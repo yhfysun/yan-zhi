@@ -34,6 +34,7 @@ import {
   listGoalBatches,
   listGoalEvents,
 } from '../services/goal-store.js';
+import { buildGoalAudit, renderGoalAuditMarkdown } from '../services/goal-audit.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -211,6 +212,21 @@ router.get('/goals', (req: Request, res: Response) => {
   }
   const goal = getLatestGoalForConversation(conversationId);
   res.json({ data: goal });
+});
+
+router.get('/goals/:id/audit', (req: Request, res: Response) => {
+  const audit = buildGoalAudit(req.params.id, req.user!.userId);
+  if (!audit) {
+    res.status(404).json({ error: '目标不存在' });
+    return;
+  }
+  if (String(req.query.format || 'json') === 'markdown') {
+    res.setHeader('Content-Disposition', `attachment; filename="goal-${audit.goal!.id}.md"`);
+    res.type('text/markdown').send(renderGoalAuditMarkdown(audit));
+    return;
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="goal-${audit.goal!.id}.json"`);
+  res.json({ data: audit });
 });
 
 router.get('/goals/:id', (req: Request, res: Response) => {

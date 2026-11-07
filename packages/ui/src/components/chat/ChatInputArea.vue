@@ -158,6 +158,14 @@
       >
         存模板
       </button>
+      <button
+        v-if="store.currentGoal"
+        type="button"
+        class="goal-action-btn"
+        @click="exportGoalAudit"
+      >
+        <el-icon><Download /></el-icon>审计
+      </button>
     </div>
 
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
@@ -981,7 +989,7 @@ import {
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer, Star, View,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer, Star, View, Download,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
@@ -1622,6 +1630,15 @@ async function saveGoalTemplate() {
     if (template) ElMessage.success(`已保存模板：${template.name}`);
   } catch (e: any) {
     ElMessage.error(e?.message || '保存目标模板失败');
+  }
+}
+
+async function exportGoalAudit() {
+  try {
+    const filename = await store.exportCurrentGoalAudit();
+    ElMessage.success(`审计文件已导出：${filename}`);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出目标审计失败');
   }
 }
 const currentModelName = computed(() => {

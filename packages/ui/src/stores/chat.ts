@@ -916,6 +916,25 @@ export const useChatStore = defineStore('chat', () => {
     pollGoal(goal.conversationId, goal.id);
     return goal;
   }
+
+  async function exportCurrentGoalAudit(): Promise<string> {
+    const goal = currentGoal.value;
+    if (!goal) throw new Error('当前没有目标');
+    const result: any = await api.get<any>(`/llm/goals/${encodeURIComponent(goal.id)}/audit`);
+    if (result?.error) throw new Error(String(result.error));
+    const audit = result?.data ?? result;
+    const blob = new Blob([JSON.stringify(audit, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const filename = `goal-${goal.id}.json`;
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    return filename;
+  }
   // 思考强度（reasoning_effort API 参数）—— 注意与上面的「深度思考」是两回事：
   //   深度思考 = 提示词模式；思考强度 = 真正下发给 LLM 的 reasoning_effort / reasoning.effort。
   //   null = 跟随智能体配置（默认：请求不带该参数，后端回退 agent.config.reasoningEffort）；
@@ -4500,7 +4519,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
     goalMode, currentGoal, goalByConv, refreshGoal, startGoal,
     goalTemplates, goalTemplateDraft, loadGoalTemplates, selectGoalTemplate, clearGoalTemplateDraft,
-    saveCurrentGoalTemplate, startGoalFromTemplate,
+    saveCurrentGoalTemplate, startGoalFromTemplate, exportCurrentGoalAudit,
     approveCurrentGoal, pauseCurrentGoal, resumeCurrentGoal, cancelCurrentGoal, resolveCurrentGoalOperation,
     reasoningEffortOverride,
     permissionMode, setPermissionMode,
