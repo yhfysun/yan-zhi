@@ -69,6 +69,7 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import goalScheduleRoutes from './routes/goal-schedules.js';
+import goalGovernanceRoutes from './routes/goal-governance.js';
 // 浏览器「页面指令」库（2026-10-16 · 页面内对话与页面指令方案 §5 P1）——
 // 挂在与 /api/browser 同级的独立路径：移动端 /api/browser 被 501 拦住，指令库不该被连坐。
 import pageCommandRoutes from './routes/page-commands.js';
@@ -324,6 +325,7 @@ app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/llm/goal-schedules', goalScheduleRoutes);
+app.use('/api/llm/goal-governance', goalGovernanceRoutes);
 // 系统信息：当前数据目录 / 实例类型（dev 还是安装版）
 // ★ 双库 issue 的真痛点就是「不可见」——本路由把这个答案交给前端
 app.use('/api/system', systemRoutes);

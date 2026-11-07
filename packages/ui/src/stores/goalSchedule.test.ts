@@ -93,4 +93,28 @@ describe('goal schedule store', () => {
     expect(updated.enabled).toBe(false);
     expect(store.schedules[0].enabled).toBe(false);
   });
+
+  it('loads and updates the per-user goal concurrency limit', async () => {
+    (api.get as any).mockResolvedValueOnce({
+      data: {
+        maxRunningGlobal: 4,
+        maxRunningPerUser: 2,
+        runningGlobal: 3,
+        runningForUser: 1,
+      },
+    });
+    (api.patch as any).mockResolvedValueOnce({
+      data: {
+        maxRunningGlobal: 4,
+        maxRunningPerUser: 3,
+        runningGlobal: 3,
+        runningForUser: 1,
+      },
+    });
+    const store = useGoalScheduleStore();
+
+    expect((await store.loadGovernance())?.maxRunningPerUser).toBe(2);
+    expect((await store.setMaxRunningPerUser(3)).maxRunningPerUser).toBe(3);
+    expect(patch.mock.calls.at(-1)?.[0]).toBe('/llm/goal-governance');
+  });
 });

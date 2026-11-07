@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { GoalSchedule, GoalScheduleRun } from '@yan-zhi/shared';
+import type { GoalGovernanceSnapshot, GoalSchedule, GoalScheduleRun } from '@yan-zhi/shared';
 import { api } from '../api/client';
 
 export interface GoalScheduleInput {
@@ -45,6 +45,7 @@ function errorMessage(result: any, fallback: string): string {
 export const useGoalScheduleStore = defineStore('goalSchedule', () => {
   const schedules = ref<GoalSchedule[]>([]);
   const loading = ref(false);
+  const governance = ref<GoalGovernanceSnapshot | null>(null);
 
   function upsert(schedule: GoalSchedule): void {
     schedules.value = [schedule, ...schedules.value.filter((item) => item.id !== schedule.id)];
@@ -101,14 +102,33 @@ export const useGoalScheduleStore = defineStore('goalSchedule', () => {
     return Array.isArray(list) ? list : [];
   }
 
+  async function loadGovernance(): Promise<GoalGovernanceSnapshot | null> {
+    const result: any = await api.get<any>('/llm/goal-governance');
+    if (result?.error) throw new Error(errorMessage(result, '加载目标并发配置失败'));
+    governance.value = (result?.data ?? result) as GoalGovernanceSnapshot;
+    return governance.value;
+  }
+
+  async function setMaxRunningPerUser(limit: number): Promise<GoalGovernanceSnapshot> {
+    const result: any = await api.patch<any>('/llm/goal-governance', {
+      maxRunningPerUser: limit,
+    });
+    if (result?.error) throw new Error(errorMessage(result, '保存目标并发配置失败'));
+    governance.value = (result?.data ?? result) as GoalGovernanceSnapshot;
+    return governance.value;
+  }
+
   return {
     schedules,
     loading,
+    governance,
     loadSchedules,
     createSchedule,
     updateSchedule,
     deleteSchedule,
     runSchedule,
     loadRuns,
+    loadGovernance,
+    setMaxRunningPerUser,
   };
 });

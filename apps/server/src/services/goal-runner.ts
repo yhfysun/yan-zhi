@@ -38,6 +38,7 @@ import {
   resolveGoalOperation,
 } from './goal-operation.js';
 import { acquireGoalResource, releaseGoalResourceLocks } from './goal-resource-lock.js';
+import { admitGoalExecution } from './goal-governance.js';
 
 type BatchStatus = 'completed' | 'failed' | 'aborted';
 
@@ -373,6 +374,12 @@ export async function runGoalOnce(
       deps.notify(goal, summary);
       return goal;
     }
+
+    const admission = admitGoalExecution(goal.id);
+    if (!admission.admitted) {
+      return admission.goal || getGoal(goal.id)!;
+    }
+    goal = admission.goal || getGoal(goal.id)!;
 
     const workspaceDir = resolveEffectiveWorkspaceDir(goal.conversationId);
     if (workspaceDir) {

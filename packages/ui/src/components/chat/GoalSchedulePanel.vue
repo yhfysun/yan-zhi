@@ -3,6 +3,41 @@
     <template v-if="!formVisible">
       <div class="gsp-toolbar">
         <el-input v-model="search" size="small" clearable placeholder="搜索目标计划" :prefix-icon="Search" />
+        <el-popover placement="bottom-end" :width="248" trigger="click">
+          <template #reference>
+            <el-tooltip content="目标并发设置" placement="top">
+              <el-button size="small" circle>
+                <el-icon><Setting /></el-icon>
+              </el-button>
+            </el-tooltip>
+          </template>
+          <div class="gsp-governance">
+            <div class="gsp-governance-title">目标并发</div>
+            <div class="gsp-governance-row">
+              <span>账号运行上限</span>
+              <el-input-number
+                v-model="governanceLimit"
+                size="small"
+                :min="1"
+                :max="20"
+              />
+            </div>
+            <div class="gsp-governance-meta">
+              当前运行 {{ scheduleStore.governance?.runningForUser || 0 }}
+              / 全局 {{ scheduleStore.governance?.runningGlobal || 0 }}
+            </div>
+            <div class="gsp-governance-actions">
+              <el-button
+                size="small"
+                type="primary"
+                :loading="savingGovernance"
+                @click="saveGovernance"
+              >
+                保存
+              </el-button>
+            </div>
+          </div>
+        </el-popover>
         <el-tooltip content="新建目标计划" placement="top">
           <el-button size="small" circle type="primary" @click="openCreate">
             <el-icon><Plus /></el-icon>
@@ -142,7 +177,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { Delete, EditPen, Plus, Search, VideoPlay } from '@element-plus/icons-vue';
+import { Delete, EditPen, Plus, Search, Setting, VideoPlay } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { GoalSchedule, GoalTemplate } from '@yan-zhi/shared';
 import { useChat } from '../../composables/chat/useChat';
@@ -165,6 +200,8 @@ const formVisible = ref(false);
 const editingId = ref<string | null>(null);
 const saving = ref(false);
 const runningId = ref('');
+const governanceLimit = ref(2);
+const savingGovernance = ref(false);
 
 const form = reactive({
   name: '',
@@ -198,7 +235,13 @@ const selectedPolicy = computed(() => currentTemplate.value || currentGoalPrevie
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
-  void Promise.all([scheduleStore.loadSchedules(), store.loadGoalTemplates()]);
+  void Promise.all([
+    scheduleStore.loadSchedules(),
+    store.loadGoalTemplates(),
+    scheduleStore.loadGovernance().then((value) => {
+      if (value) governanceLimit.value = value.maxRunningPerUser;
+    }),
+  ]);
   refreshTimer = setInterval(() => { void scheduleStore.loadSchedules(); }, 30_000);
 });
 
@@ -374,6 +417,19 @@ async function onDelete(schedule: GoalSchedule): Promise<void> {
   }
 }
 
+async function saveGovernance(): Promise<void> {
+  savingGovernance.value = true;
+  try {
+    const value = await scheduleStore.setMaxRunningPerUser(governanceLimit.value);
+    governanceLimit.value = value.maxRunningPerUser;
+    ElMessage.success('目标并发配置已保存');
+  } catch (error: any) {
+    ElMessage.error(error?.message || '保存目标并发配置失败');
+  } finally {
+    savingGovernance.value = false;
+  }
+}
+
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
   const now = new Date();
@@ -508,6 +564,39 @@ function formatTime(timestamp: number): string {
 
 .gsp-unit {
   margin-left: 6px;
+}
+
+.gsp-governance {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gsp-governance-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gsp-governance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.gsp-governance-row :deep(.el-input-number) {
+  width: 112px;
+}
+
+.gsp-governance-meta {
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.gsp-governance-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .gsp-form-footer {

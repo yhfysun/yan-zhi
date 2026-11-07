@@ -901,6 +901,13 @@ export interface GoalScheduleRun {
   createdAt: number;
 }
 
+export interface GoalGovernanceSnapshot {
+  maxRunningGlobal: number;
+  maxRunningPerUser: number;
+  runningGlobal: number;
+  runningForUser: number;
+}
+
 export interface GoalBatch {
   id: string;
   goalId: string;
