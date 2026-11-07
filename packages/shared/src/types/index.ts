@@ -777,3 +777,73 @@ export interface BrowserAnnotation {
   createdAt: number;
 }
 
+/** 目标模式：跨批次、跨重启持续执行的目标状态。 */
+export type GoalStatus =
+  | 'queued'
+  | 'planning'
+  | 'running'
+  | 'verifying'
+  | 'needing_approval'
+  | 'waiting_external'
+  | 'retry_wait'
+  | 'blocked'
+  | 'failed'
+  | 'completed'
+  | 'paused'
+  | 'cancelled';
+
+export interface GoalCriterion {
+  id: string;
+  title: string;
+  kind?: string;
+  command?: string;
+  path?: string;
+  url?: string;
+  expect?: unknown;
+}
+
+export interface GoalRun {
+  id: string;
+  userId: string;
+  conversationId: string;
+  agentId: string | null;
+  platformId: string | null;
+  modelId: string | null;
+  status: GoalStatus;
+  objective: string;
+  criteria: GoalCriterion[];
+  constraints: string[];
+  approvalRequired: string[];
+  maxBatches: number;
+  maxStallBatches: number;
+  currentBatch: number;
+  stallCount: number;
+  nextRunAt: number | null;
+  heartbeatAt: number | null;
+  lastError: string | null;
+  result: unknown;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
+export interface GoalBatch {
+  id: string;
+  goalId: string;
+  seq: number;
+  llmTaskId: string | null;
+  status: string;
+  prompt: unknown;
+  checkpoint: unknown;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+export interface GoalEvent {
+  goalId: string;
+  seq: number;
+  type: string;
+  payload: unknown;
+  createdAt: number;
+}
+

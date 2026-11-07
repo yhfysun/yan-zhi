@@ -3001,6 +3001,7 @@ async function healStalePlatform() {
     // 切走前把当前输入框（文字 / 粘贴的图片 / @ 引用）存进草稿池，切回来还在
     saveCurrentDraft();
     await loadHistory(id);
+    void store.refreshGoal(id);
     isDraftMode.value = false;
     // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
     store.browserExpanded = false;
@@ -3646,6 +3647,17 @@ ${q.text}
       // ★ 发送幂等键（2026-10-26）：断连自动重发**沿用同一个 id**，服务端据此判定
       //   「这条消息是否已经建过任务」—— 命中就直接还回原 taskId，不会再落一条重复的 user 消息。
       const clientMsgId = newSendClientMsgId();
+      if (store.goalMode) {
+        await store.startGoal({
+          conversationId: convId,
+          objective: userContent,
+          agentId: currentConv.value?.agentId || agent?.id || null,
+          platformId: platform.id,
+          modelId: model.modelId,
+        });
+        store.goalMode = false;
+        return;
+      }
       const sendOnce = () => store.sendMessage(userContent, platform, model, undefined, {
         temperature: agent?.temperature,
         maxTokens: agent?.maxTokens,

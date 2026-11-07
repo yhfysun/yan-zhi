@@ -1,7 +1,7 @@
 // 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
-import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart } from '@yan-zhi/shared';
+import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart, GoalRun } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
@@ -708,6 +708,141 @@ export const useChatStore = defineStore('chat', () => {
   const thinkingMode = ref(false);   // 深度思考：提示词要求充分推理后再作答
   const planMode = ref(false);       // 计划模式：先用 task_plan 登记计划再执行
   const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
+  const goalMode = ref(false);       // 目标模式：跨批次、跨重启持续推进，验收通过才完成
+  const goalByConv = ref<Record<string, GoalRun | null>>({});
+  const goalPollTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const currentGoal = computed(() => currentConvId.value ? goalByConv.value[currentConvId.value] || null : null);
+
+  function stopGoalPoll(convId: string) {
+    const timer = goalPollTimers.get(convId);
+    if (timer) clearTimeout(timer);
+    goalPollTimers.delete(convId);
+  }
+
+  async function refreshGoal(convId = currentConvId.value): Promise<GoalRun | null> {
+    if (!convId) return null;
+    try {
+      const r = await api.get<any>(`/llm/goals?conversationId=${encodeURIComponent(convId)}`);
+      const goal = ((r as any)?.data ?? r) as GoalRun | null;
+      goalByConv.value[convId] = goal?.id ? goal : null;
+      if (goal?.id && !['completed', 'failed', 'cancelled', 'blocked'].includes(goal.status) && !goalPollTimers.has(convId)) {
+        pollGoal(convId, goal.id);
+      }
+      return goalByConv.value[convId];
+    } catch {
+      return goalByConv.value[convId] || null;
+    }
+  }
+
+  function pollGoal(convId: string, goalId: string) {
+    stopGoalPoll(convId);
+    const tick = async () => {
+      try {
+        const r = await api.get<any>(`/llm/goals/${encodeURIComponent(goalId)}`);
+        const goal = ((r as any)?.data ?? r) as GoalRun;
+        if (!goal?.id) throw new Error('目标不存在');
+        goalByConv.value[convId] = goal;
+        await loadMessages(convId);
+        const active = !['completed', 'failed', 'cancelled', 'blocked'].includes(goal.status);
+        if (active) {
+          runningConvIds.value.add(convId);
+          goalPollTimers.set(convId, setTimeout(tick, 2_500));
+        } else {
+          runningConvIds.value.delete(convId);
+          markRunEnd(convId, goal.status === 'completed' ? 'completed' : goal.status === 'cancelled' ? 'aborted' : 'error');
+          emitTaskFinished(convId);
+          stopGoalPoll(convId);
+        }
+      } catch {
+        goalPollTimers.set(convId, setTimeout(tick, 5_000));
+      }
+    };
+    void tick();
+  }
+
+  async function startGoal(input: {
+    conversationId: string;
+    objective: string;
+    agentId?: string | null;
+    platformId: string;
+    modelId: string;
+    criteria?: Array<{ id?: string; title: string; kind?: string }>;
+  }): Promise<GoalRun> {
+    const r = await api.post<any>('/llm/goals', {
+      conversationId: input.conversationId,
+      objective: input.objective,
+      agentId: input.agentId || null,
+      platformId: input.platformId,
+      modelId: input.modelId,
+      criteria: (input.criteria || []).map((c, i) => ({
+        id: c.id || `criterion_${i + 1}`,
+        title: c.title,
+        kind: c.kind || 'text',
+      })),
+    });
+    if ((r as any)?.error) throw new Error((r as any).error);
+    const goal = ((r as any)?.data ?? r) as GoalRun;
+    if (!goal?.id) throw new Error('目标创建失败');
+    goalByConv.value[input.conversationId] = goal;
+    runningConvIds.value.add(input.conversationId);
+    if (!runStatsByConv.value[input.conversationId]) {
+      runStatsByConv.value[input.conversationId] = { status: 'running', startedAt: Date.now() };
+    }
+    pollGoal(input.conversationId, goal.id);
+    return goal;
+  }
+
+  async function approveCurrentGoal(note = ''): Promise<boolean> {
+    const goal = currentGoal.value;
+    if (!goal) return false;
+    const r = await api.post<any>(`/llm/goals/${encodeURIComponent(goal.id)}/approve`, { note });
+    if ((r as any)?.error) return false;
+    const updated = ((r as any)?.data ?? r) as GoalRun;
+    goalByConv.value[goal.conversationId] = updated;
+    pollGoal(goal.conversationId, goal.id);
+    return true;
+  }
+
+  async function pauseCurrentGoal(): Promise<boolean> {
+    const goal = currentGoal.value;
+    if (!goal) return false;
+    const r = await api.post<any>(`/llm/goals/${encodeURIComponent(goal.id)}/pause`, {});
+    if ((r as any)?.error) return false;
+    const updated = ((r as any)?.data ?? r) as GoalRun;
+    goalByConv.value[goal.conversationId] = updated;
+    stopGoalPoll(goal.conversationId);
+    runningConvIds.value.delete(goal.conversationId);
+    markRunEnd(goal.conversationId, 'aborted');
+    emitTaskFinished(goal.conversationId);
+    return true;
+  }
+
+  async function resumeCurrentGoal(): Promise<boolean> {
+    const goal = currentGoal.value;
+    if (!goal) return false;
+    const r = await api.post<any>(`/llm/goals/${encodeURIComponent(goal.id)}/resume`, {});
+    if ((r as any)?.error) return false;
+    const updated = ((r as any)?.data ?? r) as GoalRun;
+    goalByConv.value[goal.conversationId] = updated;
+    runningConvIds.value.add(goal.conversationId);
+    runStatsByConv.value[goal.conversationId] = { status: 'running', startedAt: Date.now() };
+    pollGoal(goal.conversationId, goal.id);
+    return true;
+  }
+
+  async function cancelCurrentGoal(reason = '用户取消了目标'): Promise<boolean> {
+    const goal = currentGoal.value;
+    if (!goal) return false;
+    const r = await api.post<any>(`/llm/goals/${encodeURIComponent(goal.id)}/cancel`, { reason });
+    if ((r as any)?.error) return false;
+    const updated = ((r as any)?.data ?? r) as GoalRun;
+    goalByConv.value[goal.conversationId] = updated;
+    stopGoalPoll(goal.conversationId);
+    runningConvIds.value.delete(goal.conversationId);
+    markRunEnd(goal.conversationId, 'aborted');
+    emitTaskFinished(goal.conversationId);
+    return true;
+  }
   // 思考强度（reasoning_effort API 参数）—— 注意与上面的「深度思考」是两回事：
   //   深度思考 = 提示词模式；思考强度 = 真正下发给 LLM 的 reasoning_effort / reasoning.effort。
   //   null = 跟随智能体配置（默认：请求不带该参数，后端回退 agent.config.reasoningEffort）；
@@ -4144,6 +4279,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   function stop(convId?: string) {
     const target = convId || currentConvId.value;
     if (!target) return;
+    if (goalByConv.value[target]) {
+      void cancelCurrentGoal('用户停止了目标');
+    }
     const controller = abortControllers.get(target);
     if (controller) controller.abort();
     // 终止后端任务
@@ -4287,6 +4425,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
+    goalMode, currentGoal, goalByConv, refreshGoal, startGoal,
+    approveCurrentGoal, pauseCurrentGoal, resumeCurrentGoal, cancelCurrentGoal,
     reasoningEffortOverride,
     permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,

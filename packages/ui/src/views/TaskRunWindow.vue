@@ -138,21 +138,15 @@ async function refresh(): Promise<void> {
       } catch { return null; }
     })();
 
-    // 2) 任务状态（内存活任务 → llm_task 表回落的统一出口）
-    const t = await api.get<any>(`/llm/tasks/active?conversationId=${encodeURIComponent(convId)}`);
-    const list = (t as any)?.data;
-    if (Array.isArray(list) && list.length > 0) {
-      status.value = list[0].status || 'running';
-      step.value = Number(list[0].step) || step.value;
-      updatedAt.value = Date.now();
-    } else {
-      const r = await api.get<any[]>(`/conversations/${convId}/messages?limit=100`);
-      const msgs = ((r as any)?.data || r) as any[];
-      if (Array.isArray(msgs) && msgs.length > 0) {
-        const tail = msgs[msgs.length - 1];
-        status.value = tail.role === 'assistant' ? 'completed' : 'running';
-        step.value = step.value;
-      }
+    // 2) 任务状态：内存活任务 → llm_task 最近一条记录。
+    //    ★ 绝不再按“最后一条消息是 assistant”猜 completed：中断/失败也可能以助手消息收尾，
+    //      猜出来的完成态会把未完成任务误导成成功。
+    const t = await api.get<any>(`/llm/conversations/${encodeURIComponent(convId)}/task-status`);
+    const task = (t as any)?.data;
+    if (task?.status) {
+      status.value = task.status;
+      step.value = Number(task.step) || step.value;
+      updatedAt.value = Number(task.updated_at || task.createdAt) || updatedAt.value;
     }
 
     // 3) 消息流（增量追加，避免整表替换导致滚动跳动）

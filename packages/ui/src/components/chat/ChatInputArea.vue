@@ -87,6 +87,52 @@
         </button>
       </div>
     </Teleport>
+
+    <div v-if="store.currentGoal" class="goal-status-bar" :data-status="store.currentGoal.status">
+      <el-icon class="goal-status-ic" :class="{ 'is-loading': goalIsActive }">
+        <Loading v-if="goalIsActive" />
+        <Check v-else-if="store.currentGoal.status === 'completed'" />
+        <Clock v-else />
+      </el-icon>
+      <span class="goal-status-label">目标 · {{ goalStatusLabel }}</span>
+      <span class="goal-status-objective" :title="store.currentGoal.objective">{{ store.currentGoal.objective }}</span>
+      <span v-if="store.currentGoal.status === 'retry_wait' && store.currentGoal.nextRunAt" class="goal-status-hint">
+        {{ formatGoalRetry(store.currentGoal.nextRunAt) }}
+      </span>
+      <button
+        v-if="store.currentGoal.status === 'needing_approval'"
+        type="button"
+        class="goal-action-btn is-primary"
+        @click="approveGoal"
+      >
+        <el-icon><Check /></el-icon>验收通过
+      </button>
+      <button
+        v-else-if="store.currentGoal.status === 'paused'"
+        type="button"
+        class="goal-action-btn"
+        @click="resumeGoal"
+      >
+        <el-icon><CaretRight /></el-icon>继续
+      </button>
+      <button
+        v-else-if="goalIsActive"
+        type="button"
+        class="goal-action-btn"
+        @click="pauseGoal"
+      >
+        暂停
+      </button>
+      <button
+        v-if="goalIsActive"
+        type="button"
+        class="goal-action-btn is-danger"
+        @click="cancelGoal"
+      >
+        结束
+      </button>
+    </div>
+
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
 
       <div class="input-agent-bar">
@@ -117,7 +163,7 @@
            ★ 有计划时点击该行可展开/收缩「主任务步骤详情」（与浏览器预览里的 pageAgent 步骤悬浮卡是两回事）。
            ★ 打断入口收敛：此处是唯一的「停止」，工具条发送键不再兼任停止（见下方发送按钮注释）。 -->
       <div
-        v-if="store.streaming"
+        v-if="store.streaming && !store.currentGoal"
         class="run-indicator"
         :class="{ expandable: planTotal > 0 }"
         @click="planTotal > 0 && (runDetailOpen = !runDetailOpen)"
@@ -134,7 +180,7 @@
         </button>
       </div>
       <!-- 运行进度条：登记了任务计划按 步骤x/y 填充；没计划走不定态流动条（表示"在跑，但无步骤可量"） -->
-      <div v-if="store.streaming" class="run-progress" :class="{ indeterminate: planTotal === 0 }" aria-hidden="true">
+      <div v-if="store.streaming && !store.currentGoal" class="run-progress" :class="{ indeterminate: planTotal === 0 }" aria-hidden="true">
         <div class="run-progress-fill" :style="planTotal > 0 ? { width: planPercent + '%' } : undefined"></div>
       </div>
       <!-- 结束状态回执：任务收尾后短暂停留 10s（完成/停止/失败 + 总耗时），新任务开跑即清 -->
@@ -500,6 +546,14 @@
                         <div class="plus-menu-desc">不调用工具，直接作答</div>
                       </div>
                       <el-switch v-model="store.answerOnly" size="small" @click.stop />
+                    </div>
+                    <div class="plus-menu-item" @click.stop>
+                      <span class="plus-menu-ic"><el-icon><Aim /></el-icon></span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">目标模式</div>
+                        <div class="plus-menu-desc">持续执行到验收通过，重启后继续</div>
+                      </div>
+                      <el-switch v-model="store.goalMode" size="small" @click.stop />
                     </div>
                   </template>
                   <!-- 工具权限子菜单：与桌面端工具条的权限胶囊同一个 store.permissionMode -->
@@ -1401,10 +1455,76 @@ const modesDesc = computed(() => {
   if (store.thinkingMode) on.push('深度思考');
   if (store.planMode) on.push('计划');
   if (store.answerOnly) on.push('仅回答');
+  if (store.goalMode) on.push('目标');
   // 注：思考强度（reasoning_effort API 参数）不属于工作模式，入口在模型选择弹层底部 ——
   // 这里刻意不展示，避免「模式」摘要里混进模型参数（2026-10-18 用户拍板的概念归属）。
   return on.length ? on.join(' · ') : '默认';
 });
+
+const GOAL_STATUS_LABELS: Record<string, string> = {
+  queued: '排队中',
+  planning: '规划中',
+  running: '执行中',
+  verifying: '验收中',
+  needing_approval: '待验收',
+  waiting_external: '等待外部条件',
+  retry_wait: '等待重试',
+  blocked: '已阻塞',
+  failed: '执行失败',
+  completed: '已完成',
+  paused: '已暂停',
+  cancelled: '已结束',
+};
+const goalStatusLabel = computed(() => GOAL_STATUS_LABELS[store.currentGoal?.status || ''] || '运行中');
+const goalIsActive = computed(() => {
+  const s = store.currentGoal?.status;
+  return !!s && !['completed', 'failed', 'cancelled', 'blocked', 'needing_approval', 'paused'].includes(s);
+});
+watch(() => store.goalMode, (enabled) => {
+  if (!enabled) return;
+  store.answerOnly = false;
+  store.planMode = true;
+});
+
+function formatGoalRetry(at: number): string {
+  const seconds = Math.max(0, Math.ceil((at - Date.now()) / 1000));
+  if (seconds < 60) return `${seconds} 秒后重试`;
+  return `${Math.ceil(seconds / 60)} 分钟后重试`;
+}
+
+async function approveGoal() {
+  try {
+    const ok = await store.approveCurrentGoal();
+    ElMessage[ok ? 'success' : 'error'](ok ? '目标已验收完成' : '验收失败');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '验收失败');
+  }
+}
+
+async function pauseGoal() {
+  try {
+    await store.pauseCurrentGoal();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '暂停目标失败');
+  }
+}
+
+async function resumeGoal() {
+  try {
+    await store.resumeCurrentGoal();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '恢复目标失败');
+  }
+}
+
+async function cancelGoal() {
+  try {
+    await store.cancelCurrentGoal();
+    ElMessage.success('目标已结束');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '结束目标失败');
+  }
+}
 const currentModelName = computed(() => {
   for (const g of modelGroups.value) {
     const m = g.models.find((x) => x.id === selectedModelId.value);
@@ -2582,6 +2702,59 @@ onBeforeUnmount(() => {
   /* 让 input-box 的边框过渡看起来更自然 */
   display: flex;
   flex-direction: column;
+}
+
+/* 目标模式：当前目标跨任务持续存在，状态条常驻输入框上方。 */
+.goal-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--radius-sm);
+  background: var(--el-fill-color-lighter);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+.goal-status-bar[data-status='needing_approval'],
+.goal-status-bar[data-status='retry_wait'] {
+  border-color: color-mix(in srgb, var(--color-primary) 32%, var(--el-border-color-lighter));
+}
+.goal-status-bar[data-status='blocked'],
+.goal-status-bar[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--el-color-danger) 35%, var(--el-border-color-lighter));
+}
+.goal-status-ic { flex: 0 0 auto; }
+.goal-status-label { flex: 0 0 auto; font-weight: 600; color: var(--color-text-primary); }
+.goal-status-objective {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.goal-status-hint { flex: 0 0 auto; font-size: var(--font-size-xs); }
+.goal-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--radius-sm);
+  background: var(--el-bg-color);
+  color: var(--color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.goal-action-btn:hover { color: var(--color-text-primary); border-color: var(--el-border-color-dark); }
+.goal-action-btn.is-primary { color: var(--el-color-primary); border-color: color-mix(in srgb, var(--el-color-primary) 45%, transparent); }
+.goal-action-btn.is-danger { color: var(--el-color-danger); }
+@media (max-width: 640px) {
+  .goal-status-bar { flex-wrap: wrap; }
+  .goal-status-objective { flex-basis: calc(100% - 110px); }
 }
 
 /* ===== 7.3 任务运行中：输入区上方常驻运行指示行（含唯一停止入口）===== */
