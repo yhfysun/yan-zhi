@@ -30,6 +30,7 @@ import {
   resolveContent,
   validateRecipient,
 } from './im/validate.js';
+import { createImGoalFromMessage, parseImGoalCommand } from './im-goal.js';
 
 // 各平台出站实现已拆到 ./im/providers/，这里保留原导出名供现有调用方与测试使用
 export { sendWechatPersonal } from './im/providers/wechat-personal.js';
@@ -725,29 +726,61 @@ interface ImClosedLoopPayload {
  */
 function startImTask(
   p: ImClosedLoopPayload,
-): { ok: true; conversationId: string; taskId: string } | { ok: false; reason: string } {
-  // 去重：同一消息事件只处理一次（平台可能重投）
-  const dup = db.prepare(
+):
+  | { ok: true; kind: 'task'; conversationId: string; taskId: string }
+  | { ok: true; kind: 'goal'; conversationId: string; goalId: string; objective: string }
+  | { ok: false; reason: string } {
+  const inboundExists = () => !!db.prepare(
     'SELECT id FROM im_inbound_event WHERE connector_id = ? AND provider = ? AND external_id = ?',
   ).get(p.connectorId || null, p.provider, p.externalId);
-  if (dup) return { ok: false, reason: 'duplicate' };
+  const recordInbound = () => {
+    if (inboundExists()) return;
+    db.prepare(
+      `INSERT INTO im_inbound_event
+        (id, connector_id, provider, external_id, from_user, to_user, content, file_json, raw_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      uuid(),
+      p.connectorId || null,
+      p.provider,
+      p.externalId,
+      p.fromUser,
+      p.toUser,
+      p.text,
+      null,
+      p.rawJson,
+      now(),
+    );
+  };
 
-  db.prepare(
-    `INSERT INTO im_inbound_event
-      (id, connector_id, provider, external_id, from_user, to_user, content, file_json, raw_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    uuid(),
-    p.connectorId || null,
-    p.provider,
-    p.externalId,
-    p.fromUser,
-    p.toUser,
-    p.text,
-    null,
-    p.rawJson,
-    now(),
-  );
+  const goalObjective = parseImGoalCommand(p.text);
+  if (goalObjective) {
+    const model = getDefaultModel(p.userId);
+    if (!model) return { ok: false, reason: 'no_default_model' };
+    const goal = createImGoalFromMessage({
+      userId: p.userId,
+      connectorId: p.connectorId,
+      provider: p.provider,
+      externalId: p.externalId,
+      fromUser: p.fromUser,
+      objective: goalObjective,
+      platformId: model.platformId,
+      modelId: model.modelId,
+    });
+    if (!goal.ok) return { ok: false, reason: goal.reason };
+    recordInbound();
+    return {
+      ok: true,
+      kind: 'goal',
+      conversationId: goal.conversationId,
+      goalId: goal.goalId,
+      objective: goal.objective,
+    };
+  }
+
+  // 去重：同一消息事件只处理一次（平台可能重投）
+  if (inboundExists()) return { ok: false, reason: 'duplicate' };
+  recordInbound();
 
   const model = getDefaultModel(p.userId);
   if (!model) return { ok: false, reason: 'no_default_model' };
@@ -766,7 +799,7 @@ function startImTask(
       origin: 'im',
       offlinePolicy: 'skip',
     });
-    return { ok: true, conversationId, taskId };
+    return { ok: true, kind: 'task', conversationId, taskId };
   } catch (e: any) {
     // 会话被归档/删除（用户手动收起来的 IM 会话）时不应再触发任务，也不该 500 掉整条 IM 链路
     const msg = String(e?.message || '');
@@ -807,6 +840,9 @@ export async function runWechatPersonalBridge(
   if (!started.ok) {
     return { ok: false, error: started.reason, reason: started.reason };
   }
+  if (started.kind === 'goal') {
+    return { ok: true, reply: `目标已创建：${started.objective}` };
+  }
 
   // 等 AI 任务结束（completed/error），超时给明确错误而不是挂死插件的 hook
   const reply = await new Promise<{ reply: string } | null>((resolve) => {
@@ -840,6 +876,14 @@ function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: s
 
   const started = startImTask(p);
   if (!started.ok) return { handled: false, reason: started.reason };
+  if (started.kind === 'goal') {
+    void sendImMessage(p.userId, p.connectorId || '', {
+      to: p.replyTo,
+      content: `目标已创建并开始执行：${started.objective}`,
+      receiveIdType: p.receiveIdType,
+    }).catch(() => {});
+    return { handled: true };
+  }
   const { conversationId, taskId } = started;
 
   subscribe(taskId, 0, (event) => {

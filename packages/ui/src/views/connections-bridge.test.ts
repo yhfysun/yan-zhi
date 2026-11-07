@@ -68,3 +68,12 @@ describe('④ 企微凭据一键生成', () => {
     expect(SRC).toContain("genWechatCreds('aes')");
   });
 });
+
+describe('⑤ IM 目标模板绑定', () => {
+  it('★ 连接器表单加载目标模板并把选择写回连接器配置', () => {
+    expect(SRC).toContain('/llm/goal-templates');
+    expect(SRC).toContain('v-model="form.goalTemplateId"');
+    expect(SRC).toContain('goalTemplateId: f.goalTemplateId || null');
+    expect(SRC).toContain('goalTemplateId: config.goalTemplateId ||');
+  });
+});

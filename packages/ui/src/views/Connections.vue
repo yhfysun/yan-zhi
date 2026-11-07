@@ -140,6 +140,16 @@
             <el-form-item label="名称">
               <el-input v-model="form.name" placeholder="如：团队通知机器人" />
             </el-form-item>
+            <el-form-item label="目标模板">
+              <el-select v-model="form.goalTemplateId" clearable filterable placeholder="不绑定">
+                <el-option
+                  v-for="template in goalTemplates"
+                  :key="template.id"
+                  :value="template.id"
+                  :label="template.name"
+                />
+              </el-select>
+            </el-form-item>
             <template v-if="form.provider === 'feishu'">
               <el-form-item label="App ID">
                 <el-input v-model="form.appId" placeholder="cli_xxxxxxxx" />
@@ -303,6 +313,7 @@ const importInput = ref<HTMLInputElement | null>(null);
 const form = ref({
   provider: 'feishu',
   name: '',
+  goalTemplateId: '',
   appId: '',
   appSecret: '',
   verificationToken: '',
@@ -315,6 +326,7 @@ const form = ref({
   clientId: '',
   clientSecret: '',
 });
+const goalTemplates = ref<Array<{ id: string; name: string }>>([]);
 
 const callbackBase = computed(() => {
   if (typeof window !== 'undefined' && window.location && window.location.origin && !window.location.origin.startsWith('file')) {
@@ -324,7 +336,15 @@ const callbackBase = computed(() => {
   return LOCAL_API_BASE.replace(/\/api$/, '');
 });
 
-onMounted(load);
+onMounted(() => {
+  void load();
+  void loadGoalTemplates();
+});
+
+async function loadGoalTemplates() {
+  const res = await api.get<any>('/llm/goal-templates');
+  if (!('error' in res)) goalTemplates.value = res.data || [];
+}
 
 async function load() {
   loading.value = true;
@@ -339,16 +359,32 @@ async function load() {
 
 function configFrom(f: typeof form.value) {
   if (f.provider === 'feishu') {
-    return { appId: f.appId, appSecret: f.appSecret, verificationToken: f.verificationToken };
+    return {
+      appId: f.appId,
+      appSecret: f.appSecret,
+      verificationToken: f.verificationToken,
+      goalTemplateId: f.goalTemplateId || null,
+    };
   }
   if (f.provider === 'wechat-personal') {
     // bridgeToken 由后端在创建/更新时生成并保留，前端不回传
-    return {};
+    return { goalTemplateId: f.goalTemplateId || null };
   }
   if (f.provider === 'dingtalk') {
-    return { clientId: f.clientId, clientSecret: f.clientSecret };
+    return {
+      clientId: f.clientId,
+      clientSecret: f.clientSecret,
+      goalTemplateId: f.goalTemplateId || null,
+    };
   }
-  return { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
+  return {
+    corpId: f.corpId,
+    secret: f.secret,
+    agentId: f.agentId,
+    token: f.token,
+    encodingAesKey: f.encodingAesKey,
+    goalTemplateId: f.goalTemplateId || null,
+  };
 }
 
 /** 企微 Token(3-32 位字母数字) / EncodingAESKey(43 位字母数字) 一键生成，用户只需粘贴进后台 */
@@ -487,7 +523,7 @@ function resetForm() {
   editingId.value = '';
   testResult.value = '';
   testError.value = '';
-  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '', clientId: '', clientSecret: '' };
+  form.value = { provider: 'feishu', name: '', goalTemplateId: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '', clientId: '', clientSecret: '' };
 }
 
 function openCreate() {
@@ -501,6 +537,7 @@ function openEdit(c: any) {
   form.value = {
     provider: c.provider,
     name: c.name,
+    goalTemplateId: config.goalTemplateId || '',
     appId: config.appId || '',
     appSecret: config.appSecret || '',
     verificationToken: config.verificationToken || '',
@@ -649,10 +686,14 @@ function providerLabel(p: string) {
 
 function configSummary(c: any) {
   const config = c.config || {};
-  if (c.provider === 'feishu') return config.appId ? `App ID ${config.appId}` : '未配置凭据';
-  if (c.provider === 'wechat-personal') return config.bridgeToken ? '本机 OpenClaw 桥接' : '未连接';
-  if (c.provider === 'dingtalk') return config.clientId ? `Client ID ${config.clientId}` : '未配置凭据';
-  return config.corpId ? `Corp ID ${config.corpId}` : '未配置凭据';
+  const templateName = config.goalTemplateId
+    ? goalTemplates.value.find((item) => item.id === config.goalTemplateId)?.name
+    : '';
+  const goalSuffix = templateName ? ` · 目标模板 ${templateName}` : '';
+  if (c.provider === 'feishu') return (config.appId ? `App ID ${config.appId}` : '未配置凭据') + goalSuffix;
+  if (c.provider === 'wechat-personal') return (config.bridgeToken ? '本机 OpenClaw 桥接' : '未连接') + goalSuffix;
+  if (c.provider === 'dingtalk') return (config.clientId ? `Client ID ${config.clientId}` : '未配置凭据') + goalSuffix;
+  return (config.corpId ? `Corp ID ${config.corpId}` : '未配置凭据') + goalSuffix;
 }
 
 async function openExport(c: any) {
@@ -694,6 +735,7 @@ async function onImportFile(event: Event) {
   form.value = {
     provider,
     name: obj.name || '导入的连接',
+    goalTemplateId: config.goalTemplateId || '',
     appId: config.appId || '',
     appSecret: config.appSecret || '',
     verificationToken: config.verificationToken || '',
