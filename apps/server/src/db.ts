@@ -5510,6 +5510,94 @@ db.exec(`
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_user ON llm_task(user_id, status, updated_at DESC)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_conv ON llm_task(conversation_id, status)'); } catch {}
 
+// ===== 目标模式（Goal Run）持久化 =====
+// 目标不是一次性 llm_task，而是跨批次、跨重启、跨人工等待的长期运行对象。
+// llm_task 只承载其中一批执行，goal_* 负责目标状态、检查点和审计。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS goal_run (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    agent_id TEXT,
+    platform_id TEXT,
+    model_id TEXT,
+    status TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    criteria_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    approval_policy_json TEXT NOT NULL DEFAULT '[]',
+    max_batches INTEGER NOT NULL DEFAULT 20,
+    max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    current_batch INTEGER NOT NULL DEFAULT 0,
+    stall_count INTEGER NOT NULL DEFAULT 0,
+    next_run_at INTEGER,
+    lease_owner TEXT,
+    lease_until INTEGER,
+    heartbeat_at INTEGER,
+    last_error TEXT,
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_goal_run_one_active
+    ON goal_run(conversation_id)
+    WHERE status IN ('queued','planning','running','verifying','needing_approval','waiting_external','retry_wait','paused');
+
+  CREATE TABLE IF NOT EXISTS goal_batch (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    llm_task_id TEXT,
+    status TEXT NOT NULL,
+    prompt_json TEXT NOT NULL DEFAULT '{}',
+    checkpoint_json TEXT,
+    started_at INTEGER,
+    finished_at INTEGER,
+    UNIQUE(goal_id, seq)
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_batch_goal ON goal_batch(goal_id, seq);
+
+  CREATE TABLE IF NOT EXISTS goal_event (
+    goal_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(goal_id, seq)
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_approval (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    batch_id TEXT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    answer_json TEXT,
+    requested_at INTEGER NOT NULL,
+    answered_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_approval_goal ON goal_approval(goal_id, status, requested_at);
+
+  CREATE TABLE IF NOT EXISTS goal_operation (
+    idempotency_key TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    batch_id TEXT,
+    step_id TEXT,
+    tool_name TEXT NOT NULL,
+    args_hash TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    external_ref TEXT,
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_operation_goal ON goal_operation(goal_id, status);
+`);
+
 // ===== 工作流运行持久化 =====
 // 与 llm_task 同思路：运行状态/节点日志/结果落库，前端断开后可回查，重启后遗留 running 标记 interrupted。
 db.exec(`
