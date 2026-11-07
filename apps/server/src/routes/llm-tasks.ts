@@ -12,8 +12,10 @@ import {
   cancelGoal,
   createAndStartGoal,
   pauseGoal,
+  resolveGoalOperationAndResume,
   resumeGoal,
 } from '../services/goal-runner.js';
+import { listGoalOperations } from '../services/goal-operation.js';
 import {
   getActiveGoalForConversation,
   getGoal,
@@ -211,8 +213,38 @@ router.get('/goals/:id', (req: Request, res: Response) => {
       ...goal,
       batches: listGoalBatches(goal.id),
       events: listGoalEvents(goal.id),
+      operations: listGoalOperations(goal.id),
     },
   });
+});
+
+router.post('/goals/:id/operations/:key/resolve', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    const outcome = req.body?.outcome === 'not_done' ? 'not_done' : req.body?.outcome === 'done' ? 'done' : null;
+    if (!outcome) {
+      res.status(400).json({ error: 'outcome 必须是 done 或 not_done' });
+      return;
+    }
+    const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 2_000) : '';
+    const externalRef = typeof req.body?.externalRef === 'string' ? req.body.externalRef.slice(0, 1_000) : null;
+    res.json({
+      data: resolveGoalOperationAndResume(
+        req.params.id,
+        req.params.key,
+        outcome,
+        note,
+        req.user!.userId,
+        externalRef,
+      ),
+    });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
 });
 
 router.post('/goals/:id/pause', (req: Request, res: Response) => {

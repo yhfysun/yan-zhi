@@ -5599,6 +5599,9 @@ db.exec(`
     status TEXT NOT NULL,
     external_ref TEXT,
     result_json TEXT,
+    resolution_json TEXT,
+    resolved_at INTEGER,
+    resolved_by TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -5614,6 +5617,9 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_goal_resource_lock_goal ON goal_resource_lock(goal_id);
 `);
+try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolution_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_at INTEGER'); } catch {}
+try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_by TEXT'); } catch {}
 
 // ===== 工作流运行持久化 =====
 // 与 llm_task 同思路：运行状态/节点日志/结果落库，前端断开后可回查，重启后遗留 running 标记 interrupted。

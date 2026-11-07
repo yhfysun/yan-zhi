@@ -96,11 +96,30 @@
       </el-icon>
       <span class="goal-status-label">目标 · {{ goalStatusLabel }}</span>
       <span class="goal-status-objective" :title="store.currentGoal.objective">{{ store.currentGoal.objective }}</span>
+      <span v-if="goalNeedsOperationReconcile" class="goal-status-hint" :title="formatGoalOperationArgs(unknownGoalOperation?.args)">
+        {{ unknownGoalOperation?.toolName || '外部操作' }} 结果不明
+      </span>
       <span v-if="store.currentGoal.status === 'retry_wait' && store.currentGoal.nextRunAt" class="goal-status-hint">
         {{ formatGoalRetry(store.currentGoal.nextRunAt) }}
       </span>
       <button
-        v-if="store.currentGoal.status === 'needing_approval'"
+        v-if="goalNeedsOperationReconcile"
+        type="button"
+        class="goal-action-btn is-primary"
+        @click="resolveGoalOperation('done')"
+      >
+        <el-icon><Check /></el-icon>已生效
+      </button>
+      <button
+        v-if="goalNeedsOperationReconcile"
+        type="button"
+        class="goal-action-btn"
+        @click="resolveGoalOperation('not_done')"
+      >
+        未生效，继续
+      </button>
+      <button
+        v-else-if="store.currentGoal.status === 'needing_approval'"
         type="button"
         class="goal-action-btn is-primary"
         @click="approveGoal"
@@ -124,7 +143,7 @@
         暂停
       </button>
       <button
-        v-if="goalIsActive"
+        v-if="goalCanStop"
         type="button"
         class="goal-action-btn is-danger"
         @click="cancelGoal"
@@ -1475,10 +1494,25 @@ const GOAL_STATUS_LABELS: Record<string, string> = {
   paused: '已暂停',
   cancelled: '已结束',
 };
-const goalStatusLabel = computed(() => GOAL_STATUS_LABELS[store.currentGoal?.status || ''] || '运行中');
+const goalNeedsOperationReconcile = computed(() => {
+  const goal = store.currentGoal;
+  return goal?.status === 'needing_approval' && (goal.result as any)?.kind === 'operation_reconcile';
+});
+const goalStatusLabel = computed(() =>
+  goalNeedsOperationReconcile.value
+    ? '待核实操作'
+    : GOAL_STATUS_LABELS[store.currentGoal?.status || ''] || '运行中',
+);
+const unknownGoalOperation = computed(() =>
+  store.currentGoal?.operations?.find(op => op.status === 'unknown') || null,
+);
 const goalIsActive = computed(() => {
   const s = store.currentGoal?.status;
   return !!s && !['completed', 'failed', 'cancelled', 'blocked', 'needing_approval', 'paused'].includes(s);
+});
+const goalCanStop = computed(() => {
+  const s = store.currentGoal?.status;
+  return !!s && !['completed', 'failed', 'cancelled', 'blocked'].includes(s);
 });
 watch(() => store.goalMode, (enabled) => {
   if (!enabled) return;
@@ -1490,6 +1524,15 @@ function formatGoalRetry(at: number): string {
   const seconds = Math.max(0, Math.ceil((at - Date.now()) / 1000));
   if (seconds < 60) return `${seconds} 秒后重试`;
   return `${Math.ceil(seconds / 60)} 分钟后重试`;
+}
+
+function formatGoalOperationArgs(args: unknown): string {
+  try {
+    const text = JSON.stringify(args ?? {});
+    return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+  } catch {
+    return '';
+  }
 }
 
 async function approveGoal() {
@@ -1523,6 +1566,19 @@ async function cancelGoal() {
     ElMessage.success('目标已结束');
   } catch (e: any) {
     ElMessage.error(e?.message || '结束目标失败');
+  }
+}
+
+async function resolveGoalOperation(outcome: 'done' | 'not_done') {
+  try {
+    const ok = await store.resolveCurrentGoalOperation(outcome, outcome === 'done' ? '用户核实：操作已生效' : '用户核实：操作未生效');
+    if (ok) {
+      ElMessage.success(outcome === 'done' ? '已确认操作生效，目标继续' : '已确认操作未生效，目标继续重试');
+    } else {
+      ElMessage.error('没有待核实的目标操作');
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '目标操作核实失败');
   }
 }
 const currentModelName = computed(() => {

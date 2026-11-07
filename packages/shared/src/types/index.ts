@@ -822,9 +822,29 @@ export interface GoalRun {
   heartbeatAt: number | null;
   lastError: string | null;
   result: unknown;
+  /** GET /goals/:id 时附带，用于处理崩溃后 unknown 的外部操作。 */
+  operations?: GoalOperationRecord[];
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
+}
+
+export interface GoalOperationRecord {
+  idempotencyKey: string;
+  goalId: string;
+  batchId: string | null;
+  stepId: string | null;
+  toolName: string;
+  argsHash: string;
+  args: unknown;
+  status: 'prepared' | 'executing' | 'executed' | 'verified' | 'failed' | 'unknown';
+  externalRef: string | null;
+  result: unknown;
+  resolution: unknown;
+  resolvedAt: number | null;
+  resolvedBy: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface GoalBatch {

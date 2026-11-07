@@ -10,6 +10,7 @@ import {
   markGoalOperationExecuting,
   markUncertainGoalOperations,
   operationKey,
+  resolveGoalOperation,
 } from '../src/services/goal-operation.js';
 
 beforeAll(() => {
@@ -76,5 +77,33 @@ describe('goal operation ledger', () => {
     expect(taskManager).toContain('beginGoalOperation(');
     expect(taskManager).toContain('finishGoalOperation(');
     expect(goalStore).toContain('markUncertainGoalOperations(');
+  });
+
+  it('人工核实 unknown 操作后落定 verified 或 failed', () => {
+    const doneKey = operationKey('goal_4', 'batch_4', 'browser_click', { selector: '#done' });
+    beginGoalOperation({
+      goalId: 'goal_4',
+      batchId: 'batch_4',
+      toolName: 'browser_click',
+      args: { selector: '#done' },
+    });
+    markGoalOperationExecuting(doneKey);
+    markUncertainGoalOperations('goal_4');
+    const done = resolveGoalOperation(doneKey, 'done', '外部订单已存在', 'user_1');
+    expect(done.status).toBe('verified');
+    expect(done.resolution).toMatchObject({ outcome: 'done', note: '外部订单已存在', by: 'user_1' });
+
+    const retryKey = operationKey('goal_4', 'batch_4', 'browser_click', { selector: '#retry' });
+    beginGoalOperation({
+      goalId: 'goal_4',
+      batchId: 'batch_4',
+      toolName: 'browser_click',
+      args: { selector: '#retry' },
+    });
+    markGoalOperationExecuting(retryKey);
+    markUncertainGoalOperations('goal_4');
+    const retry = resolveGoalOperation(retryKey, 'not_done', '页面没有提交成功', 'user_1');
+    expect(retry.status).toBe('failed');
+    expect(retry.resolution).toMatchObject({ outcome: 'not_done' });
   });
 });

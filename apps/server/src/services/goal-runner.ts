@@ -32,7 +32,11 @@ import {
   verifyDeterministicCriteria,
   type GoalCriterionResult,
 } from './goal-verifier.js';
-import { listUnknownGoalOperations } from './goal-operation.js';
+import {
+  getGoalOperation,
+  listUnknownGoalOperations,
+  resolveGoalOperation,
+} from './goal-operation.js';
 import { acquireGoalResource, releaseGoalResourceLocks } from './goal-resource-lock.js';
 
 type BatchStatus = 'completed' | 'failed' | 'aborted';
@@ -314,13 +318,13 @@ function scheduleRetry(goal: GoalRun, summary: string): GoalRun {
   return getGoal(goal.id)!;
 }
 
-function createApproval(goal: GoalRun, summary: string, unmet: string[]): void {
+function createApproval(goal: GoalRun, kind: string, title: string, detail: unknown): void {
   const approvalId = `goalapproval_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   db.prepare(`
     INSERT INTO goal_approval (id, goal_id, kind, title, detail_json, status, requested_at)
-    VALUES (?, ?, 'manual_acceptance', '目标完成待确认', ?, 'open', ?)
-  `).run(approvalId, goal.id, JSON.stringify({ summary, unmet }), Date.now());
-  appendGoalEvent(goal.id, 'approval.requested', { approvalId, summary, unmet });
+    VALUES (?, ?, ?, ?, ?, 'open', ?)
+  `).run(approvalId, goal.id, kind, title, JSON.stringify(detail ?? {}), Date.now());
+  appendGoalEvent(goal.id, 'approval.requested', { approvalId, kind, title, detail });
 }
 
 export async function runGoalOnce(
@@ -347,6 +351,27 @@ export async function runGoalOnce(
       });
       appendGoalEvent(goal.id, 'goal.blocked', { reason: 'max_batches' });
       return getGoal(goal.id)!;
+    }
+
+    const unknownOperations = listUnknownGoalOperations(goal.id);
+    if (unknownOperations.length) {
+      const operations = unknownOperations.map(op => ({
+        idempotencyKey: op.idempotencyKey,
+        toolName: op.toolName,
+        args: op.args,
+        argsHash: op.argsHash,
+      }));
+      const summary = `有 ${operations.length} 个外部操作结果不明，需要先核实是否已生效`;
+      createApproval(goal, 'operation_reconcile', '目标操作待核实', { summary, operations });
+      transitionGoal(goal.id, 'needing_approval', {
+        result: { kind: 'operation_reconcile', summary, operations },
+        lastError: summary,
+        leaseOwner: null,
+        leaseUntil: null,
+      });
+      goal = getGoal(goal.id)!;
+      deps.notify(goal, summary);
+      return goal;
     }
 
     const workspaceDir = resolveEffectiveWorkspaceDir(goal.conversationId);
@@ -429,7 +454,10 @@ export async function runGoalOnce(
     }
 
     if (verification.needsApproval) {
-      createApproval(goal, verification.summary, verification.unmet);
+      createApproval(goal, 'manual_acceptance', '目标完成待确认', {
+        summary: verification.summary,
+        unmet: verification.unmet,
+      });
       transitionGoal(goal.id, 'needing_approval', {
         result: verification,
         lastError: verification.summary,
@@ -562,6 +590,9 @@ export function approveGoal(goalId: string, note: string): GoalRun {
   const goal = getGoal(goalId);
   if (!goal) throw new Error('目标不存在');
   if (goal.status !== 'needing_approval') throw new Error('目标不处于待验收状态');
+  if ((goal.result as any)?.kind === 'operation_reconcile') {
+    throw new Error('当前有结果不明的外部操作，请先逐项核实，不能直接完成目标');
+  }
   const now = Date.now();
   db.prepare(
     "UPDATE goal_approval SET status = 'approved', answer_json = ?, answered_at = ? WHERE goal_id = ? AND status = 'open'",
@@ -576,6 +607,51 @@ export function approveGoal(goalId: string, note: string): GoalRun {
   appendGoalEvent(goalId, 'verification.passed', { by: 'user', note });
   notifyConversation(getGoal(goalId)!, `目标已由用户验收完成${note ? `：${note}` : ''}`);
   return getGoal(goalId)!;
+}
+
+export function resolveGoalOperationAndResume(
+  goalId: string,
+  operationKey: string,
+  outcome: 'done' | 'not_done',
+  note: string,
+  by: string,
+  externalRef?: string | null,
+): { goal: GoalRun; operation: ReturnType<typeof resolveGoalOperation> } {
+  const goal = getGoal(goalId);
+  if (!goal) throw new Error('目标不存在');
+  const existing = getGoalOperation(operationKey);
+  if (!existing || existing.goalId !== goalId) throw new Error('操作不属于当前目标');
+  const operation = resolveGoalOperation(operationKey, outcome, note, by, externalRef);
+  const remaining = listUnknownGoalOperations(goalId);
+  if (remaining.length) {
+    appendGoalEvent(goalId, 'operation.reconciled', {
+      operationKey,
+      outcome,
+      remaining: remaining.length,
+    });
+    return { goal: getGoal(goalId)!, operation };
+  }
+
+  const result = (goal.result || {}) as Record<string, unknown>;
+  if (goal.status === 'needing_approval' && result.kind === 'operation_reconcile') {
+    const now = Date.now();
+    db.prepare(`
+      UPDATE goal_approval
+      SET status = 'resolved', answer_json = ?, answered_at = ?
+      WHERE goal_id = ? AND kind = 'operation_reconcile' AND status = 'open'
+    `).run(JSON.stringify({ operationKey, outcome, note }), now, goalId);
+    transitionGoal(goalId, 'queued', {
+      result: { kind: 'operation_reconcile_complete', summary: '外部操作已逐项核实' },
+      lastError: null,
+      nextRunAt: now,
+      leaseOwner: null,
+      leaseUntil: null,
+    });
+    appendGoalEvent(goalId, 'operation.reconciled', { operationKey, outcome, remaining: 0 });
+    appendGoalEvent(goalId, 'goal.resumed', { reason: 'operations_reconciled' });
+    queueMicrotask(() => { void runGoalOnce(goalId).catch(() => {}); });
+  }
+  return { goal: getGoal(goalId)!, operation };
 }
 
 export async function tickDueGoals(now = Date.now()): Promise<number> {

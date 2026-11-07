@@ -843,6 +843,25 @@ export const useChatStore = defineStore('chat', () => {
     emitTaskFinished(goal.conversationId);
     return true;
   }
+
+  async function resolveCurrentGoalOperation(
+    outcome: 'done' | 'not_done',
+    note = '',
+    externalRef?: string,
+  ): Promise<boolean> {
+    const goal = currentGoal.value;
+    const operation = goal?.operations?.find(op => op.status === 'unknown');
+    if (!goal || !operation) return false;
+    const r = await api.post<any>(
+      `/llm/goals/${encodeURIComponent(goal.id)}/operations/${encodeURIComponent(operation.idempotencyKey)}/resolve`,
+      { outcome, note, externalRef },
+    );
+    if ((r as any)?.error) return false;
+    const data = (r as any)?.data ?? r;
+    if (data?.goal?.id) goalByConv.value[goal.conversationId] = data.goal;
+    pollGoal(goal.conversationId, goal.id);
+    return true;
+  }
   // 思考强度（reasoning_effort API 参数）—— 注意与上面的「深度思考」是两回事：
   //   深度思考 = 提示词模式；思考强度 = 真正下发给 LLM 的 reasoning_effort / reasoning.effort。
   //   null = 跟随智能体配置（默认：请求不带该参数，后端回退 agent.config.reasoningEffort）；
@@ -4426,7 +4445,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     runningToolCallIds, isToolCallRunning,
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
     goalMode, currentGoal, goalByConv, refreshGoal, startGoal,
-    approveCurrentGoal, pauseCurrentGoal, resumeCurrentGoal, cancelCurrentGoal,
+    approveCurrentGoal, pauseCurrentGoal, resumeCurrentGoal, cancelCurrentGoal, resolveCurrentGoalOperation,
     reasoningEffortOverride,
     permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,

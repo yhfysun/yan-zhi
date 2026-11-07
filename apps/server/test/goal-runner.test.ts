@@ -2,6 +2,12 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { db } from '../src/db.js';
 import { createGoal, getGoal, listGoalBatches, listGoalEvents } from '../src/services/goal-store.js';
 import { runGoalOnce, type GoalRunnerDeps } from '../src/services/goal-runner.js';
+import {
+  beginGoalOperation,
+  markGoalOperationExecuting,
+  markUncertainGoalOperations,
+  operationKey,
+} from '../src/services/goal-operation.js';
 
 const USER = 'u_goal_runner';
 
@@ -100,5 +106,28 @@ describe('goal-runner', () => {
     expect(result.status).toBe('blocked');
     expect(getGoal(goal.id)?.status).toBe('blocked');
     expect(listGoalEvents(goal.id).some(e => e.type === 'goal.blocked')).toBe(true);
+  });
+
+  it('存在结果不明的副作用时先停批等人工核实，不继续执行', async () => {
+    const conv = 'conv_goal_unknown_op';
+    db.prepare(
+      'INSERT OR IGNORE INTO conversation (id, user_id, title, permission_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(conv, USER, conv, 'default', 0, 0);
+    const goal = goalFor(conv);
+    const key = operationKey(goal.id, 'batch_unknown', 'browser_click', { selector: '#pay' });
+    beginGoalOperation({
+      goalId: goal.id,
+      batchId: 'batch_unknown',
+      toolName: 'browser_click',
+      args: { selector: '#pay' },
+    });
+    markGoalOperationExecuting(key);
+    markUncertainGoalOperations(goal.id);
+
+    const launch = vi.fn(deps().launchBatch);
+    const result = await runGoalOnce(goal.id, deps({ launchBatch: launch }));
+    expect(result.status).toBe('needing_approval');
+    expect((result.result as any)?.kind).toBe('operation_reconcile');
+    expect(launch).not.toHaveBeenCalled();
   });
 });

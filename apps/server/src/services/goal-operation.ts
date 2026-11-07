@@ -20,6 +20,9 @@ export interface GoalOperation {
   status: GoalOperationStatus;
   externalRef: string | null;
   result: unknown;
+  resolution: unknown;
+  resolvedAt: number | null;
+  resolvedBy: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -51,6 +54,9 @@ function map(row: any): GoalOperation {
     status: row.status as GoalOperationStatus,
     externalRef: row.external_ref ? String(row.external_ref) : null,
     result: parse(row.result_json),
+    resolution: parse(row.resolution_json),
+    resolvedAt: row.resolved_at == null ? null : Number(row.resolved_at),
+    resolvedBy: row.resolved_by ? String(row.resolved_by) : null,
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
   };
@@ -153,4 +159,40 @@ export function listUnknownGoalOperations(goalId: string): GoalOperation[] {
   return (db.prepare(
     "SELECT * FROM goal_operation WHERE goal_id = ? AND status = 'unknown' ORDER BY created_at ASC",
   ).all(goalId) as any[]).map(map);
+}
+
+export function resolveGoalOperation(
+  key: string,
+  outcome: 'done' | 'not_done',
+  note: string,
+  by: string,
+  externalRef?: string | null,
+): GoalOperation {
+  const operation = getGoalOperation(key);
+  if (!operation) throw new Error('目标操作不存在');
+  if (operation.status !== 'unknown') {
+    throw new Error(`只有 unknown 操作需要人工核实，当前状态：${operation.status}`);
+  }
+  const now = Date.now();
+  const resolution = {
+    outcome,
+    note: String(note || '').slice(0, 2_000),
+    by: String(by || 'user').slice(0, 200),
+    resolvedAt: now,
+  };
+  db.prepare(`
+    UPDATE goal_operation
+    SET status = ?, resolution_json = ?, resolved_at = ?, resolved_by = ?,
+        external_ref = COALESCE(?, external_ref), updated_at = ?
+    WHERE idempotency_key = ?
+  `).run(
+    outcome === 'done' ? 'verified' : 'failed',
+    JSON.stringify(resolution),
+    now,
+    resolution.by,
+    externalRef || null,
+    now,
+    key,
+  );
+  return getGoalOperation(key)!;
 }
