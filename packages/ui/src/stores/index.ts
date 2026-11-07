@@ -15,6 +15,7 @@ export { useToolsStore } from './tools';
 export { useSpaceStore } from './space';
 export { useFileStore } from './file';
 export { useScheduledTaskStore } from './scheduledTask';
+export { useGoalScheduleStore } from './goalSchedule';
 export { usePluginStore } from './plugin';
 export type { PluginInfo } from './plugin';
 export { useGitStore } from './git';

@@ -382,8 +382,15 @@
       </div>
     </div>
 
-    <div v-else-if="sideTab === 'task'" class="task-tab">
-      <ScheduledTaskDialog />
+    <div v-else-if="sideTab === 'task'" class="task-tab task-tab-switched">
+      <el-segmented
+        v-model="taskPanelTab"
+        :options="taskPanelOptions"
+        size="small"
+        class="task-panel-switch"
+      />
+      <GoalSchedulePanel v-if="taskPanelTab === 'goal'" />
+      <ScheduledTaskDialog v-else />
     </div>
 
     <!-- 发布队列（2026-10-17）：模型 publish_enqueue 入队的内容在这里人工确认 -->
@@ -685,6 +692,7 @@ import { bindLongPress } from '../../composables/useLongPress';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { useMobileShell } from '../../composables/useMobileShell';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
+import GoalSchedulePanel from './GoalSchedulePanel.vue';
 import PublishQueueTab from './PublishQueueTab.vue';
 import ChatFileTab from './ChatFileTab.vue';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
@@ -695,6 +703,12 @@ import type { ActionSheetAction } from '../common/ActionSheet.vue';
 
 /** 会话来源徽标的判据（模板里 `v-if="conv.source === BROWSER_PAGE_SOURCE"`） */
 const BROWSER_PAGE_SOURCE = CONV_SOURCE_BROWSER_PAGE;
+
+const taskPanelTab = ref<'scheduled' | 'goal'>('scheduled');
+const taskPanelOptions = [
+  { label: '定时任务', value: 'scheduled' },
+  { label: '目标计划', value: 'goal' },
+];
 
 /** 行尾相对时间：今天 → HH:mm；昨天 → 昨天；更早 → M/D（跨年带年份）。
     只做展示，排序仍由 store 按 updatedAt 决定。 */
@@ -1104,3 +1118,21 @@ onBeforeUnmount(() => {
   if (convScrollTimer) clearTimeout(convScrollTimer);
 });
 </script>
+
+<style scoped>
+.task-tab-switched {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.task-panel-switch {
+  align-self: center;
+  margin: 8px 10px 2px;
+}
+
+.task-tab-switched > :not(.task-panel-switch) {
+  flex: 1;
+  min-height: 0;
+}
+</style>
