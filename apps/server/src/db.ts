@@ -5535,6 +5535,7 @@ db.exec(`
     approval_policy_json TEXT NOT NULL DEFAULT '[]',
     max_batches INTEGER NOT NULL DEFAULT 20,
     max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    cost_limit_cny REAL NOT NULL DEFAULT 0,
     current_batch INTEGER NOT NULL DEFAULT 0,
     stall_count INTEGER NOT NULL DEFAULT 0,
     next_run_at INTEGER,
@@ -5564,6 +5565,18 @@ db.exec(`
     UNIQUE(goal_id, seq)
   );
   CREATE INDEX IF NOT EXISTS idx_goal_batch_goal ON goal_batch(goal_id, seq);
+
+  CREATE TABLE IF NOT EXISTS goal_model_attempt (
+    goal_id TEXT NOT NULL,
+    platform_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    attempted_at INTEGER NOT NULL,
+    PRIMARY KEY(goal_id, model_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_model_attempt_goal
+    ON goal_model_attempt(goal_id, attempted_at DESC);
 
   CREATE TABLE IF NOT EXISTS goal_event (
     goal_id TEXT NOT NULL,
@@ -5627,6 +5640,7 @@ db.exec(`
     approval_policy_json TEXT NOT NULL DEFAULT '[]',
     max_batches INTEGER NOT NULL DEFAULT 20,
     max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    cost_limit_cny REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(user_id, name)
@@ -5660,6 +5674,7 @@ db.exec(`
     approval_policy_json TEXT NOT NULL DEFAULT '[]',
     max_batches INTEGER NOT NULL DEFAULT 20,
     max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    cost_limit_cny REAL NOT NULL DEFAULT 0,
     interval_minutes INTEGER,
     cron_expr TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -5693,6 +5708,9 @@ db.exec(`
 `);
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolution_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_at INTEGER'); } catch {}
+try { db.exec('ALTER TABLE goal_run ADD COLUMN cost_limit_cny REAL NOT NULL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE goal_template ADD COLUMN cost_limit_cny REAL NOT NULL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE goal_schedule ADD COLUMN cost_limit_cny REAL NOT NULL DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN goal_schedule_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_by TEXT'); } catch {}
 

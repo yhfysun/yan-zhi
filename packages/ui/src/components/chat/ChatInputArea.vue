@@ -1554,6 +1554,9 @@ watch(() => store.goalMode, (enabled) => {
   store.answerOnly = false;
   store.planMode = true;
   void store.loadGoalTemplates();
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    void Notification.requestPermission().catch(() => {});
+  }
 });
 
 function applyGoalTemplate(template: GoalTemplate) {

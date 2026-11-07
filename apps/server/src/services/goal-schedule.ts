@@ -23,6 +23,7 @@ export interface GoalSchedule {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   intervalMinutes: number | null;
   cronExpr: string | null;
   enabled: boolean;
@@ -62,6 +63,7 @@ export interface GoalScheduleCreateInput {
   approvalRequired?: string[];
   maxBatches?: number;
   maxStallBatches?: number;
+  costLimitCny?: number;
   intervalMinutes?: number | null;
   cronExpr?: string | null;
   enabled?: boolean;
@@ -117,6 +119,7 @@ function mapSchedule(row: any): GoalSchedule {
     approvalRequired: parse<string[]>(row.approval_policy_json, []),
     maxBatches: clampInt(row.max_batches, 20, 1, 200),
     maxStallBatches: clampInt(row.max_stall_batches, 3, 1, 20),
+    costLimitCny: Math.max(0, Number(row.cost_limit_cny) || 0),
     intervalMinutes: row.interval_minutes == null ? null : Number(row.interval_minutes),
     cronExpr: row.cron_expr || null,
     enabled: Number(row.enabled) === 1,
@@ -207,9 +210,10 @@ export function createGoalSchedule(input: GoalScheduleCreateInput): GoalSchedule
       id, user_id, name, source_conversation_id, template_id, agent_id,
       platform_id, model_id, space_id, objective, criteria_json, constraints_json,
       approval_policy_json, max_batches, max_stall_batches, interval_minutes,
+      cost_limit_cny,
       cron_expr, enabled, last_run_at, next_run_at, last_goal_id, last_error,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)
   `).run(
     id,
     input.userId,
@@ -227,6 +231,7 @@ export function createGoalSchedule(input: GoalScheduleCreateInput): GoalSchedule
     clampInt(input.maxBatches, 20, 1, 200),
     clampInt(input.maxStallBatches, 3, 1, 20),
     intervalMinutes,
+    Math.max(0, Number(input.costLimitCny) || 0),
     cronExpr,
     enabled ? 1 : 0,
     nextRunAt,
@@ -400,6 +405,7 @@ export function materializeGoalSchedule(
       approvalRequired: schedule.approvalRequired,
       maxBatches: schedule.maxBatches,
       maxStallBatches: schedule.maxStallBatches,
+      costLimitCny: schedule.costLimitCny,
     });
     saveGoalTrigger({
       userId: schedule.userId,

@@ -39,6 +39,11 @@ import {
 } from './goal-operation.js';
 import { acquireGoalResource, releaseGoalResourceLocks } from './goal-resource-lock.js';
 import { admitGoalExecution } from './goal-governance.js';
+import { getGoalCostState } from './goal-cost.js';
+import {
+  advanceGoalModelFallback,
+  isGoalModelFailure,
+} from './goal-model-fallback.js';
 
 type BatchStatus = 'completed' | 'failed' | 'aborted';
 
@@ -326,6 +331,10 @@ function createApproval(goal: GoalRun, kind: string, title: string, detail: unkn
     VALUES (?, ?, ?, ?, ?, 'open', ?)
   `).run(approvalId, goal.id, kind, title, JSON.stringify(detail ?? {}), Date.now());
   appendGoalEvent(goal.id, 'approval.requested', { approvalId, kind, title, detail });
+  queueMicrotask(async () => {
+    const { notifyGoalImApproval } = await import('./im-goal-approval.js');
+    await notifyGoalImApproval(goal, title, detail).catch(() => {});
+  });
 }
 
 export async function runGoalOnce(
@@ -352,6 +361,24 @@ export async function runGoalOnce(
       });
       appendGoalEvent(goal.id, 'goal.blocked', { reason: 'max_batches' });
       return getGoal(goal.id)!;
+    }
+
+    const cost = getGoalCostState(goal);
+    if (cost.exceeded) {
+      transitionGoal(goal.id, 'blocked', {
+        lastError: `已达到目标费用上限（约 ¥${cost.usedCny.toFixed(4)} / ¥${cost.limitCny.toFixed(4)}）`,
+        result: {
+          kind: 'cost_hard_stop',
+          summary: '目标费用达到上限，已停止继续执行',
+          ...cost,
+        },
+        leaseOwner: null,
+        leaseUntil: null,
+      });
+      appendGoalEvent(goal.id, 'goal.cost_blocked', cost);
+      goal = getGoal(goal.id)!;
+      deps.notify(goal, `目标费用达到上限，已停止：约 ¥${cost.usedCny.toFixed(4)} / ¥${cost.limitCny.toFixed(4)}`);
+      return goal;
     }
 
     const unknownOperations = listUnknownGoalOperations(goal.id);
@@ -437,7 +464,16 @@ export async function runGoalOnce(
       return getGoal(goal.id)!;
     }
     if (outcome.status === 'failed') {
-      goal = scheduleRetry(goal, outcome.error || outcome.summary || '批次执行失败');
+      const failure = outcome.error || outcome.summary || '批次执行失败';
+      if (isGoalModelFailure(failure)) {
+        const fallback = advanceGoalModelFallback(goal, failure);
+        if (fallback) {
+          goal = scheduleRetry(fallback, `模型执行失败，已切换候选模型：${failure}`);
+          deps.notify(goal, `目标模型失败，已切换并安排重试：${goal.lastError}`);
+          return goal;
+        }
+      }
+      goal = scheduleRetry(goal, failure);
       deps.notify(goal, `目标批次执行失败，已安排自动重试：${goal.lastError}`);
       return goal;
     }

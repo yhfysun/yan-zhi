@@ -30,7 +30,9 @@ import {
   resolveContent,
   validateRecipient,
 } from './im/validate.js';
-import { createImGoalFromMessage, parseImGoalCommand } from './im-goal.js';
+import { createImGoalFromMessage } from './im-goal.js';
+import { normalizeImGoalRules, resolveImGoalRoute } from './im-goal-routing.js';
+import { handleImGoalApprovalCommand } from './im-goal-approval.js';
 
 // 各平台出站实现已拆到 ./im/providers/，这里保留原导出名供现有调用方与测试使用
 export { sendWechatPersonal } from './im/providers/wechat-personal.js';
@@ -70,6 +72,17 @@ export function listImConnectors(userId: string) {
   return (rows as any[]).map(rowToConnector);
 }
 
+function sanitizeGoalConnectorConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...config };
+  if (out.goalTemplateId !== undefined) {
+    out.goalTemplateId = String(out.goalTemplateId || '').trim().slice(0, 120) || null;
+  }
+  if (out.goalRules !== undefined) {
+    out.goalRules = normalizeImGoalRules(out.goalRules);
+  }
+  return out;
+}
+
 export function createImConnector(
   userId: string,
   input: { provider: string; name: string; config?: Record<string, unknown>; enabled?: boolean },
@@ -85,6 +98,7 @@ export function createImConnector(
   if (input.provider === 'wechat-personal' && !config.bridgeToken) {
     config.bridgeToken = uuid();
   }
+  const safeConfig = sanitizeGoalConnectorConfig(config);
   db.prepare(
     `INSERT INTO im_connector (id, user_id, provider, name, config_json, enabled, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -93,7 +107,7 @@ export function createImConnector(
     userId,
     input.provider,
     input.name,
-    JSON.stringify(config),
+    JSON.stringify(safeConfig),
     input.enabled === false ? 0 : 1,
     ts,
     ts,
@@ -138,7 +152,7 @@ export function updateImConnector(
       }
     }
     sets.push('config_json = ?');
-    vals.push(JSON.stringify(cfgOut));
+    vals.push(JSON.stringify(sanitizeGoalConnectorConfig(cfgOut)));
   }
   if (input.enabled !== undefined) {
     sets.push('enabled = ?');
@@ -729,6 +743,7 @@ function startImTask(
 ):
   | { ok: true; kind: 'task'; conversationId: string; taskId: string }
   | { ok: true; kind: 'goal'; conversationId: string; goalId: string; objective: string }
+  | { ok: true; kind: 'approval'; reply: string }
   | { ok: false; reason: string } {
   const inboundExists = () => !!db.prepare(
     'SELECT id FROM im_inbound_event WHERE connector_id = ? AND provider = ? AND external_id = ?',
@@ -753,8 +768,32 @@ function startImTask(
     );
   };
 
-  const goalObjective = parseImGoalCommand(p.text);
-  if (goalObjective) {
+  const approval = handleImGoalApprovalCommand({
+    userId: p.userId,
+    connectorId: p.connectorId,
+    provider: p.provider,
+    fromUser: p.fromUser,
+    text: p.text,
+  });
+  if (approval.handled) {
+    if (inboundExists()) return { ok: false, reason: 'duplicate' };
+    recordInbound();
+    return { ok: true, kind: 'approval', reply: approval.reply };
+  }
+
+  let connectorConfig: Record<string, any> = {};
+  if (p.connectorId) {
+    const connector = db.prepare(
+      'SELECT config_json FROM im_connector WHERE id = ? AND user_id = ?',
+    ).get(p.connectorId, p.userId) as { config_json?: string | null } | undefined;
+    try {
+      connectorConfig = connector?.config_json ? JSON.parse(connector.config_json) : {};
+    } catch {
+      connectorConfig = {};
+    }
+  }
+  const goalRoute = resolveImGoalRoute(p.text, connectorConfig);
+  if (goalRoute) {
     const model = getDefaultModel(p.userId);
     if (!model) return { ok: false, reason: 'no_default_model' };
     const goal = createImGoalFromMessage({
@@ -763,9 +802,15 @@ function startImTask(
       provider: p.provider,
       externalId: p.externalId,
       fromUser: p.fromUser,
-      objective: goalObjective,
+      objective: goalRoute.objective,
       platformId: model.platformId,
       modelId: model.modelId,
+      goalTemplateId: goalRoute.templateId,
+      routeSource: goalRoute.source,
+      ruleId: goalRoute.ruleId,
+      ruleName: goalRoute.ruleName,
+      replyTo: p.replyTo,
+      receiveIdType: p.receiveIdType,
     });
     if (!goal.ok) return { ok: false, reason: goal.reason };
     recordInbound();
@@ -843,6 +888,9 @@ export async function runWechatPersonalBridge(
   if (started.kind === 'goal') {
     return { ok: true, reply: `目标已创建：${started.objective}` };
   }
+  if (started.kind === 'approval') {
+    return { ok: true, reply: started.reply };
+  }
 
   // 等 AI 任务结束（completed/error），超时给明确错误而不是挂死插件的 hook
   const reply = await new Promise<{ reply: string } | null>((resolve) => {
@@ -880,6 +928,14 @@ function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: s
     void sendImMessage(p.userId, p.connectorId || '', {
       to: p.replyTo,
       content: `目标已创建并开始执行：${started.objective}`,
+      receiveIdType: p.receiveIdType,
+    }).catch(() => {});
+    return { handled: true };
+  }
+  if (started.kind === 'approval') {
+    void sendImMessage(p.userId, p.connectorId || '', {
+      to: p.replyTo,
+      content: started.reply,
       receiveIdType: p.receiveIdType,
     }).catch(() => {});
     return { handled: true };

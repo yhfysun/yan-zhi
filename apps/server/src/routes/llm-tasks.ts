@@ -156,7 +156,7 @@ router.post('/goals', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const {
     conversationId, agentId, platformId, modelId, objective, criteria,
-    constraints, approvalRequired, maxBatches, maxStallBatches,
+    constraints, approvalRequired, maxBatches, maxStallBatches, costLimitCny,
   } = req.body || {};
   if (!conversationId || !String(objective || '').trim() || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId / objective / platformId / modelId' });
@@ -197,6 +197,7 @@ router.post('/goals', (req: Request, res: Response) => {
       approvalRequired: Array.isArray(approvalRequired) ? approvalRequired.map(String) : [],
       maxBatches,
       maxStallBatches,
+      costLimitCny,
     });
     res.json({ data: goal });
   } catch (e: any) {
@@ -379,6 +380,7 @@ router.post('/goal-templates/:id/start', (req: Request, res: Response) => {
       approvalRequired: template.approvalRequired,
       maxBatches: template.maxBatches,
       maxStallBatches: template.maxStallBatches,
+      costLimitCny: template.costLimitCny,
     });
     res.json({ data: { goal, templateId: template.id } });
   } catch (e: any) {
@@ -390,7 +392,7 @@ router.post('/goals/events', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const {
     source, eventId, conversationId, objective, platformId, modelId, agentId,
-    criteria, constraints, approvalRequired, maxBatches, maxStallBatches, payload,
+    criteria, constraints, approvalRequired, maxBatches, maxStallBatches, costLimitCny, payload,
   } = req.body || {};
   const cleanSource = String(source || '').trim().slice(0, 120);
   const cleanEventId = String(eventId || '').trim().slice(0, 300);
@@ -434,6 +436,7 @@ router.post('/goals/events', (req: Request, res: Response) => {
       approvalRequired: Array.isArray(approvalRequired) ? approvalRequired.map(String) : [],
       maxBatches,
       maxStallBatches,
+      costLimitCny,
     });
     const trigger = saveGoalTrigger({
       userId,

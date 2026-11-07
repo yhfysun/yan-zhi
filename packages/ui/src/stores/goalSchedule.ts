@@ -109,13 +109,18 @@ export const useGoalScheduleStore = defineStore('goalSchedule', () => {
     return governance.value;
   }
 
-  async function setMaxRunningPerUser(limit: number): Promise<GoalGovernanceSnapshot> {
-    const result: any = await api.patch<any>('/llm/goal-governance', {
-      maxRunningPerUser: limit,
-    });
+  async function updateGovernance(patch: {
+    maxRunningPerUser?: number;
+    defaultCostLimitCny?: number;
+  }): Promise<GoalGovernanceSnapshot> {
+    const result: any = await api.patch<any>('/llm/goal-governance', patch);
     if (result?.error) throw new Error(errorMessage(result, '保存目标并发配置失败'));
     governance.value = (result?.data ?? result) as GoalGovernanceSnapshot;
     return governance.value;
+  }
+
+  async function setMaxRunningPerUser(limit: number): Promise<GoalGovernanceSnapshot> {
+    return updateGovernance({ maxRunningPerUser: limit });
   }
 
   return {
@@ -130,5 +135,6 @@ export const useGoalScheduleStore = defineStore('goalSchedule', () => {
     loadRuns,
     loadGovernance,
     setMaxRunningPerUser,
+    updateGovernance,
   };
 });

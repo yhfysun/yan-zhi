@@ -76,4 +76,11 @@ describe('⑤ IM 目标模板绑定', () => {
     expect(SRC).toContain('goalTemplateId: f.goalTemplateId || null');
     expect(SRC).toContain('goalTemplateId: config.goalTemplateId ||');
   });
+
+  it('★ 支持多条关键词到不同目标模板的有序规则', () => {
+    expect(SRC).toContain('v-for="(rule, index) in form.goalRules"');
+    expect(SRC).toContain('keywordsText.split(/[,，\\n]+/)');
+    expect(SRC).toContain('goalRules,');
+    expect(SRC).toContain('addGoalRule');
+  });
 });

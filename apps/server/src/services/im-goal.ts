@@ -19,6 +19,11 @@ export interface ImGoalInput {
   platformId: string;
   modelId: string;
   goalTemplateId?: string | null;
+  routeSource?: 'command' | 'rule';
+  ruleId?: string | null;
+  ruleName?: string | null;
+  replyTo?: string | null;
+  receiveIdType?: string | null;
 }
 
 export function parseImGoalCommand(text: string): string | null {
@@ -120,6 +125,7 @@ export function createImGoalFromMessage(
       approvalRequired: template?.approvalRequired || [],
       maxBatches: template?.maxBatches,
       maxStallBatches: template?.maxStallBatches,
+      costLimitCny: template?.costLimitCny,
     });
     saveGoalTrigger({
       userId: input.userId,
@@ -132,6 +138,11 @@ export function createImGoalFromMessage(
         externalId: input.externalId,
         fromUser: input.fromUser,
         goalTemplateId: template?.id || null,
+        routeSource: input.routeSource || 'command',
+        ruleId: input.ruleId || null,
+        ruleName: input.ruleName || null,
+        replyTo: input.replyTo || input.fromUser,
+        receiveIdType: input.receiveIdType || null,
       },
     });
     created = { goalId: goal.id, conversationId };

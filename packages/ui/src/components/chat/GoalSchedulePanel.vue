@@ -20,6 +20,17 @@
                 :max="20"
               />
             </div>
+            <div class="gsp-governance-row">
+              <span>账号费用上限</span>
+              <el-input-number
+                v-model="governanceCostLimit"
+                size="small"
+                :min="0"
+                :max="100000"
+                :precision="2"
+                :step="10"
+              />
+            </div>
             <div class="gsp-governance-meta">
               当前运行 {{ scheduleStore.governance?.runningForUser || 0 }}
               / 全局 {{ scheduleStore.governance?.runningGlobal || 0 }}
@@ -199,6 +210,7 @@ const editingId = ref<string | null>(null);
 const saving = ref(false);
 const runningId = ref('');
 const governanceLimit = ref(2);
+const governanceCostLimit = ref(0);
 const savingGovernance = ref(false);
 
 const form = reactive({
@@ -237,7 +249,10 @@ onMounted(() => {
     scheduleStore.loadSchedules(),
     store.loadGoalTemplates(),
     scheduleStore.loadGovernance().then((value) => {
-      if (value) governanceLimit.value = value.maxRunningPerUser;
+      if (value) {
+        governanceLimit.value = value.maxRunningPerUser;
+        governanceCostLimit.value = value.defaultCostLimitCny;
+      }
     }),
   ]);
   refreshTimer = setInterval(() => { void scheduleStore.loadSchedules(); }, 30_000);
@@ -418,8 +433,12 @@ async function onDelete(schedule: GoalSchedule): Promise<void> {
 async function saveGovernance(): Promise<void> {
   savingGovernance.value = true;
   try {
-    const value = await scheduleStore.setMaxRunningPerUser(governanceLimit.value);
+    const value = await scheduleStore.updateGovernance({
+      maxRunningPerUser: governanceLimit.value,
+      defaultCostLimitCny: governanceCostLimit.value,
+    });
     governanceLimit.value = value.maxRunningPerUser;
+    governanceCostLimit.value = value.defaultCostLimitCny;
     ElMessage.success('目标并发配置已保存');
   } catch (error: any) {
     ElMessage.error(error?.message || '保存目标并发配置失败');

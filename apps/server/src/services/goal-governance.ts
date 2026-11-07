@@ -4,12 +4,14 @@ import { appendGoalEvent, getGoal, transitionGoal, type GoalRun } from './goal-s
 const ACTIVE_STATUSES = ['planning', 'running', 'verifying'] as const;
 const USER_LIMIT_KEY_PREFIX = 'goal.max_running_per_user:';
 const GLOBAL_LIMIT_KEY = 'goal.max_running_global';
+const DEFAULT_COST_LIMIT_KEY = 'goal.default_cost_limit_cny';
 
 export interface GoalGovernanceSnapshot {
   maxRunningGlobal: number;
   maxRunningPerUser: number;
   runningGlobal: number;
   runningForUser: number;
+  defaultCostLimitCny: number;
 }
 
 export interface GoalAdmissionResult {
@@ -63,6 +65,16 @@ export function setUserGoalConcurrencyLimit(userId: string, limit: number): numb
   return normalized;
 }
 
+export function getDefaultGoalCostLimit(): number {
+  return Math.max(0, Number(readConfig(DEFAULT_COST_LIMIT_KEY) || 0) || 0);
+}
+
+export function setDefaultGoalCostLimit(limit: number): number {
+  const normalized = Math.max(0, Math.min(100_000, Number(limit) || 0));
+  writeConfig(DEFAULT_COST_LIMIT_KEY, String(normalized));
+  return normalized;
+}
+
 function activeCount(userId?: string): number {
   const placeholders = ACTIVE_STATUSES.map(() => '?').join(',');
   const row = userId
@@ -81,6 +93,7 @@ export function getGoalGovernance(userId: string): GoalGovernanceSnapshot {
     maxRunningPerUser: getUserGoalConcurrencyLimit(userId),
     runningGlobal: activeCount(),
     runningForUser: activeCount(userId),
+    defaultCostLimitCny: getDefaultGoalCostLimit(),
   };
 }
 

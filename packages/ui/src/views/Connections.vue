@@ -150,6 +150,25 @@
                 />
               </el-select>
             </el-form-item>
+            <div class="goal-rule-editor">
+              <div class="goal-rule-head">
+                <span>目标规则</span>
+                <el-button size="small" :icon="Plus" @click="addGoalRule">添加规则</el-button>
+              </div>
+              <div v-for="(rule, index) in form.goalRules" :key="rule.id" class="goal-rule-row">
+                <el-input v-model="rule.name" placeholder="规则名称" />
+                <el-input v-model="rule.keywordsText" placeholder="关键词，用逗号分隔" />
+                <el-select v-model="rule.templateId" filterable placeholder="目标模板">
+                  <el-option
+                    v-for="template in goalTemplates"
+                    :key="template.id"
+                    :value="template.id"
+                    :label="template.name"
+                  />
+                </el-select>
+                <el-button circle type="danger" :icon="Delete" @click="removeGoalRule(index)" />
+              </div>
+            </div>
             <template v-if="form.provider === 'feishu'">
               <el-form-item label="App ID">
                 <el-input v-model="form.appId" placeholder="cli_xxxxxxxx" />
@@ -314,6 +333,7 @@ const form = ref({
   provider: 'feishu',
   name: '',
   goalTemplateId: '',
+  goalRules: [] as Array<{ id: string; name: string; keywordsText: string; templateId: string }>,
   appId: '',
   appSecret: '',
   verificationToken: '',
@@ -346,6 +366,19 @@ async function loadGoalTemplates() {
   if (!('error' in res)) goalTemplates.value = res.data || [];
 }
 
+function addGoalRule() {
+  form.value.goalRules.push({
+    id: crypto.randomUUID(),
+    name: '',
+    keywordsText: '',
+    templateId: '',
+  });
+}
+
+function removeGoalRule(index: number) {
+  form.value.goalRules.splice(index, 1);
+}
+
 async function load() {
   loading.value = true;
   const res = await api.get<any[]>('/im/connectors');
@@ -358,23 +391,33 @@ async function load() {
 }
 
 function configFrom(f: typeof form.value) {
+  const goalRules = f.goalRules
+    .map((rule, index) => ({
+      id: rule.id || `rule_${index + 1}`,
+      name: rule.name.trim(),
+      keywords: rule.keywordsText.split(/[,，\n]+/).map((item) => item.trim()).filter(Boolean),
+      templateId: rule.templateId,
+    }))
+    .filter((rule) => rule.templateId && rule.keywords.length);
   if (f.provider === 'feishu') {
     return {
       appId: f.appId,
       appSecret: f.appSecret,
       verificationToken: f.verificationToken,
       goalTemplateId: f.goalTemplateId || null,
+      goalRules,
     };
   }
   if (f.provider === 'wechat-personal') {
     // bridgeToken 由后端在创建/更新时生成并保留，前端不回传
-    return { goalTemplateId: f.goalTemplateId || null };
+    return { goalTemplateId: f.goalTemplateId || null, goalRules };
   }
   if (f.provider === 'dingtalk') {
     return {
       clientId: f.clientId,
       clientSecret: f.clientSecret,
       goalTemplateId: f.goalTemplateId || null,
+      goalRules,
     };
   }
   return {
@@ -384,6 +427,7 @@ function configFrom(f: typeof form.value) {
     token: f.token,
     encodingAesKey: f.encodingAesKey,
     goalTemplateId: f.goalTemplateId || null,
+    goalRules,
   };
 }
 
@@ -523,7 +567,7 @@ function resetForm() {
   editingId.value = '';
   testResult.value = '';
   testError.value = '';
-  form.value = { provider: 'feishu', name: '', goalTemplateId: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '', clientId: '', clientSecret: '' };
+  form.value = { provider: 'feishu', name: '', goalTemplateId: '', goalRules: [], appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '', clientId: '', clientSecret: '' };
 }
 
 function openCreate() {
@@ -538,6 +582,12 @@ function openEdit(c: any) {
     provider: c.provider,
     name: c.name,
     goalTemplateId: config.goalTemplateId || '',
+    goalRules: (Array.isArray(config.goalRules) ? config.goalRules : []).map((rule: any, index: number) => ({
+      id: String(rule.id || `rule_${index + 1}`),
+      name: String(rule.name || ''),
+      keywordsText: (Array.isArray(rule.keywords) ? rule.keywords : []).join(', '),
+      templateId: String(rule.templateId || ''),
+    })),
     appId: config.appId || '',
     appSecret: config.appSecret || '',
     verificationToken: config.verificationToken || '',
@@ -736,6 +786,12 @@ async function onImportFile(event: Event) {
     provider,
     name: obj.name || '导入的连接',
     goalTemplateId: config.goalTemplateId || '',
+    goalRules: (Array.isArray(config.goalRules) ? config.goalRules : []).map((rule: any, index: number) => ({
+      id: String(rule.id || `rule_${index + 1}`),
+      name: String(rule.name || ''),
+      keywordsText: (Array.isArray(rule.keywords) ? rule.keywords : []).join(', '),
+      templateId: String(rule.templateId || ''),
+    })),
     appId: config.appId || '',
     appSecret: config.appSecret || '',
     verificationToken: config.verificationToken || '',
@@ -782,6 +838,38 @@ async function decodeQrImage(file: File): Promise<string | null> {
 </script>
 
 <style scoped>
+.goal-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 18px 110px;
+}
+
+.goal-rule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.goal-rule-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(180px, 1.4fr) minmax(150px, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 767px) {
+  .goal-rule-editor {
+    margin-left: 0;
+  }
+
+  .goal-rule-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .connector-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

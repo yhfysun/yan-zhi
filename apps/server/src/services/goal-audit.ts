@@ -1,11 +1,13 @@
 import { db } from '../db.js';
 import { getGoal, listGoalBatches, listGoalEvents, type GoalRun } from './goal-store.js';
 import { listGoalOperations, type GoalOperation } from './goal-operation.js';
+import { getGoalCostState, type GoalCostState } from './goal-cost.js';
 
 export interface GoalAuditBundle {
   version: 1;
   exportedAt: number;
   goal: GoalRun | null;
+  cost: GoalCostState | null;
   batches: ReturnType<typeof listGoalBatches>;
   events: ReturnType<typeof listGoalEvents>;
   operations: GoalOperation[];
@@ -122,6 +124,7 @@ export function buildGoalAudit(goalId: string, userId: string): GoalAuditBundle 
     version: 1,
     exportedAt: Date.now(),
     goal,
+    cost: goal ? getGoalCostState(goal) : null,
     batches: listGoalBatches(goalId),
     events: listGoalEvents(goalId),
     operations: listGoalOperations(goalId),
@@ -164,6 +167,7 @@ export function renderGoalAuditMarkdown(audit: GoalAuditBundle): string {
     `- 创建时间：${time(goal.createdAt)}`,
     `- 更新时间：${time(goal.updatedAt)}`,
     `- 完成时间：${time(goal.completedAt)}`,
+    `- 目标费用：约 ¥${(audit.cost?.usedCny || 0).toFixed(4)} / ${audit.cost?.limitCny ? `上限 ¥${audit.cost.limitCny.toFixed(4)}` : '不限额'}`,
     '',
     '## 目标',
     '',

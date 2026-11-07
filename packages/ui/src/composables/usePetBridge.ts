@@ -8,6 +8,7 @@ import {
   derivePetState,
   derivePetStateWithGame,
   emptyPetStats,
+  goalNotificationTransition,
   lastUserText,
   petMemoryContent,
   petOutcome,
@@ -280,7 +281,16 @@ export function usePetBridge() {
     if (now - last < 5000) return
     lastNotifyAt.set(convId, now)
     const title = kind === 'ready' ? '任务完成' : kind === 'error' ? '任务出错' : '智能体在等你'
-    try { api()?.notify?.({ title, body: String(text || '').slice(0, 80), convId }) } catch { /* 非桌面端忽略 */ }
+    const payload = { title, body: String(text || '').slice(0, 80), convId };
+    try {
+      const bridge = api();
+      if (bridge?.notify) bridge.notify(payload);
+      else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(title, { body: payload.body });
+      }
+    } catch {
+      /* 非桌面端或通知权限不可用时忽略 */
+    }
   }
   const titleOf = (convId: string) =>
     String((chat.conversations || []).find((c: any) => c.id === convId)?.title || '任务')
@@ -330,6 +340,35 @@ export function usePetBridge() {
       }
       waitingPrev = n
     }
+  )
+
+  const goalStatusByConv = new Map<string, string>()
+  let goalStatusInitialized = false
+  watch(
+    () => chat.goalByConv,
+    (goals: Record<string, any>) => {
+      const next = goals || {}
+      if (!goalStatusInitialized) {
+        for (const [convId, goal] of Object.entries(next)) {
+          if (goal?.status) goalStatusByConv.set(convId, String(goal.status))
+        }
+        goalStatusInitialized = true
+        return
+      }
+      for (const [convId, goal] of Object.entries(next)) {
+        const status = String(goal?.status || '')
+        if (!status) continue
+        const kind = goalNotificationTransition(goalStatusByConv.get(convId), status)
+        goalStatusByConv.set(convId, status)
+        if (!kind) continue
+        const text = goal?.objective || titleOf(convId)
+        notifyPet(kind, convId, text)
+      }
+      for (const convId of goalStatusByConv.keys()) {
+        if (!(convId in next)) goalStatusByConv.delete(convId)
+      }
+    },
+    { deep: true }
   )
 
   // 新任务开跑 → 立刻撤掉上一次的完成/出错状态（否则"完成了"会一直盖着正在跑的任务）

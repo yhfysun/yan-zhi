@@ -100,6 +100,7 @@ router.post('/', (req: Request, res: Response) => {
       approvalRequired,
       maxBatches: template?.maxBatches ?? sourceGoal?.maxBatches ?? body.maxBatches,
       maxStallBatches: template?.maxStallBatches ?? sourceGoal?.maxStallBatches ?? body.maxStallBatches,
+      costLimitCny: template?.costLimitCny ?? sourceGoal?.costLimitCny ?? body.costLimitCny,
       intervalMinutes: body.intervalMinutes,
       cronExpr: body.cronExpr,
       enabled: body.enabled,

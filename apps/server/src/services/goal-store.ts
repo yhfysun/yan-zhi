@@ -39,6 +39,7 @@ export interface GoalCreateInput {
   approvalRequired?: string[];
   maxBatches?: number;
   maxStallBatches?: number;
+  costLimitCny?: number;
 }
 
 export interface GoalRun {
@@ -55,6 +56,7 @@ export interface GoalRun {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   currentBatch: number;
   stallCount: number;
   nextRunAt: number | null;
@@ -123,6 +125,7 @@ function mapGoal(row: any): GoalRun {
     approvalRequired: parseJson<string[]>(row.approval_policy_json, []),
     maxBatches: Number(row.max_batches) || 20,
     maxStallBatches: Number(row.max_stall_batches) || 3,
+    costLimitCny: Math.max(0, Number(row.cost_limit_cny) || 0),
     currentBatch: Number(row.current_batch) || 0,
     stallCount: Number(row.stall_count) || 0,
     nextRunAt: row.next_run_at == null ? null : Number(row.next_run_at),
@@ -187,9 +190,9 @@ export function createGoal(input: GoalCreateInput): GoalRun {
       INSERT INTO goal_run (
         id, user_id, conversation_id, agent_id, platform_id, model_id, status,
         objective, criteria_json, constraints_json, approval_policy_json,
-        max_batches, max_stall_batches, current_batch, stall_count,
+        max_batches, max_stall_batches, cost_limit_cny, current_batch, stall_count,
         next_run_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
     `).run(
       id,
       input.userId,
@@ -203,6 +206,7 @@ export function createGoal(input: GoalCreateInput): GoalRun {
       JSON.stringify(normalizeStrings(input.approvalRequired, 50)),
       clampInt(input.maxBatches, 20, 1, 200),
       clampInt(input.maxStallBatches, 3, 1, 20),
+      Math.max(0, Number(input.costLimitCny) || 0),
       now,
       now,
       now,

@@ -107,6 +107,17 @@ export function petOutcome(status?: string | null): { key: string; follow?: stri
   return { key: 'hop', follow: 'spin' }
 }
 
+export function goalNotificationTransition(
+  previous: string | null | undefined,
+  next: string | null | undefined,
+): 'ready' | 'error' | 'input' | null {
+  if (!previous || !next || previous === next) return null;
+  if (next === 'completed') return 'ready';
+  if (next === 'failed' || next === 'blocked') return 'error';
+  if (next === 'needing_approval') return 'input';
+  return null;
+}
+
 /**
  * 四类「等你输入」按会话求并集（纯函数，便于单测）。
  * 入参既接受 ref 也接受已解包的 Record，兼容调用方两种写法。

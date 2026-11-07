@@ -12,6 +12,7 @@ export interface GoalTemplate {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -32,6 +33,7 @@ function map(row: any): GoalTemplate {
     approvalRequired: parse<string[]>(row.approval_policy_json, []),
     maxBatches: Number(row.max_batches) || 20,
     maxStallBatches: Number(row.max_stall_batches) || 3,
+    costLimitCny: Math.max(0, Number(row.cost_limit_cny) || 0),
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
   };
@@ -48,8 +50,8 @@ export function createGoalTemplate(goalId: string, userId: string, nameInput: st
     db.prepare(`
       INSERT INTO goal_template (
         id, user_id, name, objective, criteria_json, constraints_json,
-        approval_policy_json, max_batches, max_stall_batches, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        approval_policy_json, max_batches, max_stall_batches, cost_limit_cny, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       userId,
@@ -60,6 +62,7 @@ export function createGoalTemplate(goalId: string, userId: string, nameInput: st
       JSON.stringify(goal.approvalRequired),
       goal.maxBatches,
       goal.maxStallBatches,
+      goal.costLimitCny,
       now,
       now,
     );

@@ -816,6 +816,7 @@ export interface GoalRun {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   currentBatch: number;
   stallCount: number;
   nextRunAt: number | null;
@@ -857,6 +858,7 @@ export interface GoalTemplate {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -877,6 +879,7 @@ export interface GoalSchedule {
   approvalRequired: string[];
   maxBatches: number;
   maxStallBatches: number;
+  costLimitCny: number;
   intervalMinutes: number | null;
   cronExpr: string | null;
   enabled: boolean;
@@ -906,6 +909,7 @@ export interface GoalGovernanceSnapshot {
   maxRunningPerUser: number;
   runningGlobal: number;
   runningForUser: number;
+  defaultCostLimitCny: number;
 }
 
 export interface GoalBatch {
