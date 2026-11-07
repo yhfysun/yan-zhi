@@ -5503,12 +5503,19 @@ db.exec(`
     error TEXT,
     pending_tool_json TEXT,
     params_json TEXT,
+    goal_id TEXT,
+    goal_batch_id TEXT,
+    heartbeat_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_user ON llm_task(user_id, status, updated_at DESC)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_conv ON llm_task(conversation_id, status)'); } catch {}
+try { db.exec('ALTER TABLE llm_task ADD COLUMN goal_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE llm_task ADD COLUMN goal_batch_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE llm_task ADD COLUMN heartbeat_at INTEGER'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_goal ON llm_task(goal_id, goal_batch_id)'); } catch {}
 
 // ===== 目标模式（Goal Run）持久化 =====
 // 目标不是一次性 llm_task，而是跨批次、跨重启、跨人工等待的长期运行对象。

@@ -480,6 +480,14 @@ interface LlmTask {
   seq: number;
   step: number;
   origin?: string;
+  /** 目标模式关联：普通任务为空，Goal Runner 创建的批次才写入。 */
+  goalId?: string;
+  goalBatchId?: string;
+  /** 最近一次持久化心跳，用于区分长任务与失联任务。 */
+  heartbeatAt?: number;
+  /** 创建任务时的显式参数快照，供重启恢复与审计。 */
+  maxSteps?: number;
+  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean; goal?: boolean };
   offlinePolicy?: string;
   /**
    * 最近一轮 LLM 调用的 finish_reason。
@@ -1270,9 +1278,12 @@ export function createTask(params: {
   systemPrompt?: string;
   tools?: any[];
   options?: { temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: string };
-  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
+  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean; goal?: boolean };
   maxSteps?: number;
   origin?: string;
+  /** 目标模式：本任务属于哪个目标和批次。 */
+  goalId?: string;
+  goalBatchId?: string;
   offlinePolicy?: string;
   /** 交互式任务（前端在线，走 SSE）：UI 工具（ask_user 等）纳入工具列表，无人值守任务排除 */
   includeUiTools?: boolean;
@@ -1358,6 +1369,11 @@ export function createTask(params: {
     seq: 0,
     step: 0,
     origin: params.origin || 'chat',
+    goalId: params.goalId,
+    goalBatchId: params.goalBatchId,
+    heartbeatAt: Date.now(),
+    maxSteps: params.maxSteps,
+    modeFlags: params.modeFlags,
     offlinePolicy: params.offlinePolicy,
     agentId: params.agentId ?? null,
     includeUiTools: !!params.includeUiTools,
@@ -3058,12 +3074,33 @@ export function extractPendingQuestion(args: unknown): string {
 /** 运行中任务落库（INSERT OR REPLACE）：重启回收与被中断提示都依赖这一行存在。 */
 function persistTaskRow(task: LlmTask): void {
   try {
+    const paramsSnapshot = {
+      platformId: task.platformId,
+      modelId: task.modelId,
+      agentId: task.agentId ?? null,
+      origin: task.origin || 'chat',
+      goalId: task.goalId ?? null,
+      goalBatchId: task.goalBatchId ?? null,
+      permissionMode: task.permissionMode || 'readonly',
+      pathGuard: task.pathGuard || 'ask',
+      workspaceDir: task.workspaceDir || null,
+      includeUiTools: !!task.includeUiTools,
+      memoryExtractPlatformId: task.memoryExtractPlatformId || null,
+      memoryExtractModelId: task.memoryExtractModelId || null,
+      ontologyIds: task.ontologyIds || [],
+      toolEnv: task.toolEnv || {},
+      maxSteps: task.maxSteps ?? null,
+      modeFlags: task.modeFlags || {},
+    };
     db.prepare(
-      `INSERT OR REPLACE INTO llm_task (id, user_id, conversation_id, origin, status, step, error, pending_tool_json, params_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO llm_task
+         (id, user_id, conversation_id, origin, status, step, error, pending_tool_json,
+          params_json, goal_id, goal_batch_id, heartbeat_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       task.id, task.userId, task.conversationId, task.origin || 'chat', task.status, task.step || 0,
-      task.error || null, null, null, task.createdAt, Date.now(),
+      task.error || null, null, JSON.stringify(paramsSnapshot), task.goalId || null,
+      task.goalBatchId || null, task.heartbeatAt || Date.now(), task.createdAt, Date.now(),
     );
   } catch (e) { logger.warn('[task] 任务落库失败（不阻塞执行）:', e); }
 }
@@ -3084,8 +3121,10 @@ function persistTaskStatus(task: LlmTask): void {
  */
 export function touchTaskRow(taskId: string, step: number, now: number = Date.now()): boolean {
   try {
-    const info = db.prepare('UPDATE llm_task SET step = ?, updated_at = ? WHERE id = ?')
-      .run(Math.max(0, Math.floor(step) || 0), now, taskId);
+    const info = db.prepare('UPDATE llm_task SET step = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?')
+      .run(Math.max(0, Math.floor(step) || 0), now, now, taskId);
+    const task = tasks.get(taskId);
+    if (task) task.heartbeatAt = now;
     return Number(info?.changes || 0) > 0;
   } catch {
     return false;
@@ -3176,6 +3215,8 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   const maxRunMs = 2 * 60 * 60 * 1000; // running 任务最大运行时长 2 小时
   const maxPausedMs = 24 * 60 * 60 * 1000; // ★ paused 任务最大挂起时长 24h（2026-10-27）
   for (const [id, task] of tasks) {
+    // 目标任务由 Goal Runner 按租约和批次恢复，普通任务的墙钟看门狗不能误杀它。
+    if (task.goalId && (task.status === 'running' || task.status === 'paused')) continue;
     if (task.status !== 'running' && task.status !== 'paused' && now - task.createdAt > maxAgeMs) {
       clearTaskChunkTimer(task);
       tasks.delete(id);
@@ -3196,11 +3237,17 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
       forgetTaskScopedState(id);
       continue;
     }
-    // running 任务超 2 小时强制中止并清理（防内存泄漏）
-    if (task.status === 'running' && now - task.createdAt > maxRunMs) {
+    // 普通 running 任务按**最近活动**而不是创建时间回收。
+    // 工具活动会刷新 llm_task.updated_at；只要还在推进，就不能因为总时长长的被误杀。
+    let lastActivity = task.heartbeatAt || task.createdAt;
+    try {
+      const row = db.prepare('SELECT COALESCE(updated_at, created_at) AS t FROM llm_task WHERE id = ?').get(id) as any;
+      if (Number(row?.t) > 0) lastActivity = Math.max(lastActivity, Number(row.t));
+    } catch { /* 读库失败按内存时间 */ }
+    if (task.status === 'running' && now - lastActivity > maxRunMs) {
       try { task.abortController.abort(); } catch {}
       task.status = 'failed';
-      task.error = '任务运行超时（超过 2 小时）';
+      task.error = '任务超过 2 小时没有活动，已回收';
       clearTaskChunkTimer(task);
       tasks.delete(id);
       forgetTaskScopedState(id); // ★ A5：同上
@@ -3358,9 +3405,13 @@ export function markOrphanTasksInterrupted(): number {
   // ★ 只认显式注入的标记：未设 = 生产/真实重启 → 保持既有行为（零风险）
   const hotReload = process.env.YZ_HOT_RELOAD === '1';
   try {
-    const rows = db.prepare("SELECT id, conversation_id, user_id FROM llm_task WHERE status IN ('running','waiting_tool')").all() as Array<{ id: string; conversation_id: string; user_id?: string }>;
+    const rows = db.prepare(
+      "SELECT id, conversation_id, user_id, goal_id FROM llm_task WHERE status IN ('running','waiting_tool')",
+    ).all() as Array<{ id: string; conversation_id: string; user_id?: string; goal_id?: string | null }>;
     for (const r of rows) {
       try {
+        // 目标批次由 Goal Runner 在启动后按租约恢复，不能在这里变成普通 interrupted。
+        if (r.goal_id) continue;
         const errText = hotReload
           ? '开发热重载（tsx watch）中断，计划与进度已保留，可直接继续'
           : '服务重启，任务被中断';
@@ -3398,7 +3449,11 @@ export function isResumableTask(taskId: string): boolean {
 /** 从 DB 查 llm_task 行（任务不在内存时，前端仍能查到"已中断"而不是 404） */
 export function getTaskRow(taskId: string): any | undefined {
   try {
-    return db.prepare('SELECT id, conversation_id, status, step, error, created_at, pending_tool_json FROM llm_task WHERE id = ?').get(taskId) as any | undefined;
+    return db.prepare(
+      `SELECT id, conversation_id, status, step, error, created_at, updated_at, pending_tool_json,
+              params_json, goal_id, goal_batch_id, heartbeat_at
+       FROM llm_task WHERE id = ?`,
+    ).get(taskId) as any | undefined;
   } catch {
     return undefined;
   }
@@ -3445,7 +3500,7 @@ async function runReActLoop(task: LlmTask, params: {
   systemPrompt?: string;
   tools?: any[];
   options?: { temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: string };
-  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
+  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean; goal?: boolean };
   maxSteps?: number;
   includeUiTools?: boolean;
   workspaceDir?: string;
