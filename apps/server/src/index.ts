@@ -110,6 +110,7 @@ import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
 import { enterpriseAdminRouter, enterpriseOAuthRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
 import { startRuntimeJanitor } from './enterprise/runtime.js';
+import { handleRuntimeWsUpgrade } from './enterprise/runtime-ws.js';
 import { ensureEnterpriseSchema } from './enterprise/schema.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
@@ -673,6 +674,16 @@ function currentWsRoutes(): PluginWsRoute[] {
 }
 
 httpServer.on('upgrade', (req, socket, head) => {
+  // 运行节点 WS 控制通道（Task 5）：自带 yzn.* 节点令牌认证 + license 校验（runtime-ws 内部）。
+  // ★ 必须在通用 wsUpgradeAuthorized（multi JWT 闸）之前分发 —— 节点令牌不是 JWT，那道闸认不了它。
+  if ((req.url || '').startsWith('/api/runtime/v1/ws')) {
+    if (!handleRuntimeWsUpgrade(req, socket, head)) {
+      logger.warn('[ws] 拒绝节点 WS 升级（节点令牌无效或 license 校验失败）');
+      try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
+      socket.destroy();
+    }
+    return;
+  }
   // ★ multi 模式 WS 鉴权闸（2026-11-01）：upgrade 不走 Express 中间件链，authMiddleware
   //   对它无效 —— 不挡就是给远程客户端开了无鉴权 WS 后门（聊天流/运维终端）。
   //   guest 模式恒放行（本机桌面行为不变）。

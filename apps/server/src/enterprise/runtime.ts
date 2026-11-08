@@ -172,6 +172,21 @@ export function heartbeatRuntimeNode(token: string): any {
   return nodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(node.id));
 }
 
+/** 轻量保活（WS 通道用）：只更新心跳，不触发离线巡检（janitor 已在跑，逐帧巡检是浪费）。 */
+export function touchRuntimeNode(token: string): void {
+  const node = authenticateRuntimeNode(token);
+  if (!node) throw new Error('节点令牌无效');
+  const now = Date.now();
+  db.prepare("UPDATE runtime_node SET status = 'online', last_seen_at = ?, updated_at = ? WHERE id = ?")
+    .run(now, now, node.id);
+}
+
+/** WS 连接断开时立即置离线（比 janitor 的 2 分钟更快收敛）；HTTP 轮询心跳会在降级模式下自愈。 */
+export function markRuntimeNodeOffline(nodeId: string): void {
+  db.prepare("UPDATE runtime_node SET status = 'offline', updated_at = ? WHERE id = ?")
+    .run(Date.now(), nodeId);
+}
+
 export function expireStaleRuntimeNodes(now = Date.now()): number {
   const cutoff = now - 2 * 60 * 1000;
   return db.prepare(

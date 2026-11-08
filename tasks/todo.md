@@ -3,10 +3,10 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：Task 1 / 2 / 3 / 4 已实现、已验证、**已提交并推送**（`c65d9882` + `41f9dfd0` + `28927fe2` + `0c8929a5`）
+- 状态：Task 1-4 已推送；Task 5 已实现并通过验证（待提交推送）
 - 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：本任务范围已干净；`PlatformDetail.vue` 修改与 `.claude/*` 删除为**并行会话在途改动**，勿动
+- 工作区状态：Task 5 改动在工作区；`PlatformDetail.vue` 与 `.claude/*` 删除为**并行会话在途改动**，勿动
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
@@ -32,10 +32,10 @@
 - [x] Task 2：容器化云工作区（带 image 优先容器、无 Docker 明确失败不回退、停止移除容器 + 目录保留策略、TTL 清理）
 - [x] Task 3：云工作区端口预览（登记端口受控代理、权限/状态/TTL 校验、失效即摘端口、SSRF 与凭证头拦截）
 - [x] Task 4：团队资源进入常规选择器（模型/Skill/智能体选择器显示「团队」标签、撤权后缓存失效、公开与 ACL 标签一致）
+- [x] Task 5：实时节点通道升级（WS 控制通道：token 认证、ready 认领下发、事件 seq 幂等、断线续传、立即离线收敛、HTTP 轮询降级共存）
 
 ## 待办
 
-- [ ] Task 5：实时节点通道升级
 - [ ] Task 6：OIDC / 企业 SSO
 - [ ] Task 7：PostgreSQL repository 适配
 
@@ -128,6 +128,27 @@
 - 验证：server/shared/ui 三处 typecheck 全绿；`build:web` 成功；UI 全量 239 文件，
   2625 通过、**1 失败 = `p3Consistency.test.ts` 报 `/views/Learning.vue` 暗色硬编码 ——
   Learning.vue 是并行会话的新文件（untracked），不是本任务改动，未处理**。
+
+## Task 5 验证记录（2026-11-08）
+
+- 协议：`/api/runtime/v1/ws`（HTTP Upgrade，yzn.* 节点令牌认证 + license 校验；**必须挂在
+  通用 multi JWT 闸之前** —— 节点令牌不是 JWT）。帧：`ready`（认领触发兼心跳）/ `task` /
+  `events`（seq 幂等）/ `complete` / `heartbeat` / `workspace_state` / `events_acked` / `registered`。
+- 服务端收口 `apps/server/src/enterprise/runtime-ws.ts`：帧处理唯一出口 `handleRuntimeFrame`
+  （传输层只收发）；任务下发复用 `claimRuntimeTask` 原子认领（queued→running 事务内完成，
+  不会双下发）；事件复用 `appendRuntimeEvents` 的 UNIQUE(task, seq) + INSERT OR IGNORE
+  （重复事件不重复执行）；连接断开该节点**立即离线**（janitor 2 分钟兜底保留）；
+  一节点重连顶掉旧连接。
+- agent 协议层 `apps/server/scripts/enterprise-node-ws.mjs`：`createRuntimeWsChannel`
+  （注册、ready 节律、pending 事件缓存 + 重连续传、无限运行期重连、`isActive` 降级信号）。
+  修复了"被顶掉的旧连接 close 也安排重连"的重连风暴。宿主 agent：WS 活跃时事件即时走
+  WS、跳过 HTTP 轮询/心跳；失效自动回落轮询（降级共存），complete 仍走 HTTP（幂等低频）。
+- 新增 `apps/server/test/enterprise-runtime-ws.test.ts`：**9 个真 ws 用例全过**
+  （错误 token 拒绝、registered、ready 原子认领、事件幂等重放、断开立即离线、
+  断线重连续传 + complete、HTTP 轮询共存、agent 通道重连续传、无 WS 端点如实降级）。
+  ★ 测试坑：ws 客户端的 message 监听必须在 **open 之前**挂上，否则服务端首帧（registered）
+  在 open resolve 的间隙丢失 —— helper 用"缓冲 + waiter"模式。
+- 企业相关 4 文件 50/50 通过；server tsc 全绿；Task 5 无 UI 改动（agent/服务端协议层）。
 
 ## 新会话启动方式
 

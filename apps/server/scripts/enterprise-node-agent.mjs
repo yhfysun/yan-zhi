@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRuntimeWsChannel } from './enterprise-node-ws.mjs';
 
 // 容器生命周期收口在 .cjs 纯模块里：本文件与 server 测试都 require 同一份实现。
 const require = createRequire(import.meta.url);
@@ -74,12 +75,19 @@ class EventSender {
   }
   send(kind, payload) {
     if (this.closed) return;
+    // ★ WS 通道活跃时事件即时走 WS（低延迟），断线重连的缓存续传由通道层负责（seq 幂等）。
+    if (wsChannel?.isActive()) {
+      wsChannel.sendEvent(this.taskId, { seq: ++this.seq, kind, payload });
+      return;
+    }
     this.pending.push({ seq: ++this.seq, kind, payload });
     if (!this.timer) this.timer = setTimeout(() => this.flush(), 200);
   }
   async flush() {
     this.timer = null;
     if (this.closed || this.pending.length === 0) return;
+    // 事件已全部走 WS 时无需 HTTP 兜底。
+    if (wsChannel?.isActive()) return;
     const batch = this.pending.splice(0, this.pending.length);
     try {
       await api(`/tasks/${encodeURIComponent(this.taskId)}/events`, 'POST', { events: batch });
@@ -272,6 +280,8 @@ async function executeTask(task) {
 }
 
 let running = true;
+/** WS 控制通道（Task 5）：活跃时不跑 HTTP 轮询；连接失败/断开时自动回落轮询（降级共存）。 */
+let wsChannel = null;
 
 async function main() {
   console.log(`[runtime] server=${SERVER} token=configured workspace=${ROOT}`);
@@ -285,12 +295,36 @@ async function main() {
   });
   console.log('[runtime] 节点已上线');
 
+  try {
+    wsChannel = createRuntimeWsChannel({
+      server: SERVER,
+      token: TOKEN,
+      license: LICENSE,
+      onTask: (task) => { void executeTask(task); },
+      readyIntervalMs: 2000,
+      reconnectDelayMs: 2000,
+    });
+    void wsChannel.start().then((ok) => {
+      console.log(ok ? '[runtime] WS 控制通道已建立（HTTP 轮询转入待命）' : '[runtime] WS 不可用，保持 HTTP 轮询降级');
+    });
+  } catch (e) {
+    console.error('[runtime] WS 通道初始化失败，保持 HTTP 轮询降级:', e?.message || e);
+    wsChannel = null;
+  }
+
   const heartbeat = setInterval(() => {
+    // WS 活跃时心跳由 ready 节律承担，不再打 HTTP 心跳。
+    if (wsChannel?.isActive()) return;
     api('/heartbeat', 'POST', {}).catch((e) => console.error('[runtime] 心跳失败:', e?.message || e));
   }, 15_000);
   heartbeat.unref?.();
 
   while (running) {
+    if (wsChannel?.isActive()) {
+      // 任务经 WS 推送执行；这里只保持循环活性，等 WS 失效后自动回到轮询。
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
     try {
       const task = await api('/tasks/next');
       if (task) await executeTask(task);
@@ -305,6 +339,7 @@ async function main() {
 
 function shutdown() {
   running = false;
+  try { wsChannel?.stop(); } catch { /* ignore */ }
   console.log('[runtime] 正在退出');
 }
 
