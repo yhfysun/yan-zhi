@@ -11,9 +11,14 @@
  * 协议先用 HTTP 长轮询，保证实现简单、可调试；接口稳定后再升级 WebSocket。
  */
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// 容器生命周期收口在 .cjs 纯模块里：本文件与 server 测试都 require 同一份实现。
+const require = createRequire(import.meta.url);
+const workspaceRuntime = require('./enterprise-workspace-runtime.cjs');
 
 const SERVER = (process.env.YZ_RUNTIME_SERVER || 'http://127.0.0.1:3001').replace(/\/+$/, '');
 const TOKEN = String(process.env.YZ_RUNTIME_TOKEN || '').trim();
@@ -97,29 +102,80 @@ async function workspaceState(workspaceId, body) {
 async function executeWorkspaceCreate(task, events) {
   const payload = task.payload || {};
   const workspaceId = payload.workspaceId || task.workspace_id;
-  const dir = safeWorkspacePath(workspaceId, payload.path);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, '.yan-zhi-workspace.json'), JSON.stringify({
-    id: workspaceId,
-    name: payload.name || '工作区',
-    image: payload.image || null,
-    cpu: payload.cpu ?? null,
-    memoryMb: payload.memoryMb ?? null,
-    createdAt: Date.now(),
-  }, null, 2));
-  events.send('workspace', { status: 'running', path: dir });
-  await workspaceState(workspaceId, { status: 'running', path: dir, ports: [] });
-  return { state: 'completed', result: { workspaceId, path: dir } };
+  const hostDir = safeWorkspacePath(workspaceId, payload.path);
+  try {
+    // 带 image 时由 .cjs 判定容器模式；未装 Docker 会抛明确错误，绝不回退目录模式。
+    const created = workspaceRuntime.createWorkspaceOnNode({
+      workspaceId,
+      name: payload.name || '工作区',
+      image: payload.image || null,
+      cpu: payload.cpu ?? null,
+      memoryMb: payload.memoryMb ?? null,
+      ttlMinutes: payload.ttlMinutes ?? null,
+      hostDir,
+      keepDir: payload.keepDir === true,
+      publishPorts: Array.isArray(payload.ports) ? payload.ports : [],
+    });
+    events.send('workspace', {
+      status: 'running', path: created.path, mode: created.mode, containerId: created.containerId,
+    });
+    await workspaceState(workspaceId, {
+      status: 'running',
+      path: created.path,
+      ports: created.ports || [],
+      runtimeMode: created.mode,
+      containerId: created.containerId || null,
+      containerName: created.containerName || null,
+    });
+    return {
+      state: 'completed',
+      result: { workspaceId, path: created.path, mode: created.mode, containerId: created.containerId },
+    };
+  } catch (e) {
+    const message = e?.message || String(e);
+    events.send('workspace', { status: 'failed', error: message });
+    // ★ 必须上报 failed：否则「节点没装 Docker」在控制面只表现为永远 requested，管理员无从下手。
+    await workspaceState(workspaceId, { status: 'failed', error: message }).catch(() => null);
+    throw e;
+  }
 }
 
 async function executeWorkspaceStop(task, events) {
   const payload = task.payload || {};
   const workspaceId = payload.workspaceId || task.workspace_id;
-  const dir = safeWorkspacePath(workspaceId, payload.path);
-  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-  events.send('workspace', { status: 'stopped', path: dir, reason: payload.reason || 'requested' });
-  await workspaceState(workspaceId, { status: 'stopped', path: dir, ports: [] });
-  return { state: 'completed', result: { workspaceId, stopped: true } };
+  const hostDir = safeWorkspacePath(workspaceId, payload.path);
+  try {
+    const stopped = workspaceRuntime.stopWorkspaceOnNode({
+      workspaceId,
+      hostDir,
+      mode: payload.mode,
+      containerId: payload.containerId,
+      containerName: payload.containerName,
+      keepDir: payload.keepDir === true,
+    });
+    events.send('workspace', {
+      status: 'stopped',
+      path: hostDir,
+      reason: payload.reason || 'requested',
+      removedContainer: stopped.removedContainer,
+    });
+    await workspaceState(workspaceId, { status: 'stopped', path: hostDir, ports: [] });
+    return {
+      state: 'completed',
+      result: {
+        workspaceId,
+        stopped: true,
+        mode: stopped.mode,
+        removedContainer: stopped.removedContainer,
+        removedDirectory: stopped.removedDirectory,
+      },
+    };
+  } catch (e) {
+    const message = e?.message || String(e);
+    events.send('workspace', { status: 'failed', error: message });
+    await workspaceState(workspaceId, { status: 'failed', error: message }).catch(() => null);
+    throw e;
+  }
 }
 
 async function executeCommand(task, events) {
@@ -223,7 +279,9 @@ async function main() {
     platform: process.platform,
     arch: process.arch,
     version: process.version,
-    capabilities: ['command', 'workspace_create', 'workspace_stop'],
+    capabilities: ['command', 'workspace_create', 'workspace_stop', 'workspace_container'],
+    // 服务端代理预览时只允许连这个 host（不含 scheme / 端口），避免变成任意内网代理。
+    previewHost: process.env.YZ_RUNTIME_PREVIEW_HOST || '127.0.0.1',
   });
   console.log('[runtime] 节点已上线');
 
