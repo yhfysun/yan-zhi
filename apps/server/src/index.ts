@@ -111,6 +111,7 @@ import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
 import { enterpriseAdminRouter, enterpriseOAuthRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
 import { startRuntimeJanitor } from './enterprise/runtime.js';
+import { currentRepositoryBackend, getEnterpriseRepository } from './enterprise/repository.js';
 import { handleRuntimeWsUpgrade } from './enterprise/runtime-ws.js';
 import { ensureEnterpriseSchema } from './enterprise/schema.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
@@ -930,6 +931,20 @@ try {
   startRuntimeJanitor();
 } catch (e) {
   logger.warn('[runtime] 节点巡检启动失败:', e);
+}
+
+// Task 7：PG 模式下启动即连接 + 迁移 + health 检查；失败明确退出，
+// 绝不允许"配置成 postgres 但实际半可用/静默回落 SQLite"的状态。
+if (currentRepositoryBackend() === 'postgres') {
+  void getEnterpriseRepository()
+    .then(async (repo) => {
+      const h = await repo.health();
+      logger.info('[repo] PostgreSQL repository 就绪:', h.detail);
+    })
+    .catch((e) => {
+      console.error('[repo] PostgreSQL repository 初始化失败，进程退出:', e?.message || e);
+      process.exit(1);
+    });
 }
 
 // 启动钉钉 Stream 客户端：为所有启用的 dingtalk 连接器恢复长连接

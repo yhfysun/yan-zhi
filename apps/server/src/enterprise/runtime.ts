@@ -463,7 +463,8 @@ export function getWorkspace(id: string, userId?: string): any {
   return workspaceView(row);
 }
 
-function workspaceView(row: any) {
+/** 工作区行 → 对外视图：JSON 列/布尔列/空值归一。两种 repository 后端共用同一份实现。 */
+export function workspaceView(row: any) {
   if (!row) return null;
   return {
     ...row,

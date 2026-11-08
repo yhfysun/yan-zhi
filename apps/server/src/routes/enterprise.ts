@@ -25,6 +25,7 @@ import {
   resolveWorkspacePreviewTarget, stopWorkspace, unregisterWorkspacePort,
   updateRuntimeNode, updateWorkspaceState, WorkspacePreviewError,
 } from '../enterprise/runtime.js';
+import { getEnterpriseRepository } from '../enterprise/repository.js';
 import {
   createDesignResource, deleteDesignResource, listDesignResources, updateDesignResource,
 } from '../enterprise/design-resources.js';
@@ -311,6 +312,9 @@ enterpriseAdminRouter.delete('/runtime/nodes/:id', requirePerm('admin.runtime.ma
 enterpriseAdminRouter.get('/runtime/tasks', requirePerm('admin.runtime.manage'), (req, res) => {
   ok(res, listRuntimeTasks('', { all: true, limit: Number(req.query.limit) || 100 }));
 });
+enterpriseAdminRouter.get('/repository/health', requirePerm('admin.runtime.manage'), async (_req, res) => {
+  try { ok(res, await (await getEnterpriseRepository()).health()); } catch (e) { fail(res, e); }
+});
 enterpriseAdminRouter.get('/runtime/workspaces', requirePerm('admin.runtime.manage'), (_req, res) => {
   ok(res, listWorkspaces('', { all: true }));
 });
@@ -400,8 +404,13 @@ enterpriseUserRouter.get('/runtime/tasks/:id/artifacts', (req, res) => {
 enterpriseUserRouter.post('/runtime/tasks/:id/cancel', (req, res) => {
   try { ok(res, cancelRuntimeTask(req.user!.userId, req.params.id)); } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/workspaces', (req, res) => {
-  ok(res, listWorkspaces(req.user!.userId));
+// Task 7：工作区列表走 repository（默认 SQLite 委托唯一实现；PG 模式走 pg）。
+// 这是"收口真的生效"的验证点：换后端时该端点行为一致，且不改其它路由。
+enterpriseUserRouter.get('/runtime/workspaces', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listWorkspaces(req.user!.userId));
+  } catch (e) { fail(res, e); }
 });
 enterpriseUserRouter.post('/runtime/workspaces', (req, res) => {
   try { ok(res, createWorkspace(req.user!.userId, body(req) as any), 201); } catch (e) { fail(res, e); }

@@ -3,10 +3,10 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：Task 1-6 已实现、已验证、**已提交并推送**（最新 `d8357550`）
+- 状态：Task 1-6 已推送；Task 7 代码已完成并通过 SQLite 契约验证（待提交推送；PG 一致性**未验证**，见下方边界）
 - 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：本任务范围已干净；其余 M/?? 均为并行会话在途改动，勿动
+- 工作区状态：Task 7 改动在工作区；其余 M/?? 均为并行会话在途改动，勿动
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
@@ -34,10 +34,12 @@
 - [x] Task 4：团队资源进入常规选择器（模型/Skill/智能体选择器显示「团队」标签、撤权后缓存失效、公开与 ACL 标签一致）
 - [x] Task 5：实时节点通道升级（WS 控制通道：token 认证、ready 认领下发、事件 seq 幂等、断线续传、立即离线收敛、HTTP 轮询降级共存）
 - [x] Task 6：OIDC / 企业 SSO（授权码 + PKCE、state/nonce/签名/iss/aud/exp/iat 全校验、账号映射幂等、内置账号共存、故障不吞错）
+- [x] Task 7：PostgreSQL repository 适配（repository 收口、SQLite 默认行为不变、PG 可选后端 + 明确失败、事务/JSON/时间戳一致性；**边界见下**）
 
 ## 待办
 
-- [ ] Task 7：PostgreSQL repository 适配
+- [ ] Task 7 剩余：把全仓 SQLite 方言 SQL 逐路由迁到 repository（当前 PG 只覆盖企业运行时域）
+- [ ] 提供 PostgreSQL 实例，跑 `YZ_TEST_PG_URL=... vitest run test/enterprise-repository-pg.test.ts` 完成一致性验证
 
 ## 已推送提交（Task 1-4）
 
@@ -177,6 +179,30 @@
   **均为并行会话 learning 功能引入**，与本任务无关。
 - 已知边界：OIDC 回调 302 到**同域** `/login?oidc_token=`；轻量壳（`file://` + 远程后端）
   场景暂不支持 SSO（需让回调落到前端域）。
+
+## Task 7 验证记录与已知边界（2026-11-08）
+
+- 新增 `src/enterprise/repository.ts`：`EnterpriseRepository` 接口 + **SQLite 实现（委托
+  runtime.ts 的唯一实现，零 SQL 复制，默认行为完全不变）** + **PostgreSQL 实现**
+  （`pg.Pool`、企业运行时域 4 张表的 PG 方言 DDL、参数化 $n 查询、BEGIN/COMMIT/ROLLBACK）。
+  视图层复用 `workspaceView`（JSON 列 / 布尔列 / 时间戳 / 空值归一），两后端语义一致。
+- 工厂 `createEnterpriseRepository`：`YZ_DB_BACKEND` + `DATABASE_URL`；
+  配置缺失 / URL 非法 / 连接失败 / **迁移失败一律抛 `RepositoryError` 稳定 code**，
+  绝不静默回落 SQLite。启动接线：PG 模式启动即连接+迁移，失败 `process.exit(1)`。
+  真实接线：`GET /enterprise/runtime/workspaces` 走 repository；新增 admin
+  `GET /enterprise/repository/health`。
+- 测试 `test/enterprise-repository.test.ts`：**14 个用例全过**（默认后端、health、
+  实现方法集合、JSON/布尔/时间戳/加密列不回显、参数化防注入、事件 seq/limit、
+  withTransaction 提交与回滚、PG 配置缺失/URL 非法/连接失败明确报错、路由与启动接线守卫）。
+- 测试 `test/enterprise-repository-pg.test.ts`：按 plan.md 要求「有实例跑一致性、
+  **无实例必须如实失败（不能静默跳过）**」实现 —— 无 `YZ_TEST_PG_URL` 时抛明确错误，
+  故本机全量测试会多一个**预期失败**（不是回归，也不伪装成绿色）。
+- 验证：server tsc 全绿；企业相关 5 文件 75/75；SQLite repository 契约 14/14。
+- ★ **已知边界（不宣称全仓已迁 PG）**：全仓仍有数百处 `db.prepare` 的 SQLite 同步 API
+  与方言 SQL（`INSERT OR IGNORE` / `json_extract` / `?` 占位符等）。当前 PG 后端只覆盖
+  **企业运行时域（工作区/任务/事件）**；其余管理端路由在 PG 模式下仍走 SQLite，
+  完整多后端需要按 repository 逐路由异步化 + 方言化（已列入待办）。
+  `pg@8.23.0` 已在 `apps/server/package.json`，无需新增依赖。
 
 ## 新会话启动方式
 
