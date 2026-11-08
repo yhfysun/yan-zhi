@@ -66,7 +66,7 @@
       </el-form>
       </el-tab-pane>
       <el-tab-pane label="资源授权" name="resources">
-        <p class="res-tip">勾选该角色<strong>可以使用的</strong>智能体 / 模型 / Skill / 工具 / 插件（批量：勾一次，角色下所有用户生效）。未勾选的私有资源对该角色不可见。</p>
+        <p class="res-tip">勾选该角色<strong>可以使用的</strong>智能体 / 模型 / Skill / 工具 / 插件 / 团队规则 / MCP 连接（批量：勾一次，角色下所有用户生效）。未勾选的私有资源对该角色不可见。</p>
         <div v-for="g in resGroups" :key="g.type" class="res-group">
           <div class="res-group-head">
             <b>{{ g.label }}</b>
@@ -119,14 +119,18 @@ const RES_GROUPS = [
   { type: 'skill', label: 'Skill' },
   { type: 'tool', label: '工具' },
   { type: 'plugin', label: '插件' },
+  { type: 'rule', label: '团队规则' },
+  { type: 'mcp', label: 'MCP 连接' },
+  { type: 'design', label: '设计资源' },
 ];
 const resCatalog = reactive<Record<string, Array<any>>>({});
-const resGrants = reactive<Record<string, string[]>>({ agent: [], model: [], skill: [], tool: [], plugin: [] });
+const resGrants = reactive<Record<string, string[]>>({ agent: [], model: [], skill: [], tool: [], plugin: [], rule: [], mcp: [], design: [] });
 /** 分类分层（2026-11-01 用户要求）：智能体按分类、模型按所属平台、插件按分类分层展示 */
 const resGroups = computed(() =>
   RES_GROUPS.map((g) => {
     const items = resCatalog[g.type] || [];
-    const keyField = g.type === 'agent' || g.type === 'plugin' ? 'category' : g.type === 'model' ? 'platform' : null;
+    const keyField = g.type === 'agent' || g.type === 'plugin' || g.type === 'rule' || g.type === 'mcp'
+      ? 'category' : g.type === 'model' ? 'platform' : null;
     if (!keyField) return { ...g, subGroups: [{ label: '', items }] };
     const byKey = new Map<string, any[]>();
     for (const it of items) {

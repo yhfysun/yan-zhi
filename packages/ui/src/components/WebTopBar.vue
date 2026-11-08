@@ -476,6 +476,7 @@ const moreItems = computed<HoverMenuItem[]>(() => [
     : []),
   { key: 'divider-memory', label: '', divider: true },
   { key: 'live', label: '直播', icon: VideoCamera, path: '/live', desc: '宠物主播预演' },
+  { key: 'team', label: '团队工作台', icon: Cpu, path: '/team', desc: '团队资源、额度、节点与远程任务' },
   { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
   ...pluginWindowMenus.value,
@@ -488,6 +489,7 @@ const moreItems = computed<HoverMenuItem[]>(() => [
           label: '管理后台',
           icon: Setting,
           children: [
+            { key: 'admin-enterprise', label: '企业工作台', icon: Cpu, path: '/admin/enterprise', desc: '团队资源、额度、MCP 与节点' },
             { key: 'admin-users', label: '用户管理', icon: User, path: '/admin/users', desc: '账号与密码重置' },
             { key: 'admin-orgs', label: '组织管理', icon: Collection, path: '/admin/orgs', desc: '部门/团队层级' },
             { key: 'admin-roles', label: '角色权限', icon: Key, path: '/admin/roles', desc: '角色与授权' },

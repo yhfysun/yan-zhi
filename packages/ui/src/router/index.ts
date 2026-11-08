@@ -119,6 +119,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '初始化管理员', guest: true },
   },
   {
+    path: '/admin/enterprise',
+    name: 'admin-enterprise',
+    component: () => import('../views/admin/Enterprise.vue'),
+    meta: { title: '企业工作台', requiresAdmin: true },
+  },
+  {
     // 管理后台（multi 模式 + admin 权限点）：组织 / 角色 / 用户 / 权限
     path: '/admin/users',
     name: 'admin-users',
@@ -167,6 +173,12 @@ const routes: RouteRecordRaw[] = [
     name: 'peers',
     component: () => import('../views/Peers.vue'),
     meta: { title: '客户端节点' },
+  },
+  {
+    path: '/team',
+    name: 'team',
+    component: () => import('../views/TeamHub.vue'),
+    meta: { title: '团队工作台' },
   },
   {
     path: '/connections',

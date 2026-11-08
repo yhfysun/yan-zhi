@@ -287,6 +287,7 @@ const builtinNavItems: NavItem[] = [
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, kind: 'route', group: '工作台' },
+  { path: '/team', label: '团队工作台', tabLabel: '团队', icon: Cpu, kind: 'route', group: '工作台' },
   { path: '/page-assets', label: '页面资产', tabLabel: '页面资产', icon: Files, kind: 'route', group: '系统' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
@@ -353,6 +354,7 @@ const navItems = computed<NavItem[]>(() =>
 const adminNavItems = computed<NavItem[]>(() => {
   if (!authStore.hasPermission('admin')) return [];
   return [
+    { path: '/admin/enterprise', label: '企业工作台', tabLabel: '企业工作台', icon: Cpu, kind: 'route' as const, group: '系统' },
     { path: '/admin/users', label: '用户管理', tabLabel: '用户管理', icon: UserFilled, kind: 'route' as const, group: '系统' },
     { path: '/admin/orgs', label: '组织管理', tabLabel: '组织管理', icon: OfficeBuilding, kind: 'route' as const, group: '系统' },
     { path: '/admin/roles', label: '角色权限', tabLabel: '角色权限', icon: Key, kind: 'route' as const, group: '系统' },
