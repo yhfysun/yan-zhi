@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   srsAdvance, srsDemote, isDue, levelCountFor, levelSlice, starsFor,
-  genDrillQuestions, judgeAnswer, WORDS_PER_LEVEL, DRILL_QUESTIONS_PER_LEVEL,
+  genDrillQuestions, judgeAnswer, clozeMask, WORDS_PER_LEVEL, DRILL_QUESTIONS_PER_LEVEL,
   SRS_BOX_COUNT, SRS_INTERVAL_DAYS, type SrsWordRow, type DrillQuestion,
 } from '../src/learning/srs';
 
@@ -90,18 +90,38 @@ describe('出题与判分', () => {
     expect(qs.length).toBe(5); // 词少时以词数封顶
   });
 
-  it('满关词数出 DRILL_QUESTIONS_PER_LEVEL 题，choice/spelling 交替，选项 4 个', () => {
-    const words = Array.from({ length: WORDS_PER_LEVEL }, (_, i) => w(i));
+  it('满关词数出 DRILL_QUESTIONS_PER_LEVEL 题，四题型轮换，选项 4 个', () => {
+    const words = Array.from({ length: WORDS_PER_LEVEL }, (_, i) => w(i, { example: `I like word${i} very much.` }));
     const qs = genDrillQuestions(words, words.map((x) => x.gloss), seededRng());
     expect(qs.length).toBe(DRILL_QUESTIONS_PER_LEVEL);
+    // 轮换：选义 / 拼写 / 听写 / 例句填空
     expect(qs[0].kind).toBe('choice');
     expect(qs[1].kind).toBe('spelling');
+    expect(qs[2].kind).toBe('dictation');
+    expect(qs[3].kind).toBe('cloze');
     const choice = qs[0] as Extract<DrillQuestion, { kind: 'choice' }>;
     expect(choice.options).toHaveLength(4);
     expect(choice.options.filter((o) => o === words.find((x) => x.id === choice.wordId)!.gloss)).toHaveLength(1);
   });
 
-  it('judgeAnswer：choice 比对释义，spelling 忽略大小写与空白', () => {
+  it('★ 听写题不泄文本：题面只有 audio 与长度 hint', () => {
+    const words = Array.from({ length: 4 }, (_, i) => w(i));
+    const qs = genDrillQuestions(words, words.map((x) => x.gloss), seededRng());
+    const d = qs.find((q) => q.kind === 'dictation') as Extract<DrillQuestion, { kind: 'dictation' }>;
+    expect(d.audio).toBe(words.find((x) => x.id === d.wordId)!.word);
+    expect(d.hint).toMatch(/个字母/);
+    expect(JSON.stringify(d)).not.toContain('"prompt"');
+  });
+
+  it('例句缺失/挖空失败时 cloze 退回 spelling（不空卷）', () => {
+    const words = [w(1, { example: '' }), w(2, { example: 'No target here.' })];
+    const qs = genDrillQuestions(words, words.map((x) => x.gloss), seededRng(7));
+    for (const q of qs) expect(['choice', 'spelling', 'dictation', 'cloze']).toContain(q.kind);
+    // 两词第 3、4 位（mod 3）按理是 cloze —— 全部退回 spelling
+    expect(qs.filter((q) => q.kind === 'cloze')).toHaveLength(0);
+  });
+
+  it('judgeAnswer：choice 比对释义，其余题型忽略大小写与空白比对单词', () => {
     const words = [w(1), w(2, { word: 'Abandon' })];
     const map = new Map(words.map((x) => [x.id, x]));
     const qs = genDrillQuestions(words, words.map((x) => x.gloss), () => 0.99);
@@ -112,6 +132,31 @@ describe('出题与判分', () => {
     const word = map.get(spelling.wordId)!;
     expect(judgeAnswer(spelling, { qid: spelling.qid, kind: 'spelling', typed: word.word.toUpperCase() }, map)).toBe(true);
     expect(judgeAnswer(spelling, { qid: spelling.qid, kind: 'spelling', typed: ` ${word.word} ` }, map)).toBe(true);
+  });
+
+  it('judgeAnswer：dictation/cloze 与单词比对；choice 题用错题型判 false', () => {
+    const words = [
+      w(1, { example: 'I like word1.' }), w(2, { example: 'She uses word2 daily.' }),
+      w(3, { example: 'They found word3 there.' }), w(4, { example: 'We keep word4 here.' }),
+    ];
+    const map = new Map(words.map((x) => [x.id, x]));
+    const qs = genDrillQuestions(words, words.map((x) => x.gloss), seededRng(3));
+    const dict = qs.find((q) => q.kind === 'dictation') as Extract<DrillQuestion, { kind: 'dictation' }>;
+    const cloze = qs.find((q) => q.kind === 'cloze') as Extract<DrillQuestion, { kind: 'cloze' }>;
+    const choice = qs.find((q) => q.kind === 'choice') as Extract<DrillQuestion, { kind: 'choice' }>;
+    const wordOf = (id: string) => map.get(id)!.word;
+    expect(dict).toBeTruthy();
+    expect(cloze).toBeTruthy();
+    expect(judgeAnswer(dict, { qid: dict.qid, kind: 'dictation', typed: wordOf(dict.wordId).toUpperCase() }, map)).toBe(true);
+    expect(judgeAnswer(cloze, { qid: cloze.qid, kind: 'cloze', typed: ` ${wordOf(cloze.wordId)} ` }, map)).toBe(true);
+    expect(judgeAnswer(cloze, { qid: cloze.qid, kind: 'cloze', typed: 'zzzz' }, map)).toBe(false);
+    expect(judgeAnswer(choice, { qid: choice.qid, kind: 'spelling', typed: 'whatever' }, map)).toBe(false);
+  });
+
+  it('clozeMask：整词边界挖空、大小写不敏感、目标词未出现返回 null', () => {
+    expect(clozeMask('I like Cats here.', 'cats')).toBe('I like ____ here.');
+    expect(clozeMask('No catsaround here.', 'cats')).toBeNull(); // 非整词不挖
+    expect(clozeMask('', 'cats')).toBeNull();
   });
 
   it('答案不相等才算干扰项：正确释义不重复出现在选项里', () => {

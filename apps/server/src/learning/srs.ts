@@ -66,9 +66,13 @@ export function starsFor(correct: number, total: number): { stars: 0 | 1 | 2 | 3
 
 export type DrillQuestion =
   | { kind: 'choice'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options: string[] }
-  | { kind: 'spelling'; qid: string; wordId: string; prompt: string; gloss: string; hint: string };
+  | { kind: 'spelling'; qid: string; wordId: string; prompt: string; gloss: string; hint: string }
+  /** 听写：audio=单词本体（前端 TTS 播放，页面不展示该文本）；无语音包时前端整体过滤该题型 */
+  | { kind: 'dictation'; qid: string; wordId: string; audio: string; hint: string }
+  /** 例句填空：prompt=挖空例句（目标词替换为 ____），spelling 式作答 */
+  | { kind: 'cloze'; qid: string; wordId: string; prompt: string; gloss: string; hint: string };
 
-export type DrillAnswer = { qid: string; kind: 'choice' | 'spelling'; picked?: string; typed?: string };
+export type DrillAnswer = { qid: string; kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; picked?: string; typed?: string };
 
 type Rng = () => number;
 
@@ -100,12 +104,27 @@ export function genDrillQuestions(
   for (let i = 0; i < picked.length; i++) {
     const w = picked[i];
     const qid = `q${i + 1}`;
-    if (i % 2 === 0) {
+    const mod = i % 4; // 四题型轮换：选义 / 拼写 / 听写 / 例句填空（方案 §2.3）
+    const hintOf = (word: string) => `${word.slice(0, 1)}${'＿'.repeat(Math.max(0, word.length - 1))}（${word.length} 个字母）`;
+    if (mod === 0) {
       // 看词选义：正确释义 + 3 个来自干扰池且不等于正确释义的选项
       const wrongs = shuffle(pool.filter((g) => g.trim() !== w.gloss.trim()), rng).slice(0, 3);
       while (wrongs.length < 3) wrongs.push(`选项 ${wrongs.length + 1}`); // 兜底：词库过小时不空卷
       const options = shuffle([w.gloss, ...wrongs], rng);
       questions.push({ kind: 'choice', qid, wordId: w.id, prompt: w.word, phonetic: w.phonetic ?? null, options });
+    } else if (mod === 2) {
+      // 听写：TTS 念词 → 拼写；只给长度提示，不泄文本（无语音包时前端整体过滤该题型）
+      questions.push({ kind: 'dictation', qid, wordId: w.id, audio: w.word, hint: `${w.word.length} 个字母` });
+    } else if (mod === 3 && clozeMask(w.example || '', w.word)) {
+      // 例句填空：例句挖掉目标词；例句缺失/挖空失败退回拼写
+      questions.push({
+        kind: 'cloze',
+        qid,
+        wordId: w.id,
+        prompt: clozeMask(w.example || '', w.word) as string,
+        gloss: w.gloss,
+        hint: hintOf(w.word),
+      });
     } else {
       // 看义拼词：给释义，拼出单词；hint = 首字母 + 长度
       questions.push({
@@ -114,20 +133,26 @@ export function genDrillQuestions(
         wordId: w.id,
         prompt: w.gloss,
         gloss: w.gloss,
-        hint: `${w.word.slice(0, 1)}${'＿'.repeat(Math.max(0, w.word.length - 1))}（${w.word.length} 个字母）`,
+        hint: hintOf(w.word),
       });
     }
   }
   return questions;
 }
 
-/** 判一题：choice 比对释义原文（trim）；spelling 忽略大小写与首尾空格 */
+/** 例句挖空：整词边界匹配目标词（忽略大小写），挖空失败返回 null */
+export function clozeMask(example: string, word: string): string | null {
+  if (!example.trim() || !word.trim()) return null;
+  const re = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+  if (!re.test(example)) return null;
+  return example.replace(re, '____');
+}
+
+/** 判一题：choice 比对释义原文（trim）；其余题型忽略大小写与首尾空格比对单词 */
 export function judgeAnswer(q: DrillQuestion, a: DrillAnswer, wordById: Map<string, SrsWordRow>): boolean {
   const w = wordById.get(q.wordId);
   if (!w) return false;
   if (q.kind === 'choice' && a.kind === 'choice') return String(a.picked || '').trim() === w.gloss.trim();
-  if (q.kind === 'spelling' && a.kind === 'spelling') {
-    return String(a.typed || '').trim().toLowerCase() === w.word.trim().toLowerCase();
-  }
-  return false;
+  if (a.kind === 'choice') return false;
+  return String(a.typed || '').trim().toLowerCase() === w.word.trim().toLowerCase();
 }

@@ -23,7 +23,7 @@ function unwrap<T>(r: unknown): T | null {
 type Profile = { cefr: string | null; goals: string | null; streakDays?: number };
 type Book = { id: string; name: string; kind: string; course: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
 type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
-type Question = { kind: 'choice' | 'spelling'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string };
+type Question = { kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string; audio?: string };
 type ErrorRow = { id: string; wrong: string; right: string; reason: string | null };
 
 const profile = ref<Profile>({ cefr: null, goals: null, streakDays: 0 });
@@ -54,7 +54,7 @@ const scenes = ref<SceneCard[]>([]);
 const startingScene = ref<string | null>(null);
 async function loadScenes() {
   const r = await api.get<{ data: SceneCard[] }>('/learning/scenes');
-  scenes.value = unwrap<{ data: SceneCard[] }>(r)?.data || [];
+  scenes.value = unwrap<SceneCard[]>(r) || [];
 }
 async function startScene(scene: SceneCard) {
   if (startingScene.value) return;
@@ -78,11 +78,11 @@ const grammarList = ref<GrammarBrief[]>([]);
 const grammarActive = ref<GrammarDetail | null>(null);
 async function loadGrammar() {
   const r = await api.get<{ data: GrammarBrief[] }>('/learning/grammar');
-  grammarList.value = unwrap<{ data: GrammarBrief[] }>(r)?.data || [];
+  grammarList.value = unwrap<GrammarBrief[]>(r) || [];
 }
 async function openGrammar(id: string) {
   const r = await api.get<{ data: GrammarDetail }>(`/learning/grammar/${id}`);
-  grammarActive.value = unwrap<{ data: GrammarDetail }>(r)?.data || null;
+  grammarActive.value = unwrap<GrammarDetail>(r) || null;
 }
 
 // ── 范文阅读（P1-C）──
@@ -93,11 +93,11 @@ const readingActive = ref<ReadingDetail | null>(null);
 const collecting = ref('');
 async function loadReadings() {
   const r = await api.get<{ data: ReadingBrief[] }>('/learning/readings');
-  readings.value = unwrap<{ data: ReadingBrief[] }>(r)?.data || [];
+  readings.value = unwrap<ReadingBrief[]>(r) || [];
 }
 async function openReading(id: string) {
   const r = await api.get<{ data: ReadingDetail }>(`/learning/readings/${id}`);
-  readingActive.value = unwrap<{ data: ReadingDetail }>(r)?.data || null;
+  readingActive.value = unwrap<ReadingDetail>(r) || null;
 }
 /** 划词收集：选中文本取最后一个词 → AI 查释义 → 收进「阅读生词」词书 */
 async function collectSelection() {
@@ -108,7 +108,7 @@ async function collectSelection() {
   collecting.value = word;
   try {
     const r = await api.post<{ data: { entry: { word: string; gloss: string } } }>(`/learning/readings/${readingActive.value.id}/collect`, { word });
-    const entry = unwrap<{ data: { entry: { word: string; gloss: string } } }>(r)?.data.entry;
+    const entry = unwrap<{ entry: { word: string; gloss: string } }>(r)?.entry;
     if (entry) window.alert(`已收进词本：${entry.word} — ${entry.gloss}`);
   } catch (e) {
     window.alert(e instanceof Error ? e.message : String(e));
@@ -146,7 +146,7 @@ async function toggleRecord() {
           fr.readAsDataURL(blob);
         });
         const r = await api.post<{ data: { text: string } }>('/learning/voice', { audioBase64: b64, mime: blob.type });
-        transcript.value = unwrap<{ data: { text: string } }>(r)?.data.text || '（未识别到内容）';
+        transcript.value = unwrap<{ text: string }>(r)?.text || '（未识别到内容）';
       } catch (e) {
         transcript.value = `识别失败：${e instanceof Error ? e.message : String(e)}`;
       } finally {
@@ -165,6 +165,8 @@ async function toggleRecord() {
 type DrillResult = { stars: number; passed: boolean; pct: number; results: Array<{ qid: string; word: string; correct: boolean; expected: string }> };
 const drillLevel = ref<number | null>(null);
 const questions = ref<Question[]>([]);
+/** 听写题需要 TTS 念词——无语音包时整卷过滤掉听写（判分只按提交的题） */
+const activeQuestions = computed(() => (ttsPackId.value ? questions.value : questions.value.filter((q) => q.kind !== 'dictation')));
 const answers = ref<Record<string, string>>({}); // qid → 选项/输入
 const submitting = ref(false);
 const result = ref<DrillResult | null>(null);
@@ -182,12 +184,12 @@ async function loadAll() {
       api.get<{ data: Book[] }>('/learning/books'),
       api.get<{ data: ErrorRow[] }>('/learning/errors'),
     ]);
-    const pv = unwrap<{ data: Profile }>(p);
-    const bv = unwrap<{ data: Book[] }>(b);
-    const ev = unwrap<{ data: ErrorRow[] }>(e);
-    if (pv?.data) profile.value = pv.data;
-    if (bv?.data) books.value = bv.data;
-    if (ev?.data) errors.value = ev.data;
+    const pv = unwrap<Profile>(p);
+    const bv = unwrap<Book[]>(b);
+    const ev = unwrap<ErrorRow[]>(e);
+    if (pv) profile.value = pv;
+    if (bv) books.value = bv;
+    if (ev) errors.value = ev;
     await loadDueCount();
   } catch { /* 后端未就绪时静默，页面仍可渲染骨架 */ }
   loading.value = false;
@@ -198,11 +200,11 @@ const dueCount = ref(0);
 const reviewMode = ref(false);
 async function loadDueCount() {
   const r = await api.get<{ data: { due: number } }>('/learning/review?limit=3');
-  dueCount.value = unwrap<{ data: { due: number } }>(r)?.data.due ?? 0;
+  dueCount.value = unwrap<{ due: number }>(r)?.due ?? 0;
 }
 async function startReview() {
   const r = await api.get<{ data: { questions: Question[]; due: number } }>('/learning/review');
-  const d = unwrap<{ data: { questions: Question[]; due: number } }>(r)?.data;
+  const d = unwrap<{ questions: Question[]; due: number }>(r);
   if (!d?.questions?.length) { dueCount.value = 0; return; }
   questions.value = d.questions;
   answers.value = {};
@@ -215,13 +217,13 @@ async function submitReview() {
   if (submitting.value || !reviewMode.value) return;
   submitting.value = true;
   try {
-    const payloadAnswers = questions.value.map((q) => ({
+    const payloadAnswers = activeQuestions.value.map((q) => ({
       qid: q.qid, kind: q.kind,
       picked: q.kind === 'choice' ? answers.value[q.qid] : undefined,
-      typed: q.kind === 'spelling' ? answers.value[q.qid] : undefined,
+      typed: q.kind === 'choice' ? undefined : answers.value[q.qid],
     }));
-    const r = await api.post<{ data: DrillResult }>('/learning/review/submit', { questions: questions.value, answers: payloadAnswers });
-    result.value = unwrap<{ data: DrillResult }>(r)?.data ?? null;
+    const r = await api.post<{ data: DrillResult }>('/learning/review/submit', { questions: activeQuestions.value, answers: payloadAnswers });
+    result.value = unwrap<DrillResult>(r) ?? null;
     if (result.value) react(result.value);
     reviewMode.value = false;
     questions.value = [];
@@ -238,13 +240,13 @@ async function openBook(book: Book) {
   result.value = null;
   reviewMode.value = false;
   const r = await api.get<{ data: Level[] }>(`/learning/books/${book.id}/levels`);
-  levels.value = unwrap<{ data: Level[] }>(r)?.data || [];
+  levels.value = unwrap<Level[]>(r) || [];
 }
 
 async function startDrill(levelNo: number) {
   if (!activeBook.value) return;
   const r = await api.get<{ data: { questions: Question[] } }>(`/learning/books/${activeBook.value.id}/levels/${levelNo}/drill`);
-  questions.value = unwrap<{ data: { questions: Question[] } }>(r)?.data.questions || [];
+  questions.value = unwrap<{ questions: Question[] }>(r)?.questions || [];
   answers.value = {};
   result.value = null;
   drillLevel.value = levelNo;
@@ -254,16 +256,16 @@ async function submitDrill() {
   if (!activeBook.value || drillLevel.value == null || submitting.value) return;
   submitting.value = true;
   try {
-    const payloadAnswers = questions.value.map((q) => ({
+    const payloadAnswers = activeQuestions.value.map((q) => ({
       qid: q.qid, kind: q.kind,
       picked: q.kind === 'choice' ? answers.value[q.qid] : undefined,
-      typed: q.kind === 'spelling' ? answers.value[q.qid] : undefined,
+      typed: q.kind === 'choice' ? undefined : answers.value[q.qid],
     }));
-    const r = await api.post<{ data: NonNullable<typeof result.value> }>(
+    const r = await api.post<{ data: DrillResult }>(
       `/learning/books/${activeBook.value.id}/levels/${drillLevel.value}/drill/submit`,
-      { questions: questions.value, answers: payloadAnswers },
+      { questions: activeQuestions.value, answers: payloadAnswers },
     );
-    result.value = unwrap<{ data: NonNullable<typeof result.value> }>(r)?.data ?? null;
+    result.value = unwrap<DrillResult>(r) ?? null;
     if (result.value) react(result.value); // 形象反应：过关跳一跳 / 没过歪头看
     await openBook(activeBook.value); // 刷新星级/解锁态
     drillLevel.value = null;
@@ -280,7 +282,7 @@ async function createBook() {
     .map((p) => ({ word: p[0], gloss: p[1], example: p[2] }));
   if (!bookName.value.trim() || !words.length) return;
   const r = await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), words });
-  const created = unwrap<{ data: { id: string } }>(r)?.data;
+  const created = unwrap<{ id: string }>(r);
   showCreate.value = false;
   bookName.value = '';
   bookText.value = '';
@@ -299,11 +301,11 @@ async function extractAndCreate() {
     const r = await api.post<{ data: Array<{ word: string; gloss: string; phonetic?: string; example?: string }> }>(
       '/learning/words/extract', { text: extractText.value },
     );
-    const words = unwrap<{ data: Array<{ word: string; gloss: string; phonetic?: string; example?: string }> }>(r)?.data || [];
+    const words = unwrap<Array<{ word: string; gloss: string; phonetic?: string; example?: string }>>(r) || [];
     if (!words.length) return;
-    const created = unwrap<{ data: { id: string } }>(
+    const created = unwrap<{ id: string }>(
       await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), words }),
-    )?.data;
+    );
     extractText.value = '';
     showCreate.value = false;
     bookName.value = '';
@@ -325,7 +327,7 @@ async function importBookUrl() {
   importing.value = true;
   try {
     const r = await api.post<{ data: { id: string; name: string; wordCount: number } }>('/learning/books/import', { url: importUrl.value });
-    const d = unwrap<{ data: { id: string; name: string; wordCount: number } }>(r)?.data;
+    const d = unwrap<{ id: string; name: string; wordCount: number }>(r);
     if (!d) return;
     importUrl.value = '';
     showCreate.value = false;
@@ -368,7 +370,7 @@ const ttsPlaying = ref<HTMLAudioElement | null>(null);
 async function loadTtsPack() {
   try {
     const r = await api.get<{ data: { items: TtsItem[] } }>('/tts-packs');
-    const items = unwrap<{ data: { items: TtsItem[] } }>(r)?.data.items || [];
+    const items = unwrap<{ items: TtsItem[] }>(r)?.items || [];
     ttsPackId.value = items.find((t) => t.installed)?.id || null;
   } catch { /* 语音包接口不可用则隐藏朗读按钮 */ }
 }
@@ -474,16 +476,25 @@ onMounted(loadTtsPack);
       <!-- 中：答题面板 -->
       <section class="lp-card">
         <div class="lp-card-head"><h2>答题</h2></div>
-        <template v-if="(drillLevel != null || reviewMode) && questions.length">
+        <template v-if="(drillLevel != null || reviewMode) && activeQuestions.length">
           <p class="lp-drill-title">
-            {{ reviewMode ? `到期复习（${questions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${questions.length} 题）` }}
+            {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
           </p>
-          <div v-for="(q, qi) in questions" :key="q.qid" class="lp-q">
+          <div v-for="(q, qi) in activeQuestions" :key="q.qid" class="lp-q">
             <p class="lp-q-prompt">
               <b>{{ qi + 1 }}.</b>
               <template v-if="q.kind === 'choice'">
                 {{ q.prompt }} <i v-if="q.phonetic">{{ q.phonetic }}</i><span class="lp-kind">选释义</span>
                 <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(q.prompt)">🔊</button>
+              </template>
+              <template v-else-if="q.kind === 'dictation'">
+                🔊 听音拼写<span class="lp-kind">听写</span>
+                <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="播放单词" @click="speak(q.audio || '')">🔊 播放</button>
+                <i class="lp-hint">{{ q.hint }}</i>
+              </template>
+              <template v-else-if="q.kind === 'cloze'">
+                {{ q.prompt }}<span class="lp-kind">例句填空</span>
+                <i class="lp-hint">{{ q.hint }}</i>
               </template>
               <template v-else>{{ q.prompt }}<span class="lp-kind">拼写</span></template>
             </p>
@@ -497,11 +508,11 @@ onMounted(loadTtsPack);
             <input
               v-else
               v-model="answers[q.qid]"
-              class="lp-input" :placeholder="`拼写单词（提示：${q.hint}）`"
+              class="lp-input" :placeholder="q.kind === 'dictation' ? `听音拼写（${q.hint}）` : q.kind === 'cloze' ? `填入目标词（${q.hint}）` : `拼写单词（提示：${q.hint}）`"
               @keyup.enter="reviewMode ? submitReview() : submitDrill()"
             />
           </div>
-          <button class="lp-primary" :disabled="submitting || Object.keys(answers).length < questions.length" @click="reviewMode ? submitReview() : submitDrill()">
+          <button class="lp-primary" :disabled="submitting || Object.keys(answers).length < activeQuestions.length" @click="reviewMode ? submitReview() : submitDrill()">
             {{ submitting ? '判分中…' : '交卷' }}
           </button>
         </template>
