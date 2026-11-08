@@ -72,12 +72,14 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
   })
 
-  it('场景卡 Tab：点开真出卡，卡带标题与难度', async () => {
+  it('场景卡 Tab：点开真出卡，卡带标题与难度（中栏内渲染，不跳布局）', async () => {
     const el = await mountPage()
     ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('场景卡'))!.click()
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-scene').length).toBe(2))
-    expect(el.querySelector('.lp-scene-grid')?.textContent).toContain('机场值机')
-    expect(el.querySelector('.lp-scene-grid')?.textContent).toContain('A2')
+    expect(el.querySelector('.lp-scene-list')?.textContent).toContain('机场值机')
+    expect(el.querySelector('.lp-scene-list')?.textContent).toContain('A2')
+    // 三栏骨架仍在（布局不跳）
+    expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
 
   it('★ 开始陪练：带契约 id（a_builtin_learning_coach）创建会话并跳转', async () => {

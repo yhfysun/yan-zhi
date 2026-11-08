@@ -78,11 +78,21 @@
       "pluginId": "shop-ops",
       "views": ["views/plugin/ShopConsole.vue", "views/plugin/shop/**"],
       "markers": ["ShopConsole"]
+    },
+    "learning": {
+      "label": "学习模式",
+      "icon": "Reading",
+      "desc": "英语闯关陪练 · 课程进度",
+      "route": "/learning",
+      "entry": "views/Learning.vue",
+      "pluginId": null,
+      "views": ["views/Learning.vue", "components/learning/LearnStage.vue"],
+      "markers": ["Learning"]
     }
   },
   "editionPresets": {
     "lite": ["office"],
-    "basic": ["office", "wf", "dev"],
-    "pro": ["office", "wf", "dev", "clip", "ops", "sec", "shop"]
+    "basic": ["office", "wf", "dev", "learning"],
+    "pro": ["office", "wf", "dev", "clip", "ops", "sec", "shop", "learning"]
   }
 }
