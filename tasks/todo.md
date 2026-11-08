@@ -3,10 +3,10 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：企业工作台第一阶段已完成；Task 1 / 2 / 3 / 4 已实现并通过验证，改动**尚未提交/推送**
+- 状态：Task 1 / 2 / 3 / 4 已实现、已验证、**已提交并推送**（`c65d9882` + `41f9dfd0` + `28927fe2` + `0c8929a5`）
 - 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：Task 1–3 改动都在工作区（具体文件以 `git status --short` 为准）
+- 工作区状态：本任务范围已干净；`PlatformDetail.vue` 修改与 `.claude/*` 删除为**并行会话在途改动**，勿动
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
@@ -39,11 +39,23 @@
 - [ ] Task 6：OIDC / 企业 SSO
 - [ ] Task 7：PostgreSQL repository 适配
 
-## 已推送提交
+## 已推送提交（Task 1-4）
 
-- `d1238dcb`：企业资源治理、额度、MCP、工作节点与远程运行时
-- `6c34512b`：企业管理端与成员团队工作台
-- `f9310276`：实施记录、交接方案和后续任务清单
+- `c65d9882`：feat(enterprise) — OAuth 闭环 / 容器工作区 / 端口预览 / 团队来源（Task 1-4 功能与测试）
+- `41f9dfd0`：style(admin) — 企业管理端视觉改版（含 --color-bg-secondary 未定义的根因修复）
+- `28927fe2`：docs(tasks) — Task 1-4 验证记录
+- `0c8929a5`：fix(enterprise) — 补 c65d9882 漏掉的 node-agent 容器接线与 team-origin 契约测试
+
+## 提交经验（本机必读）
+
+- 工作区与并行会话共存时，用**临时 index（GIT_INDEX_FILE + read-tree + update-index + write-tree + commit-tree + update-ref）**
+  精确构造提交，工作区与并行会话的主 index 均不受影响；`index.ts` 这类混入他人在途改动的文件
+  先构造"HEAD+我的改动"的中间版本 blob（`git hash-object -w --path`）再 update-index。
+- ★ 提交后必须 `git show --stat` 逐文件核对，**新文件漏 add 是真实发生过的事故**（0c8929a5 即补漏提交）。
+- ★ 并行会话可能在任意时刻推进 HEAD：本次操作间隙 learning 两个提交落地，导致首个 C1 的
+  index.ts 误用旧版本（learning 挂载被退回），已重建提交修复。提交前后的 HEAD 短哈希都要核对。
+- 提交完成后主 index 可能残留旧条目（`MM` 状态），需对**自己的文件**逐个 `git restore --staged`
+  同步到 HEAD，否则并行会话 `git add -A && git commit` 会把旧内容倒退回去。
 
 ## Task 1 验证记录（2026-11-08）
 
