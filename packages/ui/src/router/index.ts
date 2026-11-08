@@ -150,6 +150,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务' },
   },
   {
+    // 学习模式（docs/英语学习模式方案-2026-11-08.md）：词书闯关 + AI 陪练入口 + 错误本
+    path: '/learning',
+    name: 'learning',
+    component: () => import('../views/Learning.vue'),
+    meta: { title: '学习' },
+  },
+  {
     // 办公工作台（P2）：文件树 / 文档画布 / AI 右栏；入口在顶栏「工作台」。
     // 与 /chat 同属 office 模式（MODE_ROUTE_KEYS 已映射），切换不回聊天页布局。
     path: '/office',

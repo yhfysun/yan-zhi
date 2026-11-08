@@ -36,6 +36,13 @@ import {
 } from './services/experience.js';
 // 安全经验库的注入闸门：只把**人工已批准**的条目拼进安全智能体的提示词（2026-10-17）
 import { isSecExperienceAgent, buildSecExperiencePromptSection } from './services/sec-experience-gate.js';
+// 学习模式上下文注入（§3.6 第 1 层）：教学智能体会话开场追加学习档案摘要
+import { LEARNING_AGENT_ID } from './builtin-learning-agents.js';
+import { getLearningContext } from './learning/service.js';
+import { getSceneCard, renderScenePrompt } from './learning/curriculum.js';
+// 学习查询工具的用户态注入（§3.6 第 2 层）+ 错误本自动抽取（对话收尾钩子）
+import { setLearningToolUser } from './learning/tools.js';
+import { extractLearningErrorsFromTask } from './learning/extract.js';
 import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
@@ -5817,6 +5824,7 @@ async function executeTool(
         recipeResult = await BrowserRunRecipeTool.run(recipeArgs, api, { workspaceDir: task.workspaceDir });
       } else {
         setBrowserToolConversationId(task.conversationId);
+        setLearningToolUser(task.userId);
         setBrowserToolWorkspaceDir(task.workspaceDir || '');
         recipeResult = await new BrowserRunRecipeTool().execute(recipeArgs, {
           conversationId: task.conversationId,
@@ -6310,6 +6318,8 @@ async function executeTool(
     //     不需要逐个改 33 个工具的 execute 签名（那必然漏）。
     //   ★ 每次调用前都设置（含非 browser 工具）—— 保证不会残留上一个会话的值。
     setBrowserToolConversationId(task.conversationId);
+    // 学习查询工具的用户态同源透传（§3.6 第 2 层）：三个只读工具靠它知道查谁的数据
+    setLearningToolUser(task.userId);
     // 工作目录同源透传（2026-10-26）：Playwright 链路的「导出/下载」据此落进
     // <工作目录>/downloads/，模型才能用文件工具直接读到导出的 Excel。
     setBrowserToolWorkspaceDir(task.workspaceDir);
@@ -8207,6 +8217,10 @@ async function recordTaskProgress(
   } catch { /* 收尾留痕失败不影响任务状态上报 */ }
   // 经验提炼（自进化经验层）：成功挖步骤/事实，失败挖坑与规避。非阻塞，失败不影响收尾。
   void distillExperienceFromTask(task, outcome);
+  // 学习错误本自动抽取（§2.4）：教学会话正常完成时抽纠错入错误本（fire-and-forget，只挂 learning_coach）
+  if (outcome === 'completed') {
+    void extractLearningErrorsFromTask(task, summary);
+  }
 }
 
 /**
@@ -8590,6 +8604,31 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   if (agentId) {
     const agent = db.prepare('SELECT system_prompt, type, skill_ids, rule_ids_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     basePrompt = composeConversationBasePrompt(convMounts.systemPrompt, agent?.system_prompt);
+    // 学习模式上下文注入（docs/英语学习模式方案-2026-11-08.md §3.6 第 1 层）：
+    // 教学智能体的会话在合成基座提示词后追加学习档案摘要（CEFR/最近关卡/到期词/薄弱点/自定义词单）。
+    // 注入点选在服务端合成处而非前端快照 —— 所有入口（学习页/聊天页/桌宠菜单）都能拿到，且不被快照遮蔽。
+    if (agentId === LEARNING_AGENT_ID) {
+      try {
+        const learningCtx = getLearningContext(userId);
+        if (learningCtx) basePrompt += (basePrompt ? '\n\n' : '') + learningCtx;
+      } catch { /* 学习表未就绪/查询失败不阻塞主链路 */ }
+      // 场景卡注入（§2.2 场景任务卡）：会话 source_meta_json.learningScene 指定场景
+      try {
+        const convRow = opts?.conversationId
+          ? db.prepare('SELECT source_meta_json FROM conversation WHERE id = ?').get(opts.conversationId) as { source_meta_json?: string | null } | undefined
+          : undefined;
+        const sceneId = convRow?.source_meta_json
+          ? (JSON.parse(convRow.source_meta_json) as Record<string, unknown>)?.learningScene
+          : null;
+        if (typeof sceneId === 'string' && sceneId) {
+          const scene = getSceneCard(sceneId);
+          // 快照可能已带场景段（前端 useChat 的「## 当前场景」快照机制）——避免双份
+          if (scene && !basePrompt.includes('## 当前场景')) {
+            basePrompt += '\n\n' + renderScenePrompt(scene);
+          }
+        }
+      } catch { /* 场景缺失按无场景自由对话 */ }
+    }
     const isHarness = !agent?.type || agent.type === 'harness';
 
     // 工具描述（提示词模式才注入；原生 tools 模型走 schema）

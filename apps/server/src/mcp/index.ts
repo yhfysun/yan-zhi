@@ -8,6 +8,8 @@ import { resolveJwtUser } from '../auth.js';
 import { executeApiTool, isApiExecutableTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf } from './client-manager.js';
 import { db } from '../db.js';
+// 学习模式只读查询工具（§3.6 第 2 层）
+import { registerLearningTools } from '../learning/tools.js';
 
 const router = Router();
 
@@ -50,6 +52,8 @@ export function ensureToolsInitialized(): void {
   _toolsInitialized = true;
   const registry = getToolRegistry();
   registerManagementTools(registry, () => db, collectExtraDiscoverySources);
+  // 学习模式只读查询工具（§3.6 第 2 层）：只挂教学智能体（builtin_tool_ids 白名单），全 SELECT
+  registerLearningTools(registry);
 }
 
 interface JsonRpcRequest {

@@ -208,7 +208,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, VideoPlay,
+  Search, VideoCamera, SwitchButton, VideoPlay, Reading,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';
@@ -441,6 +441,7 @@ const moreItems = computed<HoverMenuItem[]>(() => [
     icon: MagicStick,
     children: [
       { key: 'agents', label: '智能体', icon: User, path: '/agents', desc: '创建与编辑智能体' },
+      { key: 'learning', label: '学习模式', icon: Reading, path: '/learning', desc: '单词闯关 · AI 英语陪练' },
       { key: 'skills', label: 'Skill', icon: Files, path: '/skills', desc: '技能商店与详情' },
       { key: 'distill', label: 'Skill 蒸馏', icon: MagicStick, path: '/distill', desc: '沉淀会话为技能' },
       { key: 'tools', label: '工具', icon: Tools, path: '/tools', desc: '工具库 · MCP · 远程商城' },

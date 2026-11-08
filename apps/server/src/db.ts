@@ -10,6 +10,8 @@ import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
 import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
 // 发布执行员（三层编排的执行层：平台创作者中心发布/归集/评论/读数的专职动手智能体）
 import { builtinPublishAgentDefs } from './builtin-publish-agent.js';
+// 英语学习陪练（学习模式：口语对话陪练 + 词书关卡 + SRS）—— 定义见 ./builtin-learning-agents.ts
+import { builtinLearningAgentDefs } from './builtin-learning-agents.js';
 // 费用账本的建表/读写 SQL（纯字符串，不 import db，便于单测用真 SQLite 跑一遍）
 import { CONVERSATION_USAGE_SCHEMA, USAGE_EVENT_SCHEMA } from './usage-ledger-sql.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
@@ -2445,6 +2447,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
   ...builtinDouyinAgentDefs,
   // 言智代言官（应用即工具元智能体：派发任务 / 弹执行窗口 / 录屏演示）—— 定义见 ./builtin-yanzhi-agent.ts
   ...builtinYanzhiAgentDefs,
+  // 英语学习陪练（学习模式方案 2026-11-08：对话陪练 + 词书关卡 + SRS 复习）—— 定义见 ./builtin-learning-agents.ts
+  ...builtinLearningAgentDefs,
   // 发布执行员（三层编排的执行层：平台页面专职动手）—— 定义见 ./builtin-publish-agent.ts
   // ★ 被代言官 / 小说推文助手按 sub_agent_ids 委派，发布队列 dispatch 指令也指名它
   ...builtinPublishAgentDefs,
@@ -2563,6 +2567,7 @@ const AGENT_MODE_BY_ID: Record<string, string> = {
   a_builtin_sec_web_agent: 'sec',
   a_builtin_sec_report_agent: 'sec',
   a_builtin_workflow_assistant: 'workflow',
+  a_builtin_learning_coach: 'office',
 };
 function mergeAgentMode(id: string, mode: string): void {
   const row = db.prepare('SELECT config_json FROM agent WHERE id = ?').get(id) as { config_json?: string | null } | undefined;
@@ -5215,6 +5220,109 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_dream_log_user ON memory_dream_log(user_id, started_at DESC)'); } catch {}
+
+// ===== 学习模式（docs/英语学习模式方案-2026-11-08.md §3.3）=====================
+// 7 张新表，不动存量表。SRS/关卡/出题的业务规则唯一实现在 learning/srs.ts（纯函数），
+// 读写编排唯一在 learning/service.ts —— 这里只放 schema，不写业务。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS learning_profile (
+    user_id TEXT PRIMARY KEY,
+    cefr TEXT,
+    goals TEXT,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS word_book (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,                          -- 词书归属（NULL=内置共享；自定义/导入为用户 id）
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'custom',   -- builtin | custom | downloaded
+    course TEXT DEFAULT '',
+    level TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS word_level (
+    user_id TEXT NOT NULL,
+    book_id TEXT NOT NULL,
+    level_no INTEGER NOT NULL,
+    stars INTEGER NOT NULL DEFAULT 0,      -- 0~3（保留最好成绩）
+    best_score INTEGER NOT NULL DEFAULT 0, -- 历史最高正确率 %
+    passed INTEGER NOT NULL DEFAULT 0,
+    cleared_at INTEGER,
+    PRIMARY KEY (user_id, book_id, level_no)
+  );
+
+  CREATE TABLE IF NOT EXISTS learning_word (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    book_id TEXT NOT NULL,
+    word TEXT NOT NULL,
+    phonetic TEXT,
+    gloss TEXT NOT NULL,
+    example TEXT,
+    box INTEGER NOT NULL DEFAULT 1,        -- Leitner 盒 1..5，规则见 learning/srs.ts
+    due_at INTEGER,                        -- 到期时间戳；NULL=未排程（视为已到期）
+    source_conv TEXT,                      -- 对话收集来源（对话里收词时记 convId）
+    ord INTEGER NOT NULL DEFAULT 0,        -- 词序（决定切关），custom 词书靠它保持顺序
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_learning_word_due ON learning_word(user_id, due_at);
+  CREATE INDEX IF NOT EXISTS idx_learning_word_book ON learning_word(user_id, book_id, ord);
+
+  CREATE TABLE IF NOT EXISTS learning_grammar_point (
+    user_id TEXT NOT NULL,
+    point_id TEXT NOT NULL,
+    mastery INTEGER NOT NULL DEFAULT 0,    -- 0~100 熟练度
+    last_drill_at INTEGER,
+    due_at INTEGER,
+    PRIMARY KEY (user_id, point_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS learning_error (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    wrong TEXT NOT NULL,
+    right TEXT NOT NULL,
+    reason TEXT,
+    grammar_point TEXT,                    -- 归因到语法点 id（learning/srs 同期目录 P1 落地）
+    source_conv TEXT,
+    box INTEGER NOT NULL DEFAULT 1,
+    due_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_learning_error_user ON learning_error(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS learning_reading (
+    user_id TEXT NOT NULL,
+    article_id TEXT NOT NULL,
+    para_done INTEGER NOT NULL DEFAULT 0,  -- 已读段落数
+    words_collected INTEGER NOT NULL DEFAULT 0,
+    last_read_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, article_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS learning_session (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'drill',    -- drill | scene | chat | minigame（P1 扩）
+    scene_id TEXT,                         -- drill: "bookId#levelNo"；scene: 场景卡 id
+    score INTEGER,                         -- 正确率/评分 %
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_learning_session_user ON learning_session(user_id, started_at DESC);
+`);
+
+// word_book 增量迁移：早期建表无 user_id（2026-11-08 测试抓到「A 的自定义词书 B 能看到」）——
+// 补列后按用户过滤；旧库已存在的行 user_id 为 NULL，视为共享目录（内置）不影响。
+try {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info('word_book')`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'user_id')) {
+    db.exec(`ALTER TABLE word_book ADD COLUMN user_id TEXT`);
+  }
+} catch { /* 迁移失败不阻塞启动 */ }
+
 
 // ===== 对话定时任务 =====
 db.exec(`
