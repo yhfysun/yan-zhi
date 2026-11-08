@@ -204,6 +204,11 @@
   完整多后端需要按 repository 逐路由异步化 + 方言化（已列入待办）。
   `pg@8.23.0` 已在 `apps/server/package.json`，无需新增依赖。
 
+- 已知边界（原"轻量壳不支持 SSO"）**已修复**：回调支持 popup 模式（postMessage(token)+自动
+  关闭 + CSP），`Login.vue` 弹窗接入并校验 event.origin=后端源，弹窗被拦时整页跳转兜底；
+  302 模式落点可用 `YZ_OIDC_POST_LOGIN_REDIRECT` 配置（只允许 http(s)，防开放重定向）。
+  轻量壳 file:// / Capacitor 现在都能走 SSO。
+
 ## 新会话启动方式
 
 1. 阅读 `tasks/todo.md`、`tasks/plan.md` 和 `docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`。
