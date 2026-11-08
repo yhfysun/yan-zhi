@@ -21,7 +21,7 @@ function unwrap<T>(r: unknown): T | null {
 
 // ── 数据 ──
 type Profile = { cefr: string | null; goals: string | null; streakDays?: number };
-type Book = { id: string; name: string; kind: string; course: string; wordCount: number; levelCount: number; maxLevelCleared: number };
+type Book = { id: string; name: string; kind: string; course: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
 type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
 type Question = { kind: 'choice' | 'spelling'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string };
 type ErrorRow = { id: string; wrong: string; right: string; reason: string | null };
@@ -448,7 +448,7 @@ onMounted(loadTtsPack);
             class="lp-book" :class="{ active: activeBook?.id === b.id }"
             @click="openBook(b)"
           >
-            <span class="lp-book-name">{{ b.name }}</span>
+            <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ b.dueCount }}</i></span>
             <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关 · 已通 {{ b.maxLevelCleared }} 关</span>
           </button>
           <p v-if="!books.length && !loading" class="lp-hint">暂无词书</p>
@@ -649,6 +649,7 @@ onMounted(loadTtsPack);
 .lp-book { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; color: #1f2329; }
 .lp-book.active { border-color: #3370ff; background: #f0f5ff; }
 .lp-book-name { font-size: 13px; font-weight: 600; }
+.lp-due-badge { font-style: normal; font-size: 10px; color: #e8590c; background: #fff4e6; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
 .lp-book-meta { font-size: 11px; color: #8f959e; }
 .lp-levels { margin-top: 12px; }
 .lp-levels h3 { font-size: 13px; margin: 0 0 8px; color: #4e5469; }

@@ -49,6 +49,8 @@ export type WordBookView = {
   wordCount: number;
   levelCount: number;
   maxLevelCleared: number;
+  /** 该词书当前到期词数（>0 时关卡地图亮复习角标，对标 Duolingo 金色节点衰减提醒） */
+  dueCount: number;
 };
 
 /** 内置词书登记（幂等）：词表来自内容包不进库，word_book 只存一行目录（user_id NULL=共享） */
@@ -77,11 +79,15 @@ export function listWordBooks(userId: string): WordBookView[] {
     const wc = r.kind === 'custom'
       ? (db.prepare('SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ?').get(userId, r.id) as { c: number }).c
       : (BUILTIN_WORDBOOKS.find((b) => b.id === r.id)?.words.length ?? 0);
+    const due = db.prepare(
+      'SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ? AND (due_at IS NULL OR due_at <= ?)',
+    ).get(userId, r.id, Date.now()) as { c: number };
     return {
       id: r.id, name: r.name, kind: r.kind as WordBookView['kind'],
       course: r.course, level: r.level,
       wordCount: wc, levelCount: levelCountFor(wc),
       maxLevelCleared: maxClearedLevel(userId, r.id),
+      dueCount: due.c,
     };
   });
 }
