@@ -261,7 +261,7 @@
           <div class="live-voice-row">
             <span class="live-hint">语速</span>
             <el-slider
-              :model-value="ttsRate"
+              v-model="ttsRate"
               size="small"
               class="live-rate"
               :min="-10"
