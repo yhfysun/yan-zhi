@@ -8,6 +8,7 @@
     "dev": "node scripts/dev.cjs",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node scripts/fix-esm-extensions.cjs && node scripts/copy-plugin-assets.cjs",
     "start": "node dist/apps/server/src/index.js",
+    "enterprise:node": "node scripts/enterprise-node-agent.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "node ./scripts/fix-sqlite-electron.cjs || true"

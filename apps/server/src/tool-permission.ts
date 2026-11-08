@@ -160,6 +160,10 @@ const WRITE_TOOLS = new Set([
   'api_page_asset_activate', 'api_page_asset_archive', 'api_page_asset_rollback',
   'api_tool_install',
   'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
+  // 企业工作台：远程命令、云工作区和 MCP 工具调用都可能有外部副作用
+  'api_enterprise_mcp_call',
+  'api_enterprise_runtime_task_create',
+  'api_enterprise_workspace_create',
   'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_install',
   // —— 媒体生成/加工类：**明确放行**（用户 2026-09-29 决策：「那就放行啊」）——
   //

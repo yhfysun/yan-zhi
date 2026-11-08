@@ -13,9 +13,24 @@ import {
   ROOT_ORG_ID, getUserDetail, getUserPermissions, getAuthMode,
 } from '../rbac.js';
 import { ensureAgensPlatform } from '../agens-platform/service.js';
+import { auditRequest } from '../enterprise/audit.js';
 
 const router = Router();
 router.use(authMiddleware);
+router.use((req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) { next(); return; }
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return;
+    try {
+      auditRequest(req, `${req.method} /api/admin${req.path}`, {
+        resourceType: req.path.split('/').filter(Boolean)[0] || undefined,
+        resourceId: req.params?.id || undefined,
+        after: req.method === 'DELETE' ? null : req.body,
+      });
+    } catch { /* 审计失败不影响主流程 */ }
+  });
+  next();
+});
 
 function requirePerm(permissionId: string) {
   return (req: Request, res: Response, next: () => void) => {

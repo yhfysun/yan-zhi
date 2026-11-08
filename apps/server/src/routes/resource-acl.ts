@@ -21,6 +21,9 @@ const SHARE_PERM: Record<string, string> = {
   tool: 'share.tool.publish',
   platform: 'share.platform.publish',
   plugin: 'admin.permission.manage',
+  rule: 'share.rule.publish',
+  mcp: 'share.mcp.publish',
+  design: 'share.design.publish',
 };
 
 function canManageAcl(req: Request, type: string, id: string): boolean {
@@ -48,6 +51,9 @@ router.get('/catalog', (req: Request, res: Response) => {
       skill: pick('SELECT id, name FROM skill ORDER BY created_at DESC'),
       tool: pick('SELECT id, name FROM custom_tool ORDER BY created_at DESC'),
       plugin: pick("SELECT id, json_extract(manifest, '$.name') AS name, json_extract(manifest, '$.category') AS category FROM plugin WHERE state = 'enabled' ORDER BY id"),
+      rule: pick('SELECT id, name, scope AS category FROM team_rule WHERE enabled = 1 ORDER BY priority, name'),
+      mcp: pick("SELECT id, name, credential_mode AS category FROM mcp_connector WHERE enabled = 1 ORDER BY name"),
+      design: pick("SELECT id, name, kind AS category FROM design_resource WHERE enabled = 1 ORDER BY kind, name"),
     },
   });
 });

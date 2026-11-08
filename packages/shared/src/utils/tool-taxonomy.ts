@@ -40,6 +40,8 @@ export const TOOL_CATEGORIES = [
   'system', 'network', 'browser',
   // 编排与交互
   'orchestrate', 'interaction', 'task', 'content-gen', 'discovery', 'page-asset',
+  // 企业工作台
+  'enterprise',
 ] as const;
 
 export type ToolCategory = (typeof TOOL_CATEGORIES)[number];
@@ -333,6 +335,16 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_peer_ping: 'peer',
   api_chat_send: 'peer',
   api_chat_poll: 'peer',
+  // ═══ 企业工作台 ═══
+  api_enterprise_resources: 'enterprise',
+  api_enterprise_mcp_connectors: 'enterprise',
+  api_enterprise_design_resources: 'enterprise',
+  api_enterprise_mcp_tools: 'enterprise',
+  api_enterprise_mcp_call: 'enterprise',
+  api_enterprise_runtime_nodes: 'enterprise',
+  api_enterprise_runtime_task_create: 'enterprise',
+  api_enterprise_runtime_task_status: 'enterprise',
+  api_enterprise_workspace_create: 'enterprise',
 
   // ═══ IM 连接器 ═══
   api_im_connector_list: 'im',

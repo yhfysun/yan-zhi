@@ -73,6 +73,16 @@ import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity,
 import { listEdgeVoices, edgeSpeak, pickEdgeVoiceForRole, defaultEdgeVoice, type EdgeVoice } from './edge-tts.js';
 import { localSpeak, pcmToWav, parseLocalVoice, pickSpeakerForRole, resolveSherpaLib } from './sherpa-tts.js';
 import { listTtsPacks } from '../services/tts-packs.js';
+import { listTeamResourceCatalog } from '../enterprise/resources.js';
+import { callMcpToolDirect, listMcpConnectors, listMcpTools } from '../enterprise/mcp-hub.js';
+import {
+  createRuntimeTask,
+  createWorkspace,
+  getRuntimeTask,
+  listRuntimeEvents,
+  listRuntimeNodes,
+} from '../enterprise/runtime.js';
+import { listDesignResources } from '../enterprise/design-resources.js';
 
 /**
  * 找第一个已安装的本地语音包（用于本地合成）。
@@ -428,6 +438,10 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_verification_code_latest', 'api_verification_code_list',
   'api_file_list', 'api_file_set_category',
   'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
+  'api_enterprise_resources', 'api_enterprise_mcp_connectors', 'api_enterprise_mcp_tools',
+  'api_enterprise_design_resources',
+  'api_enterprise_mcp_call', 'api_enterprise_runtime_nodes', 'api_enterprise_runtime_task_create',
+  'api_enterprise_runtime_task_status', 'api_enterprise_workspace_create',
   'api_im_connector_list', 'api_im_connector_create', 'api_im_connector_update', 'api_im_connector_delete', 'api_im_send',
   'api_im_connector_test', 'api_im_status', 'api_im_send_message',
   'api_im_contact_search', 'api_im_chat_list',
@@ -4808,6 +4822,78 @@ export async function executeApiTool(
         }));
       case 'api_chat_poll':
         return ok(pollPeerMessages(str(args, 'peerId'), num(args, 'since', 0), num(args, 'limit', 100)));
+
+      // 企业工作台：团队资源、集中式 MCP、工作节点与云工作区
+      case 'api_enterprise_resources':
+        return ok(listTeamResourceCatalog(requireUser(userId)));
+      case 'api_enterprise_mcp_connectors':
+        return ok(listMcpConnectors(requireUser(userId)));
+      case 'api_enterprise_design_resources':
+        return ok(listDesignResources({
+          userId: requireUser(userId),
+          kind: str(args, 'kind') || undefined,
+        }));
+      case 'api_enterprise_mcp_tools': {
+        const uid = requireUser(userId);
+        const connectorId = str(args, 'connectorId');
+        if (!listMcpConnectors(uid).some((c) => c.id === connectorId)) {
+          return fail('MCP 连接不存在或无权使用');
+        }
+        return ok(listMcpTools(connectorId).filter((t) => t.enabled));
+      }
+      case 'api_enterprise_mcp_call': {
+        const uid = requireUser(userId);
+        try {
+          return ok(await callMcpToolDirect({
+            connectorId: str(args, 'connectorId'),
+            toolName: str(args, 'toolName'),
+            args: obj(args, 'arguments') as Record<string, unknown>,
+            userId: uid,
+            taskId: str(args, 'taskId') || undefined,
+          }));
+        } catch (e: any) {
+          return fail(e?.message || String(e));
+        }
+      }
+      case 'api_enterprise_runtime_nodes':
+        return ok(listRuntimeNodes(requireUser(userId)));
+      case 'api_enterprise_runtime_task_create': {
+        const uid = requireUser(userId);
+        try {
+          return ok(createRuntimeTask(uid, {
+            nodeId: str(args, 'nodeId'),
+            kind: 'command',
+            payload: {
+              command: str(args, 'command'),
+              cwd: str(args, 'cwd') || undefined,
+              timeoutMs: num(args, 'timeoutMs', 30 * 60_000),
+            },
+          }));
+        } catch (e: any) {
+          return fail(e?.message || String(e));
+        }
+      }
+      case 'api_enterprise_runtime_task_status': {
+        const uid = requireUser(userId);
+        const task = getRuntimeTask(str(args, 'taskId'), uid);
+        if (!task) return fail('远程任务不存在或无权访问');
+        return ok({
+          ...task,
+          events: args.includeEvents === false ? undefined : listRuntimeEvents(task.id, 0, 200),
+        });
+      }
+      case 'api_enterprise_workspace_create': {
+        const uid = requireUser(userId);
+        try {
+          return ok(createWorkspace(uid, {
+            nodeId: str(args, 'nodeId'),
+            name: str(args, 'name'),
+            ttlMinutes: num(args, 'ttlMinutes', 120),
+          }));
+        } catch (e: any) {
+          return fail(e?.message || String(e));
+        }
+      }
 
       // IM
       case 'api_im_connector_list':

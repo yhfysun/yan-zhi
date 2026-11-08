@@ -7,7 +7,7 @@
  */
 import { db } from '../db.js';
 
-export const ACL_TYPES = ['agent', 'model', 'skill', 'tool', 'platform', 'plugin'] as const;
+export const ACL_TYPES = ['agent', 'model', 'skill', 'tool', 'platform', 'plugin', 'rule', 'mcp', 'design'] as const;
 export type AclType = (typeof ACL_TYPES)[number];
 
 const RESOURCE_TABLE: Record<AclType, string> = {
@@ -17,6 +17,21 @@ const RESOURCE_TABLE: Record<AclType, string> = {
   tool: 'custom_tool',
   platform: 'platform',
   plugin: 'plugin',
+  rule: 'team_rule',
+  mcp: 'mcp_connector',
+  design: 'design_resource',
+};
+
+const RESOURCE_OWNER_COL: Record<AclType, string> = {
+  agent: 'user_id',
+  model: 'user_id',
+  skill: 'user_id',
+  tool: 'user_id',
+  platform: 'user_id',
+  plugin: 'user_id',
+  rule: 'owner_user_id',
+  mcp: 'owner_user_id',
+  design: 'owner_user_id',
 };
 
 export function isAclType(t: string): t is AclType {
@@ -95,7 +110,7 @@ export function agentDependencyGrants(agentId: string): Array<{ type: AclType; i
     if (seenAgent.has(aid)) return;
     seenAgent.add(aid);
     const a = db.prepare(
-      'SELECT platform_id, model_id, custom_tool_ids, skill_ids, sub_agent_ids, model_pools_json FROM agent WHERE id = ?',
+      'SELECT platform_id, model_id, custom_tool_ids, skill_ids, sub_agent_ids, rule_ids_json, model_pools_json FROM agent WHERE id = ?',
     ).get(aid) as any;
     if (!a) return;
     const add = (type: AclType, id: unknown): void => {
@@ -125,6 +140,7 @@ export function agentDependencyGrants(agentId: string): Array<{ type: AclType; i
     } catch { /* 候选池损坏 → 忽略该部分 */ }
     for (const t of parseArr(a.custom_tool_ids)) add('tool', t);
     for (const sk of parseArr(a.skill_ids)) add('skill', sk);
+    for (const rid of parseArr(a.rule_ids_json)) add('rule', rid);
     for (const sid of parseArr(a.sub_agent_ids)) { add('agent', sid); walk(sid); }
   };
   walk(agentId);
@@ -152,6 +168,7 @@ export function aclUsersOf(type: AclType, id: string): Array<{ id: string; usern
 
 /** 资源 owner（用于鉴权"只有 owner/管理员能改名单"） */
 export function resourceOwner(type: AclType, id: string): string | null {
-  const row = db.prepare(`SELECT user_id AS uid FROM "${RESOURCE_TABLE[type]}" WHERE id = ?`).get(id) as any;
+  const col = RESOURCE_OWNER_COL[type];
+  const row = db.prepare(`SELECT ${col} AS uid FROM "${RESOURCE_TABLE[type]}" WHERE id = ?`).get(id) as any;
   return row?.uid ?? null;
 }

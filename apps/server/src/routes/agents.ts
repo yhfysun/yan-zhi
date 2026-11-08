@@ -10,6 +10,7 @@ import { userHasPermission } from '../rbac.js';
 import { db, resetBuiltinAgent } from '../db.js';
 import { DEFAULT_AGENT_PARAMS } from '../constants.js';
 import { validateModelPools } from '../services/model-pools.js';
+import '../enterprise/schema.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -57,8 +58,8 @@ router.post('/', (req: Request, res: Response) => {
   const id = b.id || uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, knowledge_base_ids, model_pools_json, category, is_public, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, knowledge_base_ids, model_pools_json, category, is_public, version, rule_ids_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id, userId,
     String(b.name).trim(),
@@ -97,6 +98,7 @@ router.post('/', (req: Request, res: Response) => {
     b.category || '',
     b.isPublic ? 1 : 0,
     b.version ?? 1,
+    JSON.stringify(b.ruleIds || []),
     now, now,
   );
   const row = db.prepare('SELECT * FROM agent WHERE id = ?').get(id);
@@ -127,7 +129,7 @@ router.patch('/:id', (req: Request, res: Response) => {
     workflow: 'workflow_json', inputsSchema: 'inputs_schema_json', config: 'config_json',
     builtinToolIds: 'builtin_tool_ids', customToolIds: 'custom_tool_ids', mcpToolMounts: 'mcp_tool_mounts',
     skillIds: 'skill_ids', subAgentIds: 'sub_agent_ids', ontologyIds: 'ontology_ids',
-    knowledgeBaseIds: 'knowledge_base_ids',
+    knowledgeBaseIds: 'knowledge_base_ids', ruleIds: 'rule_ids_json',
   };
   const strMap2: Record<string, string> = {
     category: 'category',

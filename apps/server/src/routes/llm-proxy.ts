@@ -25,9 +25,40 @@ import {
   toDashscopeSize,
   extractDashscopeImageUrl,
 } from '../mcp/api-tool-executor.js';
+import { quotaGuardMessage } from '../enterprise/quota.js';
 
 const router = Router();
 router.use(authMiddleware);
+
+/**
+ * 团队周期额度闸：只拦会产生模型费用的 POST 调用。
+ * 模型列表、探测配置等读接口不受影响；本地单用户没有额度策略时直接放行。
+ */
+const BILLED_MODEL_PATHS = new Set([
+  '/chat/completions',
+  '/messages',
+  '/responses',
+  '/embeddings',
+  '/images/generations',
+  '/images/edits',
+  '/videos',
+]);
+router.use((req: Request, res: ExpressResponse, next: () => void) => {
+  if (req.method !== 'POST' || !BILLED_MODEL_PATHS.has(req.path)) {
+    next();
+    return;
+  }
+  try {
+    const msg = quotaGuardMessage(req.user!.userId);
+    if (msg) {
+      res.status(402).json({ error: msg, code: 'QUOTA_EXCEEDED' });
+      return;
+    }
+  } catch {
+    /* 额度服务异常不阻断模型调用 */
+  }
+  next();
+});
 
 /**
  * ★ probe 记账（2026-10-18）：非流式转发成功后，从响应体里抠 usage 记进账本。

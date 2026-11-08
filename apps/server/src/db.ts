@@ -1038,6 +1038,7 @@ try { db.exec('ALTER TABLE model ADD COLUMN visible INTEGER NOT NULL DEFAULT 1')
 //   读取路径已完全不走它（见 services/model-pools.ts 的 readAgentPlatformPools）。
 // 注意：内置 agent seed 的 UPDATE 清单**不得**加入 model_pools_json 列 —— 那会把用户配的池冲掉。
 try { db.exec('ALTER TABLE agent ADD COLUMN model_pools_json TEXT'); } catch {}
+try { db.exec("ALTER TABLE agent ADD COLUMN rule_ids_json TEXT DEFAULT '[]'"); } catch {}
 try { db.exec('ALTER TABLE platform ADD COLUMN model_pools_json TEXT'); } catch {}
 
 // ===== 客户端发现与聊天 =====

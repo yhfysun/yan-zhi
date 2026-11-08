@@ -41,6 +41,7 @@ import {
   type CostBudgetConfig,
   type CostNoticeState,
 } from '@yan-zhi/shared';
+import { recordQuotaUsage } from '../enterprise/quota.js';
 
 /** 明细里的调用来源（与方案 §3.1 口径一致） */
 export type UsageSource = 'main' | 'sub_agent' | 'summary' | 'judge' | 'probe';
@@ -229,6 +230,17 @@ export function recordUsage(input: RecordUsageInput): { costCny: number; unprice
     unpriced ? 1 : 0,
     now,
   );
+
+  // 企业周期额度是旁路账本：失败不能影响模型调用与主费用账本。
+  try {
+    recordQuotaUsage(input.userId, costCny, {
+      type: 'usage_event',
+      id,
+      note: `${input.source}:${input.modelId || input.platformId || 'unknown'}`,
+    });
+  } catch {
+    /* 额度旁路失败不影响主流程 */
+  }
 
   return { costCny, unpriced };
 }

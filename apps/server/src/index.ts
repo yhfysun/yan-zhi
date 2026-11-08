@@ -106,6 +106,9 @@ import llmLogsRoutes from './routes/llm-logs.js';
 // 模型候选池三层配置（model-candidate-pools）：global/platform/agent 读写集中一处
 import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
+import { enterpriseAdminRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
+import { startRuntimeJanitor } from './enterprise/runtime.js';
+import { ensureEnterpriseSchema } from './enterprise/schema.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 import { desktopCapabilityManifest, desktopCapabilityModule } from './plugins/desktop-capability.js';
@@ -147,6 +150,9 @@ import { createLogger, configureLogger } from './services/logger.js';
 //   ★ 失败不影响业务（configureLogger 内部已 try/catch 并降级为仅控制台）。
 configureLogger(path.join(dataDir, 'logs'));
 const logger = createLogger('index');
+
+// 企业工作台表结构：必须显式初始化，模块导入不得有建表副作用（否则 mock DB 的既有测试会在 import 阶段崩）。
+ensureEnterpriseSchema();
 
 setPlatformAdapter(nodeAdapter);
 
@@ -252,6 +258,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 // 管理后台：用户/组织/角色/权限（路由内部自带 admin.* 权限校验）
+app.use('/api/admin/enterprise', enterpriseAdminRouter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/resource-acl', resourceAclRoutes);
 // 授权门禁：必须在**所有业务路由之前**挂载，否则后注册的路由不受保护。
@@ -273,6 +280,9 @@ app.use('/api/platforms', platformRoutes);
 app.use('/api/model-pools', modelPoolRoutes);
 // 费用预算配置 + 会话账单（2026-10-17 任务费用核算与阈值）
 app.use('/api/cost-budget', costBudgetRoutes);
+// 企业团队资源、周期额度、集中式 MCP、工作节点与云工作区
+app.use('/api/enterprise', enterpriseUserRouter);
+app.use('/api/runtime/v1', enterpriseRuntimeRouter);
 app.use('/api/agents', agentRoutes);
 // 场景（模式）配置：动态创建「模式」= 智能体 + skill 关键词 + 场景提示词（2026-10-12）
 app.use('/api/scene-configs', sceneConfigRoutes);
@@ -894,6 +904,13 @@ startScheduledTaskScheduler();
 
 // 启动记忆整理（Dreaming）调度器：每日按配置时刻后台整理记忆
 startMemoryDreamingScheduler();
+
+// 企业工作节点巡检：离线状态回收 + 过期工作区停止
+try {
+  startRuntimeJanitor();
+} catch (e) {
+  logger.warn('[runtime] 节点巡检启动失败:', e);
+}
 
 // 启动钉钉 Stream 客户端：为所有启用的 dingtalk 连接器恢复长连接
 try {

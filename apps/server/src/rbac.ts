@@ -77,6 +77,10 @@ export const PERMISSION_TREE: PermissionDef[] = [
   { id: 'admin.org.manage', name: '组织管理', parent: 'admin' },
   { id: 'admin.role.manage', name: '角色管理', parent: 'admin' },
   { id: 'admin.permission.manage', name: '权限管理', parent: 'admin' },
+  { id: 'admin.enterprise.manage', name: '团队资源与规则', parent: 'admin' },
+  { id: 'admin.quota.manage', name: '额度与计费', parent: 'admin' },
+  { id: 'admin.audit.read', name: '管理审计', parent: 'admin' },
+  { id: 'admin.runtime.manage', name: '工作节点与云工作区', parent: 'admin' },
   { id: 'menu', name: '功能菜单', parent: null },
   // menu.* 后缀 = 模式 key（MODE_DEFS）：office/wf/dev/clip/ops/sec/shop，
   // 前端据此把权限映射为"模式放行清单"（stores/auth → setPermittedModes）。
@@ -99,6 +103,9 @@ export const PERMISSION_TREE: PermissionDef[] = [
   { id: 'share.model.publish', name: '共享单个模型', parent: 'share' },
   { id: 'share.skill.publish', name: '共享 Skill', parent: 'share' },
   { id: 'share.tool.publish', name: '共享自定义工具', parent: 'share' },
+  { id: 'share.rule.publish', name: '共享团队规则', parent: 'share' },
+  { id: 'share.mcp.publish', name: '共享 MCP 连接', parent: 'share' },
+  { id: 'share.design.publish', name: '共享设计资源', parent: 'share' },
 ];
 
 export const ROOT_ORG_ID = 'org_root';

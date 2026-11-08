@@ -17,6 +17,8 @@ import { humanBytes } from '@yan-zhi/shared';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
+import { listRulePromptForAgent } from './enterprise/resources.js';
+import { listDesignResources } from './enterprise/design-resources.js';
 import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
@@ -8586,7 +8588,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   //   （实测开发模式新提示词完全没生效）。合成规则见 composeConversationBasePrompt。
   let basePrompt = '';
   if (agentId) {
-    const agent = db.prepare('SELECT system_prompt, type, skill_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    const agent = db.prepare('SELECT system_prompt, type, skill_ids, rule_ids_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     basePrompt = composeConversationBasePrompt(convMounts.systemPrompt, agent?.system_prompt);
     const isHarness = !agent?.type || agent.type === 'harness';
 
@@ -8920,6 +8922,21 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     } catch { /* 规则读取失败不影响任务（缺文件是常态） */ }
   }
 
+  // 团队规则：系统强制规则 + 专家绑定规则。项目规则在前，团队规则在后，
+  // 冲突时由更靠后的团队规则覆盖默认行为。
+  try {
+    const teamRules = listRulePromptForAgent(agentId, userId);
+    if (teamRules.length) {
+      parts.push([
+        '---',
+        '## 团队规则（由管理员或专家绑定，优先于默认行为）',
+        ...teamRules.map((r) => `### ${r.name}\n来源：${r.source}\n${r.content}`),
+      ].join('\n'));
+    }
+  } catch {
+    /* 规则读取失败不影响任务 */
+  }
+
   // ★★★ 开发模式（/code，绑定代码编写助手）专属：工程记忆的读写约定。
   //
   // 为什么单独加（2026-09-29，对齐 CodeBuddy 的"项目长期记忆"）：
@@ -8940,6 +8957,21 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       '- 已知坑：踩过的坑与规避方式（**这条最有价值，务必写**）',
       '不要写：本次改了哪些文件的流水账（那属于任务计划与交付报告，不属于工程记忆）。',
     ].join('\n'));
+  }
+
+  // 团队设计资源：设计助手在开工前先看到可用模板/风格/设计系统。
+  if (agentId === 'a_builtin_design_agent') {
+    try {
+      const design = listDesignResources({ userId }).slice(0, 30);
+      if (design.length) {
+        parts.push([
+          '---',
+          '## 团队设计资源',
+          '以下资源来自团队设计库。优先复用团队已有视觉规范；需要细节时按名称向用户确认或调用团队资源工具。',
+          ...design.map((r) => `- [${r.kind}] **${r.name}**：${r.description || ''}${r.tags?.length ? `（${r.tags.join(' / ')}）` : ''}`),
+        ].join('\n'));
+      }
+    } catch { /* 设计资源读取失败不影响任务 */ }
   }
 
   // ★★★ 仓库地图（repo map）常驻注入（2026-10-18，开发模式专项）：架构师 + 探索者 + 实现者。
