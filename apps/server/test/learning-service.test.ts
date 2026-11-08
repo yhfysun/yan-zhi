@@ -6,7 +6,7 @@ import { db } from '../src/db';
 import {
   createCustomBook, listWordBooks, getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
-  addError, listErrors, getLearningContext,
+  addError, listErrors, getLearningContext, getCourses,
 } from '../src/learning/service';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import type { DrillQuestion } from '../src/learning/srs';
@@ -120,6 +120,21 @@ describe('到期复习（跨词书）', () => {
     expect(after.box).toBeGreaterThan(row!.box);
     const wlAfter = (db.prepare('SELECT COUNT(*) AS c FROM word_level WHERE user_id = ?').get(uid) as { c: number }).c;
     expect(wlAfter).toBe(wlBefore);
+  });
+});
+
+describe('课程学段总览', () => {
+  it('★ 11 门课按学段返回，进度随闯关推进', () => {
+    const groups = getCourses(uid);
+    expect(groups[0].stage).toBe('启蒙');
+    const all = groups.flatMap((g) => g.courses);
+    expect(all.length).toBe(11);
+    const cet4 = all.find((c) => c.name === '大学英语四级')!;
+    expect(cet4.totalLevels).toBe(2);
+    const clearedBefore = cet4.clearedLevels;
+    // 闯过四级第 1 关 → 进度 > 0（uid 在前文已通关 CET4 第 1 关，这里验一致性）
+    expect(clearedBefore).toBeGreaterThanOrEqual(1);
+    expect(cet4.progressPct).toBe(Math.round((cet4.clearedLevels / cet4.totalLevels) * 100));
   });
 });
 

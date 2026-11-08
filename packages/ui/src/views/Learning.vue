@@ -22,6 +22,8 @@ function unwrap<T>(r: unknown): T | null {
 // ── 数据 ──
 type Profile = { cefr: string | null; goals: string | null; streakDays?: number };
 type Book = { id: string; name: string; kind: string; course: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
+type CourseView = { id: string; name: string; stage: string; bookId: string; bookName: string; wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number; dueCount: number; progressPct: number };
+type CourseGroup = { stage: string; courses: CourseView[] };
 type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
 type Question = { kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string; audio?: string };
 type ErrorRow = { id: string; wrong: string; right: string; reason: string | null };
@@ -190,6 +192,7 @@ async function loadAll() {
     if (pv) profile.value = pv;
     if (bv) books.value = bv;
     if (ev) errors.value = ev;
+    await loadCourses();
     await loadDueCount();
   } catch { /* 后端未就绪时静默，页面仍可渲染骨架 */ }
   loading.value = false;
@@ -242,6 +245,17 @@ async function openBook(book: Book) {
   const r = await api.get<{ data: Level[] }>(`/learning/books/${book.id}/levels`);
   levels.value = unwrap<Level[]>(r) || [];
 }
+
+// ── 课程地图（P1-D）：学段分组，点课程直接选书闯关 ──
+const courses = ref<CourseGroup[]>([]);
+async function loadCourses() {
+  const r = await api.get<{ data: CourseGroup[] }>('/learning/courses');
+  courses.value = unwrap<CourseGroup[]>(r) || [];
+}
+function openCourse(c: CourseView) {
+  void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount });
+}
+const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom'));
 
 async function startDrill(levelNo: number) {
   if (!activeBook.value) return;
@@ -444,16 +458,37 @@ onMounted(loadTtsPack);
           <p class="lp-hint">AI 收词需已配置可用模型；词书包与内置同格式（方案 §2.3 词书来源三档）</p>
         </div>
 
-        <div class="lp-books">
-          <button
-            v-for="b in books" :key="b.id"
-            class="lp-book" :class="{ active: activeBook?.id === b.id }"
-            @click="openBook(b)"
-          >
-            <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ b.dueCount }}</i></span>
-            <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关 · 已通 {{ b.maxLevelCleared }} 关</span>
-          </button>
-          <p v-if="!books.length && !loading" class="lp-hint">暂无词书</p>
+        <div class="lp-courses">
+          <div v-for="grp in courses" :key="grp.stage" class="lp-stage">
+            <h4 class="lp-stage-name">{{ grp.stage }}</h4>
+            <button
+              v-for="c in grp.courses" :key="c.id"
+              class="lp-course" :class="{ active: activeBook?.id === c.bookId, done: c.progressPct === 100 }"
+              @click="openCourse(c)"
+            >
+              <span class="lp-course-row">
+                <span class="lp-course-name">{{ c.name }}<i v-if="c.dueCount > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ c.dueCount }}</i></span>
+                <span class="lp-course-pct">{{ c.progressPct }}%</span>
+              </span>
+              <span class="lp-course-bar"><span class="lp-course-fill" :style="{ width: c.progressPct + '%' }"></span></span>
+              <span class="lp-course-meta">{{ c.clearedLevels }}/{{ c.totalLevels }} 关 · {{ c.wordCount }} 词</span>
+            </button>
+          </div>
+          <p v-if="!courses.length && !loading" class="lp-hint">课程加载中…</p>
+        </div>
+
+        <div v-if="customBooks.length" class="lp-custom-books">
+          <h3 class="lp-stage-name">我的词单</h3>
+          <div class="lp-books">
+            <button
+              v-for="b in customBooks" :key="b.id"
+              class="lp-book" :class="{ active: activeBook?.id === b.id }"
+              @click="openBook(b)"
+            >
+              <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ b.dueCount }}</i></span>
+              <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关 · 已通 {{ b.maxLevelCleared }} 关</span>
+            </button>
+          </div>
         </div>
 
         <div v-if="activeBook" class="lp-levels">
@@ -724,4 +759,20 @@ onMounted(loadTtsPack);
 .lp-para-zh { font-size: 12px; color: #8f959e; margin: 2px 0 0; }
 .lp-transcript { font-size: 13px; background: #f6f8fc; border-radius: 6px; padding: 8px 10px; }
 .lp-primary.rec { background: #d4380d; border-color: #d4380d; }
+.lp-courses { display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow: auto; }
+.lp-stage-name { font-size: 12px; color: #8f959e; margin: 0 0 6px; letter-spacing: 2px; }
+.lp-stage { display: flex; flex-direction: column; }
+.lp-course { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; color: #1f2329; }
+.lp-course:hover { border-color: #3370ff; }
+.lp-course.active { border-color: #3370ff; background: #f0f5ff; }
+.lp-course.done { background: #f0fff4; border-color: #b7ebc9; }
+.lp-course-row { display: flex; justify-content: space-between; align-items: center; }
+.lp-course-name { font-size: 13px; font-weight: 600; }
+.lp-course-pct { font-size: 11px; color: #3370ff; font-weight: 600; }
+.lp-course-bar { height: 5px; border-radius: 3px; background: #eef0f3; overflow: hidden; }
+.lp-course-fill { display: block; height: 100%; background: linear-gradient(90deg, #3370ff, #69b1ff); border-radius: 3px; }
+.lp-course-meta { font-size: 11px; color: #8f959e; }
+.lp-custom-books { margin-top: 12px; }
+.lp-custom-books .lp-books { display: flex; flex-direction: column; gap: 6px; }
+.lp-custom-books .lp-book { display: flex; flex-direction: column; gap: 2px; }
 </style>

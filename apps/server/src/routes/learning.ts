@@ -9,7 +9,7 @@ import {
   getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   listErrors, addError,
-  getLearningContext,
+  getLearningContext, getCourses,
 } from '../learning/service.js';
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
@@ -196,6 +196,12 @@ router.post('/books/import', async (req, res) => {
     // 标记来源：course/level 透传（建书走 custom 类型，词全量落库——与内置包词表不进库不同）
     res.json({ data: { id, name, wordCount: words.length } });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// GET /api/learning/courses —— 课程学段总览（启蒙→初中→高中→大学→出国，各课进度）
+router.get('/courses', (req, res) => {
+  try { res.json({ data: getCourses(userIdOf(req)) }); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 // GET /api/learning/scenes —— 场景卡墙（12 张，含建议难度）

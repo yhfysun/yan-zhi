@@ -183,3 +183,32 @@ GRAMMAR_POINTS.push(
   { id: 'g_there_will', title: 'there be 的将来与情态', cefr: 'A2', group: '句型', rule: 'there will be / there must be——there 后接 be 原形，不接 have。', examples: [{ en: 'There will be a storm tonight.', zh: '今晚会有暴风雨。' }], pairs: [{ wrong: 'There will have a meeting.', right: 'There will be a meeting.', why: '“将有”是 there will be，不是 there will have。' }] },
   { id: 'g_adv_adj', title: '形容词 vs 副词', cefr: 'A2', group: '句型', rule: '修饰名词用形容词，修饰动词用副词（-ly）；感官动词（look/sound/feel）后用形容词。', examples: [{ en: 'She sings beautifully. / The soup tastes good.', zh: '她唱得美（副词）；汤尝起来好（形容词）。' }], pairs: [{ wrong: 'The music sounds sweetly.', right: 'The music sounds sweet.', why: 'sound 是感官动词，后接形容词。' }] },
 );
+
+// ── 课程学段目录（用户拍板：字母音标 → 初中 → 高中 → 四六级 → 雅思托福） ──────────
+// 每门课一本内置示例词书（本课 40 词起步）；完整词书走「词书库 URL 导入」补充。
+// 排序即建议学程；跨课程不做硬锁（硬锁留在书内关卡），进度条引导按序进阶。
+
+export type CourseStage = '启蒙' | '初中' | '高中' | '大学' | '出国';
+
+export type CourseDef = {
+  id: string;
+  name: string;
+  stage: CourseStage;
+  bookId: string;
+};
+
+export const COURSE_CATALOG: CourseDef[] = [
+  { id: 'course_letters', name: '字母与音标', stage: '启蒙', bookId: 'wb_letters_sample' },
+  { id: 'course_junior1', name: '初一', stage: '初中', bookId: 'wb_junior1_sample' },
+  { id: 'course_junior2', name: '初二', stage: '初中', bookId: 'wb_junior2_sample' },
+  { id: 'course_junior3', name: '初三', stage: '初中', bookId: 'wb_junior3_sample' },
+  { id: 'course_senior1', name: '高一', stage: '高中', bookId: 'wb_senior1_sample' },
+  { id: 'course_senior2', name: '高二', stage: '高中', bookId: 'wb_senior2_sample' },
+  { id: 'course_gaokao', name: '高三 · 高考冲刺', stage: '高中', bookId: 'wb_gaokao_sample' },
+  { id: 'course_cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample' },
+  { id: 'course_cet6', name: '大学英语六级', stage: '大学', bookId: 'wb_cet6_sample' },
+  { id: 'course_ielts', name: '雅思', stage: '出国', bookId: 'wb_ielts_sample' },
+  { id: 'course_toefl', name: '托福', stage: '出国', bookId: 'wb_toefl_sample' },
+];
+
+export const COURSE_STAGES: CourseStage[] = ['启蒙', '初中', '高中', '大学', '出国'];

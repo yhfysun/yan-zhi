@@ -5,9 +5,54 @@
 import { describe, it, expect } from 'vitest';
 import {
   SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES,
+  COURSE_CATALOG, COURSE_STAGES,
   getSceneCard, renderScenePrompt,
 } from '../src/learning/curriculum';
+import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import { LEARNING_AGENT_ID } from '../src/builtin-learning-agents';
+
+describe('课程学段目录', () => {
+  it('11 门课且 id/bookId 唯一（bookId 是词书内容包锚点，指错 = 该课拿错词）', () => {
+    expect(COURSE_CATALOG.length).toBe(11);
+    expect(new Set(COURSE_CATALOG.map((c) => c.id)).size).toBe(COURSE_CATALOG.length);
+    expect(new Set(COURSE_CATALOG.map((c) => c.bookId)).size).toBe(COURSE_CATALOG.length);
+  });
+
+  it('★ 每门课的 bookId 都有真实内容包（指空 = 选课拿不到词）', () => {
+    const bookIds = new Set(BUILTIN_WORDBOOKS.map((b) => b.id));
+    for (const c of COURSE_CATALOG) {
+      expect(bookIds.has(c.bookId), `${c.id} 的 ${c.bookId} 不存在`).toBe(true);
+    }
+  });
+
+  it('学段覆盖用户拍板的全部学段，目录顺序 = 建议学程', () => {
+    expect(COURSE_STAGES).toEqual(['启蒙', '初中', '高中', '大学', '出国']);
+    const names = COURSE_CATALOG.map((c) => c.name);
+    expect(names[0]).toBe('字母与音标');
+    expect(names).toContain('初一');
+    expect(names).toContain('初三');
+    expect(names).toContain('高三 · 高考冲刺');
+    expect(names).toContain('大学英语四级');
+    expect(names).toContain('大学英语六级');
+    expect(names).toContain('雅思');
+    expect(names).toContain('托福');
+    // 目录序与学段序一致（启蒙最前、出国最后）
+    const firstIdx = COURSE_STAGES.indexOf(COURSE_CATALOG[0].stage);
+    const lastIdx = COURSE_STAGES.indexOf(COURSE_CATALOG[COURSE_CATALOG.length - 1].stage);
+    expect(firstIdx).toBeLessThan(lastIdx);
+  });
+
+  it('每本课程词书都是完整可闯关的：40 词 2 关', () => {
+    for (const c of COURSE_CATALOG) {
+      const b = BUILTIN_WORDBOOKS.find((x) => x.id === c.bookId)!;
+      expect(b.words.length, c.id).toBe(40);
+      for (const w of b.words) {
+        expect(w.word.length, `${c.bookId}:${w.word}`).toBeGreaterThan(0);
+        expect(w.gloss.length, `${c.bookId}:${w.word}`).toBeGreaterThan(0);
+      }
+    }
+  });
+});
 
 describe('场景卡', () => {
   it('12 张且 id 唯一（id 是 source_meta 注入的锚点，重复会串场景）', () => {

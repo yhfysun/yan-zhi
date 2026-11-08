@@ -79,7 +79,7 @@ import { useRouter } from 'vue-router';
 import { useIsMobile } from '../composables/useIsMobile';
 import {
   ChatDotRound, ChatLineRound, Collection, Monitor, Setting, Cpu, Grid, InfoFilled,
-  User, Connection, Tools, Files, Link, Platform, Memo, MagicStick,
+  User, Connection, Tools, Files, Link, Platform, Memo, MagicStick, Reading,
 } from '@element-plus/icons-vue';
 import SolarSystem from '../components/home/SolarSystem.vue';
 import EarthMap from '../components/home/EarthMap.vue';
@@ -170,6 +170,7 @@ interface HomeMenuItem {
 
 const menuItems: HomeMenuItem[] = [
   { path: '/chat', name: '任务', desc: '与大模型多任务并行、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
+  { path: '/learning', name: '学习模式', desc: '英语闯关陪练：字母音标到四六级雅思托福 11 门课程 + AI 陪练 + 语法微课', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' },
   { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
   { path: '/knowledge', name: '知识库', desc: '文档切块向量化、语义检索，命中自动注入对话', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },

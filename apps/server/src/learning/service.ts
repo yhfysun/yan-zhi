@@ -8,6 +8,7 @@ import {
 } from './srs.js';
 import { BUILTIN_WORDBOOKS } from './data/wordbooks.js';
 import { buildLearningContextSummary } from './context.js';
+import { COURSE_CATALOG, COURSE_STAGES, type CourseStage } from './curriculum.js';
 
 export type LearningProfile = { cefr: string | null; goals: string | null; updated_at: number };
 
@@ -316,6 +317,39 @@ export function submitReviewDrill(userId: string, answers: DrillAnswer[], questi
   });
   tx();
   return { correct, total: questions.length, stars, passed, pct, results };
+}
+
+// ── 课程学段总览（§2.2 课程地图：11 门课按学段排列，各课进度/到期一目了然） ───────
+
+export type CourseView = {
+  id: string; name: string; stage: CourseStage; bookId: string; bookName: string;
+  wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number;
+  dueCount: number; progressPct: number;
+};
+
+export function getCourses(userId: string): Array<{ stage: CourseStage; courses: CourseView[] }> {
+  ensureBuiltinBookRows();
+  const byStage = new Map<CourseStage, CourseView[]>();
+  for (const c of COURSE_CATALOG) {
+    const pack = BUILTIN_WORDBOOKS.find((b) => b.id === c.bookId);
+    if (!pack) continue;
+    const wc = pack.words.length;
+    const totalLevels = levelCountFor(wc);
+    const cleared = maxClearedLevel(userId, c.bookId);
+    const due = db.prepare(
+      'SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ? AND (due_at IS NULL OR due_at <= ?)',
+    ).get(userId, c.bookId, Date.now()) as { c: number };
+    const view: CourseView = {
+      id: c.id, name: c.name, stage: c.stage, bookId: c.bookId, bookName: pack.name,
+      wordCount: wc, levelCount: totalLevels, clearedLevels: cleared, totalLevels,
+      dueCount: due.c,
+      progressPct: totalLevels ? Math.round((cleared / totalLevels) * 100) : 0,
+    };
+    const list = byStage.get(c.stage) || [];
+    list.push(view);
+    byStage.set(c.stage, list);
+  }
+  return COURSE_STAGES.filter((s) => byStage.has(s)).map((stage) => ({ stage, courses: byStage.get(stage)! }));
 }
 
 // ── 错误本 ──────────────────────────────────────────────────────────────────
