@@ -108,7 +108,7 @@ import llmLogsRoutes from './routes/llm-logs.js';
 // 模型候选池三层配置（model-candidate-pools）：global/platform/agent 读写集中一处
 import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
-import { enterpriseAdminRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
+import { enterpriseAdminRouter, enterpriseOAuthRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
 import { startRuntimeJanitor } from './enterprise/runtime.js';
 import { ensureEnterpriseSchema } from './enterprise/schema.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
@@ -283,6 +283,9 @@ app.use('/api/model-pools', modelPoolRoutes);
 // 费用预算配置 + 会话账单（2026-10-17 任务费用核算与阈值）
 app.use('/api/cost-budget', costBudgetRoutes);
 // 企业团队资源、周期额度、集中式 MCP、工作节点与云工作区
+// ★ MCP OAuth 回调由第三方授权服务器重定向触发，无 JWT；必须挂在 enterpriseUserRouter 之前，
+//   否则会被它的 authMiddleware 拦掉。认证靠一次性 state + PKCE + 来源校验。
+app.use('/api/enterprise/mcp/oauth', enterpriseOAuthRouter);
 app.use('/api/enterprise', enterpriseUserRouter);
 app.use('/api/runtime/v1', enterpriseRuntimeRouter);
 app.use('/api/agents', agentRoutes);

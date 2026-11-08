@@ -722,7 +722,7 @@
                       :class="{ active: m.id === selectedModelId }"
                       @click="pickModel(m.id)"
                     >
-                      <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                      <span class="pop-select-name">{{ m.alias || m.modelId }}<em v-if="m.shared" class="yz-team-tag">团队</em></span>
                       <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
                     </div>
                   </template>
@@ -846,7 +846,7 @@
                       @mouseleave="scheduleCloseCtxPanel"
                       @click="pickModel(m.id)"
                     >
-                      <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                      <span class="pop-select-name">{{ m.alias || m.modelId }}<em v-if="m.shared" class="yz-team-tag">团队</em></span>
                       <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
                     </div>
                   </template>

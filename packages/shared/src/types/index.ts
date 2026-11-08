@@ -123,6 +123,8 @@ export interface Model {
   isBuiltin?: boolean;
   /** 单模型共享（2026-11-01 RBAC）：is_public=1 的模型对全部用户可见可用（读），写归 owner */
   isPublic?: boolean;
+  /** 团队来源（Task 4）：可见但非本人拥有（公开共享 / ACL 授权）。唯一判定在服务端 SQL，前端只读展示 */
+  shared?: boolean;
 }
 
 /** 会话 */
@@ -559,6 +561,8 @@ export interface Agent {
   agentKind?: 'main' | 'sub';
   /** 是否发布到商城（is_public）。本地表冗余字段，发布时同步 upsert 到服务端 agent 表 */
   isPublic?: boolean;
+  /** 团队来源（Task 4）：可见但非本人拥有（公开共享 / ACL 授权）。唯一判定在服务端 SQL，前端只读展示 */
+  shared?: boolean;
   version: number;
   createdAt: number;
   updatedAt: number;

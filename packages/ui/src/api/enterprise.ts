@@ -113,6 +113,11 @@ export interface RuntimeWorkspace {
   memory_mb: number | null;
   status: string;
   ports: number[];
+  runtime_mode: 'container' | 'directory';
+  keep_dir: boolean;
+  container_id: string | null;
+  container_name: string | null;
+  last_error: string | null;
   expires_at: number | null;
   created_at: number;
 }
@@ -126,6 +131,7 @@ export interface McpProvider {
   auth_mode: 'none' | 'header' | 'oauth';
   header_names: string[];
   oauth_config: Record<string, unknown>;
+  has_oauth_client_secret?: boolean;
   enabled: boolean;
 }
 
@@ -141,8 +147,27 @@ export interface McpConnector {
   tool_policy: Record<string, unknown>;
   has_shared_secret: boolean;
   has_oauth_token: boolean;
+  oauth_status: 'not_authorized' | 'pending' | 'authorized' | 'expired' | 'revoked' | 'reauthorization_required';
+  oauth_expires_at: number | null;
+  oauth_scopes: string[];
+  oauth_error: string | null;
   is_public: boolean;
   enabled: boolean;
+}
+
+export interface McpOAuthStatus {
+  status: string;
+  expiresAt: number | null;
+  scopes: string[];
+  hasToken: boolean;
+  message: string;
+  authorizationPath: string;
+}
+
+export interface StartMcpOAuthResult {
+  authorizationUrl: string;
+  expiresAt: number;
+  status: 'pending';
 }
 
 export interface McpTool {
@@ -314,6 +339,15 @@ export const enterpriseApi = {
   },
   async mcpCalls(limit = 100) {
     return unpack(await api.get<any[]>(`/admin/enterprise/mcp/calls?limit=${limit}`));
+  },
+  async startMcpOAuth(id: string) {
+    return api.post<StartMcpOAuthResult>(`/admin/enterprise/mcp/connectors/${id}/oauth/start`, {});
+  },
+  async mcpOAuthStatus(id: string) {
+    return unpack(await api.get<McpOAuthStatus>(`/admin/enterprise/mcp/connectors/${id}/oauth/status`));
+  },
+  async revokeMcpOAuth(id: string) {
+    return api.post<{ ok: boolean }>(`/admin/enterprise/mcp/connectors/${id}/oauth/revoke`, {});
   },
 
   async runtimeNodes() {

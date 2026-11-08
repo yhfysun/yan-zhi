@@ -28,6 +28,9 @@
 import { ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../../api/client';
+import { usePlatformStore } from '../../stores/platform';
+import { useSkillStore } from '../../stores/skill';
+import { useAgentStore } from '../../stores/agent';
 
 const props = defineProps<{
   visible: boolean;
@@ -65,6 +68,11 @@ async function save() {
   saving.value = false;
   if ('error' in r) { ElMessage.error(r.error); return; }
   ElMessage.success('授权名单已保存');
+  // ★ 撤权/授权后立即失效常规选择器的资源缓存（Task 4）：名单可能减少，已撤权限的资源
+  //   必须从模型 / Skill / 智能体选择器消失，下次打开时重新拉取（服务端按 ACL 过滤）。
+  usePlatformStore().invalidateModels();
+  useSkillStore().invalidateSkills();
+  useAgentStore().invalidateAgents();
   // 重新拉取（后端会剔除无效用户）
   load();
 }

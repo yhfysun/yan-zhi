@@ -53,6 +53,9 @@ const EXEMPT_PREFIXES: readonly string[] = [
   // 泄露的只是本机刚生成的截图，与 /generated 同性质。
   '/plugin/computer-use/screenshots',
   '/network/ip',    // 局域网地址展示，无敏感信息
+  // 集中式 MCP OAuth 回调：第三方授权服务器重定向，浏览器带不了 x-license 头。
+  // ★ 只豁免 callback 这一条路径，不豁免整个 /enterprise（管理面必须照常受门禁）。
+  '/enterprise/mcp/oauth/callback',
   // 远程控制的控制端通道（向日葵式配对）：控制端手机/浏览器没有本机授权码，
   // 鉴权走插件自带的「授权码 → 会话令牌 + 白名单设备令牌」，见 plugins/remote-control.ts 头注释。
   // ★ 只豁免控制端两条路径（/pair 配对 + /session/ws 会话通道），不豁免整个插件 ——

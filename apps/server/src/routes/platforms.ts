@@ -86,6 +86,8 @@ const rowToM = (r: any) => ({
   is_builtin: !!r.is_builtin,
   /** 单模型共享（私有平台里挑几个模型授权大家用） */
   is_public: !!r.is_public,
+  /** 团队来源（可见但非本人拥有，SQL 计算列）：选择器据此显示「团队」标签 */
+  shared: !!r.shared,
   created_at: r.created_at,
 });
 
@@ -272,9 +274,11 @@ router.patch('/:id', (req: Request, res: Response) => {
 
 router.get('/all-models', (req: Request, res: Response) => {
 
-  // 可见模型 = 自己的 ∪ 共享平台的 ∪ 单模型共享（is_public=1）
-  const rows = db.prepare(`SELECT * FROM model WHERE (user_id = ? OR platform_id ${SHARED_PLATFORM_IN_SQL} OR is_public = 1 OR ${aclExistsSql('model', 'model.id')})
-    AND id NOT LIKE 'local-model-%' AND platform_id NOT LIKE 'local-model-%' ORDER BY platform_id, is_default DESC`).all(userId(req), userId(req), userId(req), userId(req));
+  // 可见模型 = 自己的 ∪ 共享平台的 ∪ 单模型共享（is_public=1）。
+  // ★ shared = 可见但非本人拥有（含公开共享与 ACL 授权），是「团队来源」的唯一判定，
+  //   前端选择器只读这个字段展示标签，不允许自行比对 user_id。占位符：SELECT 1 + WHERE 4。
+  const rows = db.prepare(`SELECT *, (COALESCE(user_id,'') <> ?) AS shared FROM model WHERE (user_id = ? OR platform_id ${SHARED_PLATFORM_IN_SQL} OR is_public = 1 OR ${aclExistsSql('model', 'model.id')})
+    AND id NOT LIKE 'local-model-%' AND platform_id NOT LIKE 'local-model-%' ORDER BY platform_id, is_default DESC`).all(userId(req), userId(req), userId(req), userId(req), userId(req));
   res.json({ data: rows.map(rowToM) });
 });
 
@@ -297,14 +301,14 @@ router.get('/:pid/models', (req: Request, res: Response) => {
   // 平台可读（自己的或共享的）→ 其模型全部可见；私有平台里**单模型共享**的行也可见
   const platform = db.prepare(`SELECT id FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(pid, userId(req), userId(req), userId(req), userId(req));
   if (!platform) {
-    // 平台本身不可读：仍允许看到其中单模型共享的行（不能 404 掉整个列表）
-    const rows = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (is_public = 1 OR user_id = ? OR ${aclExistsSql('model', 'model.id')})
-    ORDER BY is_default DESC`).all(pid, userId(req), userId(req), userId(req), userId(req));
+    // 平台本身不可读：仍允许看到其中单模型共享的行（不能 404 掉整个列表）。占位符：SELECT 1 + WHERE 4。
+    const rows = db.prepare(`SELECT *, (COALESCE(user_id,'') <> ?) AS shared FROM model WHERE platform_id = ? AND (is_public = 1 OR user_id = ? OR ${aclExistsSql('model', 'model.id')})
+    ORDER BY is_default DESC`).all(userId(req), pid, userId(req), userId(req), userId(req));
     if (rows.length) { res.json({ data: rows.map(rowToM) }); return; }
     res.status(404).json({ error: '平台不存在' });
     return;
   }
-  const rows = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (user_id = ? OR is_public = 1 OR user_id = (SELECT user_id FROM platform WHERE id = ?)) ORDER BY is_default DESC`).all(pid, userId(req), pid);
+  const rows = db.prepare(`SELECT *, (COALESCE(user_id,'') <> ?) AS shared FROM model WHERE platform_id = ? AND (user_id = ? OR is_public = 1 OR user_id = (SELECT user_id FROM platform WHERE id = ?)) ORDER BY is_default DESC`).all(userId(req), pid, userId(req), pid);
   res.json({ data: rows.map(rowToM) });
 });
 

@@ -22,11 +22,16 @@ import {
   completeRuntimeTask, createRuntimeNode, createRuntimeTask, createWorkspace,
   deleteRuntimeNode, getRuntimeTask, getWorkspace, heartbeatRuntimeNode, listRuntimeArtifacts,
   listRuntimeEvents, listRuntimeNodes, listRuntimeTasks, listWorkspaces, registerRuntimeNode,
-  stopWorkspace, updateRuntimeNode, updateWorkspaceState,
+  resolveWorkspacePreviewTarget, stopWorkspace, unregisterWorkspacePort,
+  updateRuntimeNode, updateWorkspaceState, WorkspacePreviewError,
 } from '../enterprise/runtime.js';
 import {
   createDesignResource, deleteDesignResource, listDesignResources, updateDesignResource,
 } from '../enterprise/design-resources.js';
+import {
+  completeMcpOAuth, getMcpOAuthStatus, McpOAuthError, OAUTH_CALLBACK_PATH,
+  redactSecrets, revokeMcpOAuth, startMcpOAuth,
+} from '../enterprise/mcp-oauth.js';
 
 declare global {
   namespace Express {
@@ -53,7 +58,25 @@ function ok(res: Response, data: unknown, status = 200) {
 }
 
 function fail(res: Response, e: unknown, status = 400) {
+  // OAuth 重新授权是「可行动错误」：必须带稳定 code 与重新授权入口，前端才能引导管理员操作。
+  if (e instanceof McpOAuthError) {
+    res.status(e.status).json({
+      error: e.message,
+      code: e.code,
+      connectorId: e.connectorId,
+      action: e.connectorId
+        ? `/api/admin/enterprise/mcp/connectors/${e.connectorId}/oauth/start`
+        : undefined,
+    });
+    return;
+  }
   res.status(status).json({ error: e instanceof Error ? e.message : String(e) });
+}
+
+/** 反代下用 X-Forwarded-Proto 还原外部协议，保证 redirect_uri 与发起时一致。 */
+function requestOrigin(req: Request): string {
+  const forwarded = String(req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  return `${forwarded || req.protocol}://${req.get('host')}`;
 }
 
 function body(req: Request): Record<string, any> {
@@ -69,7 +92,8 @@ enterpriseAdminRouter.use((req, res, next) => {
       try {
         auditRequest(req, `${req.method} ${req.baseUrl}${req.path}`, {
           resourceType: req.path.split('/')[1] || undefined,
-          after: req.method === 'DELETE' ? null : req.body,
+          // ★ 审计唯一出口：clientSecret / token / 授权码等一律脱敏后再落 after_json。
+          after: req.method === 'DELETE' ? null : redactSecrets(req.body),
         });
       } catch { /* 审计失败不影响主流程 */ }
     }
@@ -231,6 +255,46 @@ enterpriseAdminRouter.get('/mcp/calls', requirePerm('admin.enterprise.manage'), 
   }));
 });
 
+// ===== 集中式 MCP OAuth 授权闭环（Task 1）=====
+enterpriseAdminRouter.post('/mcp/connectors/:id/oauth/start', requirePerm('admin.enterprise.manage'), (req, res) => {
+  try {
+    ok(res, startMcpOAuth(req.params.id, req.user!.userId, { publicOrigin: requestOrigin(req) }));
+  } catch (e) { fail(res, e); }
+});
+enterpriseAdminRouter.get('/mcp/connectors/:id/oauth/status', requirePerm('admin.enterprise.manage'), (req, res) => {
+  try { ok(res, getMcpOAuthStatus(req.params.id)); } catch (e) { fail(res, e); }
+});
+enterpriseAdminRouter.post('/mcp/connectors/:id/oauth/revoke', requirePerm('admin.enterprise.manage'), (req, res) => {
+  try { revokeMcpOAuth(req.params.id); ok(res, { ok: true }); } catch (e) { fail(res, e); }
+});
+
+/**
+ * 公开回调：由第三方授权服务器通过浏览器重定向触发，带不了 JWT，
+ * 因此单独挂在 /api/enterprise/mcp/oauth（必须先于 enterpriseUserRouter 注册）。
+ * 认证完全依赖一次性 state + PKCE + iss + redirect_uri 来源校验。
+ */
+export const enterpriseOAuthRouter = Router();
+enterpriseOAuthRouter.get('/callback', async (req, res) => {
+  const q = req.query;
+  try {
+    const result = await completeMcpOAuth({
+      state: typeof q.state === 'string' ? q.state : undefined,
+      code: typeof q.code === 'string' ? q.code : undefined,
+      error: typeof q.error === 'string' ? q.error : undefined,
+      iss: typeof q.iss === 'string' ? q.iss : undefined,
+      currentRedirectUri: `${requestOrigin(req)}${OAUTH_CALLBACK_PATH}`,
+    });
+    // 用相对 Location，反代 / 多域名部署下由浏览器自己补全 origin；query 里不含任何凭证。
+    const params = new URLSearchParams({
+      mcp_oauth: result.status === 'authorized' ? 'success' : 'denied',
+      connector: result.connectorId,
+    });
+    res.redirect(302, `/admin/enterprise?${params.toString()}`);
+  } catch (e) {
+    fail(res, e, 400);
+  }
+});
+
 enterpriseAdminRouter.get('/runtime/nodes', requirePerm('admin.runtime.manage'), (_req, res) => {
   ok(res, listRuntimeNodes('', { all: true }));
 });
@@ -350,6 +414,75 @@ enterpriseUserRouter.get('/runtime/workspaces/:id', (req, res) => {
 enterpriseUserRouter.post('/runtime/workspaces/:id/stop', (req, res) => {
   try { ok(res, stopWorkspace(req.user!.userId, req.params.id)); } catch (e) { fail(res, e); }
 });
+
+/**
+ * 云工作区端口预览（Task 3）。
+ * ★ 目标地址只允许由「节点上报的 preview_host + 工作区已登记端口」拼成，
+ *   请求方无法传 host / 任意目标 URL；不跟随 3xx、不透传凭证头、不透传 Set-Cookie。
+ */
+const SAFE_PREVIEW_RESPONSE_HEADERS = [
+  'content-type', 'content-length', 'cache-control', 'etag', 'last-modified', 'x-content-type-options',
+];
+
+async function handleWorkspacePreview(req: Request, res: Response) {
+  const port = Number(req.params.port);
+  let target: ReturnType<typeof resolveWorkspacePreviewTarget>;
+  try {
+    target = resolveWorkspacePreviewTarget(req.user!.userId, req.params.id, port);
+  } catch (e) {
+    const err = e as WorkspacePreviewError;
+    res.status(err.status || 400).json({ error: err.message, code: err.code || 'PREVIEW_DENIED' });
+    return;
+  }
+  // 只接受相对子路径；禁协议相对 URL 与路径穿越。
+  const marker = `/preview/${req.params.port}/`;
+  const idx = req.path.indexOf(marker);
+  const sub = idx >= 0 ? req.path.slice(idx + marker.length) : '';
+  if (sub.startsWith('/') || sub.startsWith('//') || sub.includes('..')) {
+    res.status(400).json({ error: '预览路径非法', code: 'INVALID_PREVIEW_PATH' });
+    return;
+  }
+  // token 只用于本服务鉴权，绝不能透传给上游。
+  const qs = new URLSearchParams(String(req.url || '').split('?')[1] || '');
+  qs.delete('token');
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const url = `${target.baseUrl}/${sub}${suffix}`;
+  try {
+    const upstream = await fetch(url, {
+      method: req.method === 'HEAD' ? 'HEAD' : 'GET',
+      headers: {
+        ...(typeof req.headers.accept === 'string' ? { Accept: req.headers.accept } : {}),
+        ...(typeof req.headers['accept-language'] === 'string'
+          ? { 'Accept-Language': req.headers['accept-language'] } : {}),
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      res.status(502).json({ error: '上游返回重定向，预览已拒绝', code: 'PREVIEW_REDIRECT_BLOCKED' });
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (body.length > 2 * 1024 * 1024) {
+      res.status(502).json({ error: '预览响应过大', code: 'PREVIEW_RESPONSE_TOO_LARGE' });
+      return;
+    }
+    for (const h of SAFE_PREVIEW_RESPONSE_HEADERS) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    res.status(upstream.status).send(body);
+  } catch {
+    // 端口关闭 / 容器已停止：摘掉登记，后续请求立即被 PORT_NOT_REGISTERED 拒绝。
+    unregisterWorkspacePort(req.params.id, port);
+    res.status(502).json({ error: '工作区端口不可达，预览已关闭', code: 'PREVIEW_UPSTREAM_UNREACHABLE' });
+  }
+}
+
+enterpriseUserRouter.get('/runtime/workspaces/:id/preview/:port', handleWorkspacePreview);
+enterpriseUserRouter.get('/runtime/workspaces/:id/preview/:port/*', handleWorkspacePreview);
+enterpriseUserRouter.head('/runtime/workspaces/:id/preview/:port', handleWorkspacePreview);
+enterpriseUserRouter.head('/runtime/workspaces/:id/preview/:port/*', handleWorkspacePreview);
 
 function nodeToken(req: Request): string {
   const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));

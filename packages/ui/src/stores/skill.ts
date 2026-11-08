@@ -19,6 +19,8 @@ export interface Skill {
   capabilities?: string[];
   enabled: boolean;
   isPublic?: boolean;
+  /** 团队来源（服务端 SQL 唯一判定）：挂载 Skill 选择器据此显示「团队」标签 */
+  shared?: boolean;
   category?: string;
   author?: string;
   installs?: number;
@@ -126,6 +128,11 @@ export const useSkillStore = defineStore('skill', () => {
 
   const formatInstalls = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k+` : `${n}`;
 
+  /** 失效缓存（Task 4）：撤权 / ACL 名单变更后调用，下次 loadSkills 重新拉取。 */
+  function invalidateSkills() {
+    skills.value = [];
+  }
+
   async function loadSkills() {
     loading.value = true;
     try {
@@ -215,7 +222,7 @@ export const useSkillStore = defineStore('skill', () => {
 
   return {
     skills, marketSkills, loading, category, search, filteredMarket, formatInstalls,
-    loadSkills, install, createCustom, updateSkill, toggleEnabled, togglePublic, uninstall,
+    loadSkills, invalidateSkills, install, createCustom, updateSkill, toggleEnabled, togglePublic, uninstall,
     importFromMd, exportToMd,
   };
 });
@@ -250,6 +257,7 @@ function rowToSkill(r: any): Skill {
       id: r.id, name: r.name, description: r.description,
       source: r.source, enabled: !!r.enabled,
       isPublic: !!r.is_public,
+      shared: !!r.shared,
       frontmatter: safeJson(r.frontmatter_json, { name: r.name }),
       bodyMd: r.body_md,
       files: safeJson<Array<{ path: string; content: string }> | undefined>(r.files_json, undefined),
@@ -262,6 +270,7 @@ function rowToSkill(r: any): Skill {
     description: r.description || '',
     source: r.source || 'local',
     isPublic: !!r.is_public,
+    shared: !!r.shared,
     frontmatter: {
       name: r.name, description: r.description,
       triggers: safeJson<string[]>(r.triggers_json, []),

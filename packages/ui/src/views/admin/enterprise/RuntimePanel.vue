@@ -41,13 +41,32 @@
       <div class="panel-head"><h3>工作区</h3><span>TTL 到期自动下发停止任务</span></div>
       <el-table :data="workspaces" border size="small">
         <el-table-column prop="name" label="名称" min-width="140" />
-        <el-table-column prop="status" label="状态" width="100" />
+        <el-table-column label="模式" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.runtime_mode === 'container' ? 'warning' : 'info'">
+              {{ row.runtime_mode === 'container' ? '容器' : '目录' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.last_error" :content="row.last_error" placement="top">
+              <el-tag size="small" type="danger">{{ row.status }}</el-tag>
+            </el-tooltip>
+            <span v-else>{{ row.status }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="path" label="路径" min-width="240" show-overflow-tooltip />
         <el-table-column label="端口" width="100">
           <template #default="{ row }">{{ (row.ports || []).join(', ') || '-' }}</template>
         </el-table-column>
         <el-table-column label="到期" width="170">
           <template #default="{ row }">{{ formatTime(row.expires_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'running' && (row.ports || []).length" link type="primary" :title="`端口 ${row.ports.join(', ')}`" @click="openPreview(row)">预览</el-button>
+          </template>
         </el-table-column>
       </el-table>
     </section>
@@ -84,7 +103,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="workspaceDialog" title="创建云工作区" width="520px">
+    <el-dialog v-model="workspaceDialog" title="创建云工作区" width="560px">
       <el-form label-width="100px">
         <el-form-item label="节点">
           <el-select v-model="workspaceForm.nodeId" style="width: 100%">
@@ -95,6 +114,22 @@
         <el-form-item label="生命周期">
           <el-input-number v-model="workspaceForm.ttlMinutes" :min="5" :max="10080" />
           <span class="hint">分钟</span>
+        </el-form-item>
+        <el-form-item label="容器镜像">
+          <el-input v-model="workspaceForm.image" placeholder="留空＝节点目录模式；填写如 ubuntu:22.04 则启动容器" />
+        </el-form-item>
+        <template v-if="workspaceForm.image.trim()">
+          <el-form-item label="CPU 限额">
+            <el-input-number v-model="workspaceForm.cpu" :min="0" :max="64" :step="0.5" />
+            <span class="hint">0＝不限，单位核</span>
+          </el-form-item>
+          <el-form-item label="内存限额">
+            <el-input-number v-model="workspaceForm.memoryMb" :min="0" :max="131072" />
+            <span class="hint">0＝不限，单位 MB</span>
+          </el-form-item>
+        </template>
+        <el-form-item label="保留目录">
+          <el-switch v-model="workspaceForm.keepDir" /><span class="hint">停止后保留节点上的工作目录</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -143,6 +178,7 @@ import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Monitor, Plus, VideoPlay } from '@element-plus/icons-vue';
 import { enterpriseApi, type RuntimeNode, type RuntimeTask, type RuntimeWorkspace } from '../../../api/enterprise';
+import { API_BASE, getToken } from '../../../api/client';
 import { api } from '../../../api/client';
 
 const loading = ref(false);
@@ -157,7 +193,11 @@ const eventsDrawer = ref(false);
 const activeTask = ref<RuntimeTask | null>(null);
 const events = ref<any[]>([]);
 const nodeForm = ref({ name: '', description: '' });
-const workspaceForm = ref({ nodeId: '', name: '办公工作区', ttlMinutes: 120 });
+const emptyWorkspaceForm = () => ({
+  nodeId: '', name: '办公工作区', ttlMinutes: 120,
+  image: '', cpu: 0, memoryMb: 0, keepDir: false,
+});
+const workspaceForm = ref(emptyWorkspaceForm());
 const taskForm = ref({ nodeId: '', command: '', cwd: '', timeoutMinutes: 30 });
 
 const onlineCount = computed(() => nodes.value.filter((n) => n.status === 'online').length);
@@ -236,19 +276,33 @@ async function removeNode(row: RuntimeNode) {
 }
 
 function openWorkspace() {
-  workspaceForm.value = { nodeId: usableNodes.value[0]?.id || '', name: '办公工作区', ttlMinutes: 120 };
+  workspaceForm.value = { ...emptyWorkspaceForm(), nodeId: usableNodes.value[0]?.id || '' };
   workspaceDialog.value = true;
 }
 
 async function saveWorkspace() {
   saving.value = true;
   try {
-    const r = await api.post('/enterprise/runtime/workspaces', workspaceForm.value);
+    const f = workspaceForm.value;
+    const r = await api.post('/enterprise/runtime/workspaces', {
+      ...f,
+      image: f.image.trim() || undefined,
+      cpu: f.cpu || undefined,
+      memoryMb: f.memoryMb || undefined,
+    });
     if ('error' in r) { ElMessage.error(r.error); return; }
     ElMessage.success('工作区创建任务已下发');
     workspaceDialog.value = false;
     await reload();
   } finally { saving.value = false; }
+}
+
+function openPreview(row: RuntimeWorkspace) {
+  const port = Number((row.ports || [])[0]);
+  if (!port) { ElMessage.warning('该工作区没有已登记的预览端口'); return; }
+  const token = getToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  window.open(`${API_BASE}/enterprise/runtime/workspaces/${row.id}/preview/${port}/${qs}`, '_blank', 'noopener,noreferrer');
 }
 
 function openTask() {

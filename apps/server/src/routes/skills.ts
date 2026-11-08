@@ -12,11 +12,12 @@ router.use(authMiddleware);
 // GET /api/skills —— 可见 = 自己的 ∪ guest 预置 ∪ 共享（is_public=1）
 router.get('/', (req: Request, res: Response) => {
   const uid = req.user!.userId;
-  // 占位符共 5 个：user_id=? 、user_id=?(guest 预置) 、aclExistsSql 里 3 个（直接用户/角色/组织）。
-  // ★ 多传一个 uid 会让 better-sqlite3 抛 RangeError → 整个 /api/skills 500（同 /api/plugins 的老坑）。
-  const rows = db.prepare(`SELECT * FROM skill WHERE user_id = ? OR user_id = ? OR is_public = 1 OR ${aclExistsSql('skill', 'skill.id')}
-    ORDER BY created_at DESC`).all(uid, 'guest', uid, uid, uid);
-  res.json({ data: rows });
+  // 占位符共 6 个：SELECT 里 shared 判定 1 个（user_id<>我 = 团队来源，唯一判定在前端只读展示）、
+  // user_id=? 、user_id=?(guest 预置) 、aclExistsSql 里 3 个（直接用户/角色/组织）。
+  // ★ 占位符数量不匹配会让 better-sqlite3 抛 RangeError → 整个 /api/skills 500（同 /api/plugins 的老坑）。
+  const rows = db.prepare(`SELECT *, (COALESCE(user_id,'') <> ?) AS shared FROM skill WHERE user_id = ? OR user_id = ? OR is_public = 1 OR ${aclExistsSql('skill', 'skill.id')}
+    ORDER BY created_at DESC`).all(uid, uid, 'guest', uid, uid, uid);
+  res.json({ data: rows.map((r: any) => ({ ...r, shared: !!r.shared })) });
 });
 
 // POST /api/skills

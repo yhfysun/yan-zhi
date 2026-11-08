@@ -59,6 +59,8 @@ export function rowToModel(r: any): Model {
     enabled: !!r.enabled,
     /** 单模型共享（is_public=1）*/
     isPublic: !!r.is_public,
+    /** 团队来源（服务端 SQL 唯一判定）：选择器据此显示「团队」标签 */
+    shared: !!r.shared,
     visible: r.visible === undefined || r.visible === null ? true : !!r.visible,
     isDefault: !!r.is_default,
     capabilities: r.capabilities_json ? tryParse(r.capabilities_json) : undefined,
@@ -244,6 +246,15 @@ export const usePlatformStore = defineStore('platform', () => {
         platformsLoaded.value = true;
       }
     } finally { loading.value = false; }
+  }
+
+  /**
+   * 失效模型缓存（Task 4）：撤权 / ACL 名单变更后调用，下次 ensureModels 会重新拉取，
+   * 已被撤掉权限的团队模型从选择器消失。
+   */
+  function invalidateModels() {
+    models.value = [];
+    modelsLoaded.value = false;
   }
 
   async function loadModels(platformId?: string) {
@@ -684,7 +695,7 @@ export const usePlatformStore = defineStore('platform', () => {
 
   return {
     platforms, models, apiKeys, loading, platformsLoaded, modelsLoaded,
-    loadPlatforms, loadModels, ensurePlatforms, ensureModels, addPlatform, updatePlatform, deletePlatform, setPlatformShared, setModelShared,
+    loadPlatforms, loadModels, ensurePlatforms, ensureModels, invalidateModels, addPlatform, updatePlatform, deletePlatform, setPlatformShared, setModelShared,
     addModel, updateModel, deleteModel,
     fetchRemoteModels, testConnectivity, testModel, testModelCapability,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,

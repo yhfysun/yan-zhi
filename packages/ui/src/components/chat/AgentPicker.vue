@@ -53,7 +53,7 @@
               <span class="ap-info">
                 <span class="ap-name">
                   <el-icon v-if="ag.isDefault" class="ap-lock"><Lock /></el-icon>
-                  {{ ag.name }}
+                  {{ ag.name }}<em v-if="ag.shared" class="yz-team-tag">团队</em>
                 </span>
                 <span class="ap-desc">{{ ag.description || '未填写描述' }}</span>
               </span>

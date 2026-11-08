@@ -186,6 +186,27 @@ export function ensureEnterpriseSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_mcp_call_log_connector ON mcp_call_log(connector_id, created_at DESC);
 
+    -- 集中式 MCP OAuth 授权会话（Task 1）。
+    -- ★ state 只存 sha256，PKCE verifier 加密存：即使库被读走也无法重放授权码交换。
+    -- ★ 一次性 + expires_at + redirect_uri 绑定，回调靠这三条校验「来源」，不依赖登录态。
+    CREATE TABLE IF NOT EXISTS mcp_oauth_session (
+      id TEXT PRIMARY KEY,
+      connector_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      state_hash TEXT NOT NULL UNIQUE,
+      code_verifier_enc TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      scopes_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      consumed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcp_oauth_session_state ON mcp_oauth_session(state_hash, status);
+    CREATE INDEX IF NOT EXISTS idx_mcp_oauth_session_connector ON mcp_oauth_session(connector_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS runtime_node (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT NOT NULL,
@@ -272,7 +293,22 @@ export function ensureEnterpriseSchema(): void {
   }
   for (const sql of [
     'ALTER TABLE mcp_connector_provider ADD COLUMN oauth_config_json TEXT NOT NULL DEFAULT \'{}\'',
+    'ALTER TABLE mcp_connector_provider ADD COLUMN oauth_client_secret_enc TEXT',
     'ALTER TABLE mcp_connector ADD COLUMN oauth_token_enc TEXT',
+    // OAuth 状态是明文元数据（不含任何凭证），供列表展示与调用前判定，避免为了读状态反复解密。
+    'ALTER TABLE mcp_connector ADD COLUMN oauth_status TEXT NOT NULL DEFAULT \'not_authorized\'',
+    'ALTER TABLE mcp_connector ADD COLUMN oauth_expires_at INTEGER',
+    'ALTER TABLE mcp_connector ADD COLUMN oauth_scopes TEXT',
+    'ALTER TABLE mcp_connector ADD COLUMN oauth_error TEXT',
+    'ALTER TABLE mcp_connector ADD COLUMN oauth_updated_at INTEGER',
+    // Task 2：容器化云工作区的运行模式、容器标识、目录保留策略与节点侧失败原因。
+    'ALTER TABLE runtime_workspace ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT \'directory\'',
+    'ALTER TABLE runtime_workspace ADD COLUMN container_id TEXT',
+    'ALTER TABLE runtime_workspace ADD COLUMN container_name TEXT',
+    'ALTER TABLE runtime_workspace ADD COLUMN keep_dir INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE runtime_workspace ADD COLUMN last_error TEXT',
+    // Task 3：节点上报的预览基址（只允许 hostname/IP，不含 scheme 与端口）。
+    'ALTER TABLE runtime_node ADD COLUMN preview_host TEXT',
   ]) {
     try { db.exec(sql); } catch { /* 已存在 */ }
   }

@@ -23,11 +23,12 @@ function rowToAgentDto(r: any) {
 // GET /api/agents —— 当前用户的智能体列表（含全局公共内置智能体）
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
+  // shared = 可见但非本人拥有（公开共享 / ACL 授权）＝「团队来源」唯一判定，前端只读展示。占位符：SELECT 1 + WHERE 4。
   const rows = db.prepare(
-    `SELECT * FROM agent WHERE user_id = ? OR is_public = 1 OR ${aclExistsSql('agent', 'agent.id')}
+    `SELECT *, (COALESCE(user_id,'') <> ?) AS shared FROM agent WHERE user_id = ? OR is_public = 1 OR ${aclExistsSql('agent', 'agent.id')}
         ORDER BY is_default DESC, is_builtin DESC, created_at ASC`,
-  ).all(userId, userId, userId, userId);
-  res.json({ data: rows });
+  ).all(userId, userId, userId, userId, userId);
+  res.json({ data: rows.map((r: any) => ({ ...r, shared: !!r.shared })) });
 });
 
 // GET /api/agents/:id

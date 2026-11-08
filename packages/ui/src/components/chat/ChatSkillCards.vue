@@ -23,7 +23,7 @@
                 <div class="skill-card-icon"><el-icon :size="18"><Files /></el-icon></div>
               </div>
               <div class="skill-card-info">
-                <span class="skill-card-name">{{ s.name }}</span>
+                <span class="skill-card-name">{{ s.name }}<em v-if="s.shared" class="yz-team-tag">团队</em></span>
                 <el-tooltip :content="s.description || '无描述'" placement="top" :show-after="400" :hide-after="0" effect="dark">
                   <span class="skill-card-desc">{{ s.description || '无描述' }}</span>
                 </el-tooltip>

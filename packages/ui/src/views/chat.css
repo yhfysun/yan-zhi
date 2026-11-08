@@ -2828,3 +2828,13 @@
   .sb-tab { gap: 0; }
   .sb-tab .el-icon { font-size: 15px; opacity: 0.9; }
 }
+
+/* ===== 团队来源标签（Task 4）：模型 / Skill / 智能体选择器共用一处样式 =====
+   shared 字段由服务端 SQL 统一判定（可见但非本人拥有），前端只读展示。 */
+.yz-team-tag {
+  display: inline-flex; align-items: center; flex: none;
+  margin-left: 5px; padding: 0 5px; border-radius: 6px;
+  background: var(--color-primary-soft); color: var(--color-primary);
+  font-size: 10px; line-height: 16px; font-weight: 500; font-style: normal;
+  vertical-align: middle;
+}

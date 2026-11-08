@@ -44,6 +44,8 @@ function rowToAgent(r: any): Agent {
     // 无该列的老库按 main 处理（子智能体仅由 seed/新建时显式标记）
     agentKind: r.agent_kind === 'sub' ? 'sub' : 'main',
     isPublic: !!r.is_public,
+    /** 团队来源（服务端 SQL 唯一判定）：选择器据此显示「团队」标签 */
+    shared: !!r.shared,
     version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -429,6 +431,11 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  /** 失效缓存（Task 4）：撤权 / ACL 名单变更后调用，下次 ensureAgents 重新拉取。 */
+  function invalidateAgents() {
+    agents.value = [];
+  }
+
   async function loadAgents() {
     // 单库收敛：数据面走后端（data.db 唯一权威）。seed/迁移已收归后端 db.ts，前端仅拉取。
     // ★ 2026-10-09 改走 getWithRetry：更新安装后首启，后端端口已监听但 seed 未完，
@@ -701,7 +708,7 @@ export const useAgentStore = defineStore('agent', () => {
   return {
     agents, current, running, runLogs,
     selectedId, selectedAgent, chatAgents, groupedChatAgents, delegatableAgents, selectAgent,
-    loadAgents, ensureAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
+    loadAgents, ensureAgents, invalidateAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
     runAgent, addNode,
   };

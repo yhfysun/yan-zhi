@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { aclExistsSql } from '../services/resource-acl.js';
 import { decrypt, encrypt } from '../utils/crypto.js';
+import {
+  encodeOAuthConfigInput, resolveMcpOAuthAccessToken, scrubBearerTokens,
+} from './mcp-oauth.js';
 import { recordQuotaUsage } from './quota.js';
 import './schema.js';
 
@@ -44,12 +47,23 @@ export interface McpConnectorInput {
   enabled?: boolean;
 }
 
+/** Provider 对外的 OAuth 配置：clientSecret 单独加密存，密文列与明文残留都不回显。 */
+function publicOAuthConfig(r: any): Record<string, unknown> {
+  const cfg = parseJson<Record<string, unknown>>(r.oauth_config_json, {});
+  delete cfg.clientSecret;
+  delete cfg.client_secret;
+  return cfg;
+}
+
 export function listMcpProviders(): any[] {
   return db.prepare('SELECT * FROM mcp_connector_provider ORDER BY created_at DESC').all().map((r: any) => ({
     ...r,
     header_names: parseJson(r.header_names_json, []),
-    oauth_config: parseJson(r.oauth_config_json, {}),
+    oauth_config: publicOAuthConfig(r),
+    has_oauth_client_secret: !!r.oauth_client_secret_enc,
     enabled: !!r.enabled,
+    oauth_config_json: undefined,
+    oauth_client_secret_enc: undefined,
   }));
 }
 
@@ -60,17 +74,18 @@ export function createMcpProvider(userId: string, input: McpProviderInput): any 
   if (!/^https?:\/\//i.test(url)) throw new Error('MCP 地址必须以 http:// 或 https:// 开头');
   const id = randomUUID();
   const now = Date.now();
+  const { config, clientSecretEnc } = encodeOAuthConfigInput(input.oauthConfig);
   db.prepare(
     `INSERT INTO mcp_connector_provider
       (id, owner_user_id, name, description, transport, url, auth_mode,
-       header_names_json, oauth_config_json, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       header_names_json, oauth_config_json, oauth_client_secret_enc, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id, userId, name, input.description || null,
     input.transport || 'streamable_http', url,
     input.authMode === 'none' || input.authMode === 'oauth' ? input.authMode : 'header',
     JSON.stringify(input.headerNames || []),
-    JSON.stringify(input.oauthConfig || {}),
+    JSON.stringify(config), clientSecretEnc,
     input.enabled === false ? 0 : 1, now, now,
   );
   return listMcpProviders().find((x) => x.id === id);
@@ -91,7 +106,14 @@ export function updateMcpProvider(id: string, input: Partial<McpProviderInput>):
   if (input.transport !== undefined) put('transport', input.transport);
   if (input.authMode !== undefined) put('auth_mode', input.authMode);
   if (input.headerNames !== undefined) put('header_names_json', JSON.stringify(input.headerNames));
-  if (input.oauthConfig !== undefined) put('oauth_config_json', JSON.stringify(input.oauthConfig));
+  if (input.oauthConfig !== undefined) {
+    const { config, clientSecretEnc } = encodeOAuthConfigInput(input.oauthConfig, row.oauth_client_secret_enc);
+    put('oauth_config_json', JSON.stringify(config));
+    // 只有明确提交 clientSecret 才改密钥；否则保留已有加密值，避免"改了 scope 把密钥清空"。
+    if (Object.prototype.hasOwnProperty.call(input.oauthConfig, 'clientSecret')) {
+      put('oauth_client_secret_enc', clientSecretEnc);
+    }
+  }
   if (input.enabled !== undefined) put('enabled', input.enabled ? 1 : 0);
   if (!sets.length) return listMcpProviders().find((x) => x.id === id);
   put('updated_at', Date.now());
@@ -113,6 +135,10 @@ function mapConnector(r: any) {
     tool_policy: parseJson(r.tool_policy_json, {}),
     has_shared_secret: !!r.shared_secret_enc,
     has_oauth_token: !!r.oauth_token_enc,
+    oauth_status: r.oauth_status || 'not_authorized',
+    oauth_expires_at: r.oauth_expires_at ?? null,
+    oauth_scopes: parseJson(r.oauth_scopes, []),
+    oauth_error: r.oauth_error ?? null,
     is_public: !!r.is_public,
     enabled: !!r.enabled,
     shared_secret_enc: undefined,
@@ -204,18 +230,17 @@ export function deleteMcpConnector(id: string): void {
   db.prepare('DELETE FROM mcp_connector WHERE id = ?').run(id);
 }
 
-function authHeaders(connector: any): Record<string, string> {
+async function authHeaders(connector: any): Promise<Record<string, string>> {
   const provider = db.prepare('SELECT * FROM mcp_connector_provider WHERE id = ?').get(connector.provider_id) as any;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
   };
-  if (connector.oauth_token_enc) {
-    try {
-      const token = parseJson<Record<string, unknown>>(decrypt(connector.oauth_token_enc), {});
-      const accessToken = String(token.accessToken || token.access_token || '');
-      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-    } catch { /* token 损坏时按无认证继续，由上游返回 401 */ }
+  // ★ 唯一出口：OAuth 模式（或已有 OAuth 令牌）一律经 resolveMcpOAuthAccessToken，
+  //   由它负责过期刷新、撤销判定与可行动错误。旧实现"解密失败就按无认证继续"会让
+  //   过期/撤销的连接继续用匿名身份打上游，排障时只看到 401，属于典型的静默失效。
+  if (provider?.auth_mode === 'oauth' || connector.oauth_token_enc) {
+    headers.Authorization = `Bearer ${await resolveMcpOAuthAccessToken(connector)}`;
   }
   if (connector.credential_mode === 'centralized' && connector.shared_secret_enc) {
     try {
@@ -269,7 +294,7 @@ async function mcpRpc(
 }
 
 async function initializeConnector(connector: any): Promise<{ headers: Record<string, string>; sessionId?: string }> {
-  const headers = authHeaders(connector);
+  const headers = await authHeaders(connector);
   const init = await mcpRpc(connector.url, headers, 'initialize', {
     protocolVersion: '2025-03-26',
     capabilities: {},
@@ -389,7 +414,7 @@ export async function callMcpToolDirect(input: {
        VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?)`,
     ).run(
       randomUUID(), input.connectorId, input.toolName, input.userId, input.taskId || null,
-      String(e?.message || e).slice(0, 160), Date.now() - started, Date.now(),
+      scrubBearerTokens(String(e?.message || e)).slice(0, 160), Date.now() - started, Date.now(),
     );
     throw e;
   }
