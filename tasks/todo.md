@@ -3,10 +3,10 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：Task 1-4 已推送；Task 5 已实现并通过验证（待提交推送）
+- 状态：Task 1-5 已实现、已验证、**已提交并推送**（最新 `1672e624`）
 - 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：Task 5 改动在工作区；`PlatformDetail.vue` 与 `.claude/*` 删除为**并行会话在途改动**，勿动
+- 工作区状态：本任务范围已干净；`PlatformDetail.vue` 修改与 `.claude/*` 删除为**并行会话在途改动**，勿动
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
