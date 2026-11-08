@@ -3,7 +3,10 @@
 ## 当前状态
 
 - 分支：`codex/goal-mode`
-- 状态：企业工作台第一阶段已完成，待提交推送
+- 状态：企业工作台第一阶段已完成、已提交、已推送
+- 远端分支：`origin/codex/goal-mode`
+- 远端提交：`f9310276`
+- 工作区状态：干净
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
@@ -35,6 +38,12 @@
 - [ ] Task 5：实时节点通道升级
 - [ ] Task 6：OIDC / 企业 SSO
 - [ ] Task 7：PostgreSQL repository 适配
+
+## 已推送提交
+
+- `d1238dcb`：企业资源治理、额度、MCP、工作节点与远程运行时
+- `6c34512b`：企业管理端与成员团队工作台
+- `f9310276`：实施记录、交接方案和后续任务清单
 
 ## 新会话启动方式
 
