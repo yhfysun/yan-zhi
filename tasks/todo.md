@@ -3,10 +3,10 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：Task 1-5 已实现、已验证、**已提交并推送**（最新 `1672e624`）
+- 状态：Task 1-5 已推送；Task 6 已实现并通过验证（待提交推送）
 - 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：本任务范围已干净；`PlatformDetail.vue` 修改与 `.claude/*` 删除为**并行会话在途改动**，勿动
+- 工作区状态：Task 6 改动在工作区；并行会话的 learning 功能与 `PlatformDetail.vue` 修改勿动
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
 - 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
 
@@ -33,10 +33,10 @@
 - [x] Task 3：云工作区端口预览（登记端口受控代理、权限/状态/TTL 校验、失效即摘端口、SSRF 与凭证头拦截）
 - [x] Task 4：团队资源进入常规选择器（模型/Skill/智能体选择器显示「团队」标签、撤权后缓存失效、公开与 ACL 标签一致）
 - [x] Task 5：实时节点通道升级（WS 控制通道：token 认证、ready 认领下发、事件 seq 幂等、断线续传、立即离线收敛、HTTP 轮询降级共存）
+- [x] Task 6：OIDC / 企业 SSO（授权码 + PKCE、state/nonce/签名/iss/aud/exp/iat 全校验、账号映射幂等、内置账号共存、故障不吞错）
 
 ## 待办
 
-- [ ] Task 6：OIDC / 企业 SSO
 - [ ] Task 7：PostgreSQL repository 适配
 
 ## 已推送提交（Task 1-4）
@@ -149,6 +149,34 @@
   ★ 测试坑：ws 客户端的 message 监听必须在 **open 之前**挂上，否则服务端首帧（registered）
   在 open resolve 的间隙丢失 —— helper 用"缓冲 + waiter"模式。
 - 企业相关 4 文件 50/50 通过；server tsc 全绿；Task 5 无 UI 改动（agent/服务端协议层）。
+
+## Task 6 验证记录（2026-11-08）
+
+- 服务端 `routes/oidc.ts`（新）：授权码 + PKCE(S256)、state/nonce 只存哈希、verifier 加密、
+  一次性 + TTL + redirect_uri 绑定、iss 校验（RFC 9207）。ID Token 只接受 **RS256**，
+  JWKS kid 匹配 + RSA 验签（kid 未命中强制刷新一次）、iss/aud/exp/iat/sub/nonce 全校验
+  （±60s 时钟偏移）；算法混淆（none/HS256）与签名篡改一律拒绝。
+  账号映射唯一出口 `findOrCreateOidcUser`：`user_oidc_identity` 以 **(issuer, sub)** 为主键，
+  首次事务内建号、再次不重复创建；本地 JWT 复用 `auth.ts#issueAuthToken` 唯一签发出口。
+  配置/上游故障全部抛带稳定 code 的 `OidcError`（JWKS_UNREACHABLE / TOKEN_EXCHANGE_FAILED /
+  OIDC_NOT_CONFIGURED 等），绝不吞错。
+- 配置：`YZ_OIDC_ISSUER` / `CLIENT_ID` / `CLIENT_SECRET`（必填），
+  `AUTHORIZATION_URL` / `TOKEN_URL` / `JWKS_URL` / `REDIRECT_URI` / `SCOPES`（可选）。
+  `GET /api/auth/oidc/config` 只回 enabled/issuer/clientId，**不回显密钥**。
+- UI：`Login.vue` 启用时显示「企业账号单点登录」；回调 `?oidc_token=` → `setToken` → 整页刷新；
+  内置账号登录路径零改动。
+- 测试（`apps/server/test/auth-oidc.test.ts`）：mock IdP 用**真 RSA-2048** 签 RS256 ID Token +
+  真 JWKS/token/authorize，**25 个真跑用例全过**：全流程 + PKCE 匹配、账号映射幂等、
+  跨 issuer 不串号、内置账号共存、state 未知/重放/过期、iss/redirect_uri、用户取消、
+  签名篡改、alg=none/HS256、nonce、iss/aud/exp/iat/sub 六类 claim、kid 未知、ID Token 缺失、
+  JWKS 500、token 端点 500、配置缺失、config 不回显密钥。
+  UI 契约测试 `packages/ui/src/views/oidc-login.test.ts` 5/5（入口/令牌落地/内置路径不改/接线守卫）。
+- 验证：server/ui/core/shared 四项 typecheck 全绿；服务端相关 45/45；`build:web` 成功；
+  服务端全量 421 文件 / 418 通过（3 个失败仍是环境基线，无新回归）；
+  UI 全量 2 个失败（`mode.test.ts` 多出 learning 模式、`p3Consistency` 的 `Learning.vue` 硬编码）
+  **均为并行会话 learning 功能引入**，与本任务无关。
+- 已知边界：OIDC 回调 302 到**同域** `/login?oidc_token=`；轻量壳（`file://` + 远程后端）
+  场景暂不支持 SSO（需让回调落到前端域）。
 
 ## 新会话启动方式
 

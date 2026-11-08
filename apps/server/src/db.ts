@@ -275,6 +275,29 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  -- Task 6：OIDC 授权会话（state/nonce 只存哈希、PKCE verifier 加密、一次性 + TTL）
+  CREATE TABLE IF NOT EXISTS oidc_login_session (
+    id TEXT PRIMARY KEY,
+    state_hash TEXT NOT NULL UNIQUE,
+    nonce_hash TEXT NOT NULL,
+    code_verifier_enc TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    consumed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_oidc_session_state ON oidc_login_session(state_hash, status);
+
+  -- Task 6：外部身份映射。(issuer, sub) 才是唯一身份，防跨 issuer 账号碰撞
+  CREATE TABLE IF NOT EXISTS user_oidc_identity (
+    issuer TEXT NOT NULL,
+    sub TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (issuer, sub)
+  );
+
   CREATE TABLE IF NOT EXISTS platform (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES user(id),

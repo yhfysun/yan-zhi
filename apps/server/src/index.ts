@@ -10,6 +10,7 @@ import type { PluginWsRoute } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes, { seedRbac, wsUpgradeAuthorized, ensureDefaultAdmin, getAuthMode, verifyBearer } from './auth.js';
+import oidcRoutes from './routes/oidc.js';
 import licenseRoutes from './license.js';
 // 管理后台（组织/角色/用户/权限）：仅 multi 模式有意义，但路由挂载不区分模式，
 // 内部 requirePerm 权限点校验保证 guest 身份（无权限）打不进来。
@@ -238,6 +239,8 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: Date.now() });
 });
 
+// OIDC 回调由 IdP 重定向触发、带不了 license 头；路由必须先于 /api/auth 注册。
+app.use('/api/auth/oidc', oidcRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/license', licenseRoutes);
 // ★ 首次登录强制改密闸（2026-11-01）：默认管理员 yanZhiPower 密码为空，首次登录

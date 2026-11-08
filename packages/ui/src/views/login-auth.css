@@ -38,3 +38,8 @@
 .server-field { margin-top: 8px; }
 .server-row { display: flex; gap: 8px; }
 .server-hint { font-size: 12px; color: var(--color-text-secondary); margin: 6px 0 0; }
+
+/* Task 6：企业 SSO 登录入口（与内置账号表单共存） */
+.oidc-entry { margin-top: 4px; }
+.oidc-btn { width: 100%; border-radius: 10px; }
+.oidc-error { margin: 8px 0 0; font-size: 12px; color: var(--color-danger, #E24B4A); text-align: center; }

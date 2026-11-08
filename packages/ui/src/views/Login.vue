@@ -68,6 +68,13 @@
         </el-form-item>
       </el-form>
 
+      <!-- Task 6：企业 OIDC 单点登录（仅在服务端启用时出现，内置账号登录保持不变） -->
+      <div v-if="step !== 'changePwd' && oidcEnabled" class="oidc-entry">
+        <el-divider>或</el-divider>
+        <el-button class="oidc-btn" size="large" @click="startOidcLogin">企业账号单点登录</el-button>
+        <p v-if="oidcError" class="oidc-error">{{ oidcError }}</p>
+      </div>
+
       <!-- 二段式第二步：改密时整卡切换，登录表单/服务器地址全部隐藏 -->
       <el-form v-if="step === 'changePwd'" @submit.prevent="submitChangePwd" class="auth-form change-form">
         <div class="account-chip">
@@ -123,7 +130,7 @@ import { useRouter } from 'vue-router';
 import { User, Lock, Message, ArrowLeft, Check } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
-import { getEffectiveServerBase, getBakedServerBase, setServerBase } from '../api/client';
+import { getEffectiveServerBase, getBakedServerBase, setServerBase, setToken, API_BASE } from '../api/client';
 import { api } from '../api/client';
 
 const router = useRouter();
@@ -133,11 +140,32 @@ const serverBase = ref(getEffectiveServerBase());
 const bakedBase = getBakedServerBase();
 /** multi 模式（后端要求登录）下不开放自助注册：账号由管理员创建 */
 const hideRegister = ref(false);
+const oidcEnabled = ref(false);
+const oidcError = ref('');
 
 onMounted(async () => {
+  // OIDC 回调 302 回 /login?oidc_token=：存本地令牌后整页刷新，让 authStore 用新身份初始化。
+  const params = new URLSearchParams(window.location.search);
+  const oidcToken = params.get('oidc_token');
+  if (oidcToken) {
+    setToken(oidcToken);
+    window.location.replace(window.location.pathname + window.location.hash);
+    return;
+  }
+  try {
+    const r = await api.get<{ enabled: boolean }>('/auth/oidc/config');
+    if ('data' in r) oidcEnabled.value = !!r.data?.enabled;
+  } catch {
+    // 配置端点不可用不阻塞内置账号登录（该模式本来就不需要 OIDC）。
+  }
   if (!authStore.statusLoaded) await authStore.fetchStatus();
   hideRegister.value = authStore.authRequired;
 });
+
+function startOidcLogin() {
+  oidcError.value = '';
+  window.location.href = `${API_BASE}/auth/oidc/login`;
+}
 
 function saveServerBase() {
   try {

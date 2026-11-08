@@ -13,6 +13,11 @@ import { ensureAgensPlatform } from './agens-platform/service.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'yan-zhi-secret-change-in-production';
 const JWT_EXPIRES = '30d';
 
+/** 本地 JWT 签发的唯一出口（内置账号与 OIDC 登录共用，避免两份签发口径）。 */
+export function issueAuthToken(userId: string, username: string): string {
+  return jwt.sign({ userId, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+}
+
 const router = Router();
 
 export interface JwtPayload {
