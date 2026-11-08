@@ -55,16 +55,18 @@ async function switchSubject(key: string) {
   await loadCourses();
 }
 
-// ── 工作区 Tab：闯关 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'drill' | 'scenes' | 'grammar' | 'reading'>('drill');
+// ── 工作区 Tab：闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
+const tab = ref<'drill' | 'words' | 'scenes' | 'grammar' | 'reading'>('drill');
 const tabDefs = [
   { key: 'drill', label: '单词闯关' },
+  { key: 'words', label: '词汇表' },
   { key: 'scenes', label: '场景卡' },
   { key: 'grammar', label: '语法微课' },
   { key: 'reading', label: '范文阅读' },
 ] as const;
 function switchTab(k: typeof tab.value) {
   tab.value = k;
+  if (k === 'words' && activeBook.value) void loadBookWords(true);
   if (k === 'scenes' && !scenes.value.length) loadScenes();
   if (k === 'grammar' && !grammarList.value.length) loadGrammar();
   if (k === 'reading' && !readings.value.length) loadReadings();
@@ -99,7 +101,9 @@ async function loadCourses() {
   courses.value = unwrap<CourseGroup[]>(r) || [];
 }
 function openCourse(c: CourseView) {
-  tab.value = 'drill'; // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）
+  // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）；
+  // 但用户正在词汇表通读时保持当前 Tab（换书词汇表跟着换，不把人踢回闯关）
+  if (tab.value !== 'words') tab.value = 'drill';
   void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount });
 }
 const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom' && (b.subject || '英语') === subject.value));
@@ -121,6 +125,35 @@ async function openBook(book: Book) {
   levelPage.value = 0;
   const r = await api.get<{ data: Level[] }>(`/learning/books/${book.id}/levels`);
   levels.value = unwrap<Level[]>(r) || [];
+  if (tab.value === 'words') void loadBookWords(true); // 换书后词汇表跟着换（修"词汇表还是上一本的"）
+}
+
+// ── 词汇表（全量浏览：分页 + 中英搜索，修"看不全/不完整"）──
+type BookWordRow = { word: string; phonetic: string | null; gloss: string; example: string | null };
+type BookWordsPage = { total: number; page: number; size: number; words: BookWordRow[] };
+const WORD_PAGE_SIZE = 50;
+const wordRows = ref<BookWordRow[]>([]);
+const wordTotal = ref(0);
+const wordPage = ref(0);
+const wordQ = ref('');
+const wordLoading = ref(false);
+const wordPageCount = computed(() => Math.max(1, Math.ceil(wordTotal.value / WORD_PAGE_SIZE)));
+async function loadBookWords(reset = false) {
+  if (!activeBook.value) return;
+  if (reset) { wordPage.value = 0; }
+  wordLoading.value = true;
+  try {
+    const r = await api.get<{ data: BookWordsPage }>(
+      `/learning/books/${activeBook.value.id}/words?page=${wordPage.value}&size=${WORD_PAGE_SIZE}&q=${encodeURIComponent(wordQ.value)}`,
+    );
+    const p = unwrap<BookWordsPage>(r);
+    if (p) { wordRows.value = p.words; wordTotal.value = p.total; }
+  } catch { /* 静默：保留上一页数据 */ }
+  wordLoading.value = false;
+}
+function setWordPage(delta: number) {
+  wordPage.value = Math.max(0, Math.min(wordPageCount.value - 1, wordPage.value + delta));
+  void loadBookWords();
 }
 
 // ── 关卡分页（全量词书可达 200 关：整页铺开不可用，按 12 关一页翻）──
@@ -626,6 +659,41 @@ onMounted(loadTtsPack);
           </div>
         </template>
 
+        <!-- 词汇表：整本词书通读（分页 + 中英搜索） -->
+        <template v-else-if="tab === 'words'">
+          <template v-if="activeBook">
+            <div class="lp-wt-head">
+              <h3 class="lp-levels-title">{{ activeBook.name }} · 词汇表</h3>
+              <input
+                v-model="wordQ" class="lp-input lp-wt-search"
+                placeholder="搜索单词或释义（如：apple / 苹果）"
+                @keyup.enter="loadBookWords(true)"
+              />
+              <button class="lp-mini" :disabled="wordLoading" @click="loadBookWords(true)">搜索</button>
+            </div>
+            <p class="lp-hint">共 {{ wordTotal }} 词{{ wordQ ? '（搜索结果）' : '' }} · 第 {{ wordPage + 1 }} / {{ wordPageCount }} 页</p>
+            <div class="lp-wt-list">
+              <div v-for="w in wordRows" :key="w.word" class="lp-wt-row">
+                <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(w.word)">🔊</button>
+                <b class="lp-wt-word">{{ w.word }}</b>
+                <i v-if="w.phonetic" class="lp-wt-pho">{{ w.phonetic }}</i>
+                <span class="lp-wt-gloss">{{ w.gloss }}</span>
+              </div>
+              <p v-if="!wordRows.length && !wordLoading" class="lp-hint">没有匹配的单词</p>
+              <p v-if="wordLoading" class="lp-hint">加载中…</p>
+            </div>
+            <div v-if="wordPageCount > 1" class="lp-pager">
+              <button class="lp-mini" :disabled="wordPage === 0" @click="setWordPage(-1)">‹ 上一页</button>
+              <span>第 {{ wordPage + 1 }} / {{ wordPageCount }} 页</span>
+              <button class="lp-mini" :disabled="wordPage >= wordPageCount - 1" @click="setWordPage(1)">下一页 ›</button>
+            </div>
+          </template>
+          <div v-else class="lp-empty">
+            <p class="lp-empty-title">从左侧选一门课程后查看整本词汇表</p>
+            <p class="lp-hint">词汇表支持中英搜索与分页浏览；点 🔊 可听发音（需配置语音包）。</p>
+          </div>
+        </template>
+
         <!-- 场景卡 -->
         <template v-else-if="tab === 'scenes'">
           <div class="lp-scene-list">
@@ -731,7 +799,7 @@ onMounted(loadTtsPack);
 .lp-sub { margin: 0; color: #646a73; font-size: 13px; }
 .lp-streak { margin-left: 10px; color: #e8590c; font-weight: 600; }
 .lp-subjects { display: flex; gap: 6px; margin-top: 8px; }
-.lp-subject { border: 1px solid #d0d3d9; background: #fff; color: #4e5469; border-radius: 999px; padding: 3px 14px; font-size: 12px; cursor: pointer; }
+.lp-subject { border: 1px solid #d0d3d9; background: var(--glass-bg); color: #4e5469; border-radius: 999px; padding: 3px 14px; font-size: 12px; cursor: pointer; }
 .lp-subject.active { background: #1f2329; border-color: #1f2329; color: #fff; }
 .lp-subject:disabled { opacity: .5; cursor: not-allowed; }
 .lp-soon { font-style: normal; font-size: 10px; margin-left: 3px; opacity: .8; }
@@ -742,7 +810,7 @@ onMounted(loadTtsPack);
 /* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」）：
    视口高度减去头部约 180px，任何 Tab 的内容都能拉到底，不再被整页裁掉。 */
 .lp-col-left, .lp-col-mid, .lp-col-right { max-height: calc(100vh - 180px); overflow-y: auto; scrollbar-gutter: stable; }
-.lp-card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 14px; }
+.lp-card { background: var(--glass-bg); border: 1px solid #e5e6eb; border-radius: 10px; padding: 14px; }
 .lp-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .lp-card-head h2 { font-size: 15px; margin: 0; }
 .lp-mini, .lp-primary { border: 1px solid #d0d3d9; background: #f5f6f7; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: #1f2329; }
@@ -752,7 +820,7 @@ onMounted(loadTtsPack);
 .lp-create input, .lp-create textarea, .lp-input { border: 1px solid #d0d3d9; border-radius: 6px; padding: 7px 9px; font-size: 13px; width: 100%; box-sizing: border-box; }
 .lp-hint { color: #8f959e; font-size: 12px; margin: 6px 0 0; }
 .lp-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
-.lp-tab { border: 1px solid #e5e6eb; background: #fff; color: #4e5469; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+.lp-tab { border: 1px solid #e5e6eb; background: var(--glass-bg); color: #4e5469; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
 .lp-tab.active { background: #3370ff; border-color: #3370ff; color: #fff; }
 .lp-courses { display: flex; flex-direction: column; gap: 10px; }
 .lp-stage { display: flex; flex-direction: column; }
@@ -783,6 +851,14 @@ onMounted(loadTtsPack);
 .lp-no { font-size: 18px; font-weight: 700; }
 .lp-stars { color: #f7b500; font-size: 12px; letter-spacing: 1px; }
 .lp-words { font-size: 10px; color: #8f959e; }
+.lp-wt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lp-wt-search { max-width: 280px; }
+.lp-wt-list { display: flex; flex-direction: column; }
+.lp-wt-row { display: flex; align-items: baseline; gap: 8px; padding: 7px 4px; border-bottom: 1px solid #f0f1f2; font-size: 13px; line-height: 1.5; }
+.lp-wt-row:hover { background: #f7f8fa; }
+.lp-wt-word { min-width: 110px; color: #1f2329; }
+.lp-wt-pho { font-size: 11px; color: #8f959e; white-space: nowrap; }
+.lp-wt-gloss { color: #4e5460; }
 .lp-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #646a73; }
 .lp-empty { text-align: center; padding: 48px 12px; }
 .lp-empty-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
@@ -823,7 +899,7 @@ onMounted(loadTtsPack);
 .lp-grammar-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: #fafbfc; padding: 9px 10px; cursor: pointer; color: #1f2329; font-size: 13px; }
 .lp-grammar-row:hover { background: #f0f5ff; }
 .lp-grammar-rule { flex: 1; color: #8f959e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lp-grammar-detail { padding: 10px 12px; border-top: 1px solid #f0f1f3; background: #fff; }
+.lp-grammar-detail { padding: 10px 12px; border-top: 1px solid #f0f1f3; background: var(--glass-bg); }
 .lp-grammar-detail h3 { font-size: 13px; color: #4e5469; margin: 10px 0 6px; }
 .lp-g-ex, .lp-g-pairs { list-style: none; margin: 0; padding: 0; font-size: 13px; }
 .lp-g-ex li, .lp-g-pairs li { padding: 5px 0; border-bottom: 1px dashed #eee; }

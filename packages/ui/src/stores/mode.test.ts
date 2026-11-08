@@ -171,7 +171,7 @@ describe('模式定义完整性（路由与插件依赖）', () => {
 
   it('模式定义与 openspec 表格一致（含 wf / clip / shop；douyin 已于 2026-10-16 下线）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');

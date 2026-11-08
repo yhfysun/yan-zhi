@@ -6,7 +6,7 @@ import { db } from '../src/db';
 import {
   createCustomBook, listWordBooks, getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
-  addError, listErrors, getLearningContext, getCourses,
+  addError, listErrors, getLearningContext, getCourses, listBookWords,
 } from '../src/learning/service';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import type { DrillQuestion } from '../src/learning/srs';
@@ -50,6 +50,63 @@ describe('词书与关卡', () => {
     // addWordToBook 对重复词静默跳过（服务内部防重）
     const after = listWordBooks(uid).find((b) => b.id === id)!.wordCount;
     expect(after).toBe(before);
+  });
+});
+
+describe('词汇表全量浏览（listBookWords）', () => {
+  it('★ 内置词书：total = 内容包全量词数（不是某一关的 20 词）', () => {
+    const p = listBookWords(uid, BUILTIN_BOOK.id, 0, 50);
+    expect(p.total).toBe(BUILTIN_BOOK.words.length);
+    expect(p.words.length).toBe(50); // 第一页满页
+    expect(p.words[0].gloss.length).toBeGreaterThan(0);
+  });
+
+  it('分页：翻页词不重叠、末页不越界', () => {
+    const p1 = listBookWords(uid, BUILTIN_BOOK.id, 0, 50);
+    const p2 = listBookWords(uid, BUILTIN_BOOK.id, 1, 50);
+    const seen = new Set(p1.words.map((w) => w.word));
+    for (const w of p2.words) expect(seen.has(w.word)).toBe(false);
+    const last = listBookWords(uid, BUILTIN_BOOK.id, Math.ceil(p1.total / 50) - 1, 50);
+    expect(last.words.length).toBeGreaterThan(0);
+    // 越界页返回空但不报错
+    expect(listBookWords(uid, BUILTIN_BOOK.id, 9999, 50).words.length).toBe(0);
+  });
+
+  it('搜索：英文单词与中文释义都能命中', () => {
+    const sample = BUILTIN_BOOK.words[0];
+    const byWord = listBookWords(uid, BUILTIN_BOOK.id, 0, 20, sample.word);
+    expect(byWord.words.some((w) => w.word === sample.word)).toBe(true);
+    // 中文释义搜索：取释义前两个字（ qwerty 词库释义含空格/标点，前缀更稳）
+    const zhKey = sample.gloss.slice(0, 2);
+    const byGloss = listBookWords(uid, BUILTIN_BOOK.id, 0, 20, zhKey);
+    expect(byGloss.words.some((w) => w.word === sample.word)).toBe(true);
+    expect(listBookWords(uid, BUILTIN_BOOK.id, 0, 20, '__不存在的词__').total).toBe(0);
+  });
+
+  it('自定义词书：从 DB 读全量 + 权限隔离（别人的书拿不到词）', () => {
+    const id = createCustomBook(uid, '浏览词单', [
+      { word: 'alpha', gloss: '字母 A' },
+      { word: 'beta', gloss: '字母 B' },
+      { word: 'gamma', gloss: '字母 G' },
+    ]);
+    const p = listBookWords(uid, id, 0, 50);
+    expect(p.total).toBe(3);
+    expect(p.words.map((w) => w.word)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(listBookWords(uid, id, 0, 50, 'beta').words.length).toBe(1);
+    // 另一个用户查这本书 → 报错（词书不存在或无权访问）
+    expect(() => listBookWords(`other-${uid}`, id, 0, 50)).toThrow(/无权访问/);
+  });
+
+  it('内置词书目录行名称自愈：旧库残留「示例」名会被刷新成全量名', () => {
+    // 模拟旧版本目录行：手写一条旧名（ON CONFLICT DO NOTHING 时代的产物）
+    db.prepare(
+      "INSERT OR IGNORE INTO word_book (id, user_id, name, kind, course, level, created_at) VALUES (?, NULL, '旧示例名', 'builtin', 'x', 'y', 0)",
+    ).run(BUILTIN_BOOK.id);
+    // listBookWords 不触发目录刷新；listWordBooks 里的 ensureBuiltinBookRows 会
+    listWordBooks(uid);
+    const row = db.prepare('SELECT name FROM word_book WHERE id = ?').get(BUILTIN_BOOK.id) as { name: string };
+    expect(row.name).toBe(BUILTIN_BOOK.name);
+    expect(row.name).not.toContain('示例');
   });
 });
 

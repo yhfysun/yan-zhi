@@ -24,23 +24,29 @@ vi.mock('../stores/chat', () => ({
   useChatStore: () => ({ createConversation }),
 }))
 
+/** 默认 api.get 分发（vi.hoisted：vi.mock factory 会提升到顶层声明之前，直接引用 const 会 TDZ 崩）。
+ *  每个用例 beforeEach 恢复它，防止某个用例的 mockImplementation 泄漏到后面。 */
+const { defaultGet } = vi.hoisted(() => ({
+  defaultGet: async (url: string) => {
+    if (url.includes('/learning/profile')) return { data: { cefr: 'B1', goals: '日常口语', streakDays: 3 } }
+    if (url.includes('/learning/scenes')) {
+      return { data: [
+        { id: 'sc_airport', title: '机场值机', scene: '值机柜台', roles: ['柜员', '旅客'], keyPhrases: ['a', 'b', 'c'], exitHint: '托运完成', cefr: 'A2' },
+        { id: 'sc_hotel', title: '酒店入住', scene: '前台', roles: ['前台', '客人'], keyPhrases: ['a', 'b', 'c'], exitHint: '拿到房卡', cefr: 'A2' },
+      ] }
+    }
+    if (url.includes('/learning/grammar')) return { data: [] }
+    if (url.includes('/learning/readings')) return { data: [] }
+    if (url.includes('/learning/errors')) return { data: [] }
+    if (url.includes('/learning/books')) return { data: [] }
+    if (url.includes('/tts-packs')) return { data: { items: [] } }
+    return { data: null }
+  },
+}))
+
 vi.mock('../api/client', () => ({
   api: {
-    get: vi.fn(async (url: string) => {
-      if (url.includes('/learning/profile')) return { data: { cefr: 'B1', goals: '日常口语', streakDays: 3 } }
-      if (url.includes('/learning/scenes')) {
-        return { data: [
-          { id: 'sc_airport', title: '机场值机', scene: '值机柜台', roles: ['柜员', '旅客'], keyPhrases: ['a', 'b', 'c'], exitHint: '托运完成', cefr: 'A2' },
-          { id: 'sc_hotel', title: '酒店入住', scene: '前台', roles: ['前台', '客人'], keyPhrases: ['a', 'b', 'c'], exitHint: '拿到房卡', cefr: 'A2' },
-        ] }
-      }
-      if (url.includes('/learning/grammar')) return { data: [] }
-      if (url.includes('/learning/readings')) return { data: [] }
-      if (url.includes('/learning/errors')) return { data: [] }
-      if (url.includes('/learning/books')) return { data: [] }
-      if (url.includes('/tts-packs')) return { data: { items: [] } }
-      return {}
-    }),
+    get: vi.fn(defaultGet),
     post: vi.fn(async () => ({})),
   },
 }))
@@ -56,20 +62,59 @@ async function mountPage(): Promise<HTMLElement> {
   return el
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = ''
   push.mockClear()
   createConversation.mockClear()
+  // 恢复默认分发：前一用例的 mockImplementation 不泄漏（jsdom 用例间共享同一个 vi.fn 实例）
+  const { api } = await import('../api/client')
+  vi.mocked(api.get).mockImplementation(defaultGet)
 })
 
 describe('Learning 工作区 · 挂载契约', () => {
-  it('渲染标题、streak 火焰与四个 Tab', async () => {
+  it('渲染标题、streak 火焰与五个 Tab（闯关/词汇表/场景/语法/阅读）', async () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-sub')?.textContent).toContain('🔥 连续 3 天'))
     expect(el.querySelector('h1')?.textContent).toContain('学习模式')
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
-    expect(tabs).toEqual(['单词闯关', '场景卡', '语法微课', '范文阅读'])
+    expect(tabs).toEqual(['单词闯关', '词汇表', '场景卡', '语法微课', '范文阅读'])
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
+  })
+
+  it('词汇表 Tab：未选课程时空态引导；mock 一本词书后点开真出词行（分页+搜索栏）', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/courses')) return {
+        data: [{ stage: '大学', courses: [
+          { id: 'cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample', bookName: '大学英语四级 · 全量', wordCount: 2607, levelCount: 131, clearedLevels: 0, totalLevels: 131, dueCount: 0, progressPct: 0 },
+        ] }],
+      }
+      if (url.includes('/learning/levels')) return { data: [] }
+      if (url.includes('/words?')) return {
+        data: { total: 20841, page: 0, size: 50, words: [
+          { word: 'cancel', phonetic: "/'kænsl/", gloss: '取消，撤销；删去', example: null },
+          { word: 'numerous', phonetic: "/'numərəs/", gloss: '众多的', example: null },
+        ] },
+      }
+      if (url.includes('/learning/books/')) return { data: [] }
+      return { data: null }
+    })
+    const el = await mountPage()
+    const wordsTab = ([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('词汇表'))!
+    // 未选课程 → 空态引导
+    wordsTab.click()
+    await nextTick()
+    expect(el.querySelector('.lp-empty')?.textContent).toContain('词汇表')
+    // 选一门课程（点课程卡）→ 词汇表出词行
+    const courseBtn = el.querySelector('.lp-course') as HTMLElement
+    expect(courseBtn).toBeTruthy()
+    courseBtn.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-wt-row').length).toBe(2))
+    expect(el.querySelector('.lp-wt-list')?.textContent).toContain('cancel')
+    expect(el.querySelector('.lp-hint')?.textContent).toContain('20841')
+    expect(el.querySelector('.lp-wt-search')).toBeTruthy()
+    // 三栏骨架仍在（布局不跳）
+    expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
 
   it('场景卡 Tab：点开真出卡，卡带标题与难度（中栏内渲染，不跳布局）', async () => {

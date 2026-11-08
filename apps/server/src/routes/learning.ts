@@ -9,6 +9,7 @@ import {
   getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   listErrors, addError,
+  listBookWords,
   getLearningContext, getCourses, getSubjects,
 } from '../learning/service.js';
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
@@ -79,6 +80,16 @@ router.post('/books/:bookId/words', (req, res) => {
     if (!word || !gloss) { res.status(400).json({ error: 'word 与 gloss 必填' }); return; }
     addWordToBook(userIdOf(req), String(req.params.bookId), { word, gloss, phonetic: body.phonetic, example: body.example });
     res.json({ data: { ok: true } });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// GET /api/learning/books/:bookId/words —— 词书全量词汇浏览（?page=&size=&q=，分页+搜索）
+router.get('/books/:bookId/words', (req, res) => {
+  try {
+    const page = Number(req.query.page ?? 0) || 0;
+    const size = Number(req.query.size ?? 50) || 50;
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    res.json({ data: listBookWords(userIdOf(req), String(req.params.bookId), page, size, q) });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 

@@ -55,12 +55,14 @@ export type WordBookView = {
   dueCount: number;
 };
 
-/** 内置词书登记（幂等）：词表来自内容包不进库，word_book 只存一行目录（user_id NULL=共享） */
+/** 内置词书登记（幂等 + 名称自愈）：词表来自内容包不进库，word_book 只存一行目录（user_id NULL=共享）。
+ *  DO UPDATE 刷新 name —— 早期版本建过同名 id 的目录行（如「CET4 高频核心 · 示例」），
+ *  ON CONFLICT DO NOTHING 会把旧名永久留在库里，用户看到的就是过时词书名。 */
 function ensureBuiltinBookRows(): void {
   for (const b of BUILTIN_WORDBOOKS) {
     db.prepare(
       `INSERT INTO word_book (id, user_id, name, kind, course, level, created_at) VALUES (?, NULL, ?, 'builtin', ?, ?, ?)
-       ON CONFLICT(id) DO NOTHING`,
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
     ).run(b.id, b.name, b.course, b.level, Date.now());
   }
 }
@@ -162,6 +164,42 @@ export function addWordToBook(userId: string, bookId: string, w: { word: string;
      VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)`,
   ).run(`lw_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`, userId, bookId,
     w.word.trim(), w.phonetic ?? null, w.gloss.trim(), w.example ?? null, ord, Date.now());
+}
+
+// ── 词书全量词汇浏览（修"看不全"：点进词书只能闯关，没有地方通读整本词表） ─────
+export type BookWordRow = { word: string; phonetic: string | null; gloss: string; example: string | null };
+export type BookWordsPage = { total: number; page: number; size: number; words: BookWordRow[] };
+
+/** 分页 + 搜索读一本书的词汇表。builtin 走内容包内存过滤（不落库）；custom/downloaded 走 DB。
+ *  搜索同时命中单词与释义（中英都可搜）。 */
+export function listBookWords(userId: string, bookId: string, page = 0, size = 50, q = ''): BookWordsPage {
+  const book = db.prepare('SELECT kind FROM word_book WHERE id = ? AND (user_id IS NULL OR user_id = ?)')
+    .get(bookId, userId) as { kind: string } | undefined;
+  if (!book) throw new Error('词书不存在或无权访问');
+  const kw = q.trim().toLowerCase();
+  let all: BookWordRow[];
+  if (book.kind === 'custom' || book.kind === 'downloaded') {
+    if (kw) {
+      const like = `%${kw}%`;
+      all = db.prepare(
+        `SELECT word, phonetic, gloss, example FROM learning_word
+         WHERE user_id = ? AND book_id = ? AND (LOWER(word) LIKE ? OR LOWER(gloss) LIKE ?) ORDER BY ord ASC, created_at ASC`,
+      ).all(userId, bookId, like, like) as unknown as BookWordRow[];
+    } else {
+      all = db.prepare(
+        'SELECT word, phonetic, gloss, example FROM learning_word WHERE user_id = ? AND book_id = ? ORDER BY ord ASC, created_at ASC',
+      ).all(userId, bookId) as unknown as BookWordRow[];
+    }
+  } else {
+    const pack = BUILTIN_WORDBOOKS.find((b) => b.id === bookId);
+    if (!pack) throw new Error('词书不存在或无权访问');
+    all = pack.words
+      .filter((w) => !kw || w.word.toLowerCase().includes(kw) || w.gloss.toLowerCase().includes(kw))
+      .map((w) => ({ word: w.word, phonetic: w.phonetic ?? null, gloss: w.gloss, example: w.example ?? null }));
+  }
+  const safeSize = Math.max(1, Math.min(200, Math.floor(size) || 50));
+  const safePage = Math.max(0, Math.floor(page) || 0);
+  return { total: all.length, page: safePage, size: safeSize, words: all.slice(safePage * safeSize, (safePage + 1) * safeSize) };
 }
 
 // ── 关卡与闯关 ──────────────────────────────────────────────────────────────
