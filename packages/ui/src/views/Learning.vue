@@ -118,8 +118,18 @@ async function openBook(book: Book) {
   drillLevel.value = null;
   result.value = null;
   reviewMode.value = false;
+  levelPage.value = 0;
   const r = await api.get<{ data: Level[] }>(`/learning/books/${book.id}/levels`);
   levels.value = unwrap<Level[]>(r) || [];
+}
+
+// ── 关卡分页（全量词书可达 200 关：整页铺开不可用，按 12 关一页翻）──
+const LEVEL_PAGE_SIZE = 12;
+const levelPage = ref(0);
+const levelPageCount = computed(() => Math.max(1, Math.ceil(levels.value.length / LEVEL_PAGE_SIZE)));
+const pagedLevels = computed(() => levels.value.slice(levelPage.value * LEVEL_PAGE_SIZE, (levelPage.value + 1) * LEVEL_PAGE_SIZE));
+function setLevelPage(delta: number) {
+  levelPage.value = Math.max(0, Math.min(levelPageCount.value - 1, levelPage.value + delta));
 }
 
 async function startDrill(levelNo: number) {
@@ -591,10 +601,10 @@ onMounted(loadTtsPack);
             </div>
           </template>
           <template v-else-if="activeBook">
-            <h3 class="lp-levels-title">{{ activeBook.name }} · 选一关开始</h3>
+            <h3 class="lp-levels-title">{{ activeBook.name }} · 选一关开始（共 {{ levels.length }} 关）</h3>
             <div class="lp-level-grid">
               <button
-                v-for="l in levels" :key="l.levelNo"
+                v-for="l in pagedLevels" :key="l.levelNo"
                 class="lp-level" :class="{ locked: !l.unlocked, cleared: l.passed }"
                 :title="l.unlocked ? '' : '跳关考试：通过即解锁下一关'"
                 @click="startDrill(l.levelNo)"
@@ -603,6 +613,11 @@ onMounted(loadTtsPack);
                 <span class="lp-stars">{{ starText(l.stars) }}</span>
                 <span class="lp-words">{{ l.wordCount }} 词{{ l.unlocked ? '' : ' · 跳考' }}</span>
               </button>
+            </div>
+            <div v-if="levelPageCount > 1" class="lp-pager">
+              <button class="lp-mini" :disabled="levelPage === 0" @click="setLevelPage(-1)">‹ 上一页</button>
+              <span>第 {{ levelPage + 1 }} / {{ levelPageCount }} 页（{{ pagedLevels[0]?.levelNo }}–{{ pagedLevels[pagedLevels.length - 1]?.levelNo }} 关）</span>
+              <button class="lp-mini" :disabled="levelPage >= levelPageCount - 1" @click="setLevelPage(1)">下一页 ›</button>
             </div>
           </template>
           <div v-else class="lp-empty">
@@ -724,6 +739,9 @@ onMounted(loadTtsPack);
 .lp-coach:disabled { opacity: .6; cursor: default; }
 .lp-stage { width: 150px; min-height: 110px; flex-shrink: 0; }
 .lp-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; align-items: start; }
+/* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」）：
+   视口高度减去头部约 180px，任何 Tab 的内容都能拉到底，不再被整页裁掉。 */
+.lp-col-left, .lp-col-mid, .lp-col-right { max-height: calc(100vh - 180px); overflow-y: auto; scrollbar-gutter: stable; }
 .lp-card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 14px; }
 .lp-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .lp-card-head h2 { font-size: 15px; margin: 0; }
@@ -736,7 +754,7 @@ onMounted(loadTtsPack);
 .lp-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
 .lp-tab { border: 1px solid #e5e6eb; background: #fff; color: #4e5469; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
 .lp-tab.active { background: #3370ff; border-color: #3370ff; color: #fff; }
-.lp-courses { display: flex; flex-direction: column; gap: 10px; max-height: 640px; overflow: auto; }
+.lp-courses { display: flex; flex-direction: column; gap: 10px; }
 .lp-stage { display: flex; flex-direction: column; }
 .lp-stage-name { font-size: 12px; color: #8f959e; margin: 0 0 6px; letter-spacing: 2px; }
 .lp-course { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; color: #1f2329; }
@@ -765,6 +783,7 @@ onMounted(loadTtsPack);
 .lp-no { font-size: 18px; font-weight: 700; }
 .lp-stars { color: #f7b500; font-size: 12px; letter-spacing: 1px; }
 .lp-words { font-size: 10px; color: #8f959e; }
+.lp-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #646a73; }
 .lp-empty { text-align: center; padding: 48px 12px; }
 .lp-empty-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 .lp-drill-title { font-size: 13px; color: #4e5469; margin: 0 0 10px; }
@@ -799,7 +818,7 @@ onMounted(loadTtsPack);
 .lp-scene-desc { font-size: 12px; color: #4e5469; }
 .lp-scene-meta { font-size: 11px; color: #8f959e; }
 .lp-scene-go { font-size: 12px; color: #3370ff; font-weight: 600; }
-.lp-grammar-list { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow: auto; }
+.lp-grammar-list { display: flex; flex-direction: column; gap: 6px; }
 .lp-grammar-item { border: 1px solid #eef0f3; border-radius: 8px; overflow: hidden; }
 .lp-grammar-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: #fafbfc; padding: 9px 10px; cursor: pointer; color: #1f2329; font-size: 13px; }
 .lp-grammar-row:hover { background: #f0f5ff; }

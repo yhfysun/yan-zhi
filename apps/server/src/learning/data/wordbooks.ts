@@ -4,6 +4,19 @@
 // 词条结构刻意窄：word/phonetic/gloss/example —— 与 learning_word 表列一一对应，
 // 词书库（P1 的 JSON 内容包）沿用同一结构，落库时零转换。
 
+// 完整词书内容包（开源词库转换，见 packs/ 目录头注释）
+import { WORDS as fullLetters } from './packs/wb_letters_sample.js';
+import { WORDS as fullJunior1 } from './packs/wb_junior1_sample.js';
+import { WORDS as fullJunior2 } from './packs/wb_junior2_sample.js';
+import { WORDS as fullJunior3 } from './packs/wb_junior3_sample.js';
+import { WORDS as fullSenior1 } from './packs/wb_senior1_sample.js';
+import { WORDS as fullSenior2 } from './packs/wb_senior2_sample.js';
+import { WORDS as fullGaokao } from './packs/wb_gaokao_sample.js';
+import { WORDS as fullCet4 } from './packs/wb_cet4_sample.js';
+import { WORDS as fullCet6 } from './packs/wb_cet6_sample.js';
+import { WORDS as fullIelts } from './packs/wb_ielts_sample.js';
+import { WORDS as fullToefl } from './packs/wb_toefl_sample.js';
+
 export type BuiltinWordEntry = { word: string; phonetic?: string; gloss: string; example?: string };
 
 export type BuiltinWordBook = {
@@ -363,3 +376,28 @@ BUILTIN_WORDBOOKS.push(
     ],
   },
 );
+
+
+// ── 完整词书覆盖 ──────────────────────────────────────────────────────────────
+// 上面的 40 词示例包仅作结构说明；这里用开源词库的完整词表替换（同名/同 id，
+// 关卡数、SRS、复习、课程进度全部自动按新词数重新计算）。
+// 加新科目（日语/数学/物理）照此模式：放一个内容包 + 目录里加一门课即可。
+const FULL_PACKS: Record<string, { name: string; words: BuiltinWordEntry[] }> = {
+  wb_letters_sample: { name: '字母与音标 · 小学启蒙', words: fullLetters },
+  wb_junior1_sample: { name: '初一 · 人教版七年级', words: fullJunior1 },
+  wb_junior2_sample: { name: '初二 · 人教版八年级', words: fullJunior2 },
+  wb_junior3_sample: { name: '初三 · 人教版九年级', words: fullJunior3 },
+  wb_senior1_sample: { name: '高一 · 人教版必修 1-2', words: fullSenior1 },
+  wb_senior2_sample: { name: '高二 · 人教版必修 3-5', words: fullSenior2 },
+  wb_gaokao_sample: { name: '高考 3500 词', words: fullGaokao },
+  wb_cet4_sample: { name: '大学英语四级 · 全量', words: fullCet4 },
+  wb_cet6_sample: { name: '大学英语六级 · 全量', words: fullCet6 },
+  wb_ielts_sample: { name: '雅思核心词 · 全量', words: fullIelts },
+  wb_toefl_sample: { name: '托福核心词 · 全量', words: fullToefl },
+};
+for (const b of BUILTIN_WORDBOOKS) {
+  const full = FULL_PACKS[b.id];
+  if (!full) continue;
+  b.name = full.name;
+  b.words = full.words;
+}

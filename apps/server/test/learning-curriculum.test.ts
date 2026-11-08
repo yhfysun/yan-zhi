@@ -50,15 +50,26 @@ describe('课程学段目录', () => {
     for (const c of COURSE_CATALOG) expect(c.subject, c.id).toBe('英语');
   });
 
-  it('每本课程词书都是完整可闯关的：40 词 2 关', () => {
+  it('★ 全量词书：每门课 >= 200 词（不再只是 40 词示例），词条无空值、无重复', () => {
     for (const c of COURSE_CATALOG) {
       const b = BUILTIN_WORDBOOKS.find((x) => x.id === c.bookId)!;
-      expect(b.words.length, c.id).toBe(40);
+      expect(b.words.length, c.id).toBeGreaterThanOrEqual(200);
+      const seen = new Set<string>();
       for (const w of b.words) {
         expect(w.word.length, `${c.bookId}:${w.word}`).toBeGreaterThan(0);
         expect(w.gloss.length, `${c.bookId}:${w.word}`).toBeGreaterThan(0);
+        const k = w.word.toLowerCase();
+        expect(seen.has(k), `${c.bookId} 重复词 ${w.word}`).toBe(false);
+        seen.add(k);
       }
     }
+  });
+
+  it('重点考试词库规模真实（高考 >=3000 / 四级 >=2000 / 托福 >=4000）', () => {
+    const count = (id: string) => BUILTIN_WORDBOOKS.find((b) => b.id === id)!.words.length;
+    expect(count('wb_gaokao_sample')).toBeGreaterThanOrEqual(3000);
+    expect(count('wb_cet4_sample')).toBeGreaterThanOrEqual(2000);
+    expect(count('wb_toefl_sample')).toBeGreaterThanOrEqual(4000);
   });
 });
 

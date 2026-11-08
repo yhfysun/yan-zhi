@@ -130,7 +130,10 @@ describe('课程学段总览', () => {
     const all = groups.flatMap((g) => g.courses);
     expect(all.length).toBe(11);
     const cet4 = all.find((c) => c.name === '大学英语四级')!;
-    expect(cet4.totalLevels).toBe(2);
+    // 全量词书接入后总关卡数按 20 词/关动态计算
+    const expectedLevels = Math.ceil(cet4.wordCount / 20);
+    expect(cet4.totalLevels).toBe(expectedLevels);
+    expect(expectedLevels).toBeGreaterThan(100);
     const clearedBefore = cet4.clearedLevels;
     // 闯过四级第 1 关 → 进度 > 0（uid 在前文已通关 CET4 第 1 关，这里验一致性）
     expect(clearedBefore).toBeGreaterThanOrEqual(1);
