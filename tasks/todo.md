@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-- 分支：`codex/goal-mode`
+- 分支：`dev0.1-mobile`
 - 状态：企业工作台第一阶段已完成、已提交、已推送
-- 远端分支：`origin/codex/goal-mode`
+- 远端分支：`origin/dev0.1-mobile`
 - 远端提交：以 `git log -1 --oneline` 为准
 - 工作区状态：干净
 - 新会话入口：先读本文件，再读 `tasks/plan.md`
