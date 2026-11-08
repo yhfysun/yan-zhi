@@ -387,3 +387,66 @@ describe('上游故障与配置错误（不吞错）', () => {
     expect(JSON.stringify(cfg)).not.toContain(CLIENT_SECRET);
   });
 });
+
+describe('popup 回调通道（轻量壳 file:// / 移动端可用）', () => {
+  async function beginPopupLogin() {
+    const res = await fetch(`${appBase}/api/auth/oidc/login?popup=1`, { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    const authorizeUrl = res.headers.get('location') || '';
+    await fetch(authorizeUrl);
+    return new URL(authorizeUrl).searchParams.get('state') || '';
+  }
+
+  it('★ popup 成功回调返回 200 HTML：postMessage(token) + 自动关闭 + CSP，绝不 302 到服务端页面', async () => {
+    const state = await beginPopupLogin();
+    const cb = await hitCallback({ code: 'code-ok', state, iss: ISSUER });
+    expect(cb.status).toBe(200);
+    expect(cb.headers.get('content-type')).toContain('text/html');
+    expect(cb.headers.get('content-security-policy')).toContain("script-src 'unsafe-inline'");
+    const html = await cb.text();
+    expect(html).toContain('postMessage');
+    expect(html).toContain('"oidc-token"');
+    expect(html).toContain('window.close()');
+    const token = /"token":"([^"]+)"/.exec(html)?.[1] || '';
+    expect(token).toBeTruthy();
+    expect((jwt.verify(token, JWT_SECRET) as any).userId).toMatch(/^oidc-/);
+    expect(cb.headers.get('location')).toBeNull();
+  });
+
+  it('★ popup 会话失败返回 HTML 错误页（错误可见，不吞错）', async () => {
+    const state = await beginPopupLogin();
+    const first = await hitCallback({ code: 'c', state, iss: ISSUER });
+    expect(first.status).toBe(200);
+    const second = await hitCallback({ code: 'c', state, iss: ISSUER });
+    expect(second.status).toBe(400);
+    expect(second.headers.get('content-type')).toContain('text/html');
+    expect(await second.text()).toContain('已被使用');
+  });
+});
+
+describe('重定向目标配置（远程托管前端的 302 模式）', () => {
+  it('YZ_OIDC_POST_LOGIN_REDIRECT ⇒ 非 popup 成功回调 302 到配置地址并带 token', async () => {
+    process.env.YZ_OIDC_POST_LOGIN_REDIRECT = 'https://app.example.test/login';
+    try {
+      const s = await beginLogin();
+      const cb = await hitCallback({ code: 'code-ok', state: s, iss: ISSUER });
+      expect(cb.status).toBe(302);
+      expect((cb.headers.get('location') || '').startsWith('https://app.example.test/login?oidc_token=')).toBe(true);
+    } finally {
+      delete process.env.YZ_OIDC_POST_LOGIN_REDIRECT;
+    }
+  });
+
+  it('★ 非法协议（javascript:）明确拒绝，防开放重定向', async () => {
+    process.env.YZ_OIDC_POST_LOGIN_REDIRECT = 'javascript:alert(1)';
+    try {
+      const s = await beginLogin();
+      const cb = await hitCallback({ code: 'code-ok', state: s, iss: ISSUER });
+      expect(cb.status).toBe(400);
+      const body = await cb.json() as any;
+      expect(body.code).toBe('INVALID_REDIRECT_TARGET');
+    } finally {
+      delete process.env.YZ_OIDC_POST_LOGIN_REDIRECT;
+    }
+  });
+});

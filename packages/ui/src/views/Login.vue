@@ -162,9 +162,41 @@ onMounted(async () => {
   hideRegister.value = authStore.authRequired;
 });
 
+/**
+ * Task 7 补：popup + postMessage 通道 —— 前端可能在 file://（轻量壳）或 Capacitor 上，
+ * 302 到服务端域的 /login 拿不到 token。弹独立窗口走授权，回调页把 token postMessage
+ * 回来；弹窗被拦时整页跳转兜底（Web 同域场景仍可用旧 302 处理）。
+ */
 function startOidcLogin() {
   oidcError.value = '';
-  window.location.href = `${API_BASE}/auth/oidc/login`;
+  const backendOrigin = new URL(API_BASE, window.location.href).origin;
+  let settled = false;
+  const win = window.open(`${API_BASE}/auth/oidc/login?popup=1`, 'oidc-login', 'width=520,height=640');
+  if (!win) {
+    window.location.href = `${API_BASE}/auth/oidc/login`;
+    return;
+  }
+  const cleanup = () => { window.removeEventListener('message', onMessage); clearInterval(poll); };
+  const onMessage = (event: MessageEvent) => {
+    // ★ 只信任后端源：token 不能被任意源的窗口塞进来，也不能泄露给别的窗口。
+    if (event.origin !== backendOrigin) return;
+    const data = event.data as { type?: string; token?: string; message?: string } | null;
+    if (data?.type === 'oidc-error') { oidcError.value = data.message || '企业登录失败'; return; }
+    if (data?.type !== 'oidc-token' || !data.token) return;
+    settled = true;
+    cleanup();
+    try { win.close(); } catch { /* ignore */ }
+    setToken(data.token);
+    window.location.reload();
+  };
+  window.addEventListener('message', onMessage);
+  const poll = setInterval(() => {
+    if (settled) { cleanup(); return; }
+    if (win.closed) {
+      cleanup();
+      if (!settled) oidcError.value = '登录窗口已关闭，未完成授权';
+    }
+  }, 400);
 }
 
 function saveServerBase() {

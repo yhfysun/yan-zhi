@@ -49,9 +49,36 @@ describe('服务端接线守卫', () => {
       "header?.alg !== 'RS256'", 'INVALID_ID_TOKEN_SIGNATURE', 'INVALID_NONCE',
       'INVALID_ISSUER', 'INVALID_AUDIENCE', 'ID_TOKEN_EXPIRED', 'INVALID_ISSUED_AT',
       'UNKNOWN_SIGNING_KEY', 'JWKS_UNREACHABLE', 'TOKEN_EXCHANGE_FAILED',
-      "state_hash = ? AND status = 'pending'", 'code_verifier',
+      "SELECT * FROM oidc_login_session WHERE state_hash = ?", 'code_verifier',
     ]) {
       expect(OIDC_ROUTE, anchor).toContain(anchor);
     }
+  });
+});
+
+describe('popup 通道（轻量壳 file:// / 移动端）', () => {
+  const OIDC_ROUTE = readFileSync(resolve(__dirname, '../../../../apps/server/src/routes/oidc.ts'), 'utf8');
+
+  it('登录入口用弹窗 + message 监听，且只信任后端源', () => {
+    expect(LOGIN).toContain("window.open(`${API_BASE}/auth/oidc/login?popup=1`");
+    expect(LOGIN).toContain("window.addEventListener('message', onMessage)");
+    expect(LOGIN).toContain('event.origin !== backendOrigin');
+    expect(LOGIN).toContain("data?.type !== 'oidc-token'");
+    // 弹窗被拦时整页跳转兜底（Web 同域仍可走旧 302 处理）
+    expect(LOGIN).toContain('window.location.href = `${API_BASE}/auth/oidc/login`;');
+  });
+
+  it('回调页渲染 postMessage + 自动关闭 + CSP（服务端锚点防误删）', () => {
+    expect(OIDC_ROUTE).toContain('popupSuccessPage');
+    expect(OIDC_ROUTE).toContain("postMessage");
+    expect(OIDC_ROUTE).toContain('window.close()');
+    expect(OIDC_ROUTE).toContain("script-src 'unsafe-inline'");
+    expect(OIDC_ROUTE).toContain('INVALID_REDIRECT_TARGET');
+    expect(OIDC_ROUTE).toContain('YZ_OIDC_POST_LOGIN_REDIRECT');
+  });
+
+  it('旧 302 查询处理保留（Web 同域兼容）', () => {
+    expect(LOGIN).toContain("params.get('oidc_token')");
+    expect(LOGIN).toContain('setToken(oidcToken)');
   });
 });

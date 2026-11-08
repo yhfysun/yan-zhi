@@ -276,6 +276,7 @@ db.exec(`
   );
 
   -- Task 6：OIDC 授权会话（state/nonce 只存哈希、PKCE verifier 加密、一次性 + TTL）
+  -- popup 列（Task 7 补）：标记该会话来自弹窗流程，回调返回 postMessage 页面而非 302。
   CREATE TABLE IF NOT EXISTS oidc_login_session (
     id TEXT PRIMARY KEY,
     state_hash TEXT NOT NULL UNIQUE,
@@ -283,6 +284,7 @@ db.exec(`
     code_verifier_enc TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    popup INTEGER NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     consumed_at INTEGER
@@ -1013,6 +1015,8 @@ try {
   )`);
   // 名单主体类型（2026-11-01 扩展）：'user' | 'role' —— 角色授权即批量（角色下所有用户生效）
   try { db.exec("ALTER TABLE resource_acl ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'user'"); } catch {}
+  // Task 7：老库存量 oidc 会话表补 popup 列（新库已由 CREATE 建出，重复 ALTER 会抛错被吞）。
+  try { db.exec('ALTER TABLE oidc_login_session ADD COLUMN popup INTEGER NOT NULL DEFAULT 0'); } catch {}
   // 智能体分类：main=主智能体（会话可选中）/ sub=子智能体（仅供其他智能体引用委派）
   try { db.exec("ALTER TABLE agent ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'main'"); } catch {}
 } catch {}

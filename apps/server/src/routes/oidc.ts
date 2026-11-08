@@ -198,8 +198,10 @@ function requestOrigin(req: Request): string {
   return `${forwarded || req.protocol}://${req.get('host')}`;
 }
 
-/** 发起登录：state/nonce 只以哈希落库，verifier 加密存，返回 IdP 授权 URL。 */
-export function startOidcLogin(origin: string): { authorizationUrl: string; expiresAt: number } {
+/** 发起登录：state/nonce 只以哈希落库，verifier 加密存，返回 IdP 授权 URL。
+ *  popup=true（Task 7）：回调返回 postMessage 页面而非 302 —— 轻量壳 file:// / 移动端
+ *  的前端不在服务端域上，302 会把 token 送到一个没有页面的域。 */
+export function startOidcLogin(origin: string, popup = false): { authorizationUrl: string; expiresAt: number } {
   const cfg = requireConfig();
   const state = randomBytes(32).toString('base64url');
   const nonce = randomBytes(32).toString('base64url');
@@ -209,9 +211,9 @@ export function startOidcLogin(origin: string): { authorizationUrl: string; expi
   const now = Date.now();
   db.prepare(
     `INSERT INTO oidc_login_session
-      (id, state_hash, nonce_hash, code_verifier_enc, redirect_uri, status, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-  ).run(randomUUID(), sha256(state), sha256(nonce), encrypt(verifier), redirectUri, now + SESSION_TTL_MS, now);
+      (id, state_hash, nonce_hash, code_verifier_enc, redirect_uri, status, popup, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+  ).run(randomUUID(), sha256(state), sha256(nonce), encrypt(verifier), redirectUri, popup ? 1 : 0, now + SESSION_TTL_MS, now);
   const url = new URL(cfg.authorizationUrl);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', cfg.clientId);
@@ -243,62 +245,101 @@ async function postTokenEndpoint(cfg: OidcConfig, params: Record<string, string>
   }
 }
 
-/** 回调：state/iss/redirect_uri → 原子消费 → PKCE 换 token → 验 ID Token → 映射用户 → 本地 JWT。 */
+/** 回调：state/iss/redirect_uri → 原子消费 → PKCE 换 token → 验 ID Token → 映射用户 → 本地 JWT。
+ *  返回 popup 标记：弹窗流程由路由层渲染 postMessage 页面，普通流程 302。 */
 export async function completeOidcLogin(input: {
   state?: string; code?: string; error?: string; iss?: string; currentRedirectUri: string;
-}): Promise<{ token: string; user: any; status: 'success' | 'denied' }> {
+}): Promise<{ token: string; user: any; status: 'success' | 'denied'; popup: boolean }> {
   const cfg = requireConfig();
   const state = String(input.state || '');
-  const session = db.prepare("SELECT * FROM oidc_login_session WHERE state_hash = ? AND status = 'pending'")
+  // ★ 不按 status 过滤：重放/过期会话也要能读出 popup 标记，让弹窗流程的错误以 HTML 呈现。
+  const session = db.prepare('SELECT * FROM oidc_login_session WHERE state_hash = ?')
     .get(sha256(state)) as any;
-  if (!session) throw new OidcError('INVALID_STATE', 'state 无效或已被使用');
-  if (Number(session.expires_at) <= Date.now()) {
-    db.prepare("UPDATE oidc_login_session SET status = 'expired' WHERE id = ?").run(session.id);
-    throw new OidcError('EXPIRED_STATE', '授权会话已过期，请重新登录');
-  }
-  if (input.iss && input.iss !== cfg.issuer) throw new OidcError('INVALID_ISSUER', '授权来源校验失败');
-  if (input.currentRedirectUri !== session.redirect_uri) {
-    throw new OidcError('INVALID_REDIRECT_URI', '回调地址与授权会话不匹配');
-  }
-  const claimed = db.prepare(
-    "UPDATE oidc_login_session SET status = 'exchanging', consumed_at = ? WHERE id = ? AND status = 'pending'",
-  ).run(Date.now(), session.id);
-  if (claimed.changes !== 1) throw new OidcError('INVALID_STATE', 'state 无效或已被使用');
-  if (input.error) {
-    db.prepare("UPDATE oidc_login_session SET status = 'denied' WHERE id = ?").run(session.id);
-    throw new OidcError('OIDC_DENIED', `企业登录被取消或拒绝: ${String(input.error).slice(0, 60)}`);
-  }
-  if (!input.code) throw new OidcError('MISSING_AUTH_CODE', '回调缺少授权码');
+  const isPopup = !!Number(session?.popup);
+  try {
+    if (!session || session.status !== 'pending') throw new OidcError('INVALID_STATE', 'state 无效或已被使用');
+    if (Number(session.expires_at) <= Date.now()) {
+      db.prepare("UPDATE oidc_login_session SET status = 'expired' WHERE id = ?").run(session.id);
+      throw new OidcError('EXPIRED_STATE', '授权会话已过期，请重新登录');
+    }
+    if (input.iss && input.iss !== cfg.issuer) throw new OidcError('INVALID_ISSUER', '授权来源校验失败');
+    if (input.currentRedirectUri !== session.redirect_uri) {
+      throw new OidcError('INVALID_REDIRECT_URI', '回调地址与授权会话不匹配');
+    }
+    const claimed = db.prepare(
+      "UPDATE oidc_login_session SET status = 'exchanging', consumed_at = ? WHERE id = ? AND status = 'pending'",
+    ).run(Date.now(), session.id);
+    if (claimed.changes !== 1) throw new OidcError('INVALID_STATE', 'state 无效或已被使用');
+    if (input.error) {
+      db.prepare("UPDATE oidc_login_session SET status = 'denied' WHERE id = ?").run(session.id);
+      throw new OidcError('OIDC_DENIED', `企业登录被取消或拒绝: ${String(input.error).slice(0, 60)}`);
+    }
+    if (!input.code) throw new OidcError('MISSING_AUTH_CODE', '回调缺少授权码');
 
-  let verifier: string;
-  try { verifier = decrypt(session.code_verifier_enc); } catch {
-    throw new OidcError('INVALID_PKCE_VERIFIER', 'PKCE verifier 解密失败');
-  }
-  let tokenJson: any;
-  try {
-    tokenJson = await postTokenEndpoint(cfg, {
-      grant_type: 'authorization_code',
-      code: String(input.code),
-      redirect_uri: session.redirect_uri,
-      code_verifier: verifier,
-    });
+    let verifier: string;
+    try { verifier = decrypt(session.code_verifier_enc); } catch {
+      throw new OidcError('INVALID_PKCE_VERIFIER', 'PKCE verifier 解密失败');
+    }
+    let tokenJson: any;
+    try {
+      tokenJson = await postTokenEndpoint(cfg, {
+        grant_type: 'authorization_code',
+        code: String(input.code),
+        redirect_uri: session.redirect_uri,
+        code_verifier: verifier,
+      });
+    } catch (e) {
+      db.prepare("UPDATE oidc_login_session SET status = 'failed' WHERE id = ?").run(session.id);
+      throw e instanceof OidcError ? e : new OidcError('TOKEN_EXCHANGE_FAILED', (e as Error).message);
+    }
+    if (!tokenJson?.id_token) {
+      throw new OidcError('MISSING_ID_TOKEN', 'OIDC token 端点未返回 id_token');
+    }
+    const claims = await verifyOidcIdToken(cfg, String(tokenJson.id_token), session);
+    const user = findOrCreateOidcUser(cfg.issuer, claims);
+    db.prepare("UPDATE oidc_login_session SET status = 'authorized' WHERE id = ?").run(session.id);
+    return { token: issueAuthToken(user.id, user.username), user, status: 'success', popup: isPopup };
   } catch (e) {
-    db.prepare("UPDATE oidc_login_session SET status = 'failed' WHERE id = ?").run(session.id);
-    throw e instanceof OidcError ? e : new OidcError('TOKEN_EXCHANGE_FAILED', (e as Error).message);
-  }
-  if (!tokenJson?.id_token) {
-    throw new OidcError('MISSING_ID_TOKEN', 'OIDC token 端点未返回 id_token');
-  }
-  let claims: IdTokenClaims;
-  try {
-    claims = await verifyOidcIdToken(cfg, String(tokenJson.id_token), session);
-  } catch (e) {
-    db.prepare("UPDATE oidc_login_session SET status = 'failed' WHERE id = ?").run(session.id);
+    // 弹窗流程的错误必须以 HTML 呈现（弹窗里没有前端来消费 JSON）。
+    if (isPopup && e instanceof OidcError) (e as any).renderHtml = true;
     throw e;
   }
-  const user = findOrCreateOidcUser(cfg.issuer, claims);
-  db.prepare("UPDATE oidc_login_session SET status = 'authorized' WHERE id = ?").run(session.id);
-  return { token: issueAuthToken(user.id, user.username), user, status: 'success' };
+}
+
+const escapeHtml = (s: string) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+));
+
+/** 弹窗成功页：把签发的本地 token 交还给打开者，然后自动关闭。 */
+function popupSuccessPage(token: string): string {
+  const payload = JSON.stringify({ type: 'oidc-token', token });
+  return `<!doctype html><html><head><meta charset="utf-8"><title>登录成功</title></head>
+<body style="font-family:sans-serif"><p>登录成功，正在返回应用…</p>
+<script>
+try { if (window.opener) { window.opener.postMessage(${payload}, '*'); } } catch (e) {}
+setTimeout(function () { window.close(); }, 300);
+</script></body></html>`;
+}
+
+/** 弹窗失败页：错误信息可见且同步给打开者，不吞错。 */
+function popupErrorPage(message: string): string {
+  const payload = JSON.stringify({ type: 'oidc-error', message: String(message).slice(0, 300) });
+  return `<!doctype html><html><head><meta charset="utf-8"><title>登录失败</title></head>
+<body style="font-family:sans-serif"><p>企业登录失败：${escapeHtml(message).slice(0, 200)}</p>
+<script>
+try { if (window.opener) { window.opener.postMessage(${payload}, '*'); } } catch (e) {}
+</script></body></html>`;
+}
+
+/** 302 模式的落点：默认同域 /login；远程托管前端可配置，只允许 http(s)（防开放重定向）。 */
+function resolvePostLoginRedirect(): string {
+  const configured = String(process.env.YZ_OIDC_POST_LOGIN_REDIRECT || '').trim();
+  if (!configured) return '/login';
+  if (!/^https?:\/\//i.test(configured)) {
+    throw new OidcError('INVALID_REDIRECT_TARGET',
+      `YZ_OIDC_POST_LOGIN_REDIRECT 只允许 http(s) 地址（收到: ${configured.slice(0, 80)}）`);
+  }
+  return configured;
 }
 
 function fail(res: Response, e: unknown): void {
@@ -318,7 +359,8 @@ router.get('/config', (_req, res) => {
 
 router.get('/login', (req, res) => {
   try {
-    const started = startOidcLogin(requestOrigin(req));
+    const popup = req.query.popup === '1';
+    const started = startOidcLogin(requestOrigin(req), popup);
     res.redirect(302, started.authorizationUrl);
   } catch (e) { fail(res, e); }
 });
@@ -333,9 +375,26 @@ router.get('/callback', async (req, res) => {
       iss: typeof q.iss === 'string' ? q.iss : undefined,
       currentRedirectUri: `${requestOrigin(req)}${CALLBACK_PATH}`,
     });
-    const params = new URLSearchParams({ oidc_token: result.token });
-    res.redirect(302, `/login?${params.toString()}`);
-  } catch (e) { fail(res, e); }
+    if (result.popup) {
+      // 轻量壳 file:// / 移动端：前端不在本域，302 无意义 → postMessage + 自动关闭。
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'");
+      res.status(200).send(popupSuccessPage(result.token));
+      return;
+    }
+    const target = resolvePostLoginRedirect();
+    const sep = target.includes('?') ? '&' : '?';
+    res.redirect(302, `${target}${sep}oidc_token=${encodeURIComponent(result.token)}`);
+  } catch (e) {
+    if ((e as any).renderHtml) {
+      const err = e as OidcError;
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('Content-Security-Policy', "default-src 'none'");
+      res.status(err.status || 400).send(popupErrorPage(err.message));
+      return;
+    }
+    fail(res, e);
+  }
 });
 
 export default router;
