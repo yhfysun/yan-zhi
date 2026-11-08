@@ -456,6 +456,17 @@
             :agent-id="agentStore.selectedId || ''"
             :partial-window="loadedConvHasMore"
           />
+          <!-- 学习模式语音输入：录音 → whisper 本地转写 → 填入输入框（不发消息，用户可先改） -->
+          <button
+            v-if="activeMode === 'learning'"
+            class="voice-input-btn" :class="{ recording: voiceRecording }"
+            :disabled="voiceBusy" type="button"
+            :title="voiceBusy ? '识别中…' : voiceRecording ? '停止录音' : '语音输入（英语）'"
+            @click="toggleVoiceInput"
+          >
+            <el-icon :size="16"><Microphone /></el-icon>
+            <span>{{ voiceBusy ? '识别中' : voiceRecording ? '停止' : '语音' }}</span>
+          </button>
           <el-popover v-model:visible="plusOpen" placement="top-start" :width="264" trigger="click" :show-arrow="false" popper-class="plus-menu-popper">
             <template #reference>
               <el-button size="small" circle class="ctx-btn plus-btn" :class="{ 'is-active': plusOpen }">
@@ -989,8 +1000,9 @@ import {
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer, Star, View, Download,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer, Star, View, Download, Microphone,
 } from '@element-plus/icons-vue';
+import { activeMode } from '../../stores/mode';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
 import { bindLongPress } from '../../composables/useLongPress';
@@ -1036,6 +1048,51 @@ const compactCount = computed(() =>
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
+
+// ── 学习模式语音输入（P0 尾巴）：录音 → /learning/voice(whisper EN) → 追加到输入框 ──
+// 只在学习模式显示；转写结果先填入输入框由用户确认，不自动发送（避免半句被发出去）。
+const voiceBusy = ref(false);
+const voiceRecording = ref(false);
+let voiceRecorder: MediaRecorder | null = null;
+let voiceChunks: Blob[] = [];
+async function toggleVoiceInput() {
+  if (voiceBusy.value) return;
+  if (voiceRecording.value) { voiceRecorder?.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceChunks = [];
+    voiceRecorder = new MediaRecorder(stream);
+    voiceRecorder.ondataavailable = (e) => { if (e.data.size) voiceChunks.push(e.data); };
+    voiceRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      voiceRecording.value = false;
+      const blob = new Blob(voiceChunks, { type: voiceRecorder?.mimeType || 'audio/webm' });
+      if (blob.size < 2000) { ElMessage.warning('录音太短，请再说一次'); return; }
+      voiceBusy.value = true;
+      try {
+        const b64 = await new Promise<string>((resolve) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+          fr.readAsDataURL(blob);
+        });
+        const r = await api.post<{ data: { text: string } }>('/learning/voice', { audioBase64: b64, mime: blob.type });
+        const payload = r && typeof r === 'object' && 'data' in r ? (r as { data: { text?: string } }).data : null;
+        const text = String(payload?.text || '').trim();
+        if (!text) { ElMessage.warning('没有识别到语音内容'); return; }
+        input.value = (input.value ? String(input.value).trimEnd() + ' ' : '') + text;
+        ElMessage.success('已填入输入框，确认后再发送');
+      } catch (e) {
+        ElMessage.error(`语音识别失败：${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        voiceBusy.value = false;
+      }
+    };
+    voiceRecorder.start();
+    voiceRecording.value = true;
+  } catch {
+    ElMessage.error('无法访问麦克风（请检查应用权限）');
+  }
+}
 
 /**
  * 智能体下拉展开时兜底加载（2026-10-09）：
@@ -3233,4 +3290,24 @@ onBeforeUnmount(() => {
   margin: 4px 6px;
   background: var(--color-border, rgba(0, 0, 0, 0.08));
 }
+</style>
+
+<style scoped>
+/* 学习模式语音输入按钮（只在该模式渲染，不挤占其他模式工具条） */
+.voice-input-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+  background: transparent;
+  color: var(--color-text-secondary, #646a73);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.voice-input-btn:hover { color: var(--color-primary, #3370ff); border-color: var(--color-primary, #3370ff); }
+.voice-input-btn.recording { color: #d4380d; border-color: #d4380d; background: #fff4ef; }
+.voice-input-btn:disabled { opacity: .5; cursor: default; }
 </style>

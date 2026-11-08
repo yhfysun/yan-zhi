@@ -5258,6 +5258,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS word_book (
     id TEXT PRIMARY KEY,
     user_id TEXT,                          -- 词书归属（NULL=内置共享；自定义/导入为用户 id）
+    subject TEXT DEFAULT '英语',           -- 科目归属（扩展点：日语/数学/物理各自的词书/题库）
     name TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'custom',   -- builtin | custom | downloaded
     course TEXT DEFAULT '',
@@ -5343,6 +5344,9 @@ try {
   const cols = db.prepare(`SELECT name FROM pragma_table_info('word_book')`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === 'user_id')) {
     db.exec(`ALTER TABLE word_book ADD COLUMN user_id TEXT`);
+  }
+  if (!cols.some((c) => c.name === 'subject')) {
+    db.exec(`ALTER TABLE word_book ADD COLUMN subject TEXT DEFAULT '英语'`);
   }
 } catch { /* 迁移失败不阻塞启动 */ }
 

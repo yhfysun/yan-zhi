@@ -136,6 +136,11 @@ describe('课程学段总览', () => {
     expect(clearedBefore).toBeGreaterThanOrEqual(1);
     expect(cet4.progressPct).toBe(Math.round((cet4.clearedLevels / cet4.totalLevels) * 100));
   });
+
+  it('★ subject 过滤：英语 11 门课，未开科目的课程为空（扩展点真生效）', () => {
+    expect(getCourses(uid, '英语').flatMap((g) => g.courses).length).toBe(11);
+    expect(getCourses(uid, '日语')).toEqual([]);
+  });
 });
 
 describe('错误本与上下文注入', () => {

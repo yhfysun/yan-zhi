@@ -9,7 +9,7 @@ import {
   getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   listErrors, addError,
-  getLearningContext, getCourses,
+  getLearningContext, getCourses, getSubjects,
 } from '../learning/service.js';
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
@@ -58,14 +58,14 @@ router.get('/books', (req, res) => {
 // POST /api/learning/books —— 建自定义词书 { name, words: [{word, gloss, phonetic?, example?}] }
 router.post('/books', (req, res) => {
   try {
-    const body = req.body as { name?: string; words?: Array<{ word?: string; gloss?: string; phonetic?: string; example?: string }> };
+    const body = req.body as { name?: string; subject?: string; words?: Array<{ word?: string; gloss?: string; phonetic?: string; example?: string }> };
     const name = String(body.name || '').trim();
     const words = (body.words || [])
       .map((w) => ({ word: String(w.word || '').trim(), gloss: String(w.gloss || '').trim(), phonetic: w.phonetic ? String(w.phonetic) : undefined, example: w.example ? String(w.example) : undefined }))
       .filter((w) => w.word && w.gloss);
     if (!name) { res.status(400).json({ error: '词书名称必填' }); return; }
     if (words.length < 1) { res.status(400).json({ error: '至少需要 1 个有效词条（word + gloss）' }); return; }
-    const id = createCustomBook(userIdOf(req), name, words);
+    const id = createCustomBook(userIdOf(req), name, words, String(body.subject || '英语'));
     res.json({ data: { id } });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
@@ -158,7 +158,7 @@ router.post('/errors', (req, res) => {
 router.post('/books/import', async (req, res) => {
   try {
     const uid = userIdOf(req);
-    const body = req.body as { url?: string; json?: unknown };
+    const body = req.body as { url?: string; json?: unknown; subject?: string };
     let pack: unknown;
     if (typeof body.json !== 'undefined') {
       pack = body.json;
@@ -192,15 +192,20 @@ router.post('/books/import', async (req, res) => {
       .filter((w) => w.word && w.gloss);
     if (!name) { res.status(400).json({ error: '内容包缺少 name' }); return; }
     if (words.length < 1) { res.status(400).json({ error: '内容包没有有效词条（word + gloss）' }); return; }
-    const id = createCustomBook(uid, name, words);
+    const id = createCustomBook(uid, name, words, String(body.subject || '英语'));
     // 标记来源：course/level 透传（建书走 custom 类型，词全量落库——与内置包词表不进库不同）
     res.json({ data: { id, name, wordCount: words.length } });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// GET /api/learning/courses —— 课程学段总览（启蒙→初中→高中→大学→出国，各课进度）
+// GET /api/learning/subjects —— 科目清单（前端科目分段由服务端驱动，不写死）
+router.get('/subjects', (_req, res) => {
+  res.json({ data: getSubjects() });
+});
+
+// GET /api/learning/courses —— 课程学段总览（按 ?subject= 过滤，默认英语）
 router.get('/courses', (req, res) => {
-  try { res.json({ data: getCourses(userIdOf(req)) }); }
+  try { res.json({ data: getCourses(userIdOf(req), String(req.query.subject || '英语')) }); }
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 

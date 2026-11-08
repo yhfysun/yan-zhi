@@ -8,6 +8,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
+import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 
 /** ★ 与 apps/server/src/builtin-learning-agents.ts 的 LEARNING_AGENT_ID 成对维护（服务端有契约单测） */
@@ -24,7 +25,7 @@ function unwrap<T>(r: unknown): T | null {
 
 // ── 数据 ──
 type Profile = { cefr: string | null; goals: string | null; streakDays?: number };
-type Book = { id: string; name: string; kind: string; course: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
+type Book = { id: string; name: string; kind: string; course: string; subject?: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
 type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
 type Question = { kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string; audio?: string };
 type DrillResult = { stars: number; passed: boolean; pct: number; results: Array<{ qid: string; word: string; correct: boolean; expected: string }> };
@@ -37,14 +38,22 @@ const activeBook = ref<Book | null>(null);
 const levels = ref<Level[]>([]);
 const loading = ref(true);
 
-// ── 科目（架构预留：当前仅英语有内容，其余占位禁用）──
-const SUBJECTS = [
-  { key: '英语', ready: true },
-  { key: '日语', ready: false },
-  { key: '数学', ready: false },
-  { key: '物理', ready: false },
-] as const;
+// ── 科目（服务端清单驱动：以后加科目只改服务端 curriculum.ts，UI 自动出现）──
+type SubjectDef = { key: string; label: string; ready: boolean };
+const SUBJECTS = ref<SubjectDef[]>([{ key: '英语', label: '英语', ready: true }]);
 const subject = ref<string>('英语');
+async function loadSubjects() {
+  const r = await api.get<SubjectDef[]>('/learning/subjects');
+  const list = unwrap<SubjectDef[]>(r);
+  if (list?.length) SUBJECTS.value = list;
+}
+async function switchSubject(key: string) {
+  if (!SUBJECTS.value.find((s) => s.key === key)?.ready) return;
+  subject.value = key;
+  activeBook.value = null;
+  levels.value = [];
+  await loadCourses();
+}
 
 // ── 工作区 Tab：闯关 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
 const tab = ref<'drill' | 'scenes' | 'grammar' | 'reading'>('drill');
@@ -93,7 +102,7 @@ function openCourse(c: CourseView) {
   tab.value = 'drill'; // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）
   void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount });
 }
-const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom'));
+const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom' && (b.subject || '英语') === subject.value));
 
 // ── 闯关状态 ──
 const drillLevel = ref<number | null>(null);
@@ -156,7 +165,7 @@ async function createBook() {
     .filter((p) => p[0] && p[1])
     .map((p) => ({ word: p[0], gloss: p[1], example: p[2] }));
   if (!bookName.value.trim() || !words.length) return;
-  const r = await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), words });
+  const r = await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), subject: subject.value, words });
   const created = unwrap<{ id: string }>(r);
   showCreate.value = false;
   bookName.value = '';
@@ -179,7 +188,7 @@ async function extractAndCreate() {
     const words = unwrap<Array<{ word: string; gloss: string; phonetic?: string; example?: string }>>(r) || [];
     if (!words.length) return;
     const created = unwrap<{ id: string }>(
-      await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), words }),
+      await api.post<{ data: { id: string } }>('/learning/books', { name: bookName.value.trim(), subject: subject.value, words }),
     );
     extractText.value = '';
     showCreate.value = false;
@@ -201,7 +210,7 @@ async function importBookUrl() {
   if (importing.value || !importUrl.value.startsWith('http')) return;
   importing.value = true;
   try {
-    const r = await api.post<{ data: { id: string; name: string; wordCount: number } }>('/learning/books/import', { url: importUrl.value });
+    const r = await api.post<{ data: { id: string; name: string; wordCount: number } }>('/learning/books/import', { url: importUrl.value, subject: subject.value });
     const d = unwrap<{ id: string; name: string; wordCount: number }>(r);
     if (!d) return;
     importUrl.value = '';
@@ -422,6 +431,13 @@ async function speak(text: string) {
   }
 }
 
+onMounted(() => {
+  // ★ 从首页快捷入口/直接输 URL 进学习页时，activeMode 仍是上一个模式 ——
+  //   不切就会话被记到办公任务列表（用户实报：「点了陪练跑到办公里面还创建了任务」）。
+  //   页面挂载即把模式切到 learning（与顶栏模式切换器同一函数，幂等）。
+  if (activeMode.value !== 'learning') setMode('learning');
+  void loadSubjects();
+});
 onMounted(loadAll);
 onMounted(loadTtsPack);
 </script>
@@ -441,8 +457,8 @@ onMounted(loadTtsPack);
             v-for="s in SUBJECTS" :key="s.key"
             class="lp-subject" :class="{ active: subject === s.key }"
             :disabled="!s.ready" :title="s.ready ? '' : '筹备中'"
-            @click="s.ready && (subject = s.key, loadCourses())"
-          >{{ s.key }}<i v-if="!s.ready" class="lp-soon">筹备中</i></button>
+            @click="switchSubject(s.key)"
+          >{{ s.label }}<i v-if="!s.ready" class="lp-soon">筹备中</i></button>
         </div>
       </div>
       <LearnStage ref="stageRef" class="lp-stage" />

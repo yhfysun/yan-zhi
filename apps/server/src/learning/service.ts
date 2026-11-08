@@ -8,7 +8,7 @@ import {
 } from './srs.js';
 import { BUILTIN_WORDBOOKS } from './data/wordbooks.js';
 import { buildLearningContextSummary } from './context.js';
-import { COURSE_CATALOG, COURSE_STAGES, type CourseStage } from './curriculum.js';
+import { COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS, type CourseStage } from './curriculum.js';
 
 export type LearningProfile = { cefr: string | null; goals: string | null; updated_at: number };
 
@@ -47,6 +47,7 @@ export type WordBookView = {
   kind: 'builtin' | 'custom' | 'downloaded';
   course: string;
   level: string;
+  subject: string;
   wordCount: number;
   levelCount: number;
   maxLevelCleared: number;
@@ -74,8 +75,8 @@ export function listWordBooks(userId: string): WordBookView[] {
   ensureBuiltinBookRows();
   // ★ 词书按用户过滤：内置（user_id NULL）共享；custom/downloaded 只归本人
   const rows = db.prepare(
-    'SELECT id, name, kind, course, level FROM word_book WHERE user_id IS NULL OR user_id = ? ORDER BY created_at ASC',
-  ).all(userId) as Array<{ id: string; name: string; kind: string; course: string; level: string }>;
+    'SELECT id, name, kind, course, level, COALESCE(subject, \'英语\') AS subject FROM word_book WHERE user_id IS NULL OR user_id = ? ORDER BY created_at ASC',
+  ).all(userId) as Array<{ id: string; name: string; kind: string; course: string; level: string; subject: string }>;
   return rows.map((r) => {
     const wc = r.kind === 'custom'
       ? (db.prepare('SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ?').get(userId, r.id) as { c: number }).c
@@ -85,7 +86,7 @@ export function listWordBooks(userId: string): WordBookView[] {
     ).get(userId, r.id, Date.now()) as { c: number };
     return {
       id: r.id, name: r.name, kind: r.kind as WordBookView['kind'],
-      course: r.course, level: r.level,
+      course: r.course, level: r.level, subject: r.subject,
       wordCount: wc, levelCount: levelCountFor(wc),
       maxLevelCleared: maxClearedLevel(userId, r.id),
       dueCount: due.c,
@@ -124,12 +125,18 @@ function wordsOfBook(userId: string, bookId: string): SrsWordRow[] {
   });
 }
 
-export function createCustomBook(userId: string, name: string, words: Array<{ word: string; phonetic?: string; gloss: string; example?: string }>): string {
+/** 科目清单（前端科目分段由服务端驱动，不写死在 UI：以后加科目只改 curriculum.ts） */
+export function getSubjects() {
+  return LEARNING_SUBJECTS.map((s) => ({ ...s }));
+}
+
+/** 自定义词书建书（subject 决定归属哪个科目；默认英语） */
+export function createCustomBook(userId: string, name: string, words: Array<{ word: string; phonetic?: string; gloss: string; example?: string }>, subject = '英语'): string {
   const id = `wb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
   const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO word_book (id, user_id, name, kind, course, level, created_at) VALUES (?, ?, ?, 'custom', '自定义', '', ?)`)
-      .run(id, userId, name, now);
+    db.prepare(`INSERT INTO word_book (id, user_id, name, kind, subject, course, level, created_at) VALUES (?, ?, ?, 'custom', ?, '自定义', '', ?)`)
+      .run(id, userId, name, subject, now);
     const ins = db.prepare(
       `INSERT INTO learning_word (id, user_id, book_id, word, phonetic, gloss, example, box, due_at, ord, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)`,
@@ -327,10 +334,12 @@ export type CourseView = {
   dueCount: number; progressPct: number;
 };
 
-export function getCourses(userId: string): Array<{ stage: CourseStage; courses: CourseView[] }> {
+export function getCourses(userId: string, subject = '英语'): Array<{ stage: CourseStage; courses: CourseView[] }> {
   ensureBuiltinBookRows();
   const byStage = new Map<CourseStage, CourseView[]>();
   for (const c of COURSE_CATALOG) {
+    // ★ 按科目过滤（此前路由声称支持但没接 —— 已收口到此唯一实现）
+    if (c.subject !== subject) continue;
     const pack = BUILTIN_WORDBOOKS.find((b) => b.id === c.bookId);
     if (!pack) continue;
     const wc = pack.words.length;

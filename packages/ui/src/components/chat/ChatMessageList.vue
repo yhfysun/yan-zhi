@@ -452,6 +452,11 @@
                         <DashboardCard v-if="dash.ok" :dash="dash.dash" />
                         <div v-else class="msg-doc-error">看板结构有误：{{ dash.error }}</div>
                       </template>
+                      <!-- 学习模式：场景任务卡结算（[SCENE_END] + scene_result 围栏 → 星级/句型/纠错卡） -->
+                      <template v-for="(sr, i) in roundSceneResults(vr.round)" :key="vr.round.finalAssistant.id + '-sr-' + i">
+                        <SceneResultCard v-if="sr.ok" :result="sr.result" />
+                        <div v-else class="msg-doc-error">场景结算数据有误：{{ sr.error }}</div>
+                      </template>
                       <!-- 工具生成的看板：build_dashboard_dsl 结果里的 [ydash] 定义（数据按 data_path 活取） -->
                       <DashboardCard
                         v-for="(td, ti) in roundToolDashboards(vr.round)"
@@ -813,6 +818,8 @@ import DataQueryWorkbench from './DataQueryWorkbench.vue';
 const InfographicBlock = defineAsyncComponent(() => import('./InfographicBlock.vue'));
 // 文档类型卡片：同样按需加载（内含图表/信息图渲染与 Word 导出）
 const DocumentCard = defineAsyncComponent(() => import('./DocumentCard.vue'));
+// 学习模式场景结算卡：[SCENE_END] + ```scene_result 围栏
+const SceneResultCard = defineAsyncComponent(() => import('./SceneResultCard.vue'));
 // 看板卡片：.ydash 定义渲染（图表/指标/表格/信息图）
 const DashboardCard = defineAsyncComponent(() => import('./DashboardCard.vue'));
 // 图表卡片：build_chart_dsl 产物（读 data_path 渲染，数据不进上下文）
@@ -820,6 +827,7 @@ const ChartFileCard = defineAsyncComponent(() => import('./ChartFileCard.vue'));
 import { collectChartDsls } from '../../utils/chart-file';
 import { extractInfographicBlocks, stripInfographicBlocks } from '../../utils/infographic-blocks';
 import { extractDocumentBlocks, stripDocumentBlocks } from '../../utils/document-blocks';
+import { extractSceneResultBlocks, stripSceneResultBlocks } from '../../utils/scene-result';
 import { extractDashboardBlocks, stripDashboardBlocks, extractToolDashboardBlocks } from '../../utils/ydash-blocks';
 import { extractSvgBlocks, stripSvgBlocks, svgToDataUrl } from '../../utils/svg-blocks';
 import { groupDeliverablesByRound } from '../../utils/deliverable-rounds';
@@ -886,6 +894,11 @@ function roundDashboards(round: MessageRound) {
   const content = round.finalAssistant?.content || '';
   return content ? extractDashboardBlocks(content) : [];
 }
+/** 学习模式：从本轮最终回复抽场景结算卡数据（渲染与正文剥离共用同一解析器） */
+function roundSceneResults(round: MessageRound) {
+  const content = round.finalAssistant?.content || '';
+  return content ? extractSceneResultBlocks(content) : [];
+}
 /**
  * 本轮所有工具结果文本。
  * ★ 结果挂在 step.toolResults[].content（role='tool' 的消息按 toolCallId 归位），
@@ -905,7 +918,7 @@ function roundSvgs(round: MessageRound) {
 }
 function renderRoundContent(content: string): string {
   return renderAssistantMarkdown(
-    stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(content)))),
+    stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(stripSceneResultBlocks(content))))),
   );
 }
 

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES,
-  COURSE_CATALOG, COURSE_STAGES,
+  COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS,
   getSceneCard, renderScenePrompt,
 } from '../src/learning/curriculum';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
@@ -40,6 +40,14 @@ describe('课程学段目录', () => {
     const firstIdx = COURSE_STAGES.indexOf(COURSE_CATALOG[0].stage);
     const lastIdx = COURSE_STAGES.indexOf(COURSE_CATALOG[COURSE_CATALOG.length - 1].stage);
     expect(firstIdx).toBeLessThan(lastIdx);
+  });
+
+  it('★ 科目架构：清单含英语（ready）+ 预留日语/数学/物理（未就绪）；课程都有 subject', () => {
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '英语')?.ready).toBe(true);
+    for (const k of ['日语', '数学', '物理']) {
+      expect(LEARNING_SUBJECTS.find((s) => s.key === k)?.ready).toBe(false);
+    }
+    for (const c of COURSE_CATALOG) expect(c.subject, c.id).toBe('英语');
   });
 
   it('每本课程词书都是完整可闯关的：40 词 2 关', () => {

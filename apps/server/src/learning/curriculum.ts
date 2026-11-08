@@ -190,25 +190,35 @@ GRAMMAR_POINTS.push(
 
 export type CourseStage = '启蒙' | '初中' | '高中' | '大学' | '出国';
 
+/** 科目清单（扩展点）：以后加日语/数学/物理 = 往这里加一项 + 往 COURSE_CATALOG 加对应 subject 的课程 */
+export const LEARNING_SUBJECTS = [
+  { key: '英语', label: '英语', ready: true },
+  { key: '日语', label: '日语', ready: false },
+  { key: '数学', label: '数学', ready: false },
+  { key: '物理', label: '物理', ready: false },
+] as const;
+
 export type CourseDef = {
   id: string;
   name: string;
   stage: CourseStage;
+  /** 科目归属（按科目过滤课程地图；当前全部英语） */
+  subject: string;
   bookId: string;
 };
 
 export const COURSE_CATALOG: CourseDef[] = [
-  { id: 'course_letters', name: '字母与音标', stage: '启蒙', bookId: 'wb_letters_sample' },
-  { id: 'course_junior1', name: '初一', stage: '初中', bookId: 'wb_junior1_sample' },
-  { id: 'course_junior2', name: '初二', stage: '初中', bookId: 'wb_junior2_sample' },
-  { id: 'course_junior3', name: '初三', stage: '初中', bookId: 'wb_junior3_sample' },
-  { id: 'course_senior1', name: '高一', stage: '高中', bookId: 'wb_senior1_sample' },
-  { id: 'course_senior2', name: '高二', stage: '高中', bookId: 'wb_senior2_sample' },
-  { id: 'course_gaokao', name: '高三 · 高考冲刺', stage: '高中', bookId: 'wb_gaokao_sample' },
-  { id: 'course_cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample' },
-  { id: 'course_cet6', name: '大学英语六级', stage: '大学', bookId: 'wb_cet6_sample' },
-  { id: 'course_ielts', name: '雅思', stage: '出国', bookId: 'wb_ielts_sample' },
-  { id: 'course_toefl', name: '托福', stage: '出国', bookId: 'wb_toefl_sample' },
+  { id: 'course_letters', name: '字母与音标', subject: '英语', stage: '启蒙', bookId: 'wb_letters_sample' },
+  { id: 'course_junior1', name: '初一', subject: '英语', stage: '初中', bookId: 'wb_junior1_sample' },
+  { id: 'course_junior2', name: '初二', subject: '英语', stage: '初中', bookId: 'wb_junior2_sample' },
+  { id: 'course_junior3', name: '初三', subject: '英语', stage: '初中', bookId: 'wb_junior3_sample' },
+  { id: 'course_senior1', name: '高一', subject: '英语', stage: '高中', bookId: 'wb_senior1_sample' },
+  { id: 'course_senior2', name: '高二', subject: '英语', stage: '高中', bookId: 'wb_senior2_sample' },
+  { id: 'course_gaokao', name: '高三 · 高考冲刺', subject: '英语', stage: '高中', bookId: 'wb_gaokao_sample' },
+  { id: 'course_cet4', name: '大学英语四级', subject: '英语', stage: '大学', bookId: 'wb_cet4_sample' },
+  { id: 'course_cet6', name: '大学英语六级', subject: '英语', stage: '大学', bookId: 'wb_cet6_sample' },
+  { id: 'course_ielts', name: '雅思', subject: '英语', stage: '出国', bookId: 'wb_ielts_sample' },
+  { id: 'course_toefl', name: '托福', subject: '英语', stage: '出国', bookId: 'wb_toefl_sample' },
 ];
 
 export const COURSE_STAGES: CourseStage[] = ['启蒙', '初中', '高中', '大学', '出国'];
