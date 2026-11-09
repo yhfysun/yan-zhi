@@ -37,9 +37,12 @@
 
 # 6. 验证
 
-- [ ] 6.1 `openspec validate --all`
-- [ ] 6.2 `pnpm --filter @yan-zhi/server typecheck` 与 `pnpm --filter @yan-zhi/ui typecheck`
+- [x] 6.1 `openspec validate --all`
+  → 2026-11-09：`@fission-ai/openspec@1.16.1` validate --all **33 passed / 0 failed**（仅 WARNING 级提示，无 ERROR）。
+- [x] 6.2 `pnpm --filter @yan-zhi/server typecheck` 与 `pnpm --filter @yan-zhi/ui typecheck`
+  → 2026-11-09：双端 --noEmit 均 0 错误（server tsc + ui vue-tsc）。
 - [ ] 6.3 `agent-browser` 核验：ChatHub 三模式、内置收发(无 AI)、微信/飞书授权流、设置绑定状态、三端
+  → 运行时 UI 核验（非代码任务），需 dev 应用跑起来后逐页截图核验，未做。
 
 > **2026-11-01 校对**：本变更 22 条中 19 条**代码已落地**（勾选注明实现形态与 tasks 原文的差异），
 > 此前清单里"22 条 0 完成"是**勾选滞后**。剩余 3 条（6.1 validate / 6.2 typecheck / 6.3 截图核验）
