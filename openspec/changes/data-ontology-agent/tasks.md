@@ -25,8 +25,8 @@
 - [x] 2.2 `views/DataConsolePage.vue`：数据源下拉（默认项目库）+ schema 树（搜索/点列插入）+ 行号深色编辑器 + Ctrl+Enter 运行选中/光标语句 + Ctrl+Shift+Enter 全部 + 结果多 Tab（状态点/截断提示/出错即停标 skipped）+ 导出 CSV（BOM）+ 轻量格式化
 - [x] 2.3a **数据编辑基础通道**：`data_edit_audit` 表 + 显式写权限开关 + 预检影响行数 + 二次确认 + 事务化提交 + 审计查询
   → 2026-11-05：SQLite / MySQL / PostgreSQL / Oracle / 达梦事务适配与一次性令牌已落地；控制台数据编辑入口、审计抽屉及窄屏卡片已接。`data-edit.test.ts` 5 例、Oracle/DM 2 例通过。
-- [ ] 2.3b 写权限 15 分钟自动关闭 + 审计记录变更前快照
-  → 当前 `allow_write` 为数据源持久开关，审计只存 SQL/参数/影响行数与错误，尚不可回放变更前数据。
+- [x] 2.3b 写权限 15 分钟自动关闭 + 审计记录变更前快照
+  → 2026-11-09：`data_source.write_enabled_at` 打开即计时，15 分钟窗口过期懒重置（判定收口 `isWriteAllowed`，预检/apply/控制台 guard 同走）；`data_edit_audit.before_snapshot_json` 预检执行前抓受影响行（`buildSnapshotQuery` 纯函数：DELETE 头换 SELECT *、UPDATE 单表参数偏移、INSERT 记 kind=insert、多表记 unavailable），200 行/256KB 双限；审计抽屉加快照列。`sql-guard` 快照计划 8 例 + `data-edit` 快照/窗口 3 例全绿。
 - [ ] 2.4 网格内编辑：结果集必须带主键，否则禁止；禁止 DDL / 无 WHERE 的 UPDATE·DELETE / 多语句
 
 ## P2.5 schema 同步升级为富化流水线（v2 新增）
