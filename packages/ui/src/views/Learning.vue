@@ -850,7 +850,9 @@ onMounted(loadTtsPack);
 </template>
 
 <style scoped>
-.learning-page { padding: 20px 24px; max-width: 1400px; margin: 0 auto; color: #1f2329; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; }
+/* ★ 高度用 flex 撑满 main-content（视口 − 顶栏 − 底部状态栏），绝不能写 100vh ——
+   100vh 是视口全高，会把学习页底部压到状态栏底下（用户实报：左栏最后一项永远被裁一半）。 */
+.learning-page { padding: 20px 24px; max-width: 1400px; width: 100%; margin: 0 auto; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
 .lp-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; flex-shrink: 0; }
 .lp-head-left { flex: 1; min-width: 0; }
 .lp-header h1 { font-size: 22px; margin: 0 0 4px; }
