@@ -5951,6 +5951,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_data_edit_audit_ds
     ON data_edit_audit(user_id, datasource_id, created_at DESC);
 `);
+// 2.3b：写权限打开时刻（15 分钟窗口判定基准）+ 变更前快照（受影响行 SELECT 结果）
+try { db.exec('ALTER TABLE data_source ADD COLUMN write_enabled_at INTEGER'); } catch {}
+try { db.exec('ALTER TABLE data_edit_audit ADD COLUMN before_snapshot_json TEXT'); } catch {}
 
 // ===== 看板（数据查询 P1）=====
 // 一个看板 = 标题 + 若干 widget；widget 只存「取数契约 + 图表定义 + 位置」，不存行数据，

@@ -107,6 +107,8 @@ export interface DataSourceRow {
   options_json: string | null;
   readonly: number;
   allow_write: number;
+  /** 2.3b 写权限打开时刻（ms）；15 分钟窗口过期即视为关闭。NULL = 从未打开 */
+  write_enabled_at: number | null;
   builtin: number;
   status: string;
   last_error: string | null;

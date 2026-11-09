@@ -59,6 +59,23 @@ function getRow(userId: string, id: string): DataSourceRow | undefined {
     | undefined;
 }
 
+// ===== 写权限 15 分钟窗口（2.3b）=====
+// allow_write 不再是持久开关：打开时记 write_enabled_at，窗口过完自动视为关闭并懒重置。
+// 所有「能否写」判定一律走 isWriteAllowed，别直接读 row.allow_write。
+export const WRITE_WINDOW_MS = 15 * 60_000;
+
+/** 唯一判定出口：allow_write=1 且打开时刻在 15 分钟窗口内。过期顺带落库重置（懒失效）。 */
+export function isWriteAllowed(row: DataSourceRow, now = Date.now()): boolean {
+  if (!row.allow_write || row.write_enabled_at == null) return false;
+  if (now - row.write_enabled_at > WRITE_WINDOW_MS) {
+    db.prepare(
+      'UPDATE data_source SET allow_write = 0, write_enabled_at = NULL, updated_at = ? WHERE id = ? AND allow_write = 1',
+    ).run(now, row.id);
+    return false;
+  }
+  return true;
+}
+
 function toInfo(row: DataSourceRow): DataSourceInfo {
   let ssl = false;
   try {
@@ -77,7 +94,8 @@ function toInfo(row: DataSourceRow): DataSourceInfo {
     filePath: row.file_path,
     username: row.username,
     readonly: !!row.readonly,
-    allowWrite: !!row.allow_write,
+    // 视图输出走窗口判定（不触发落库重置），前端开关状态与真实可写一致
+    allowWrite: row.allow_write === 1 && row.write_enabled_at != null && Date.now() - row.write_enabled_at <= WRITE_WINDOW_MS,
     status: row.status,
     lastError: row.last_error,
     lastTestAt: row.last_test_at,
@@ -142,8 +160,8 @@ export function createDataSource(userId: string, input: CreateInput): DataSource
     db.prepare(
       `INSERT INTO data_source
          (id, user_id, name, type, host, port, database, service_name, file_path,
-          username, password_enc, options_json, readonly, allow_write, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+          username, password_enc, options_json, readonly, allow_write, write_enabled_at, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
     ).run(
       id,
       userId,
@@ -159,6 +177,7 @@ export function createDataSource(userId: string, input: CreateInput): DataSource
       optionsJson(input),
       input.allowWrite ? 0 : 1,
       input.allowWrite ? 1 : 0,
+      input.allowWrite ? now : null,
       now,
       now,
     );
@@ -185,10 +204,19 @@ export function updateDataSource(userId: string, id: string, patch: Partial<Crea
     filePath: patch.filePath ?? row.file_path ?? undefined,
     username: patch.username ?? row.username ?? undefined,
     readonly: undefined,
-    allowWrite: patch.allowWrite ?? !row.allow_write,
+    // 不传保持原值（原来取反兜底会把不带 allowWrite 的改名请求误翻转写权限）
+    allowWrite: patch.allowWrite ?? !!row.allow_write,
   };
   const err = validateInput(merged.type, merged);
   if (err) throw new Error(err);
+  // 写窗口：allowWrite 关→开时重新计时；开着不改名不重置；开→关清空时刻
+  const openingWrite = !!merged.allowWrite && !row.allow_write;
+  const closingWrite = !merged.allowWrite && !!row.allow_write;
+  const writeEnabledAt = closingWrite || !merged.allowWrite
+    ? null
+    : openingWrite
+      ? Date.now()
+      : row.write_enabled_at;
   // 密码策略：不传 = 保持原值；传空串 = 清除
   const passwordEnc =
     patch.password === undefined
@@ -200,7 +228,7 @@ export function updateDataSource(userId: string, id: string, patch: Partial<Crea
   db.prepare(
     `UPDATE data_source SET
        name = ?, type = ?, host = ?, port = ?, database = ?, service_name = ?, file_path = ?,
-       username = ?, password_enc = ?, options_json = ?, readonly = ?, allow_write = ?, updated_at = ?
+       username = ?, password_enc = ?, options_json = ?, readonly = ?, allow_write = ?, write_enabled_at = ?, updated_at = ?
      WHERE id = ? AND user_id = ?`,
   ).run(
     merged.name!.trim(),
@@ -215,6 +243,7 @@ export function updateDataSource(userId: string, id: string, patch: Partial<Crea
     JSON.stringify(ssl ? { ssl: true } : {}),
     merged.allowWrite ? 0 : 1,
     merged.allowWrite ? 1 : 0,
+    writeEnabledAt,
     Date.now(),
     id,
     userId,
@@ -304,7 +333,7 @@ export async function runConsole(
 ): Promise<{ results: ConsoleStatementResult[]; totalMs: number }> {
   const row = getRow(userId, id);
   if (!row) throw new Error('数据源不存在');
-  const guard = guardSqlConsole(sql, !!row.allow_write);
+  const guard = guardSqlConsole(sql, isWriteAllowed(row));
   const results: ConsoleStatementResult[] = [];
   const start = Date.now();
 

@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { splitSqlStatements, statementAt } from '@yan-zhi/shared';
-import { guardDataEditSql, guardSqlConsole } from '../src/services/sql-guard.js';
+import { buildSnapshotQuery, guardDataEditSql, guardSqlConsole } from '../src/services/sql-guard.js';
 
 describe('splitSqlStatements（@yan-zhi/shared）', () => {
   const SQL = `SELECT 1; -- 注释; 里的分号
@@ -192,5 +192,58 @@ describe('guardDataEditSql · 数据编辑通道', () => {
     expect(guardDataEditSql('DROP TABLE account').ok).toBe(false);
     expect(guardDataEditSql('SET statement_timeout = 0').ok).toBe(false);
     expect(guardDataEditSql('WITH x AS (SELECT 1) DELETE FROM account WHERE id = 1').ok).toBe(false);
+  });
+});
+
+// ===== buildSnapshotQuery（2.3b 变更前快照计划）=====
+describe('buildSnapshotQuery · 数据编辑变更前快照计划', () => {
+  const build = buildSnapshotQuery;
+
+  it('DELETE：DELETE → SELECT *，其余原文照搬，参数全量沿用', () => {
+    const plan = build('DELETE FROM account WHERE status = ? ORDER BY id', ['x']);
+    expect(plan).toMatchObject({ kind: 'select', params: ['x'], paramOffset: 0 });
+    expect((plan as { sql: string }).sql).toBe('SELECT * FROM account WHERE status = ? ORDER BY id');
+  });
+
+  it('DELETE 带别名：SELECT * FROM t AS a WHERE ...', () => {
+    const plan = build('DELETE FROM "account" AS a WHERE a.id = 1', []);
+    expect((plan as { sql: string }).sql).toBe('SELECT * FROM "account" AS a WHERE a.id = 1');
+  });
+
+  it('UPDATE 单表：参数从 WHERE 段起取（SET 段参数数作偏移）', () => {
+    const plan = build('UPDATE account SET name = ?, status = ? WHERE id = ?', ['n', 's', 42]);
+    expect(plan).toMatchObject({ kind: 'select', params: [42], paramOffset: 2 });
+    expect((plan as { sql: string }).sql).toBe('SELECT * FROM account WHERE id = ?');
+  });
+
+  it('UPDATE WHERE 段含子查询参数：子查询 ? 同样归 WHERE 段序号', () => {
+    const plan = build(
+      'UPDATE t SET name = ? WHERE id = (SELECT id FROM u WHERE k = ?) AND flag = ?',
+      ['a', 'b', 'c'],
+    );
+    // offset = SET 段 1 个 ?；快照 SQL 的 ? 都在 WHERE 文本里，参数 [b, c] 一一对应
+    expect(plan).toMatchObject({ kind: 'select', params: ['b', 'c'], paramOffset: 1 });
+  });
+
+  it('UPDATE 多表（MySQL 逗号 / PG FROM / JOIN）→ unavailable', () => {
+    expect(build('UPDATE a, b SET a.x = 1 WHERE a.id = b.id', []).kind).toBe('unavailable');
+    expect(build('UPDATE a SET x = 1 FROM b WHERE a.id = b.id', []).kind).toBe('unavailable');
+    expect(build('UPDATE a JOIN b ON a.id = b.id SET a.x = 1 WHERE a.id = 1', []).kind).toBe('unavailable');
+  });
+
+  it('INSERT → kind=insert（变更前无行）', () => {
+    expect(build("INSERT INTO account (id) VALUES (1)", [])).toEqual({ kind: 'insert' });
+  });
+
+  it('字符串里的 where 关键字与 ? 不参与定位/计数', () => {
+    // WHERE 前的 SET 段里字符串含 ? 与 'where'：不应干扰 offset 与切片
+    const plan = build("UPDATE t SET note = 'a?b where c' WHERE id = ?", [7]);
+    expect(plan).toMatchObject({ kind: 'select', params: [7], paramOffset: 0 });
+    expect((plan as { sql: string }).sql).toBe("SELECT * FROM t WHERE id = ?");
+  });
+
+  it('注释里的 WHERE 不误定位', () => {
+    const plan = build('DELETE FROM t -- where 注释\nWHERE id = 1', []);
+    expect((plan as { sql: string }).sql).toBe('SELECT * FROM t -- where 注释\nWHERE id = 1');
   });
 });

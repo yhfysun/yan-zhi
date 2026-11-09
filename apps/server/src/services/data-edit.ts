@@ -7,11 +7,14 @@ import {
   type RunParam,
   type WriteExecutionResult,
 } from './connector.js';
-import { guardDataEditSql } from './sql-guard.js';
+import { guardDataEditSql, buildSnapshotQuery } from './sql-guard.js';
+import { isWriteAllowed } from './datasource.js';
 
 const PREFLIGHT_TTL_MS = 5 * 60_000;
 const MAX_PARAMS = 500;
 const MAX_PARAMS_JSON_BYTES = 64 * 1024;
+const SNAPSHOT_MAX_ROWS = 200;
+const SNAPSHOT_MAX_BYTES = 256 * 1024;
 
 export interface DataEditAudit {
   id: string;
@@ -24,6 +27,15 @@ export interface DataEditAudit {
   error: string | null;
   createdAt: number;
   appliedAt: number | null;
+  beforeSnapshot: EditBeforeSnapshot | null;
+}
+
+/** 变更前快照（2.3b）：UPDATE/DELETE 抓受影响行；INSERT 变更前无行；解析/执行失败记 unavailable */
+export interface EditBeforeSnapshot {
+  kind: 'insert' | 'rows' | 'unavailable';
+  rows?: Record<string, unknown>[];
+  truncated?: boolean;
+  reason?: string;
 }
 
 interface PendingEdit {
@@ -49,6 +61,7 @@ interface AuditRow {
   error: string | null;
   created_at: number;
   applied_at: number | null;
+  before_snapshot_json: string | null;
 }
 
 const pendingEdits = new Map<string, PendingEdit>();
@@ -123,12 +136,13 @@ function insertAudit(input: {
   status: DataEditAudit['status'];
   affectedRows?: number | null;
   error?: string | null;
+  snapshotJson?: string | null;
 }): string {
   const id = `dea_${uuid()}`;
   db.prepare(
     `INSERT INTO data_edit_audit
-      (id, user_id, datasource_id, action, sql_text, params_json, status, affected_rows, error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, user_id, datasource_id, action, sql_text, params_json, status, affected_rows, error, created_at, before_snapshot_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.userId,
@@ -140,6 +154,7 @@ function insertAudit(input: {
     input.affectedRows ?? null,
     input.error ?? null,
     Date.now(),
+    input.snapshotJson ?? null,
   );
   return id;
 }
@@ -163,7 +178,55 @@ function parseAudit(row: AuditRow): DataEditAudit {
     error: row.error,
     createdAt: row.created_at,
     appliedAt: row.applied_at,
+    beforeSnapshot: parseSnapshot(row.before_snapshot_json),
   };
+}
+
+function parseSnapshot(json: string | null): EditBeforeSnapshot | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as EditBeforeSnapshot;
+    if (parsed && (parsed.kind === 'insert' || parsed.kind === 'rows' || parsed.kind === 'unavailable')) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 预检时抓变更前快照：不阻塞预检（失败记 unavailable），大小/行数双限 */
+async function captureBeforeSnapshot(
+  row: DataSourceRow,
+  action: 'insert' | 'update' | 'delete',
+  statement: string,
+  params: RunParam[],
+): Promise<string> {
+  try {
+    const plan = buildSnapshotQuery(statement, params);
+    if (plan.kind === 'insert') return JSON.stringify({ kind: 'insert' } satisfies EditBeforeSnapshot);
+    if (plan.kind === 'unavailable') {
+      return JSON.stringify({ kind: 'unavailable', reason: plan.reason } satisfies EditBeforeSnapshot);
+    }
+    const r = await getConnector(row).queryParam(plan.sql, plan.params as RunParam[], {
+      maxRows: SNAPSHOT_MAX_ROWS,
+      timeoutMs: 15_000,
+    });
+    const snapshot: EditBeforeSnapshot = { kind: 'rows', rows: r.rows, truncated: r.truncated };
+    let json = JSON.stringify(snapshot);
+    // 字节超限时从尾部丢行，直到能装下（行粒度截断，保持 JSON 合法）
+    while (json.length > SNAPSHOT_MAX_BYTES && snapshot.rows!.length > 0) {
+      snapshot.rows!.pop();
+      snapshot.truncated = true;
+      json = JSON.stringify(snapshot);
+    }
+    if (json.length > SNAPSHOT_MAX_BYTES) {
+      return JSON.stringify({ kind: 'unavailable', reason: '快照超过 256KB 上限，未保存' } satisfies EditBeforeSnapshot);
+    }
+    return json;
+  } catch (err) {
+    return JSON.stringify({ kind: 'unavailable', reason: safeError(err) } satisfies EditBeforeSnapshot);
+  }
 }
 
 function executeWrite(
@@ -219,8 +282,8 @@ export async function preflightDataEdit(
     throw err;
   }
 
-  if (!row.allow_write || row.readonly) {
-    const message = '该数据源未开启写操作或仍为只读，不能执行数据编辑';
+  if (!isWriteAllowed(row) || row.readonly) {
+    const message = '该数据源未开启写操作或写窗口已过期（15 分钟自动关闭），不能执行数据编辑';
     insertAudit({
       userId, datasourceId, action: 'unknown', sql, params, status: 'rejected', error: message,
     });
@@ -240,6 +303,9 @@ export async function preflightDataEdit(
     });
     throw new Error(guard.reason || 'SQL 未通过数据编辑校验');
   }
+
+  // 变更前快照（2.3b）：预检事务执行前抓受影响行；抓不到不阻塞预检，审计里记 unavailable
+  const snapshotJson = await captureBeforeSnapshot(row, guard.action, guard.statement, params);
 
   let writeResult: WriteExecutionResult;
   try {
@@ -265,6 +331,7 @@ export async function preflightDataEdit(
     params,
     status: 'preflight',
     affectedRows: writeResult.affectedRows,
+    snapshotJson,
   });
   const token = randomBytes(32).toString('hex');
   const expiresAt = Date.now() + PREFLIGHT_TTL_MS;
@@ -323,8 +390,8 @@ export async function applyDataEdit(
     if (dataSourceFingerprint(row) !== pending.sourceVersion) {
       throw new Error('数据源配置已变更，请重新预检');
     }
-    if (!row.allow_write || row.readonly) {
-      throw new Error('数据源写权限已关闭，不能提交数据编辑');
+    if (!isWriteAllowed(row) || row.readonly) {
+      throw new Error('数据源写权限已关闭或写窗口已过期，不能提交数据编辑');
     }
     const result = await executeWrite(row, pending.sql, pending.params, false);
     db.prepare(

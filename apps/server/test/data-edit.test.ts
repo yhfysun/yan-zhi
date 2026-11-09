@@ -48,13 +48,23 @@ async function readAccounts(): Promise<Array<{ id: number; name: string; status:
   return rows;
 }
 
-function seedDataSource(allowWrite: boolean): void {
+function seedDataSource(allowWrite: boolean, writeEnabledAt?: number | null): void {
   const now = Date.now();
   db.prepare(
     `INSERT OR REPLACE INTO data_source
-      (id, user_id, name, type, file_path, readonly, allow_write, status, created_at, updated_at)
-     VALUES (?, ?, ?, 'sqlite', ?, ?, ?, 'ok', ?, ?)`,
-  ).run(DS_ID, USER_ID, '编辑测试库', sqliteFile, allowWrite ? 0 : 1, allowWrite ? 1 : 0, now, now);
+      (id, user_id, name, type, file_path, readonly, allow_write, write_enabled_at, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'sqlite', ?, ?, ?, ?, 'ok', ?, ?)`,
+  ).run(
+    DS_ID,
+    USER_ID,
+    '编辑测试库',
+    sqliteFile,
+    allowWrite ? 0 : 1,
+    allowWrite ? 1 : 0,
+    allowWrite ? (writeEnabledAt === undefined ? now : writeEnabledAt) : null,
+    now,
+    now,
+  );
 }
 
 beforeEach(async () => {
@@ -205,5 +215,63 @@ describe('数据编辑通道', () => {
       status: 'applied',
       affectedRows: 2,
     });
+  });
+
+  it('★ 2.3b UPDATE/DELETE 预检记录变更前快照，INSERT 记 kind=insert', async () => {
+    const upd = await preflightDataEdit(USER_ID, DS_ID, {
+      sql: "UPDATE account SET status = 'frozen' WHERE status = 'active'",
+    });
+    let audit = listDataEditAudits(USER_ID, DS_ID)[0];
+    expect(audit.beforeSnapshot).toMatchObject({ kind: 'rows', truncated: false });
+    // 快照是变更前数据：两条 active 行原值
+    expect(audit.beforeSnapshot!.rows).toEqual([
+      { id: 1, name: 'Alice', status: 'active' },
+      { id: 2, name: 'Bob', status: 'active' },
+    ]);
+    await applyDataEdit(USER_ID, DS_ID, upd.token);
+    audit = listDataEditAudits(USER_ID, DS_ID)[0];
+    expect(audit.beforeSnapshot!.rows).toEqual([
+      { id: 1, name: 'Alice', status: 'active' },
+      { id: 2, name: 'Bob', status: 'active' },
+    ]);
+
+    const del = await preflightDataEdit(USER_ID, DS_ID, {
+      sql: 'DELETE FROM account WHERE status = ?',
+      params: ['disabled'],
+    });
+    audit = listDataEditAudits(USER_ID, DS_ID)[0];
+    expect(audit.beforeSnapshot!.rows).toEqual([{ id: 3, name: 'Carol', status: 'disabled' }]);
+
+    const ins = await preflightDataEdit(USER_ID, DS_ID, {
+      sql: "INSERT INTO account (id, name, status) VALUES (4, 'Dan', 'active')",
+    });
+    audit = listDataEditAudits(USER_ID, DS_ID)[0];
+    expect(audit.beforeSnapshot).toEqual({ kind: 'insert' });
+    expect(ins.affectedRows).toBe(1);
+  });
+
+  it('★ 2.3b 写窗口过期（>15 分钟）预检拒绝且懒重置 allow_write', async () => {
+    seedDataSource(true, Date.now() - 16 * 60_000);
+    invalidateConnector(DS_ID);
+
+    await expect(preflightDataEdit(USER_ID, DS_ID, {
+      sql: "UPDATE account SET status = 'frozen' WHERE status = 'active'",
+    })).rejects.toThrow(/写窗口已过期/);
+
+    const row = db.prepare('SELECT allow_write, write_enabled_at FROM data_source WHERE id = ?').get(DS_ID) as
+      { allow_write: number; write_enabled_at: number | null };
+    expect(row.allow_write).toBe(0);
+    expect(row.write_enabled_at).toBeNull();
+    // 审计留痕 rejected
+    expect(listDataEditAudits(USER_ID, DS_ID)[0]).toMatchObject({ status: 'rejected' });
+  });
+
+  it('★ 2.3b 写窗口内（<15 分钟）预检正常放行', async () => {
+    seedDataSource(true, Date.now() - 14 * 60_000);
+    invalidateConnector(DS_ID);
+    const preview = await preflightDataEdit(USER_ID, DS_ID, {
+      sql: "UPDATE account SET status = 'frozen' WHERE status = 'active'",
+    });
+    expect(preview.affectedRows).toBe(2);
   });
 });

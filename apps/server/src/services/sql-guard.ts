@@ -158,6 +158,114 @@ function hasTopLevelKeyword(stripped: string, keyword: string): boolean {
   return false;
 }
 
+/** 与 stripForScan 同语义，但输出与输入**等长**（注释/字符串内容逐字符换成空格，引号保留）——用于原文切片定位与 ? 计数 */
+function stripKeepLength(sql: string): string {
+  let out = '';
+  let i = 0;
+  while (i < sql.length) {
+    const two = sql.slice(i, i + 2);
+    if (two === '--') {
+      while (i < sql.length && sql[i] !== '\n') { out += ' '; i++; }
+      continue;
+    }
+    if (two === '/*') {
+      const end = sql.indexOf('*/', i + 2);
+      const stop = end === -1 ? sql.length : end + 2;
+      while (i < stop) { out += ' '; i++; }
+      continue;
+    }
+    const ch = sql[i];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      out += ch;
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === q) {
+          if (sql[i + 1] === q && q !== '`') { out += '  '; i += 2; continue; }
+          out += ch;
+          i++;
+          break;
+        }
+        out += ' ';
+        i++;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** stripped 中第一个顶层（depth=0）关键字的原文区间；找不到返回 null */
+function locateTopLevelKeyword(stripped: string, keyword: string): { start: number; end: number } | null {
+  let depth = 0;
+  for (let i = 0; i < stripped.length;) {
+    const ch = stripped[i];
+    if (ch === '(') { depth++; i++; continue; }
+    if (ch === ')') { depth = Math.max(0, depth - 1); i++; continue; }
+    if (depth !== 0 || !/[A-Za-z_]/.test(ch)) { i++; continue; }
+    const prev = i > 0 ? stripped[i - 1] : '';
+    if (/[A-Za-z0-9_]/.test(prev)) { i++; continue; }
+    let end = i + 1;
+    while (end < stripped.length && /[A-Za-z0-9_]/.test(stripped[end])) end++;
+    if (stripped.slice(i, end).toUpperCase() === keyword) return { start: i, end };
+    i = end;
+  }
+  return null;
+}
+
+export type SnapshotPlan =
+  | { kind: 'insert' }
+  | { kind: 'select'; sql: string; params: unknown[]; paramOffset: number }
+  | { kind: 'unavailable'; reason: string };
+
+/**
+ * 数据编辑「变更前快照」计划（2.3b）：由原 DML 构造同 WHERE 的 SELECT，参数沿用。
+ * - DELETE：头部 `DELETE` → `SELECT *`，其余（alias/WHERE/ORDER/LIMIT）原样，参数序列不变
+ * - UPDATE：只支持单表（无顶层 JOIN/FROM/逗号多表）——取表名构 `SELECT * FROM t WHERE ...`，
+ *   参数从 WHERE 段起取（SET 段参数数按等长 strip 计数）
+ * - INSERT：变更前无行，kind='insert'
+ * - 解析不出安全形态时返回 unavailable（快照缺失，不阻塞预检）
+ * 纯函数：不触碰数据库，单测直接钉行为。
+ */
+export function buildSnapshotQuery(statement: string, params: unknown[]): SnapshotPlan {
+  const stripped = stripKeepLength(statement);
+  const head = headWord(stripped);
+  if (head === 'INSERT') return { kind: 'insert' };
+  if (head !== 'UPDATE' && head !== 'DELETE') {
+    return { kind: 'unavailable', reason: `仅支持 UPDATE/DELETE 快照（收到 ${head || '空'}）` };
+  }
+  const where = locateTopLevelKeyword(stripped, 'WHERE');
+  if (!where) return { kind: 'unavailable', reason: '无顶层 WHERE（护栏本应拒绝）' };
+
+  if (head === 'DELETE') {
+    // `DELETE FROM <t> ...` → `SELECT * FROM <t> ...`：只替换 DELETE 一词，其余原样。
+    // 多表删除形态（`DELETE t FROM t JOIN ...`）FROM 不紧跟 DELETE 头 → unavailable
+    const headEnd = locateTopLevelKeyword(stripped, 'DELETE');
+    if (!headEnd) return { kind: 'unavailable', reason: '无法定位 DELETE 头' };
+    if (!/^\s*FROM\b/i.test(stripped.slice(headEnd.end))) {
+      return { kind: 'unavailable', reason: 'DELETE 多表形态暂不支持快照' };
+    }
+    const sql = `SELECT *${statement.slice(headEnd.end)}`;
+    return { kind: 'select', sql, params, paramOffset: 0 };
+  }
+
+  // UPDATE：只支持单表 —— 表名段（head..SET）含逗号或 JOIN，或 SET..WHERE 间有顶层 FROM/JOIN（PG 更新）都算多表
+  const setLoc = locateTopLevelKeyword(stripped, 'SET');
+  if (!setLoc) return { kind: 'unavailable', reason: '无法定位 SET 段' };
+  const tableSeg = stripped.slice(head.length, setLoc.start).trim();
+  if (!tableSeg || /,/.test(tableSeg) || /\b(JOIN|FROM)\b/i.test(tableSeg)) {
+    return { kind: 'unavailable', reason: 'UPDATE 多表/表名无法解析' };
+  }
+  const setSeg = stripped.slice(setLoc.end, where.start);
+  if (/\b(FROM|JOIN)\b/i.test(setSeg)) return { kind: 'unavailable', reason: 'UPDATE 多表形态暂不支持快照' };
+  // SET 段参数占 params 前缀；WHERE 段参数从 offset 起
+  const paramOffset = (stripped.slice(0, where.start).match(/\?/g) || []).length;
+  const sql = `SELECT * FROM ${statement.slice(head.length, setLoc.start).trim()} ${statement.slice(where.start)}`;
+  return { kind: 'select', sql, params: params.slice(paramOffset), paramOffset };
+}
+
 export interface DataEditGuardResult {
   ok: boolean;
   action: 'insert' | 'update' | 'delete' | null;

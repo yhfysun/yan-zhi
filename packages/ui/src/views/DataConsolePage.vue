@@ -239,6 +239,11 @@
           <el-table-column label="影响行数" width="90" align="right">
             <template #default="{ row }">{{ row.affectedRows ?? '—' }}</template>
           </el-table-column>
+          <el-table-column label="变更前快照" width="110">
+            <template #default="{ row }">
+              <span :title="snapshotTitle(row)">{{ snapshotLabel(row) }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="错误" min-width="160">
             <template #default="{ row }">
               <span v-if="row.error" class="dc-audit-error">{{ row.error }}</span>
@@ -257,6 +262,7 @@
             <div class="dc-audit-card-meta">
               <span>{{ actionLabel(row.action) }}</span>
               <span>影响 {{ row.affectedRows ?? '—' }} 行</span>
+              <span>快照 {{ snapshotLabel(row) }}</span>
             </div>
             <pre class="dc-audit-card-sql dw-mono">{{ row.sql }}</pre>
             <p v-if="row.error" class="dc-audit-card-error">{{ row.error }}</p>
@@ -497,6 +503,7 @@ interface DataEditAudit {
   error: string | null;
   createdAt: number;
   appliedAt: number | null;
+  beforeSnapshot: { kind: 'insert' | 'rows' | 'unavailable'; rows?: Record<string, unknown>[]; truncated?: boolean; reason?: string } | null;
 }
 
 const editChecking = ref(false);
@@ -524,6 +531,27 @@ function auditTagType(status: DataEditAudit['status']): 'success' | 'warning' | 
   if (status === 'preflight') return 'warning';
   if (status === 'failed') return 'danger';
   return 'info';
+}
+
+/** 变更前快照摘要：行数 / 无（INSERT）/ 不可用原因 */
+function snapshotLabel(a: DataEditAudit): string {
+  const s = a.beforeSnapshot;
+  if (!s) return '—';
+  if (s.kind === 'insert') return '无（新增）';
+  if (s.kind === 'rows') {
+    const n = s.rows?.length ?? 0;
+    return `${n} 行${s.truncated ? '+' : ''}`;
+  }
+  return `不可用${s.reason ? `：${s.reason}` : ''}`;
+}
+
+/** 快照 title：rows 展开前几行键值预览 */
+function snapshotTitle(a: DataEditAudit): string {
+  const s = a.beforeSnapshot;
+  if (!s || s.kind !== 'rows' || !s.rows?.length) return '';
+  return s.rows.slice(0, 3)
+    .map((r) => Object.entries(r).map(([k, v]) => `${k}=${v}`).join(' '))
+    .join('\n') + (s.rows.length > 3 ? '\n…' : '');
 }
 
 function formatTime(value: number | null): string {
