@@ -9,8 +9,10 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
+import { usePlatformStore } from '../stores/platform';
 import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
+import { stripSceneResultBlocks } from '../utils/scene-result';
 
 /** ★ 与 apps/server/src/builtin-learning-agents.ts 的 LEARNING_AGENT_ID 成对维护（服务端有契约单测） */
 const LEARNING_AGENT_ID = 'a_builtin_learning_coach';
@@ -56,10 +58,11 @@ async function switchSubject(key: string) {
   await loadCourses();
 }
 
-// ── 工作区 Tab：闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'drill' | 'words' | 'scenes' | 'grammar' | 'reading'>('drill');
+// ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
+const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading'>('drill');
 const tabDefs = [
   { key: 'drill', label: '单词闯关' },
+  { key: 'coach', label: '陪练对话' },
   { key: 'words', label: '词汇表' },
   { key: 'scenes', label: '场景卡' },
   { key: 'grammar', label: '语法微课' },
@@ -67,6 +70,7 @@ const tabDefs = [
 ] as const;
 function switchTab(k: typeof tab.value) {
   tab.value = k;
+  if (k === 'coach') void ensureCoachConv(); // 复用/创建陪练会话（不跳路由，内嵌对话）
   if (k === 'words' && activeBook.value) void loadBookWords(true);
   if (k === 'scenes' && !scenes.value.length) loadScenes();
   if (k === 'grammar' && !grammarList.value.length) loadGrammar();
@@ -478,16 +482,118 @@ async function startCoaching() {
   if (startingChat.value) return;
   startingChat.value = true;
   try {
-    const convId = await chat.createConversation('英语陪练', { agentId: LEARNING_AGENT_ID, source: 'learning' });
-    await router.push({ name: 'chat-detail', params: { convId } });
+    await ensureCoachConv();
+    tab.value = 'coach'; // ★ 内嵌对话：留在学习模式，不跳聊天页（用户实报"又跳到办公模式"）
+    if (!coachMsgs.value.length) {
+      await sendCoach('Hi! I want to practice English. Please start with a few easy questions.');
+    } else {
+      speakLastCoachReply();
+    }
   } catch (e) {
-    // ★ 失败必须有反馈（此前异常静默：后端拒了/网络挂了用户只看到"按钮没用"，狂点建一串会话）
-    console.error('[learning] 创建陪练会话失败', e);
-    ElMessage.error(e instanceof Error ? `创建陪练会话失败：${e.message}` : '创建陪练会话失败，请稍后重试');
+    // ★ 失败必须有反馈（此前异常静默：后端拒了/网络挂了用户只看到"按钮没用"）
+    console.error('[learning] 开始陪练失败', e);
+    ElMessage.error(e instanceof Error ? `开始陪练失败：${e.message}` : '开始陪练失败，请稍后重试');
   } finally {
     startingChat.value = false;
   }
 }
+
+// ── 陪练对话（内嵌中栏：复用 chat store 的会话/消息/SSE 链路，AI 输出英文后自动朗读）──
+const platformStore = usePlatformStore();
+const coachConvId = ref('');
+const coachInput = ref('');
+const coachSending = ref(false);
+const coachVoiceOn = ref(true);
+const coachMsgs = computed(() => (coachConvId.value ? chat.messagesByConv[coachConvId.value] || [] : []));
+const coachStreaming = computed(() => !!coachConvId.value && chat.isConvStreaming(coachConvId.value));
+
+/** 复用最近的 learning 陪练会话（刷新不丢对话），没有才建新的 */
+async function ensureCoachConv(): Promise<string> {
+  if (coachConvId.value) return coachConvId.value;
+  const r = await api.get<any[]>('/conversations?mode=learning&limit=1');
+  const list = unwrap<any[]>(r) || [];
+  if (list.length) {
+    coachConvId.value = String(list[0].id);
+  } else {
+    coachConvId.value = await chat.createConversation('英语陪练', { agentId: LEARNING_AGENT_ID, source: 'learning' });
+  }
+  await chat.loadMessages(coachConvId.value);
+  return coachConvId.value;
+}
+
+/** 发送用的平台/模型：优先会话已绑模型，否则取平台列表第一个可用模型。
+ *  ★ 学习模式是独立页面，挂载时不会走聊天页的平台初始化 —— 必须自己幂等预热，
+ *    否则首次点陪练必然落到「还没有可用的 AI 模型」提示，AI 根本调不通。
+ *    ensureModels() 走 /platforms/all-models 全量清单，不会把共享缓存替换成单平台清单。 */
+async function resolveCoachModel(): Promise<{ platform: any; model: any } | null> {
+  await platformStore.ensurePlatforms();
+  await platformStore.ensureModels();
+  const conv = chat.conversations.find((c) => c.id === coachConvId.value);
+  let model = conv?.modelId ? platformStore.models.find((m: any) => m.id === conv.modelId) : undefined;
+  if (!model) model = platformStore.models[0] as any;
+  if (!model) return null;
+  const platform = platformStore.platforms.find((p: any) => p.id === (model as any).platformId);
+  return platform ? { platform, model } : null;
+}
+
+async function sendCoach(preset?: string) {
+  const content = (preset ?? coachInput.value).trim();
+  if (!content || coachSending.value) return;
+  coachSending.value = true;
+  try {
+    const convId = await ensureCoachConv();
+    const resolved = await resolveCoachModel();
+    if (!resolved) {
+      ElMessage.error('还没有可用的 AI 模型 —— 请先在对话页配置平台与模型');
+      return;
+    }
+    if (!preset) coachInput.value = '';
+    await chat.sendMessage(content, resolved.platform, resolved.model, undefined, {}, convId);
+    speakLastCoachReply(); // AI 说完 → 宠物读出来（浏览器本地 TTS，离线可用）
+  } catch (e) {
+    console.error('[learning] 陪练发送失败', e);
+    ElMessage.error(e instanceof Error ? `发送失败：${e.message}` : '发送失败，请稍后重试');
+  } finally {
+    coachSending.value = false;
+  }
+}
+
+function coachTextOf(m: { role: string; content?: string }): string {
+  if (m.role !== 'assistant') return String(m.content || '');
+  return stripSceneResultBlocks(String(m.content || ''));
+}
+
+// 浏览器本地 TTS（en-US）：长句朗读用它（单词朗读走 tts-packs 合成，场景结算卡同款思路）
+function speakLastCoachReply() {
+  if (!coachVoiceOn.value) return;
+  const last = [...coachMsgs.value].reverse().find((m) => m.role === 'assistant' && coachTextOf(m).trim());
+  if (!last) return;
+  speakCoachText(coachTextOf(last));
+}
+function speakCoachText(text: string) {
+  const t = text.trim().slice(0, 600);
+  if (!t) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang = 'en-US';
+    u.rate = 0.95;
+    u.onend = () => stageRef.value?.play('wave');
+    speechSynthesis.speak(u);
+    stageRef.value?.play('pet');
+  } catch { /* 环境无 TTS（如旧 jsdom）→ 静默 */ }
+}
+function stopCoachSpeak() { try { speechSynthesis.cancel(); } catch { /* 同上 */ } }
+function toggleCoachVoice() {
+  coachVoiceOn.value = !coachVoiceOn.value;
+  if (!coachVoiceOn.value) stopCoachSpeak();
+}
+// 流式输出时消息区跟到底部
+watch(() => coachMsgs.value.map((m) => m.content?.length || 0).join(','), async () => {
+  await nextTick();
+  const el = document.querySelector('.lp-chat-msgs');
+  if (el) el.scrollTop = el.scrollHeight;
+});
 
 const starText = computed(() => (n: number) => '★'.repeat(n) + '☆'.repeat(3 - n));
 
@@ -633,8 +739,44 @@ onMounted(loadTtsPack);
           >{{ t.label }}</button>
         </div>
 
+        <!-- 陪练对话：内嵌中栏（不跳路由），AI 输出英文 + 自动朗读 -->
+        <template v-if="tab === 'coach'">
+          <div class="lp-coach-chat">
+            <div class="lp-chat-msgs">
+              <template v-for="(m, mi) in coachMsgs" :key="m.id || mi">
+                <div v-if="m.role === 'user' || (m.role === 'assistant' && coachTextOf(m).trim())" class="lp-chat-row" :class="m.role">
+                  <div class="lp-chat-bubble">
+                    <p class="lp-chat-text">{{ coachTextOf(m) }}</p>
+                    <button v-if="m.role === 'assistant' && coachTextOf(m).trim()" class="lp-speak" title="朗读这句" @click="speakCoachText(coachTextOf(m))">🔊</button>
+                  </div>
+                </div>
+              </template>
+              <div v-if="coachStreaming" class="lp-chat-typing">陪练正在输入…</div>
+              <div v-if="!coachMsgs.length && !coachStreaming" class="lp-empty">
+                <p class="lp-empty-title">和英语陪练开聊吧</p>
+                <p class="lp-hint">AI 每句 ≤3 句英文，说错的地方用「你说 → 母语者会说 → 为什么」轻纠；回复会自动朗读（右上角 🔇 可关）。</p>
+                <button class="lp-mini" @click="sendCoach('Hi! I want to practice English. Please start with a few easy questions.')">
+                  Hi, let's start! 👋
+                </button>
+              </div>
+            </div>
+            <div class="lp-chat-input">
+              <button class="lp-mini" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">{{ coachVoiceOn ? '🔊' : '🔇' }}</button>
+              <input
+                v-model="coachInput" class="lp-chat-entry"
+                placeholder="用英语说点什么…（回车发送）"
+                @keyup.enter="sendCoach()"
+              />
+              <button v-if="coachStreaming" class="lp-primary lp-stop" @click="chat.stop(coachConvId)">⏹ 停止</button>
+              <button v-else class="lp-primary" :disabled="coachSending || !coachInput.trim()" @click="sendCoach()">
+                {{ coachSending ? '发送中…' : '发送' }}
+              </button>
+            </div>
+          </div>
+        </template>
+
         <!-- 单词闯关 -->
-        <template v-if="tab === 'drill'">
+        <template v-else-if="tab === 'drill'">
           <!-- 单题聚焦模式：一次只答一题（此前 10 题平铺成一条长列表，又密又乱） -->
           <template v-if="(drillLevel != null || reviewMode) && currentQ">
             <p class="lp-drill-title">
@@ -950,6 +1092,24 @@ onMounted(loadTtsPack);
 .lp-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #646a73; }
 .lp-empty { text-align: center; padding: 48px 12px; }
 .lp-empty-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+/* 陪练对话（内嵌）：气泡列表 + 底部输入条 */
+/* 中栏在陪练 Tab 下改为纵向 flex（tabs 固定 + 对话区吃满剩余），关闭外层滚动让气泡区独立滚 */
+.lp-col-mid:has(> .lp-coach-chat) { overflow: hidden; display: flex; flex-direction: column; }
+.lp-coach-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lp-chat-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 2px 12px; }
+.lp-chat-row { display: flex; margin-bottom: 12px; }
+.lp-chat-row.user { justify-content: flex-end; }
+.lp-chat-row.assistant { justify-content: flex-start; }
+.lp-chat-bubble { max-width: 78%; background: color-mix(in srgb, var(--color-primary) 9%, var(--glass-bg)); border-radius: 12px; padding: 10px 14px; position: relative; }
+.lp-chat-row.user .lp-chat-bubble { background: color-mix(in srgb, var(--color-primary) 16%, var(--glass-bg)); }
+.lp-chat-row.assistant .lp-chat-bubble { background: var(--glass-bg-hover); }
+.lp-chat-text { margin: 0; font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; color: var(--color-text); }
+.lp-chat-bubble .lp-speak { position: absolute; right: 6px; bottom: -14px; }
+.lp-chat-typing { font-size: 12px; color: var(--color-text-tertiary); padding: 4px 8px; }
+.lp-chat-input { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 10px; }
+.lp-chat-entry { flex: 1; }
+.lp-stop { background: #d4380d; border-color: #d4380d; }
+
 .lp-drill-title { font-size: 13px; color: #4e5469; margin: 0 0 10px; }
 /* 单题聚焦模式：进度条 + 大题卡 + 圆点导航（替代 10 题平铺） */
 .lp-drill-meter { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }

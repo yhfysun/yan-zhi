@@ -20,8 +20,27 @@ const push = vi.fn(async () => {})
 vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
 
 const createConversation = vi.fn(async () => 'c_test_1')
+const loadMessages = vi.fn(async () => {})
+const sendMessage = vi.fn(async () => {})
+const stopChat = vi.fn()
+const isConvStreaming = vi.fn(() => false)
+/** 陪练消息仓：顶层共享对象（组件 setup 捕获的是这个引用），用例可注入英文回复再断言气泡 */
+const messagesByConv: Record<string, Array<{ id?: string; role: string; content?: string }>> = {}
 vi.mock('../stores/chat', () => ({
-  useChatStore: () => ({ createConversation }),
+  useChatStore: () => ({
+    createConversation, loadMessages, sendMessage, stop: stopChat, isConvStreaming,
+    conversations: [], messagesByConv,
+  }),
+}))
+const ensurePlatforms = vi.fn(async () => {})
+const ensureModels = vi.fn(async () => {})
+/** 陪练发送要选模型：给一个可用平台/模型，否则 resolveCoachModel 返回 null 会走错误提示分支 */
+vi.mock('../stores/platform', () => ({
+  usePlatformStore: () => ({
+    models: [{ id: 'm_test', platformId: 'p_test', name: 'test-model' }],
+    platforms: [{ id: 'p_test', name: 'test-platform' }],
+    ensurePlatforms, ensureModels,
+  }),
 }))
 
 /** 默认 api.get 分发（vi.hoisted：vi.mock factory 会提升到顶层声明之前，直接引用 const 会 TDZ 崩）。
@@ -66,18 +85,25 @@ beforeEach(async () => {
   document.body.innerHTML = ''
   push.mockClear()
   createConversation.mockClear()
+  loadMessages.mockClear()
+  sendMessage.mockClear()
+  stopChat.mockClear()
+  ensurePlatforms.mockClear()
+  ensureModels.mockClear()
+  // 消息仓清空但保留对象引用（组件 setup 已捕获该引用）
+  for (const k of Object.keys(messagesByConv)) delete messagesByConv[k]
   // 恢复默认分发：前一用例的 mockImplementation 不泄漏（jsdom 用例间共享同一个 vi.fn 实例）
   const { api } = await import('../api/client')
   vi.mocked(api.get).mockImplementation(defaultGet)
 })
 
 describe('Learning 工作区 · 挂载契约', () => {
-  it('渲染标题、streak 火焰与五个 Tab（闯关/词汇表/场景/语法/阅读）', async () => {
+  it('渲染标题、streak 火焰与六个 Tab（含陪练对话）', async () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-sub')?.textContent).toContain('🔥 连续 3 天'))
     expect(el.querySelector('h1')?.textContent).toContain('学习模式')
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
-    expect(tabs).toEqual(['单词闯关', '词汇表', '场景卡', '语法微课', '范文阅读'])
+    expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读'])
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
   })
 
@@ -171,16 +197,44 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
 
-  it('★ 开始陪练：带契约 id（a_builtin_learning_coach）创建会话并跳转', async () => {
+  it('★ 开始陪练：内嵌中栏直接调 AI（不跳路由），带契约 id 建会话并发起英文对话', async () => {
     const el = await mountPage()
     const btn = [...el.querySelectorAll('.lp-coach')].find((b) => b.textContent?.includes('开始陪练')) as HTMLElement
     expect(btn).toBeTruthy()
     btn.click()
-    await nextTick(); await nextTick()
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled())
     expect(createConversation).toHaveBeenCalledTimes(1)
     const [title, opts] = createConversation.mock.calls[0] as unknown as [string, { agentId?: string }]
     expect(title).toContain('英语陪练')
     expect(opts.agentId).toBe('a_builtin_learning_coach')
-    expect(push).toHaveBeenCalledWith({ name: 'chat-detail', params: { convId: 'c_test_1' } })
+    // ★ 用户实报「怎么又跳到办公模式」：陪练必须留在学习模式内嵌对话，绝不 push 聊天路由
+    expect(push).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(el.querySelector('.lp-coach-chat')).toBeTruthy())
+    // ★ 独立学习页必须自己幂等预热平台/模型，否则首次发送必然落到「没有可用模型」提示
+    expect(ensurePlatforms).toHaveBeenCalled()
+    expect(ensureModels).toHaveBeenCalled()
+    // 直接调用 AI 接口（chat.sendMessage），且首句是英文摸底开场白
+    const args = sendMessage.mock.calls[0] as unknown as [string, unknown, unknown, unknown, unknown, string]
+    expect(args[0]).toContain('practice English')
+    expect(args[5]).toBe('c_test_1')
+    expect(loadMessages).toHaveBeenCalledWith('c_test_1')
+  })
+
+  it('陪练对话 Tab：AI 英文回复渲染成气泡并带朗读按钮（不跳布局）', async () => {
+    // 消息仓是普通对象：必须在 ensureCoachConv 写入 coachConvId（触发 computed 重算）之前注入
+    messagesByConv['c_test_1'] = [
+      { id: 'u1', role: 'user', content: 'Hi!' },
+      { id: 'a1', role: 'assistant', content: 'Hello! Nice to meet you. How are you today?' },
+    ]
+    const el = await mountPage()
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('陪练对话'))!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2))
+    expect(el.querySelector('.lp-coach-chat')).toBeTruthy()
+    expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2)
+    expect(el.querySelector('.lp-chat-text')?.textContent).toContain('Hi!')
+    expect(el.textContent).toContain('How are you today?')
+    // assistant 气泡带 🔊 朗读按钮；三栏骨架仍在
+    expect(el.querySelectorAll('.lp-chat-row.assistant .lp-speak').length).toBe(1)
+    expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
 })
