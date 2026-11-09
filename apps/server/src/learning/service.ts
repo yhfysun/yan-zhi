@@ -166,6 +166,18 @@ export function addWordToBook(userId: string, bookId: string, w: { word: string;
     w.word.trim(), w.phonetic ?? null, w.gloss.trim(), w.example ?? null, ord, Date.now());
 }
 
+/** 删除自定义词书（连词行与关卡进度一起清）。内置词书不可删（共享目录行）；别人的词书删不了。 */
+export function deleteCustomBook(userId: string, bookId: string): void {
+  const book = db.prepare("SELECT id FROM word_book WHERE id = ? AND kind = 'custom' AND user_id = ?").get(bookId, userId) as { id: string } | undefined;
+  if (!book) throw new Error('词书不存在或不可删除（内置词书不能删）');
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM word_level WHERE user_id = ? AND book_id = ?').run(userId, bookId);
+    db.prepare('DELETE FROM learning_word WHERE user_id = ? AND book_id = ?').run(userId, bookId);
+    db.prepare('DELETE FROM word_book WHERE id = ?').run(bookId);
+  });
+  tx();
+}
+
 // ── 词书全量词汇浏览（修"看不全"：点进词书只能闯关，没有地方通读整本词表） ─────
 export type BookWordRow = { word: string; phonetic: string | null; gloss: string; example: string | null };
 export type BookWordsPage = { total: number; page: number; size: number; words: BookWordRow[] };

@@ -6,7 +6,7 @@ import { db } from '../src/db';
 import {
   createCustomBook, listWordBooks, getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
-  addError, listErrors, getLearningContext, getCourses, listBookWords,
+  addError, listErrors, getLearningContext, getCourses, listBookWords, deleteCustomBook,
 } from '../src/learning/service';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import type { DrillQuestion } from '../src/learning/srs';
@@ -107,6 +107,31 @@ describe('词汇表全量浏览（listBookWords）', () => {
     const row = db.prepare('SELECT name FROM word_book WHERE id = ?').get(BUILTIN_BOOK.id) as { name: string };
     expect(row.name).toBe(BUILTIN_BOOK.name);
     expect(row.name).not.toContain('示例');
+  });
+
+  it('删除自定义词书：词行+关卡进度连清；内置词书和别人的词书不可删', () => {
+    const id = createCustomBook(uid, '待删词单', [
+      { word: 'alpha', gloss: '字母 A' },
+      { word: 'beta', gloss: '字母 B' },
+    ]);
+    // 先闯一关留下进度行
+    const { questions } = getDrill(uid, id, 1);
+    submitDrill(uid, id, 1, questions.map((q) => ({ qid: q.qid, kind: 'spelling' as const, typed: 'zzz' })), questions);
+    expect(db.prepare('SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ?').get(uid, id)).toBeTruthy();
+
+    deleteCustomBook(uid, id);
+    expect(db.prepare('SELECT COUNT(*) AS c FROM word_book WHERE id = ?').get(id)).toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS c FROM learning_word WHERE book_id = ?').get(id)).toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS c FROM word_level WHERE book_id = ?').get(id)).toEqual({ c: 0 });
+    expect(listWordBooks(uid).some((b) => b.id === id)).toBe(false);
+
+    // 内置词书不可删
+    expect(() => deleteCustomBook(uid, BUILTIN_BOOK.id)).toThrow(/不可删除/);
+    // 不存在的书报错
+    expect(() => deleteCustomBook(uid, 'wb_no_such')).toThrow(/不存在/);
+    // 别人的 custom 书删不了
+    const other = createCustomBook(`other-${uid}`, '别人的词单', [{ word: 'x', gloss: 'y' }]);
+    expect(() => deleteCustomBook(uid, other)).toThrow(/不存在/);
   });
 });
 

@@ -6,7 +6,7 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { setMode, activeMode } from '../stores/mode';
@@ -182,6 +182,25 @@ async function loadBookWords(reset = false) {
 function setWordPage(delta: number) {
   wordPage.value = Math.max(0, Math.min(wordPageCount.value - 1, wordPage.value + delta));
   void loadBookWords();
+}
+
+/** 删除自定义词单（确认后连词与闯关进度一起清；内置课程无此按钮不可删） */
+async function removeBook(b: Book, ev: Event) {
+  ev.stopPropagation();
+  try {
+    await ElMessageBox.confirm(`删除词单「${b.name}」？里面的单词和闯关进度会一起清掉，不可恢复。`, '删除词单', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    });
+  } catch { return; }
+  try {
+    const r = await api.delete<{ data: unknown }>(`/learning/books/${b.id}`);
+    if (r && 'error' in (r as object)) { ElMessage.error(String((r as { error: string }).error)); return; }
+    ElMessage.success('词单已删除');
+    if (activeBook.value?.id === b.id) { activeBook.value = null; levels.value = []; drillLevel.value = null; }
+    await loadAll();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '删除失败');
+  }
 }
 
 // ── 关卡分页（全量词书可达 200 关：整页铺开不可用，按 12 关一页翻）──
@@ -579,6 +598,7 @@ onMounted(loadTtsPack);
             >
               <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge">🟡 {{ b.dueCount }}</i></span>
               <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关</span>
+              <i class="lp-book-del" role="button" title="删除词单" @click.stop="removeBook(b, $event)">×</i>
             </button>
           </div>
         </div>
@@ -904,10 +924,12 @@ onMounted(loadTtsPack);
 .lp-due-badge { font-style: normal; font-size: 10px; color: #e8590c; background: #fff4e6; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
 .lp-custom-books { margin-top: 12px; padding-top: 10px; border-top: 1px solid #f0f1f3; }
 .lp-books { display: flex; flex-direction: column; gap: 6px; }
-.lp-book { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; color: #1f2329; }
+.lp-book { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; color: #1f2329; position: relative; }
 .lp-book.active { border-color: #3370ff; background: #f0f5ff; }
 .lp-book-name { font-size: 13px; font-weight: 600; }
 .lp-book-meta { font-size: 11px; color: #8f959e; }
+.lp-book-del { position: absolute; top: 4px; right: 6px; width: 18px; height: 18px; line-height: 16px; text-align: center; border-radius: 50%; font-style: normal; font-size: 13px; color: #8f959e; cursor: pointer; }
+.lp-book-del:hover { background: #fee2e2; color: #d4380d; }
 .lp-levels-title { font-size: 14px; margin: 0 0 10px; color: #1f2329; }
 .lp-level-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
 .lp-level { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 1px solid #e5e6eb; border-radius: 10px; padding: 12px 4px; cursor: pointer; background: #fafbfc; color: #1f2329; }

@@ -9,7 +9,7 @@ import {
   getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   listErrors, addError,
-  listBookWords,
+  listBookWords, deleteCustomBook,
   getLearningContext, getCourses, getSubjects,
 } from '../learning/service.js';
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
@@ -79,6 +79,14 @@ router.post('/books/:bookId/words', (req, res) => {
     const gloss = String(body.gloss || '').trim();
     if (!word || !gloss) { res.status(400).json({ error: 'word 与 gloss 必填' }); return; }
     addWordToBook(userIdOf(req), String(req.params.bookId), { word, gloss, phonetic: body.phonetic, example: body.example });
+    res.json({ data: { ok: true } });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// DELETE /api/learning/books/:bookId —— 删除自定义词书（连词行与关卡进度；内置词书不可删）
+router.delete('/books/:bookId', (req, res) => {
+  try {
+    deleteCustomBook(userIdOf(req), String(req.params.bookId));
     res.json({ data: { ok: true } });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
