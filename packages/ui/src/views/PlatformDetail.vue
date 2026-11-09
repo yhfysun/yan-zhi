@@ -619,17 +619,20 @@ async function testModel(row: any) {
 
 /** 每种模型类型可跑的测试项 */
 function testKindsOf(m: any): { kind: string; label: string }[] {
-  // 所有模型都给全项（问答/视觉/工具/图片/视频）——平台目录的 type 常与实际能力不符，
-  // 不按类型收窄；不支持会在结果里如实报失败，通过的那项自动勾上
-  const base = [
+  // 专项类型只给对应测试项（2026-11-08 用户：「向量模型测试应该只有一个吧」）：
+  // embedding/image/video 这类专用模型跑问答/视觉/工具测试必然失败，只会制造报错噪音。
+  // llm 是兜底类型 —— 平台目录的 type 常与实际能力不符，维持全项 + 实测为准
+  //（不支持会在结果里如实报失败，通过的那项自动勾上）。
+  if (m.type === 'embedding') return [{ kind: 'embedding', label: '向量嵌入' }];
+  if (m.type === 'image') return [{ kind: 'image', label: '图片生成' }];
+  if (m.type === 'video') return [{ kind: 'video', label: '视频生成' }];
+  return [
     { kind: 'chat', label: '基础问答' },
     { kind: 'vision', label: '视觉识图' },
     { kind: 'function_call', label: '工具调用' },
     { kind: 'image', label: '图片生成' },
     { kind: 'video', label: '视频生成' },
   ];
-  if (m.type === 'embedding') base.push({ kind: 'embedding', label: '向量嵌入' });
-  return base;
 }
 
 /** 卡片下拉：单项测试 / 自动检测全部 */
@@ -652,13 +655,13 @@ async function runCapabilityTest(m: any, kind: string) {
   } finally { testing.value = ''; }
 }
 
-/** 自动检测：跑全部能力项（问答/视觉/工具/图片/视频），把通过的写回能力 */
+/** 自动检测：按模型类型的可测项逐项跑，把通过的写回能力 */
 async function autoDetectCapabilities(m: any) {
   testing.value = m.id;
   try {
-    // 不按模型类型收窄：图片/视频项对所有模型都跑，通过即勾上，不通过就不勾
-    const kinds = ['chat', 'vision', 'function_call', 'image', 'video'];
-    if (m.type === 'embedding') kinds.push('embedding');
+    // 与下拉菜单同一份清单（testKindsOf 唯一实现）：专项类型只测对应项，
+    // llm 兜底类型全项都跑（图片/视频项对所有 llm 都跑，通过即勾上，不通过就不勾）
+    const kinds = testKindsOf(m).map((k) => k.kind);
     const list: { kind: string; label: string; ok: boolean; msg: string; durationMs: number }[] = [];
     const applied: string[] = [];
     for (const k of kinds) {
