@@ -42,6 +42,17 @@ function resolveBakedServerBase() {
 }
 const BAKED_SERVER_BASE = resolveBakedServerBase();
 
+/**
+ * 运行形态标记（2026-11-08，共享服务设置页门控用）。
+ * 主进程经 additionalArguments 下发：--yz-shell-mode=1（壳模式）/ --yz-local-backend=1（有本机后端）。
+ * 两者互斥（壳 = 无本机后端）；都缺省 = Web/移动端等非 Electron 环境。
+ */
+function argvFlag(name) {
+  try { return (process.argv || []).includes(`--${name}=1`); } catch { return false; }
+}
+const IS_SHELL_MODE = argvFlag('yz-shell-mode');
+const HAS_LOCAL_BACKEND = argvFlag('yz-local-backend');
+
 // ★ 渲染层心跳已删除（2026-10-27）：定时器会被 Chromium 节流（窗口被遮挡/切后台），
 //   拿它当"主线程卡死"的判据会自己和自己打架。现在由主进程主动 executeJavaScript 探活。
 
@@ -53,6 +64,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   apiOrigin: 'http://127.0.0.1:' + API_PORT,
   // 轻量壳内置的远程后端地址（'' = 未内置；渲染层 localStorage yz_server_base 优先级更高）
   serverBase: BAKED_SERVER_BASE,
+  // 运行形态（共享服务页门控）：壳模式 / 有本机后端（完整版与 dev）
+  isShellMode: IS_SHELL_MODE,
+  hasLocalBackend: HAS_LOCAL_BACKEND,
+  // 共享服务（2026-11-08）：multi 模式切换 + 导出壳安装包
+  sharedServer: {
+    info: () => ipcRenderer.invoke('shared-server:info'),
+    setMode: (mode) => ipcRenderer.invoke('shared-server:set-mode', String(mode || '')),
+    pickExportDir: () => ipcRenderer.invoke('shell-export:pick-dir'),
+    exportShell: (opts) => ipcRenderer.invoke('shell-export:start', opts || {}),
+    openExported: (p) => ipcRenderer.invoke('shell-export:open-path', String(p || '')),
+    firewallStatus: () => ipcRenderer.invoke('shared-server:firewall-status'),
+    firewallAllow: () => ipcRenderer.invoke('shared-server:firewall-allow'),
+    onExportProgress: (cb) => {
+      const listener = (_e, p) => { try { cb(p); } catch { /* 回调异常不阻断 */ } };
+      ipcRenderer.on('shell-export:progress', listener);
+      return () => ipcRenderer.removeListener('shell-export:progress', listener);
+    },
+  },
   // 轻量壳本机能力服务：远控 host 必须使用壳所在机器的 origin/token
   localCapabilityInfo: () => ipcRenderer.invoke('local-capabilities:info'),
   localCapabilityRotateCode: () => ipcRenderer.invoke('local-capabilities:rotate-code'),

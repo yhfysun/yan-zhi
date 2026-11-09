@@ -57,7 +57,7 @@ import { useZIndex } from 'element-plus';
 import {
   Setting, MagicStick, Present, Cpu, Files, Suitcase, FolderOpened, SetUp,
   Shop, Monitor, Message, Memo, Microphone, Document, InfoFilled, Close,
-  Key, Connection, Box,
+  Key, Connection, Box, Share,
 } from '@element-plus/icons-vue';
 // Settings.vue 走异步组件：保持与 /settings 路由、SettingsDrawer 相同的懒加载分包，
 // 不因弹窗常驻 App 壳而把它拉进首包。
@@ -88,6 +88,11 @@ const categories: SettingsCategory[] = [
   { key: 'localip', label: '本机 IP', icon: Connection, pane: 'localip' },
   { key: 'marketplace', label: '商城服务端', icon: Shop, pane: 'marketplace' },
   { key: 'lan', label: '局域网', icon: Monitor, pane: 'lan' },
+  // 共享服务（2026-11-08）：仅"有本机后端"的 Electron 显示 —— 轻量壳（isShellMode）自己
+  // 就是无后端壳，不能当共享主机，隐藏入口（对应 Settings.vue 的 isDesktopHost 门控）。
+  ...((window as any).electronAPI?.hasLocalBackend && !(window as any).electronAPI?.isShellMode
+    ? [{ key: 'shared', label: '共享服务', icon: Share, pane: 'shared' }]
+    : []),
   { key: 'verification', label: '短信验证码', icon: Message, pane: 'verification' },
   { key: 'memory', label: '记忆管理', icon: Memo, pane: 'memory' },
   { key: 'voicepack', label: '语音包', icon: Microphone, pane: 'voicepack' },

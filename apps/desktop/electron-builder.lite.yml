@@ -33,6 +33,7 @@ files:
   - dist/**/*
   - main.cjs
   - desktop-capability-relay.cjs
+  - export-shell.cjs
   - preload.cjs
   - browser-preload.cjs
   - snip-preload.cjs

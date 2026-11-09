@@ -44,6 +44,9 @@ const {
 // 插件窗口全局快捷键：清单规范化和差量（纯函数，有单测）；注册仍走本文件 setGlobalHotkey
 const { normalizePluginHotkeys } = require('./plugin-hotkeys.cjs');
 const { createDesktopCapabilityRelay } = require('./desktop-capability-relay.cjs');
+// 导出轻量壳安装包（2026-11-08）：完整版设置页一键生成同事用的无后端壳包。
+// 纯逻辑模块（不依赖 electron），细节见 export-shell.cjs 顶部注释。
+const { collectLanIps, exportShell } = require('./export-shell.cjs');
 // ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
 protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
@@ -124,6 +127,9 @@ function resolveBakedServerBase() {
     }
     if (!app.isPackaged) return '';
     const candidates = [
+      // ★ 便携覆盖（2026-11-08）：exe 同目录的 server-base.json 优先 —— 导出后若主机
+      //   IP 变了，重新发一个 300 字节的小文件给同事替换即可，不必重新导出整个壳包。
+      path.join(path.dirname(process.execPath), 'server-base.json'),
       path.join(process.resourcesPath, 'server-base.json'),
       path.join(__dirname, 'resources', 'server-base.json'),
     ];
@@ -162,6 +168,10 @@ const SHELL_MODE = DEV_SHELL_MODE
 /** 下发给渲染层的附加参数（主窗口/采集窗/RC 卡片窗共用）。 */
 const RENDER_EXTRA_ARGS = ['--yz-api-port=' + API_PORT,
   ...(BAKED_SERVER_BASE ? ['--yz-server-base=' + BAKED_SERVER_BASE] : []),
+  // 共享服务设置页门控（2026-11-08）：壳模式隐藏「导出壳包」入口（自己就是壳）；
+  // 有本机后端（完整版/dev）才允许当共享主机。经 preload 暴露为 electronAPI.isShellMode / hasLocalBackend。
+  ...(SHELL_MODE ? ['--yz-shell-mode=1'] : []),
+  ...(!SHELL_MODE ? ['--yz-local-backend=1'] : []),
   ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])];
 
 /**
@@ -226,6 +236,122 @@ ipcMain.handle('local-capabilities:rotate-code', async () => {
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
+});
+
+// ===== 共享服务 / 导出壳安装包（2026-11-08）=====
+// 完整版当共享主机：multi 多用户 + 导出轻量壳给同事（后端地址烘焙本机内网 IP）。
+// 方案见 docs/安装版导出壳安装包-方案-2026-11-08.md。
+
+const FIREWALL_RULE_NAME = 'yan-zhi-backend';
+
+function execFileText(cmd, args, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { windowsHide: true, timeout: timeoutMs }, (err, stdout, stderr) => {
+      resolve({ code: err && typeof err.code === 'number' ? err.code : (err ? 1 : 0), stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
+ipcMain.handle('shared-server:info', async () => {
+  return {
+    ok: true,
+    shellMode: SHELL_MODE,
+    isPackaged: app.isPackaged,
+    version: app.getVersion(),
+    apiPort: API_PORT,
+    authMode: readHostConfig().authMode === 'multi' ? 'multi' : 'guest',
+    lanIps: collectLanIps(),
+    serverBase: `http://127.0.0.1:${API_PORT}`,
+  };
+});
+
+ipcMain.handle('shared-server:set-mode', async (_event, mode) => {
+  if (SHELL_MODE) return { ok: false, error: '轻量壳没有本地后端，不能当共享主机' };
+  const next = mode === 'multi' ? 'multi' : 'guest';
+  try {
+    writeHostConfig({ authMode: next });
+  } catch (err) {
+    return { ok: false, error: `写入配置失败: ${err && err.message}` };
+  }
+  console.log('[共享服务] authMode →', next, '，准备重启使 env 生效');
+  // 后端 env 只在 spawn 时读取 ⇒ 必须重启。杀掉本进程管理的后端再整体重启应用；
+  // 等后端真的退了再 relaunch —— 否则复用守卫（isServerAlive）会接回旧模式的进程，
+  // 用户视角就是「切了没反应」。
+  let detachedLeftover = false;
+  if (serverProcess) {
+    try { serverProcess.kill('SIGTERM'); } catch { /* 已退出 */ }
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && await isServerAlive()) {
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  } else if (await isServerAlive()) {
+    // detached 守护模式：无句柄可杀，旧后端会继续占着端口（复用守卫会接回它）
+    detachedLeftover = true;
+  }
+  app.relaunch();
+  app.exit(0);
+  return { ok: true, restarting: true, detachedLeftover };
+});
+
+ipcMain.handle('shell-export:pick-dir', async () => {
+  const r = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: '选择壳安装包输出目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (r.canceled || !r.filePaths?.length) return { ok: false, canceled: true };
+  return { ok: true, dir: r.filePaths[0] };
+});
+
+ipcMain.handle('shell-export:start', async (event, opts = {}) => {
+  if (SHELL_MODE) return { ok: false, error: '轻量壳模式不支持导出壳包（自己就是壳）' };
+  if (app.isPackaged) {
+    opts.sourceDir = path.dirname(process.execPath);
+  } else {
+    // dev 没有安装目录可拷；联调用 YZ_EXPORT_SOURCE 指向一个 win-unpacked 目录
+    const src = String(process.env.YZ_EXPORT_SOURCE || '');
+    if (!src) return { ok: false, error: '开发模式下没有安装目录可导出；如需联调请设 YZ_EXPORT_SOURCE 指向打包产物目录（win-unpacked）' };
+    opts.sourceDir = src;
+  }
+  if (!opts.destDir) return { ok: false, error: '未选择输出目录' };
+  if (!opts.serverBase) {
+    // 默认：本机内网 IP + 本实例端口（与设置页「局域网」显示的地址同口径）
+    const ip = collectLanIps()[0]?.address;
+    if (!ip) return { ok: false, error: '未检测到局域网 IPv4 地址，请手动填写后端地址' };
+    opts.serverBase = `http://${ip}:${API_PORT}`;
+  }
+  opts.appVersion = app.getVersion();
+  const sender = event.sender;
+  return await exportShell(opts, (p) => {
+    try { sender.send('shell-export:progress', p); } catch { /* 窗口已关 */ }
+  });
+});
+
+ipcMain.handle('shell-export:open-path', async (_event, p) => {
+  const target = String(p || '');
+  if (!target || !fs.existsSync(target)) return { ok: false, error: '路径不存在' };
+  shell.showItemInFolder(target);
+  return { ok: true };
+});
+
+ipcMain.handle('shared-server:firewall-status', async () => {
+  // 规则存在 ≠ 一切网络畅通（策略/第三方防火墙仍可能拦），但作为自检已够用
+  const r = await execFileText('netsh', ['advfirewall', 'firewall', 'show', 'rule', `name=${FIREWALL_RULE_NAME}`]);
+  const exists = r.code === 0 && /规则名称|Rule Name/i.test(r.stdout);
+  return { ok: true, ruleName: FIREWALL_RULE_NAME, exists, port: API_PORT };
+});
+
+ipcMain.handle('shared-server:firewall-allow', async () => {
+  // 加规则需要管理员 ⇒ 经 UAC 提权（Start-Process -Verb RunAs）；用户取消 UAC 时 exit code 非 0
+  const args = `advfirewall firewall add rule name="${FIREWALL_RULE_NAME}" dir=in action=allow protocol=TCP localport=${API_PORT}`;
+  const script = `Start-Process netsh -Verb RunAs -Wait -ArgumentList '${args.replace(/'/g, "''")}'`;
+  const r = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], 120000);
+  if (r.code !== 0) {
+    return { ok: false, error: r.stderr.includes('操作已被用户取消') || r.code === 1
+      ? '未获管理员授权（UAC 已取消），防火墙规则未添加'
+      : `netsh 执行失败: ${(r.stderr || r.stdout).trim().slice(0, 300)}` };
+  }
+  const check = await execFileText('netsh', ['advfirewall', 'firewall', 'show', 'rule', `name=${FIREWALL_RULE_NAME}`]);
+  return { ok: check.code === 0 && /规则名称|Rule Name/i.test(check.stdout), ruleName: FIREWALL_RULE_NAME };
 });
 
 ipcMain.handle('desktop-capability:start', async (event, options = {}) => {
@@ -1298,6 +1424,48 @@ function readLicenseCodesEnv() {
 
 const guardEnv = readGuardEnv();
 
+/**
+ * 主机共享配置（2026-11-08）：userData/host-config.json，当前仅 authMode。
+ *
+ * ★ 为什么放 userData 而不是 resources：用户在设置页可切换「共享服务模式」，
+ *   resources 在打包版是只读安装目录；userData 可写、随实例隔离（instance.cjs 口径）。
+ *
+ * authMode: 'guest'（默认，本地单机）| 'multi'（共享服务，同事账号登录）。
+ * 读写都做 try/catch 兜底：配置损坏绝不能让主进程启动失败（与 edition.json 同样的容错口径）。
+ */
+function hostConfigPath() {
+  return path.join(app.getPath('userData'), 'host-config.json');
+}
+function readHostConfig() {
+  try {
+    const j = JSON.parse(fs.readFileSync(hostConfigPath(), 'utf8'));
+    return j && typeof j === 'object' ? j : {};
+  } catch {
+    return {};
+  }
+}
+function writeHostConfig(patch) {
+  const merged = { ...readHostConfig(), ...patch };
+  fs.mkdirSync(path.dirname(hostConfigPath()), { recursive: true });
+  fs.writeFileSync(hostConfigPath(), JSON.stringify(merged, null, 2), 'utf8');
+  return merged;
+}
+
+/**
+ * 共享模式 env：host-config 配了 multi 才注入 YZ_AUTH_MODE=multi。
+ * 后端据此启用 JWT 登录 / RBAC / 用户隔离（见 apps/server/src/rbac.ts getAuthMode）。
+ * 不配 = guest 单机模式，行为与历史版本完全一致。
+ * ★ 函数而非常量：startServer 每次（重）启动都要现读，设置页切完档重启即生效。
+ */
+function sharedModeEnv() {
+  const mode = readHostConfig().authMode;
+  if (mode === 'multi') {
+    console.log('[共享服务] multi 模式：后端将以 YZ_AUTH_MODE=multi 启动（同事需账号登录）');
+    return { YZ_AUTH_MODE: 'multi' };
+  }
+  return {};
+}
+
 /** 探测 127.0.0.1:API_PORT 上是否已有健康后端在跑（上次的 detached 守护进程、或手动起的 dev server）。
  *  命中 ⇒ 本进程复用它且退出时不杀 —— 这是「关掉桌面端、后端继续当服务跑」的复用侧。 */
 async function isServerAlive() {
@@ -1395,7 +1563,7 @@ async function startServer() {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -1409,7 +1577,7 @@ async function startServer() {
         env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -1435,7 +1603,7 @@ async function startServer() {
       stdio: logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       ...(detached ? { detached: true } : {}),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
     });
     if (logStream) {
       serverProcess.stdout.on('data', (d) => logStream.write(d));

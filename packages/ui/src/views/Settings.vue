@@ -598,6 +598,59 @@
           <div v-else class="lan-empty">remote-control 插件未启用：在「插件管理」页开启后可使用远程控制</div>
         </div>
       </el-tab-pane>
+      <!-- 共享服务（2026-11-08）：仅 Electron 完整版（有本机后端）可见 —— 壳/Web/移动端不显示 -->
+      <el-tab-pane v-if="(!embedded || isPaneMode) && isDesktopHost" label="共享服务" name="shared" lazy>
+        <div class="lan-section">
+          <p class="lan-tip">把本机当共享主机：同事安装轻量壳（下方导出）后连到本机后端使用，聊天/远控等功能与本机一致，数据存在本机、按账号隔离。</p>
+          <div class="shared-row">
+            <div class="shared-row-main">
+              <div>共享服务模式</div>
+              <div class="shared-muted">{{ sharedAuthMulti ? 'multi：多用户模式，同事需账号登录' : 'guest：本地单机（默认，无登录）' }}</div>
+            </div>
+            <el-switch :model-value="sharedAuthMulti" @change="toggleSharedMode" />
+          </div>
+          <div v-if="sharedAuthMulti" class="shared-row">
+            <el-button size="small" type="primary" plain @click="goAdminUsers">管理用户</el-button>
+            <span class="shared-muted">在管理后台创建同事账号、分配角色与权限</span>
+          </div>
+          <div class="shared-row">
+            <div class="shared-row-main">
+              <div>同事连接地址</div>
+              <code class="shared-code">{{ sharedConnectUrl || '—（未检测到局域网 IP，请在「本机 IP」分区检查）' }}</code>
+            </div>
+            <el-button size="small" :disabled="!sharedConnectUrl" @click="copyText(sharedConnectUrl, '已复制连接地址')">复制</el-button>
+          </div>
+          <div class="shared-row">
+            <div class="shared-row-main">
+              <div>Windows 防火墙（端口 {{ sharedInfo?.apiPort ?? '—' }}）</div>
+              <div class="shared-muted">{{ fwExists ? '已放行，同事可以连入' : '未放行时同事将连不上本机后端' }}</div>
+            </div>
+            <el-tag v-if="firewallKnown" size="small" :type="fwExists ? 'success' : 'warning'">{{ fwExists ? '已放行' : '未放行' }}</el-tag>
+            <el-button v-if="firewallKnown && !fwExists" size="small" type="primary" plain @click="allowFirewall">一键放行</el-button>
+          </div>
+        </div>
+        <div class="lan-section" style="margin-top: 16px">
+          <p class="lan-tip">导出轻量壳安装包：生成不含后端的壳包（内置上方地址），发给同事解压后运行 yan-zhi.exe 即可。同事机器上的浏览器自动化、电脑使用等能力会回连到同事自己的机器执行；文件与数据保存在本机。</p>
+          <div class="shared-row">
+            <div class="shared-row-main">
+              <div>后端地址（烘焙进壳包）</div>
+              <el-input v-model="exportBaseDraft" size="small" style="width: 240px; margin-top: 6px" placeholder="http://192.168.x.x:3001" />
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px">
+            <el-button type="primary" :loading="exporting" @click="startExport">导出壳安装包</el-button>
+            <el-button v-if="lastExportPath" @click="openExported">打开所在文件夹</el-button>
+          </div>
+          <div v-if="exporting && exportProgress" style="margin-top: 10px">
+            <el-progress :percentage="Math.min(100, Math.max(0, exportProgress.pct || 0))" :stroke-width="8" />
+            <div class="shared-muted">{{ exportProgress.detail || exportProgress.phase }}</div>
+          </div>
+          <div v-if="exportResultMsg" class="shared-muted" style="margin-top: 8px">{{ exportResultMsg }}</div>
+          <div v-if="sharedInfo && !sharedInfo.isPackaged" class="shared-muted" style="margin-top: 8px">
+            开发模式没有安装目录可导出（联调可设 YZ_EXPORT_SOURCE 指向打包产物目录）；请在打包版使用本功能。
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane v-if="!embedded || isPaneMode" label="短信验证码" name="verification" lazy>
         <div class="sms-section">
           <p class="lan-tip">
@@ -1747,6 +1800,109 @@ function copyText(text: string, okMsg = '已复制') {
   if (!text) return;
   navigator.clipboard.writeText(text).then(() => ElMessage.success(okMsg)).catch(() => ElMessage.warning('复制失败，请手动选择'));
 }
+
+// ===== 共享服务 / 导出壳安装包（2026-11-08，docs/安装版导出壳安装包-方案-2026-11-08.md）=====
+// 完整桌面版当共享主机：multi 多用户 + 一键导出轻量壳（后端地址烘焙本机内网 IP）给同事。
+// 仅 Electron 且有本机后端（hasLocalBackend）时可见：壳/Web/移动端不该看到"把自己当主机"。
+const electronShared = (window as any).electronAPI?.sharedServer;
+const isDesktopHost = computed(() =>
+  !!((window as any).electronAPI?.hasLocalBackend) && !isCapacitor,
+);
+const sharedInfo = ref<{
+  authMode?: string; isPackaged?: boolean; version?: string; apiPort?: number;
+  lanIps?: Array<{ name: string; address: string }>;
+} | null>(null);
+const firewallKnown = ref(false);
+const fwExists = ref(false);
+const exportBaseDraft = ref('');
+const exporting = ref(false);
+const exportProgress = ref<{ phase: string; detail?: string; pct?: number } | null>(null);
+const lastExportPath = ref('');
+const exportResultMsg = ref('');
+const sharedAuthMulti = computed(() => sharedInfo.value?.authMode === 'multi');
+/** 同事连接地址：与 connectUrl/webServiceUrl 同一默认 IP 真相源（preferredLanIp），端口取后端实际监听端口 */
+const sharedConnectUrl = computed(() => {
+  const ip = preferredLanIp.value;
+  const port = sharedInfo.value?.apiPort || lanPort.value;
+  return ip ? `http://${ip}:${port}` : '';
+});
+async function loadSharedInfo() {
+  if (!electronShared?.info) return;
+  const r = await electronShared.info();
+  if (!r?.ok) return;
+  sharedInfo.value = r;
+  if (!exportBaseDraft.value) {
+    const ip = preferredLanIp.value || r.lanIps?.[0]?.address || '';
+    if (ip) exportBaseDraft.value = `http://${ip}:${r.apiPort}`;
+  }
+}
+async function loadFirewallState() {
+  if (!electronShared?.firewallStatus) return;
+  const r = await electronShared.firewallStatus();
+  if (r?.ok) { fwExists.value = !!r.exists; firewallKnown.value = true; }
+}
+async function allowFirewall() {
+  const r = await electronShared?.firewallAllow?.();
+  if (r?.ok) { fwExists.value = true; firewallKnown.value = true; ElMessage.success('防火墙已放行本机后端端口'); }
+  else ElMessage.error(r?.error || '放行失败（需要管理员授权）');
+}
+function toggleSharedMode(v: boolean | string | number) {
+  const on = v === true || v === 'true' || v === 1;
+  const tip = on
+    ? '开启后本机后端将变为多用户模式（multi），同事需用账号登录、数据按账号隔离，应用会自动重启使配置生效。确认开启？'
+    : '关闭后恢复本地单机模式（guest），已有账号数据保留但不再要求登录，应用会自动重启。确认关闭？';
+  ElMessageBox.confirm(tip, '切换共享服务模式', { type: 'warning' })
+    .then(async () => {
+      const r = await electronShared.setMode(on ? 'multi' : 'guest');
+      if (!r?.ok) { ElMessage.error(r?.error || '切换失败'); return; }
+      ElMessage.success('配置已保存，应用即将重启…');
+    })
+    .catch(() => {});
+}
+function goAdminUsers() {
+  closeSettingsDialog();
+  router.push('/admin/users');
+}
+async function startExport() {
+  if (!electronShared?.exportShell) return;
+  const base = exportBaseDraft.value.trim().replace(/\/+$/, '');
+  if (base && !/^https?:\/\//i.test(base)) { ElMessage.error('后端地址必须以 http:// 或 https:// 开头'); return; }
+  const picked = await electronShared.pickExportDir();
+  if (!picked?.ok || !picked.dir) return;
+  exporting.value = true;
+  exportResultMsg.value = '';
+  lastExportPath.value = '';
+  exportProgress.value = { phase: '准备导出…', pct: 0 };
+  // 进度事件在导出期间持续到达；off 在 finally 解绑（窗口关闭也安全：主进程侧已 try/catch）
+  const off = electronShared.onExportProgress?.((p: { phase: string; detail?: string; pct?: number }) => { exportProgress.value = p; });
+  try {
+    const r = await electronShared.exportShell({ destDir: picked.dir, serverBase: base });
+    if (r?.ok) {
+      lastExportPath.value = String(r.outputPath || '');
+      exportResultMsg.value = `导出完成：${r.outputPath}${r.warning ? `（${r.warning}）` : ''}`;
+      ElMessage.success('壳安装包导出完成');
+    } else {
+      exportResultMsg.value = r?.error || '导出失败';
+      ElMessage.error(exportResultMsg.value);
+    }
+  } finally {
+    off?.();
+    exporting.value = false;
+  }
+}
+async function openExported() {
+  if (lastExportPath.value) await electronShared?.openExported?.(lastExportPath.value);
+}
+// 首次切到本分区时再拉信息（electronAPI 不存在的 Web/移动端天然跳过）。
+// ★ immediate 必须有：SettingsDialog pane 模式下 props.pane 的 watch（上方，immediate）
+//   在本 watch 注册**之前**就把 tab 置成 'shared'，非 immediate 会错过这次赋值 ⇒ 永远拉不到 info。
+watch(tab, (t) => {
+  if (t === 'shared') {
+    if (!sharedInfo.value) void loadSharedInfo();
+    if (!firewallKnown.value) void loadFirewallState();
+  }
+}, { immediate: true });
+
 function copyCode(code: string) {
   copyText(code, `已复制验证码 ${code}`);
 }
@@ -2334,6 +2490,19 @@ onMounted(async () => {
 .clip-hint { font-size: 12px; color: var(--el-text-color-secondary, #909399); }
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
+/* 共享服务 pane（2026-11-08）：行式布局复用 lan-section 宽度 */
+.shared-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--glass-border, #e7e4dc);
+}
+.shared-row:last-child { border-bottom: none; }
+.shared-row-main { min-width: 0; }
+.shared-muted { color: var(--color-text-secondary); font-size: 12px; margin-top: 2px; }
+.shared-code { font-size: 12px; word-break: break-all; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }
 /* 远程控制卡片：码值用等宽放大展示（向日葵式「报码」的可读性优先） */
 .rc-card-box { border: 1px solid var(--color-border, #dcdfe6); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
