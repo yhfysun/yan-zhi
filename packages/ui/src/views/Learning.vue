@@ -6,6 +6,7 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { setMode, activeMode } from '../stores/mode';
@@ -460,6 +461,10 @@ async function startCoaching() {
   try {
     const convId = await chat.createConversation('英语陪练', { agentId: LEARNING_AGENT_ID, source: 'learning' });
     await router.push({ name: 'chat-detail', params: { convId } });
+  } catch (e) {
+    // ★ 失败必须有反馈（此前异常静默：后端拒了/网络挂了用户只看到"按钮没用"，狂点建一串会话）
+    console.error('[learning] 创建陪练会话失败', e);
+    ElMessage.error(e instanceof Error ? `创建陪练会话失败：${e.message}` : '创建陪练会话失败，请稍后重试');
   } finally {
     startingChat.value = false;
   }

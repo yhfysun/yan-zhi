@@ -544,9 +544,11 @@ router.beforeEach(async (to) => {
   }
   // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
   // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。
+  // ★ 只拦「列表页」/chat，不拦 /chat/:convId（2026-11-09 实报：学习模式点「开始陪练」
+  //   → push 会话详情被这道闸弹回 /learning —— 会话建好了、人却留在原地，用户看到
+  //   "按钮没用"连点出 10 条会话。会话详情是明确目标，模式记忆不该抢跳）。
   if (
-    to.path !== '/code' &&
-    (to.path === '/chat' || to.path.startsWith('/chat/')) &&
+    to.path === '/chat' &&
     activeMode.value !== 'office' &&
     // 当前模式已失权 / 未编译进本包时不再跳回它（否则换低档码或精简包会弹到不存在的页面）
     isModeAvailable(activeMode.value) &&
@@ -626,7 +628,9 @@ async function resolvePluginRouteComponent(
  */
 function restoreActiveModeRouteAfterSync(): void {
   const cur = router.currentRoute.value;
-  if (cur.path !== '/chat' && !cur.path.startsWith('/chat/')) return;
+  // ★ 只认列表页 /chat：/chat/:convId 是用户明确要开的会话详情，不许弹回模式工作台
+  //   （与 beforeEach 的模式记忆同一语义，两处实现不要漂移）
+  if (cur.path !== '/chat') return;
   const m = activeMode.value;
   if (m === 'office' || !isModeAvailable(m) || !isModeRouteRegistered(m)) return;
   if (isCapacitor && MOBILE_BLOCKED_PATHS.has(modeRoute(m))) return;
