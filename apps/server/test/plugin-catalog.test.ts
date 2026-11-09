@@ -94,18 +94,27 @@ describe('插件选择集与模式清单联动（P5）', () => {
   const pluginModeKeys = (ids: string[]) =>
     ids.map((id) => plugins[id]?.modeKey).filter((k): k is string => typeof k === 'string');
 
-  it('插件 modeKey 与 modes.catalog 的键一一对应', () => {
+  // 编译期内置模式（无插件承载，见 modes.catalog.json 的 pluginId=null）。
+  // learning 于 2026-11-08 升独立模式；office 虽 pluginId=null 但由 office-core 的 modeKey 覆盖。
+  const BUILTIN_MODES = ['learning'];
+
+  it('插件 modeKey ∪ 内置模式 = modes.catalog 的键（不许漂移）', () => {
     const fromPlugins = Object.values(plugins)
       .map((e) => e.modeKey)
       .filter((k): k is string => typeof k === 'string')
       .sort();
-    expect(fromPlugins).toEqual(Object.keys(modesCatalog.modes).sort());
+    const fromCatalog = Object.keys(modesCatalog.modes)
+      .filter((k) => !BUILTIN_MODES.includes(k))
+      .sort();
+    expect(fromPlugins).toEqual(fromCatalog);
   });
 
-  it('每档预设覆盖的模式 = modes.catalog 同档预设（两套清单不许漂移）', () => {
+  it('每档预设覆盖的模式 = modes.catalog 同档预设（两套清单不许漂移，内置模式除外）', () => {
     for (const [edition, preset] of Object.entries(catalog.editionPresets as Record<string, string[]>)) {
       const derived = pluginModeKeys(preset).sort();
-      const fromModes = [...(modesCatalog.editionPresets[edition] || [])].sort();
+      const fromModes = (modesCatalog.editionPresets[edition] || [])
+        .filter((k: string) => !BUILTIN_MODES.includes(k))
+        .sort();
       expect(derived, `${edition} 档：插件预设与模式预设不一致`).toEqual(fromModes);
     }
   });
