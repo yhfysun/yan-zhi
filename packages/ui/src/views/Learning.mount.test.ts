@@ -155,6 +155,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     ;([...el.querySelectorAll('.lp-focus-nav .lp-primary')] as HTMLElement[]).find((b) => b.textContent?.includes('下一题'))!.click()
     await nextTick()
     expect(el.querySelector('.lp-focus')?.textContent).toContain('第 2 题')
+    // ★ 拼写题必须给中文释义（没有释义用户不知道要拼哪个词）
+    expect(el.querySelector('.lp-focus-word')?.textContent).toContain('薪金，薪水')
     // 三栏骨架仍在
     expect(el.querySelector('.lp-grid')).toBeTruthy()
   })

@@ -633,11 +633,11 @@ onMounted(loadTtsPack);
               </div>
               <div v-else-if="currentQ.kind === 'cloze'" class="lp-focus-body">
                 <p class="lp-focus-word lp-focus-cloze">{{ currentQ.prompt }}</p>
-                <p class="lp-focus-hint">填入画线处的单词（{{ currentQ.hint }}）</p>
+                <p class="lp-focus-hint">填入画线处的单词 · 提示：{{ currentQ.hint }}</p>
               </div>
               <div v-else class="lp-focus-body">
-                <p class="lp-focus-word">✍️ 拼写单词</p>
-                <p class="lp-focus-hint">提示：{{ currentQ.hint }}</p>
+                <p class="lp-focus-word">{{ currentQ.prompt }}</p>
+                <p class="lp-focus-hint">根据释义拼写单词 · 提示：{{ currentQ.hint }}</p>
               </div>
               <!-- 作答区 -->
               <div v-if="currentQ.kind === 'choice'" class="lp-opts">
@@ -844,8 +844,8 @@ onMounted(loadTtsPack);
 </template>
 
 <style scoped>
-.learning-page { padding: 20px 24px; max-width: 1400px; margin: 0 auto; color: #1f2329; }
-.lp-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; }
+.learning-page { padding: 20px 24px; max-width: 1400px; margin: 0 auto; color: #1f2329; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; }
+.lp-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; flex-shrink: 0; }
 .lp-head-left { flex: 1; min-width: 0; }
 .lp-header h1 { font-size: 22px; margin: 0 0 4px; }
 .lp-sub { margin: 0; color: #646a73; font-size: 13px; }
@@ -858,10 +858,12 @@ onMounted(loadTtsPack);
 .lp-coach { border: none; background: #3370ff; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
 .lp-coach:disabled { opacity: .6; cursor: default; }
 .lp-stage { width: 150px; min-height: 110px; flex-shrink: 0; }
-.lp-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; align-items: start; }
-/* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」）：
-   视口高度减去头部约 180px，任何 Tab 的内容都能拉到底，不再被整页裁掉。 */
-.lp-col-left, .lp-col-mid, .lp-col-right { max-height: calc(100vh - 180px); overflow-y: auto; scrollbar-gutter: stable; }
+/* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」「最后一个显示不完整」）：
+   此前用 max-height: calc(100vh - 180px) 魔法数估头部高度，估不准 ⇒ 最后一项被视口裁半。
+   改为 flex 精确贴合：页面占满视口，grid 弹性吃掉 header 之外的剩余高度，三栏 stretch 等高，
+   栏内滚动 —— 高度永远正好，不依赖任何估算常数。 */
+.lp-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; flex: 1; min-height: 0; }
+.lp-col-left, .lp-col-mid, .lp-col-right { height: 100%; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 .lp-card { background: var(--glass-bg); border: 1px solid #e5e6eb; border-radius: 10px; padding: 14px; }
 .lp-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .lp-card-head h2 { font-size: 15px; margin: 0; }
