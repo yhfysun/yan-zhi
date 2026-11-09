@@ -563,6 +563,21 @@ onMounted(loadTtsPack);
           <p class="lp-hint">AI 收词需已配置可用模型；完整词书用 URL 导入</p>
         </div>
 
+        <!-- 我的词单放顶部（个人资产优先于课程目录；此前埋在课程列表底部被裁半，用户两次圈红框） -->
+        <div v-if="customBooks.length" class="lp-custom-books">
+          <h3 class="lp-stage-name">我的词单</h3>
+          <div class="lp-books">
+            <button
+              v-for="b in customBooks" :key="b.id"
+              class="lp-book" :class="{ active: activeBook?.id === b.id }"
+              @click="openBook(b)"
+            >
+              <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge">🟡 {{ b.dueCount }}</i></span>
+              <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关</span>
+            </button>
+          </div>
+        </div>
+
         <div class="lp-courses">
           <div v-for="grp in courses" :key="grp.stage" class="lp-stage">
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
@@ -580,20 +595,6 @@ onMounted(loadTtsPack);
             </button>
           </div>
           <p v-if="!courses.length && !loading" class="lp-hint">课程加载中…</p>
-        </div>
-
-        <div v-if="customBooks.length" class="lp-custom-books">
-          <h3 class="lp-stage-name">我的词单</h3>
-          <div class="lp-books">
-            <button
-              v-for="b in customBooks" :key="b.id"
-              class="lp-book" :class="{ active: activeBook?.id === b.id }"
-              @click="openBook(b)"
-            >
-              <span class="lp-book-name">{{ b.name }}<i v-if="(b.dueCount || 0) > 0" class="lp-due-badge">🟡 {{ b.dueCount }}</i></span>
-              <span class="lp-book-meta">{{ b.wordCount }} 词 · {{ b.levelCount }} 关</span>
-            </button>
-          </div>
         </div>
       </section>
 
@@ -864,6 +865,10 @@ onMounted(loadTtsPack);
    栏内滚动 —— 高度永远正好，不依赖任何估算常数。 */
 .lp-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; flex: 1; min-height: 0; }
 .lp-col-left, .lp-col-mid, .lp-col-right { height: 100%; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+/* 细滚动条：让「内容可滚」有明确视觉暗示（用户实报过"滚动没有/显示不完整"） */
+.lp-col-left::-webkit-scrollbar, .lp-col-mid::-webkit-scrollbar, .lp-col-right::-webkit-scrollbar { width: 6px; }
+.lp-col-left::-webkit-scrollbar-thumb, .lp-col-mid::-webkit-scrollbar-thumb, .lp-col-right::-webkit-scrollbar-thumb { background: #c9cdd4; border-radius: 3px; }
+.lp-col-left::-webkit-scrollbar-thumb:hover, .lp-col-mid::-webkit-scrollbar-thumb:hover, .lp-col-right::-webkit-scrollbar-thumb:hover { background: #a9adb5; }
 .lp-card { background: var(--glass-bg); border: 1px solid #e5e6eb; border-radius: 10px; padding: 14px; }
 .lp-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .lp-card-head h2 { font-size: 15px; margin: 0; }
