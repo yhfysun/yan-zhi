@@ -57,13 +57,25 @@ export type WordBookView = {
 
 /** 内置词书登记（幂等 + 名称自愈）：词表来自内容包不进库，word_book 只存一行目录（user_id NULL=共享）。
  *  DO UPDATE 刷新 name —— 早期版本建过同名 id 的目录行（如「CET4 高频核心 · 示例」），
- *  ON CONFLICT DO NOTHING 会把旧名永久留在库里，用户看到的就是过时词书名。 */
+ *  ON CONFLICT DO NOTHING 会把旧名永久留在库里，用户看到的就是过时词书名。
+ *  顺带清理无主 custom 词书：早期没有 user_id 列时代的遗留（如「冒烟测试词单」）——
+ *  kind=custom 但 user_id=NULL 的行不属于任何人，可见是泄露、删除又被归属校验挡住（谁都删不掉），
+ *  唯一合理归宿是清掉（含词行与关卡进度的孤儿引用）。 */
 function ensureBuiltinBookRows(): void {
   for (const b of BUILTIN_WORDBOOKS) {
     db.prepare(
       `INSERT INTO word_book (id, user_id, name, kind, course, level, created_at) VALUES (?, NULL, ?, 'builtin', ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
     ).run(b.id, b.name, b.course, b.level, Date.now());
+  }
+  const orphanBook = db.prepare("SELECT 1 FROM word_book WHERE kind IN ('custom', 'downloaded') AND user_id IS NULL LIMIT 1").get();
+  if (orphanBook) {
+    const tx = db.transaction(() => {
+      db.prepare("DELETE FROM word_book WHERE kind IN ('custom', 'downloaded') AND user_id IS NULL").run();
+      db.prepare('DELETE FROM learning_word WHERE book_id NOT IN (SELECT id FROM word_book)').run();
+      db.prepare('DELETE FROM word_level WHERE book_id NOT IN (SELECT id FROM word_book)').run();
+    });
+    tx();
   }
 }
 
@@ -75,9 +87,10 @@ function maxClearedLevel(userId: string, bookId: string): number {
 
 export function listWordBooks(userId: string): WordBookView[] {
   ensureBuiltinBookRows();
-  // ★ 词书按用户过滤：内置（user_id NULL）共享；custom/downloaded 只归本人
+  // ★ 归属收紧：只有内置（user_id NULL）共享；custom/downloaded 必须是本人的
+  //   （此前「user_id IS NULL OR user_id = ?」会把早期无主 custom 行泄露给所有用户）
   const rows = db.prepare(
-    'SELECT id, name, kind, course, level, COALESCE(subject, \'英语\') AS subject FROM word_book WHERE user_id IS NULL OR user_id = ? ORDER BY created_at ASC',
+    "SELECT id, name, kind, course, level, COALESCE(subject, '英语') AS subject FROM word_book WHERE kind = 'builtin' OR user_id = ? ORDER BY created_at ASC",
   ).all(userId) as Array<{ id: string; name: string; kind: string; course: string; level: string; subject: string }>;
   return rows.map((r) => {
     const wc = r.kind === 'custom'

@@ -133,6 +133,23 @@ describe('词汇表全量浏览（listBookWords）', () => {
     const other = createCustomBook(`other-${uid}`, '别人的词单', [{ word: 'x', gloss: 'y' }]);
     expect(() => deleteCustomBook(uid, other)).toThrow(/不存在/);
   });
+
+  it('★ 无主 custom 词书（user_id NULL 的早期遗留）对任何用户不可见且会被自动清理', () => {
+    // 模拟老库脏数据：kind=custom 但无归属（早期无 user_id 列时代的产物）
+    db.prepare(
+      "INSERT INTO word_book (id, user_id, name, kind, course, level, created_at) VALUES ('wb_orphan_test', NULL, '无主词单', 'custom', '自定义', '', 0)",
+    ).run();
+    db.prepare(
+      "INSERT INTO learning_word (id, user_id, book_id, word, phonetic, gloss, example, box, due_at, ord, created_at) VALUES ('lw_orphan', ?, 'wb_orphan_test', 'foo', NULL, '测试', NULL, 1, NULL, 0, 0)",
+    ).run(uid);
+    // 任何用户都看不到它（此前 user_id IS NULL 分支会把它泄露给所有人）
+    expect(listWordBooks(uid).some((b) => b.id === 'wb_orphan_test')).toBe(false);
+    expect(listWordBooks(`other-${uid}`).some((b) => b.id === 'wb_orphan_test')).toBe(false);
+    // 触发 ensureBuiltinBookRows 的清理链（listWordBooks 内部调用）
+    expect(db.prepare('SELECT COUNT(*) AS c FROM word_book WHERE id = ?').get('wb_orphan_test')).toEqual({ c: 0 });
+    // 连带孤儿词行清掉
+    expect(db.prepare('SELECT COUNT(*) AS c FROM learning_word WHERE id = ?').get('lw_orphan')).toEqual({ c: 0 });
+  });
 });
 
 describe('闯关闭环（内置词书）', () => {
