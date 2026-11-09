@@ -5,6 +5,30 @@
 ## [Unreleased]
 
 ### Added
+- **交接文档（2026-11-09）**：新增 `docs/交接-项目接手说明-2026-11-09.md` —— 自包含的项目交接，
+  含当前提交/远端状态、代码地图、两天完成项、未完成项、测试状态矩阵、环境与网络链路、工程判据、
+  开工指令与文档索引。起因：逐日过程记录在 `.workbuddy/memory/`，该目录被 `.gitignore` 忽略，
+  克隆仓库后不可见；本文件保证换任何 AI IDE / 新会话都能接着干。
+- **共享服务 + 一键导出轻量壳安装包（2026-11-08/09，提交 `a537fb46`）**：完整桌面版设置页新增「共享服务」分区 ——
+  `userData/host-config.json` 的 `guest|multi` 切换（`sharedModeEnv()` 注入三处 spawn env，切档杀后端 + app.relaunch 使 `YZ_AUTH_MODE` 生效）、
+  管理用户入口、局域网连接地址、Windows 防火墙自检与 UAC 一键放行；`apps/desktop/export-shell.cjs`
+  拷贝自身安装目录 + 剔除后端资源 + 写 `server-base.json` + Compress-Archive 生成无后端壳包（zip 失败降级文件夹），
+  exe 同目录 `server-base.json` 为最高优先便携覆盖；preload 暴露 `isShellMode`/`hasLocalBackend`/`sharedServer`，
+  Web/移动端/壳隐藏入口；full/lite/mac/shell 四份 electron-builder yml 登记导出模块。
+  测试：export-shell 5/5、Settings.sharedPane.mount 3/3、打包入口守门 21/21。
+- **英语学习模式（2026-11-08 从 0 到 1，11-09 实机反馈修复，9 个提交）**：独立 `learning` 模式 +
+  `/api/learning` 全套路由 + 7 张学习表 + 陪练智能体与学习档案注入；SRS 五盒复习、四题型（选义/拼写/听写/例句填空）、
+  11 门课学段闯关（字母音标→初中→高中→四六级→雅思托福）、11 本内置词书共 20,841 词静态打包、
+  单题聚焦闯关、词汇表全量浏览分页搜索、场景卡/语法点/范文、结算卡与聊天语音输入、TTS 朗读 + 2D/3D 形象舞台、
+  错误本自动抽取、3 个学习查询工具、自定义词书增删与用户隔离（修 `user_id NULL` 遗留的跨用户泄露）。
+  11-09 另修：Vite 孤立 `v-else-if` 编译崩溃、内嵌陪练对话平台初始化、模式记忆闸弹回「开始陪练」、
+  页面高度扣除 AppStatusBar（裁半问题）、拼写题丢中文释义。UI 全量 243 文件 / 2649 用例全绿。
+- **企业工作台 Task 1-7（2026-11-08，详见 `tasks/todo.md`）**：集中式 MCP OAuth 授权闭环、
+  容器化云工作区、云工作区端口预览、团队资源进入常规选择器、WS 实时节点通道、
+  OIDC 企业 SSO（授权码 + PKCE + JWKS 验签）、PostgreSQL repository 适配（企业运行时域）；
+  补 SSO popup 回调通道让轻量壳 / Capacitor 也能登录。**边界：全仓 SQLite 方言逐路由迁移与 PG 一致性真跑未完成。**
+- **专项模型能力测试项收窄（2026-11-09，提交 `74a34975`）**：embedding/image/video 只给对应测试项，
+  llm 兜底类型维持全项实测；`autoDetectCapabilities` 复用 `testKindsOf` 唯一实现。12/12 挂载用例通过。
 - **Runbook 定时调度**：定时任务新增 `runbook` 类型，创建时固定 Runbook 版本与解析后的参数，到点直接执行并写入 Runbook 运行历史；运行记录新增 `scheduled_task_id` 来源，工作台标记「定时」，定时任务列表回显最近一次 Runbook 的成功/失败/运行中状态与错误摘要。生产连接的写操作与回滚步骤需在任务表单显式建立长期无人值守授权，授权指纹绑定 Runbook 版本、参数、连接目标与标签；绑定变化后自动失效。模型工具不能自行授权。定时任务表单、REST API 与 `api_scheduled_task_*` 模型工具同步支持 Runbook
 - **运维版本化 Runbook（P2）**：ops-shell 新增可复用 Runbook：每个 Runbook 绑定连接，支持 exec/HTTP/wait 步骤、失败回滚步骤、启停和自动版本递增；每次保存写入不可变定义快照，控制台可查看旧版完整 JSON 并恢复为新版本。运行参数支持必填/默认值与 `${key}` 模板替换，审批计划和执行快照绑定同一组入参，运行记录保存输入参数与完整版本快照；可在步骤边界请求取消，正在执行的远程命令不会被强杀。生产连接必须先通过 ops-shell 人工审批队列，失败时执行同版本回滚并记录主流程/回滚逐步结果。运维控制台新增 Runbook 页（版本历史与恢复、参数与 JSON 步骤编辑、运行参数表单、取消入口、步骤/回滚结果和历史）；运维助手新增 `runbook_list` / `runbook_run` / `runbook_get_run` / `runbook_cancel_run` 工具。新增归一化、版本历史/恢复、参数安全、执行/回滚、取消、SQLite 落库和 API 端到端测试
 - **运维发布安全闭环（P0）**：生产发布不再接受模型自报 `confirmed`，改为复用 ops-shell 的人工审批队列；审批指纹覆盖流水线步骤、部署目标、健康检查与回滚配置，计划变更自动失效且一次批准只能消费一次。CICD 远端执行统一经过危险命令护栏并写入 `cicd.release.start/finish` 审计；备份命令失败或备份文件校验不通过会直接阻断上传；部署目标新增健康检查、回滚命令与自动回滚，健康检查失败时执行回滚并把步骤证据写入运行记录。新增发布审批/备份/回滚守门测试

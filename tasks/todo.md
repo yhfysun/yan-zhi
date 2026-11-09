@@ -3,12 +3,12 @@
 ## 当前状态
 
 - 分支：`dev0.1-mobile`
-- 状态：Task 1-7 代码均已交付并推送（最新 `60cdd554`）；**Task 7 的 PG 全仓迁移与 PG 一致性验证仍未完成，见待办与边界说明**
+- 状态：Task 1-7 代码均已交付并推送；**Task 7 的 PG 全仓迁移与 PG 一致性验证仍未完成，见待办与边界说明**
 - 远端分支：`origin/dev0.1-mobile`
-- 远端提交：以 `git log -1 --oneline` 为准
-- 工作区状态：Task 7 改动在工作区；其余 M/?? 均为并行会话在途改动，勿动
-- 新会话入口：先读本文件，再读 `tasks/plan.md`
-- 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`
+- 远端提交：`74a34975`（2026-11-09 收尾）；本地与远端 **0 ahead / 0 behind**，以 `git log -1 --oneline` 为准
+- 工作区状态：**干净**，2026-11-08/09 的改动（含学习模式、共享服务/导出壳）已全部提交推送，无并行会话在途改动
+- 新会话入口：**先读 `docs/交接-项目接手说明-2026-11-09.md`（自包含交接，clone 后可读）**，再读本文件与 `tasks/plan.md`
+- 方案文档：`docs/baizhi-monkeyai-feature-migration-plan-2026-11-05.md`、`docs/英语学习模式方案-2026-11-08.md`
 
 ## 已完成
 
