@@ -15,8 +15,9 @@ const INSTALLER = fs.readFileSync(path.join(DESKTOP, 'build', 'installer.nsh'), 
 const NSIS_CONFIGS = [
   'electron-builder.full.yml',
   'electron-builder.lite.yml',
-  'electron-builder.lite.relocated.yml',
   'electron-builder.shell.yml',
+  // 注意：707887a8 曾在此登记 'electron-builder.lite.relocated.yml'，但该文件从未入库、
+  // 全仓零脚本/文档消费（2026-11-09 全仓检索确认）——并行会话的虚胖条目，移除而非补建。
 ];
 
 describe('Windows 安装器进度页', () => {
