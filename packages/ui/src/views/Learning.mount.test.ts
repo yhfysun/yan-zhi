@@ -237,4 +237,38 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelectorAll('.lp-chat-row.assistant .lp-speak').length).toBe(1)
     expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
+
+  it('★ P2 金色复习节点：dueCount>0 的关卡挂 due 类与角标；跟读目标输入在右栏', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/courses')) return {
+        data: [{ stage: '大学', courses: [
+          { id: 'cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample', bookName: '大学英语四级', wordCount: 2607, levelCount: 131, clearedLevels: 0, totalLevels: 131, dueCount: 0, progressPct: 0 },
+        ] }],
+      }
+      // 第 1 关 3 个词到期 → 金色节点；第 2 关 0 到期 → 普通节点
+      if (url.includes('/levels')) return {
+        data: [
+          { levelNo: 1, wordCount: 20, stars: 3, passed: true, unlocked: true, dueCount: 3 },
+          { levelNo: 2, wordCount: 20, stars: 0, passed: false, unlocked: true, dueCount: 0 },
+        ],
+      }
+      if (url.includes('/drill')) return { data: { questions: [] } }
+      if (url.includes('/learning/books/')) return { data: [] }
+      return { data: null }
+    })
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-course')).toBeTruthy())
+    ;(el.querySelector('.lp-course') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-level').length).toBe(2))
+    const dueNode = el.querySelector('.lp-level.due') as HTMLElement
+    expect(dueNode).toBeTruthy()
+    expect(dueNode.textContent).toContain('🟡 3')
+    // 无到期词的节点不挂 due（断言「存在 ≠ 生效」的反面：不是所有节点都金）
+    expect(el.querySelectorAll('.lp-level.due').length).toBe(1)
+    // P2 发音打分：跟读目标句输入框在右栏常驻
+    expect(el.querySelector('.lp-col-right .lp-review input.lp-input')).toBeTruthy()
+    // 三栏骨架仍在
+    expect(el.querySelector('.lp-grid')).toBeTruthy()
+  })
 })

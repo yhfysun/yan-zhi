@@ -29,7 +29,7 @@ function unwrap<T>(r: unknown): T | null {
 // ── 数据 ──
 type Profile = { cefr: string | null; goals: string | null; streakDays?: number };
 type Book = { id: string; name: string; kind: string; course: string; subject?: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
-type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
+type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean; dueCount: number };
 type Question = { kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string; audio?: string };
 type DrillResult = { stars: number; passed: boolean; pct: number; results: Array<{ qid: string; word: string; correct: boolean; expected: string }> };
 type ErrorRow = { id: string; wrong: string; right: string; reason: string | null };
@@ -432,10 +432,14 @@ async function collectSelection() {
   }
 }
 
-// ── 口语跟读（whisper EN 转写，说→看识别结果自查）──
+// ── 口语跟读（whisper EN 转写 + P2 发音打分：目标句词级对齐）──
+type PronWordMatch = { expected: string; spoken: string | null; status: 'ok' | 'wrong' | 'missing'; sim: number };
+type PronunciationScore = { score: number; words: PronWordMatch[]; extraWords: string[] };
 const recording = ref(false);
 const transcribing = ref(false);
 const transcript = ref('');
+const shadowTarget = ref('');
+const pronResult = ref<PronunciationScore | null>(null);
 let mediaRecorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
 async function toggleRecord() {
@@ -460,10 +464,16 @@ async function toggleRecord() {
           fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
           fr.readAsDataURL(blob);
         });
-        const r = await api.post<{ data: { text: string } }>('/learning/voice', { audioBase64: b64, mime: blob.type });
-        transcript.value = unwrap<{ text: string }>(r)?.text || '（未识别到内容）';
+        const expected = shadowTarget.value.trim();
+        const r = await api.post<{ data: { text: string; pronunciation?: PronunciationScore } }>(
+          '/learning/voice', { audioBase64: b64, mime: blob.type, ...(expected ? { expected } : {}) },
+        );
+        const d = unwrap<{ text: string; pronunciation?: PronunciationScore }>(r);
+        transcript.value = d?.text || '（未识别到内容）';
+        pronResult.value = d?.pronunciation ?? null;
       } catch (e) {
         transcript.value = `识别失败：${e instanceof Error ? e.message : String(e)}`;
+        pronResult.value = null;
       } finally {
         transcribing.value = false;
       }
@@ -471,6 +481,7 @@ async function toggleRecord() {
     mediaRecorder.start();
     recording.value = true;
     transcript.value = '';
+    pronResult.value = null;
   } catch {
     transcript.value = '无法访问麦克风（请检查浏览器/应用权限）';
   }
@@ -858,13 +869,14 @@ onMounted(loadTtsPack);
             <div class="lp-level-grid">
               <button
                 v-for="l in pagedLevels" :key="l.levelNo"
-                class="lp-level" :class="{ locked: !l.unlocked, cleared: l.passed }"
+                class="lp-level" :class="{ locked: !l.unlocked, cleared: l.passed, due: l.dueCount > 0 }"
                 :title="l.unlocked ? '' : '跳关考试：通过即解锁下一关'"
                 @click="startDrill(l.levelNo)"
               >
                 <span class="lp-no">{{ l.unlocked ? l.levelNo : '🎯' }}</span>
                 <span class="lp-stars">{{ starText(l.stars) }}</span>
                 <span class="lp-words">{{ l.wordCount }} 词{{ l.unlocked ? '' : ' · 跳考' }}</span>
+                <i v-if="l.dueCount > 0" class="lp-due-badge" title="已学词到期，该复习了">🟡 {{ l.dueCount }}</i>
               </button>
             </div>
             <div v-if="levelPageCount > 1" class="lp-pager">
@@ -971,7 +983,7 @@ onMounted(loadTtsPack);
             <h3>{{ readingActive.title }} <span class="lp-kind">{{ readingActive.cefr }}</span></h3>
             <p class="lp-hint">🔊 逐段朗读；划选英文单词后点「收词」进词本（进「阅读生词」词单）。</p>
             <div v-for="(p, i) in readingActive.paras" :key="i" class="lp-para">
-              <p class="lp-para-en" @mouseup="collectSelection">{{ p.en }} <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(p.en)">🔊</button></p>
+              <p class="lp-para-en" @mouseup="collectSelection">{{ p.en }} <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(p.en)">🔊</button> <button class="lp-speak" title="设为跟读目标（右栏录音打分）" @click="shadowTarget = p.en">🎙</button></p>
               <p class="lp-para-zh">{{ p.zh }}</p>
             </div>
             <button class="lp-mini" :disabled="!!collecting" @click="collectSelection">
@@ -992,11 +1004,23 @@ onMounted(loadTtsPack);
         </div>
         <div class="lp-card-head" style="margin-top:14px;"><h2>口语跟读</h2></div>
         <div class="lp-review">
+          <input v-model="shadowTarget" class="lp-input" placeholder="跟读目标句（留空则只转写）" />
           <button class="lp-primary" :class="{ rec: recording }" :disabled="transcribing" @click="toggleRecord">
             {{ transcribing ? '识别中…' : recording ? '⏹ 停止录音' : '🎙 点我录音说英语' }}
           </button>
           <p v-if="transcript" class="lp-transcript">{{ transcript }}</p>
-          <p class="lp-hint">说一句英语 → 看识别结果自查发音清晰度（whisper 本地转写，需安装语音识别模型）。</p>
+          <div v-if="pronResult" class="lp-pron">
+            <p class="lp-pron-score">
+              发音得分 <b :class="{ good: pronResult.score >= 80, mid: pronResult.score >= 60 && pronResult.score < 80 }">{{ pronResult.score }}</b> 分
+              <span v-if="pronResult.extraWords.length" class="lp-hint">多说：{{ pronResult.extraWords.join(' ') }}</span>
+            </p>
+            <p class="lp-pron-words">
+              <span v-for="(w, i) in pronResult.words" :key="i" class="lp-pron-w" :class="w.status">
+                {{ w.expected }}<i v-if="w.status === 'wrong'" class="lp-pron-heard">（听到 {{ w.spoken }}）</i>
+              </span>
+            </p>
+          </div>
+          <p class="lp-hint">填目标句（阅读段点 🎙 可一键填入）→ 录音 → 看逐词比对与得分（whisper 本地转写，需安装语音识别模型）。</p>
         </div>
         <div class="lp-card-head" style="margin-top:14px;"><h2>错误本</h2></div>
         <ul v-if="errors.length" class="lp-errors">
@@ -1064,6 +1088,8 @@ onMounted(loadTtsPack);
 .lp-course-fill { display: block; height: 100%; background: linear-gradient(90deg, #3370ff, #69b1ff); border-radius: 3px; }
 .lp-course-meta { font-size: 11px; color: #8f959e; }
 .lp-due-badge { font-style: normal; font-size: 10px; color: #e8590c; background: #fff4e6; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+/* 金色复习节点：该关有已学词到期（对标 Duolingo 衰减提醒） */
+.lp-level.due { background: #fff8e1; border-color: #f7b500; }
 .lp-custom-books { margin-top: 12px; padding-top: 10px; border-top: 1px solid #f0f1f3; }
 .lp-books { display: flex; flex-direction: column; gap: 6px; }
 .lp-book { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; color: #1f2329; position: relative; }
@@ -1153,6 +1179,16 @@ onMounted(loadTtsPack);
 .lp-review .lp-primary { width: 100%; }
 .lp-primary.rec { background: #d4380d; border-color: #d4380d; }
 .lp-transcript { font-size: 13px; background: #f6f8fc; border-radius: 6px; padding: 8px 10px; }
+/* P2 发音打分：逐词比对（绿=读对 / 红=读错 / 灰删除线=漏读） */
+.lp-pron { margin-top: 6px; }
+.lp-pron-score { font-size: 13px; margin: 0 0 4px; }
+.lp-pron-score b.good { color: #0f8a3d; }
+.lp-pron-score b.mid { color: #e8590c; }
+.lp-pron-words { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0; }
+.lp-pron-w { font-size: 12px; border-radius: 4px; padding: 1px 5px; background: #f0fff4; color: #0f8a3d; }
+.lp-pron-w.wrong { background: #fff1f0; color: #d4380d; }
+.lp-pron-w.missing { background: #f2f3f5; color: #8f959e; text-decoration: line-through; }
+.lp-pron-heard { font-style: normal; font-size: 11px; opacity: .85; }
 .lp-scene-list { display: flex; flex-direction: column; gap: 10px; }
 .lp-scene { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 10px; padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; color: #1f2329; }
 .lp-scene:hover { border-color: #3370ff; }

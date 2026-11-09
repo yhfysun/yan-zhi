@@ -454,7 +454,7 @@
                       </template>
                       <!-- 学习模式：场景任务卡结算（[SCENE_END] + scene_result 围栏 → 星级/句型/纠错卡） -->
                       <template v-for="(sr, i) in roundSceneResults(vr.round)" :key="vr.round.finalAssistant.id + '-sr-' + i">
-                        <SceneResultCard v-if="sr.ok" :result="sr.result" />
+                        <SceneResultCard v-if="sr.ok" :result="sr.result" :can-retry="!!currentSceneId" :retrying="sceneRetrying" @retry="retryScene" />
                         <div v-else class="msg-doc-error">场景结算数据有误：{{ sr.error }}</div>
                       </template>
                       <!-- 工具生成的看板：build_dashboard_dsl 结果里的 [ydash] 定义（数据按 data_path 活取） -->
@@ -898,6 +898,35 @@ function roundDashboards(round: MessageRound) {
 function roundSceneResults(round: MessageRound) {
   const content = round.finalAssistant?.content || '';
   return content ? extractSceneResultBlocks(content) : [];
+}
+
+// ===== P2 场景重练：结算卡「重练」→ 按当前会话的场景元数据建新会话 =====
+// 闸口两个（缺一会话就落错模式列表）：① 当前在 learning 模式；② 会话带 learningScene 元数据。
+const sceneRetrying = ref(false);
+const currentSceneId = computed(() => {
+  if (activeMode.value !== 'learning') return '';
+  const conv = store.conversations.find((c) => c.id === store.currentConvId);
+  const meta = conv?.sourceMeta as { learningScene?: string } | null | undefined;
+  return String(meta?.learningScene || '').trim();
+});
+async function retryScene() {
+  const sceneId = currentSceneId.value;
+  const conv = store.conversations.find((c) => c.id === store.currentConvId);
+  if (!sceneId || sceneRetrying.value || !conv) return;
+  sceneRetrying.value = true;
+  try {
+    // 复用当前会话的学习陪练 agent；新会话带同一场景元数据，服务端注入同一场景提示词
+    const convId = await store.createConversation(`场景：${String(conv.title || '').replace(/^场景：/, '')}`, {
+      agentId: conv.agentId || undefined,
+      source: 'learning',
+      sourceMeta: { learningScene: sceneId } as unknown as { url?: string; host?: string; scope?: string },
+    });
+    await router.push({ name: 'chat-detail', params: { convId } });
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? `重练失败：${e.message}` : '重练失败，请稍后重试');
+  } finally {
+    sceneRetrying.value = false;
+  }
 }
 /**
  * 本轮所有工具结果文本。

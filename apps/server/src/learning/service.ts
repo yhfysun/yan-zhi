@@ -229,7 +229,7 @@ export function listBookWords(userId: string, bookId: string, page = 0, size = 5
 
 // ── 关卡与闯关 ──────────────────────────────────────────────────────────────
 
-export type LevelView = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean };
+export type LevelView = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean; dueCount: number };
 
 export function getLevels(userId: string, bookId: string): LevelView[] {
   const words = wordsOfBook(userId, bookId);
@@ -237,18 +237,23 @@ export function getLevels(userId: string, bookId: string): LevelView[] {
     .all(userId, bookId) as Array<{ level_no: number; stars: number; passed: number }>;
   const byLevel = new Map(rows.map((r) => [r.level_no, r]));
   const total = levelCountFor(words.length);
+  const now = Date.now();
   const out: LevelView[] = [];
   for (let no = 1; no <= total; no++) {
     const r = byLevel.get(no);
     const { start, end } = levelSlice(no, words.length);
     // 锁定规则：第 1 关始终开放；其后必须前一关 passed 才解锁
     const unlocked = no === 1 || byLevel.get(no - 1)?.passed === 1;
+    // ★ 复习角标口径：**已学过且按 SRS 到期**（due_at 非空且 <= now）。
+    //   不含 due_at NULL 的新词 —— 新词归「闯新关」，不该亮金色复习角标（对标 Duolingo 衰减节点）。
+    const dueCount = words.slice(start, end).filter((w) => w.due_at != null && w.due_at <= now).length;
     out.push({
       levelNo: no,
       wordCount: end - start,
       stars: r?.stars ?? 0,
       passed: r?.passed === 1,
       unlocked,
+      dueCount,
     });
   }
   return out;

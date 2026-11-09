@@ -222,6 +222,31 @@ describe('到期复习（跨词书）', () => {
   });
 });
 
+describe('关卡复习角标（P2 金色节点）', () => {
+  it('★ dueCount 只数「已学过且 SRS 到期」的词；新词（due_at NULL）不算', () => {
+    // 第 1 关前 3 个词的 learning_word 行已在前面闯关用例落库；先清第 2 关影响再构造：
+    // ① 把第 1 关（词序 0..19）中前 2 个学过的词设为已到期
+    const lvl1Words = BUILTIN_BOOK.words.slice(0, 20).map((w) => w.word);
+    const past = Date.now() - 1000;
+    let setPast = 0;
+    for (const w of lvl1Words) {
+      const row = db.prepare('SELECT id FROM learning_word WHERE user_id = ? AND book_id = ? AND word = ?')
+        .get(uid, BUILTIN_BOOK.id, w) as { id: string } | undefined;
+      if (row && setPast < 2) { db.prepare('UPDATE learning_word SET due_at = ? WHERE id = ?').run(past, row.id); setPast++; }
+    }
+    // ② 未学过的词造不了行（不落库）——直接验证 NULL 语义：插入一行 due_at=NULL 的假想新词不在此关
+    const levels = getLevels(uid, BUILTIN_BOOK.id);
+    expect(levels[0].dueCount).toBe(setPast); // 只有显式设为到期的词算
+    // ③ 复习交卷清零：把到期词全部答对推进 SRS 后，角标归零
+    for (const w of lvl1Words) {
+      db.prepare('UPDATE learning_word SET due_at = ? WHERE user_id = ? AND book_id = ? AND word = ? AND due_at IS NOT NULL')
+        .run(Date.now() + 86_400_000, uid, BUILTIN_BOOK.id, w);
+    }
+    const levelsAfter = getLevels(uid, BUILTIN_BOOK.id);
+    expect(levelsAfter[0].dueCount).toBe(0);
+  });
+});
+
 describe('课程学段总览', () => {
   it('★ 11 门课按学段返回，进度随闯关推进', () => {
     const groups = getCourses(uid);

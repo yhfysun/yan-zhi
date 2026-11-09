@@ -15,6 +15,7 @@ import {
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
+import { scorePronunciation } from '../learning/pronunciation.js';
 import type { DrillAnswer } from '../learning/srs.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -291,12 +292,13 @@ router.post('/readings/:id/collect', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// POST /api/learning/voice —— 口语跟读识别：{audioBase64, mime} → whisper(en) 转写
-// 复用剪辑模式的 whisper 基建（clip-asr）——同一套依赖解析与错误指引，不另起炉灶
+// POST /api/learning/voice —— 口语跟读识别：{audioBase64, mime, expected?} → whisper(en) 转写
+// 复用剪辑模式的 whisper 基建（clip-asr）——同一套依赖解析与错误指引，不另起炉灶。
+// 带 expected（目标句）时返回词级对齐发音打分（learning/pronunciation.ts 唯一实现）。
 router.post('/voice', async (req, res) => {
   let tmpFile: string | null = null;
   try {
-    const body = req.body as { audioBase64?: string; mime?: string };
+    const body = req.body as { audioBase64?: string; mime?: string; expected?: string };
     const b64 = String(body.audioBase64 || '').replace(/^data:[^;]+;base64,/, '');
     if (!b64) { res.status(400).json({ error: 'audioBase64 必填' }); return; }
     const buf = Buffer.from(b64, 'base64');
@@ -310,7 +312,16 @@ router.post('/voice', async (req, res) => {
       res.status(r.status || 400).json({ error: r.error || '识别失败', ...(r.extra || {}) });
       return;
     }
-    res.json({ data: { text: r.cues.map((c) => c.text).join(' ').trim(), model: r.model } });
+    const text = r.cues.map((c) => c.text).join(' ').trim();
+    const expected = String(body.expected || '').trim();
+    res.json({
+      data: {
+        text,
+        model: r.model,
+        // 目标句对齐打分（P2 发音打分）；不传 expected 维持纯转写旧行为
+        ...(expected ? { pronunciation: scorePronunciation(expected, text) } : {}),
+      },
+    });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e) }); }
   finally {
     if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch { /* 临时文件清理失败不阻塞 */ } }

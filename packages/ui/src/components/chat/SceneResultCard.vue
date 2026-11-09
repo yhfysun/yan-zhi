@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // 场景练习结算卡：学习模式陪练输出 [SCENE_END] + ```scene_result 围栏时的展示卡。
 // 星级 + 分数 + 目标句型 + 纠错表（错句 → 母语者说法 → 一句为什么）；纠错项可朗读。
+// P2 场景重练：仅当当前会话带场景元数据时显示「重练」（建新会话由 ChatMessageList 接线）。
 import type { SceneResult } from '../../utils/scene-result';
 
-const props = defineProps<{ result: SceneResult }>();
+const props = defineProps<{ result: SceneResult; canRetry?: boolean; retrying?: boolean }>();
+defineEmits<{ retry: [] }>();
 
 /** 本地朗读：不依赖语音包安装状态（Chromium 自带 SpeechSynthesis，en-US 优先） */
 function speak(text: string) {
@@ -47,6 +49,9 @@ function speak(text: string) {
       </ul>
     </div>
     <p class="sr-hint">这些表达会自动进入错误本，按 SRS 排程复习。</p>
+    <button v-if="props.canRetry" class="sr-retry" :disabled="props.retrying" @click="$emit('retry')">
+      {{ props.retrying ? '创建重练会话中…' : '🔁 重练这个场景' }}
+    </button>
   </div>
 </template>
 
@@ -68,4 +73,7 @@ function speak(text: string) {
 .sr-gp { margin-left: 6px; background: #eef7f0; border-radius: 4px; padding: 1px 5px; }
 .sr-speak { border: none; background: transparent; cursor: pointer; font-size: 12px; }
 .sr-hint { color: #8f959e; font-size: 11px; margin: 8px 0 0; }
+.sr-retry { margin-top: 8px; width: 100%; border: 1px solid #b7ebc9; background: #fff; border-radius: 6px; padding: 6px 0; font-size: 13px; color: #0f8a3d; cursor: pointer; }
+.sr-retry:hover { background: #f6fff8; }
+.sr-retry:disabled { opacity: .6; cursor: default; }
 </style>
