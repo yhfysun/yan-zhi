@@ -117,6 +117,48 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
 
+  it('闯关单题聚焦：点关卡后一次只渲染一题，进度条与圆点导航工作', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/courses')) return {
+        data: [{ stage: '大学', courses: [
+          { id: 'cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample', bookName: '大学英语四级 · 全量', wordCount: 2607, levelCount: 131, clearedLevels: 0, totalLevels: 131, dueCount: 0, progressPct: 0 },
+        ] }],
+      }
+      if (url.includes('/drill')) return {
+        data: { questions: [
+          { qid: 'q1', kind: 'choice', wordId: 'cancel', prompt: 'cancel', phonetic: "/'kænsl/", options: ['取消', '众多的'] },
+          { qid: 'q2', kind: 'spelling', wordId: 'salary', prompt: '薪金，薪水', hint: '6 个字母' },
+        ] },
+      }
+      if (url.includes('/levels')) return {
+        data: [{ levelNo: 1, wordCount: 20, stars: 0, passed: false, unlocked: true }],
+      }
+      if (url.includes('/words?')) return { data: { total: 0, page: 0, size: 50, words: [] } }
+      if (url.includes('/learning/books/')) return { data: [] }
+      return { data: null }
+    })
+    const el = await mountPage()
+    // 选课程 → 点第 1 关（课程/关卡都是异步加载，必须 waitFor）
+    await vi.waitFor(() => expect(el.querySelector('.lp-course')).toBeTruthy())
+    ;(el.querySelector('.lp-course') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-level')).toBeTruthy())
+    ;(el.querySelector('.lp-level') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-focus')).toBeTruthy())
+    // 一次只渲染一题（不是 2 题平铺）
+    expect(el.querySelectorAll('.lp-q').length).toBe(0)
+    expect(el.querySelector('.lp-focus')?.textContent).toContain('cancel')
+    expect(el.querySelector('.lp-focus')?.textContent).toContain('第 1 题')
+    expect(el.querySelector('.lp-drill-count')?.textContent).toContain('0/2')
+    // 圆点导航 2 个；点下一题 → 第 2 题
+    expect(el.querySelectorAll('.lp-dot').length).toBe(2)
+    ;([...el.querySelectorAll('.lp-focus-nav .lp-primary')] as HTMLElement[]).find((b) => b.textContent?.includes('下一题'))!.click()
+    await nextTick()
+    expect(el.querySelector('.lp-focus')?.textContent).toContain('第 2 题')
+    // 三栏骨架仍在
+    expect(el.querySelector('.lp-grid')).toBeTruthy()
+  })
+
   it('场景卡 Tab：点开真出卡，卡带标题与难度（中栏内渲染，不跳布局）', async () => {
     const el = await mountPage()
     ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('场景卡'))!.click()

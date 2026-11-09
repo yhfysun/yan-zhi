@@ -4,7 +4,7 @@
 // 此前 Tab 切换时中栏整块换布局导致"样式跳来跳去"，已废弃。
 // 选中课程后关卡地图直接出现在中栏（此前藏在左栏滚动区外，用户感知"点了没用"）。
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
@@ -117,6 +117,33 @@ const answers = ref<Record<string, string>>({}); // qid → 选项/输入
 const submitting = ref(false);
 const result = ref<DrillResult | null>(null);
 
+// ── 单题聚焦模式（对标 Duolingo：一次只答一题 + 进度条，替代 10 题平铺长列表）──
+const qIndex = ref(0);
+const currentQ = computed(() => activeQuestions.value[qIndex.value] ?? null);
+const answeredCount = computed(() => activeQuestions.value.filter((q) => String(answers.value[q.qid] ?? '').trim() !== '').length);
+function isAnswered(q: Question): boolean {
+  return String(answers.value[q.qid] ?? '').trim() !== '';
+}
+const KIND_LABELS: Record<Question['kind'], string> = { choice: '选释义', spelling: '拼写', dictation: '听写', cloze: '例句填空' };
+function goQ(delta: number) {
+  qIndex.value = Math.max(0, Math.min(activeQuestions.value.length - 1, qIndex.value + delta));
+}
+/** 输入框回车：非末题 → 跳下一题；末题且答满 → 交卷 */
+function nextOrSubmit() {
+  if (qIndex.value < activeQuestions.value.length - 1) { goQ(1); return; }
+  if (answeredCount.value >= activeQuestions.value.length) {
+    if (reviewMode.value) void submitReview(); else void submitDrill();
+  }
+}
+// 听写题自动念一遍（进入题目即播，不用手点）；输入框每题自动聚焦
+const focusInput = ref<HTMLInputElement | null>(null);
+watch(qIndex, async () => {
+  const q = currentQ.value;
+  if (q?.kind === 'dictation' && ttsPackId.value) void speak(q.audio || '');
+  await nextTick();
+  focusInput.value?.focus();
+});
+
 async function openBook(book: Book) {
   activeBook.value = book;
   drillLevel.value = null;
@@ -172,6 +199,7 @@ async function startDrill(levelNo: number) {
   answers.value = {};
   result.value = null;
   drillLevel.value = levelNo;
+  qIndex.value = 0;
 }
 
 // ── 建词书（手动 / AI 收词 / URL 导入共用表单）──
@@ -283,6 +311,7 @@ async function startReview() {
   answers.value = {};
   result.value = null;
   drillLevel.value = null;
+  qIndex.value = 0;
   activeBook.value = null;
   reviewMode.value = true;
   tab.value = 'drill';
@@ -580,45 +609,68 @@ onMounted(loadTtsPack);
 
         <!-- 单词闯关 -->
         <template v-if="tab === 'drill'">
-          <template v-if="(drillLevel != null || reviewMode) && activeQuestions.length">
+          <!-- 单题聚焦模式：一次只答一题（此前 10 题平铺成一条长列表，又密又乱） -->
+          <template v-if="(drillLevel != null || reviewMode) && currentQ">
             <p class="lp-drill-title">
               {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
             </p>
-            <div v-for="(q, qi) in activeQuestions" :key="q.qid" class="lp-q">
-              <p class="lp-q-prompt">
-                <b>{{ qi + 1 }}.</b>
-                <template v-if="q.kind === 'choice'">
-                  {{ q.prompt }} <i v-if="q.phonetic">{{ q.phonetic }}</i><span class="lp-kind">选释义</span>
-                  <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(q.prompt)">🔊</button>
-                </template>
-                <template v-else-if="q.kind === 'dictation'">
-                  🔊 听音拼写<span class="lp-kind">听写</span>
-                  <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="播放单词" @click="speak(q.audio || '')">🔊 播放</button>
-                  <i class="lp-hint">{{ q.hint }}</i>
-                </template>
-                <template v-else-if="q.kind === 'cloze'">
-                  {{ q.prompt }}<span class="lp-kind">例句填空</span>
-                  <i class="lp-hint">{{ q.hint }}</i>
-                </template>
-                <template v-else>{{ q.prompt }}<span class="lp-kind">拼写</span></template>
-              </p>
-              <div v-if="q.kind === 'choice'" class="lp-opts">
+            <div class="lp-drill-meter">
+              <div class="lp-drill-bar"><span :style="{ width: (answeredCount / activeQuestions.length) * 100 + '%' }"></span></div>
+              <span class="lp-drill-count">已答 {{ answeredCount }}/{{ activeQuestions.length }}</span>
+            </div>
+            <div class="lp-focus">
+              <p class="lp-focus-kind"><b>第 {{ qIndex + 1 }} 题</b><span class="lp-kind">{{ KIND_LABELS[currentQ.kind] }}</span></p>
+              <!-- 题干 -->
+              <div v-if="currentQ.kind === 'choice'" class="lp-focus-body">
+                <p class="lp-focus-word">{{ currentQ.prompt }}<i v-if="currentQ.phonetic" class="lp-focus-pho">{{ currentQ.phonetic }}</i>
+                  <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(currentQ.prompt)">🔊</button>
+                </p>
+                <p class="lp-focus-hint">选出正确的中文释义</p>
+              </div>
+              <div v-else-if="currentQ.kind === 'dictation'" class="lp-focus-body">
+                <button class="lp-bigplay" :disabled="ttsSpeaking || !ttsPackId" title="播放单词" @click="speak(currentQ.audio || '')">🔊 播放单词</button>
+                <p class="lp-focus-hint">听发音拼写（{{ currentQ.hint }}）</p>
+              </div>
+              <div v-else-if="currentQ.kind === 'cloze'" class="lp-focus-body">
+                <p class="lp-focus-word lp-focus-cloze">{{ currentQ.prompt }}</p>
+                <p class="lp-focus-hint">填入画线处的单词（{{ currentQ.hint }}）</p>
+              </div>
+              <div v-else class="lp-focus-body">
+                <p class="lp-focus-word">✍️ 拼写单词</p>
+                <p class="lp-focus-hint">提示：{{ currentQ.hint }}</p>
+              </div>
+              <!-- 作答区 -->
+              <div v-if="currentQ.kind === 'choice'" class="lp-opts">
                 <button
-                  v-for="opt in q.options" :key="opt"
-                  class="lp-opt" :class="{ picked: answers[q.qid] === opt }"
-                  @click="answers[q.qid] = opt"
+                  v-for="opt in currentQ.options" :key="opt"
+                  class="lp-opt" :class="{ picked: answers[currentQ.qid] === opt }"
+                  @click="answers[currentQ.qid] = opt"
                 >{{ opt }}</button>
               </div>
               <input
                 v-else
-                v-model="answers[q.qid]"
-                class="lp-input" :placeholder="q.kind === 'dictation' ? `听音拼写（${q.hint}）` : q.kind === 'cloze' ? `填入目标词（${q.hint}）` : `拼写单词（提示：${q.hint}）`"
-                @keyup.enter="reviewMode ? submitReview() : submitDrill()"
+                ref="focusInput"
+                v-model="answers[currentQ.qid]"
+                class="lp-input lp-focus-input" :placeholder="currentQ.kind === 'dictation' ? `听音拼写（${currentQ.hint}）` : currentQ.kind === 'cloze' ? `填入目标词（${currentQ.hint}）` : `拼写单词（提示：${currentQ.hint}）`"
+                @keyup.enter="nextOrSubmit"
               />
             </div>
-            <button class="lp-primary" :disabled="submitting || Object.keys(answers).length < activeQuestions.length" @click="reviewMode ? submitReview() : submitDrill()">
-              {{ submitting ? '判分中…' : '交卷' }}
-            </button>
+            <!-- 导航：上一题 / 题号圆点 / 下一题或交卷 -->
+            <div class="lp-focus-nav">
+              <button class="lp-mini" :disabled="qIndex === 0" @click="goQ(-1)">‹ 上一题</button>
+              <div class="lp-dots">
+                <button
+                  v-for="(q, i) in activeQuestions" :key="q.qid"
+                  class="lp-dot" :class="{ done: isAnswered(q), cur: i === qIndex }"
+                  :title="`第 ${i + 1} 题${isAnswered(q) ? '（已答）' : ''}`"
+                  @click="qIndex = i"
+                >{{ i + 1 }}</button>
+              </div>
+              <button v-if="qIndex < activeQuestions.length - 1" class="lp-primary" @click="goQ(1)">下一题 ›</button>
+              <button v-else class="lp-primary" :disabled="submitting || answeredCount < activeQuestions.length" @click="reviewMode ? submitReview() : submitDrill()">
+                {{ submitting ? '判分中…' : '交卷' }}
+              </button>
+            </div>
           </template>
           <template v-else-if="result">
             <div class="lp-result" :class="{ pass: result.passed }">
@@ -863,12 +915,31 @@ onMounted(loadTtsPack);
 .lp-empty { text-align: center; padding: 48px 12px; }
 .lp-empty-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 .lp-drill-title { font-size: 13px; color: #4e5469; margin: 0 0 10px; }
-.lp-q { margin-bottom: 12px; }
-.lp-q-prompt { font-size: 13px; margin: 0 0 6px; }
-.lp-q-prompt i { color: #8f959e; font-style: normal; margin-left: 4px; }
+/* 单题聚焦模式：进度条 + 大题卡 + 圆点导航（替代 10 题平铺） */
+.lp-drill-meter { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
+.lp-drill-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--color-border, #e5e6eb); overflow: hidden; }
+.lp-drill-bar span { display: block; height: 100%; background: var(--color-primary, #3370ff); border-radius: 3px; transition: width 0.2s; }
+.lp-drill-count { font-size: 12px; color: #8f959e; white-space: nowrap; }
+.lp-focus { border: 1px solid var(--color-border, #e5e6eb); border-radius: 12px; padding: 22px 24px; text-align: center; background: var(--glass-bg); }
+.lp-focus-kind { margin: 0 0 12px; font-size: 12px; color: #8f959e; }
+.lp-focus-kind b { color: #4e5469; margin-right: 8px; }
+.lp-focus-body { min-height: 96px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+.lp-focus-word { font-size: 26px; font-weight: 600; color: var(--color-text, #1f2329); margin: 0; line-height: 1.4; }
+.lp-focus-cloze { font-size: 17px; font-weight: 500; }
+.lp-focus-pho { font-size: 14px; color: #8f959e; font-style: normal; font-weight: 400; margin-left: 8px; }
+.lp-focus-hint { font-size: 13px; color: #8f959e; margin: 0; }
+.lp-bigplay { border: 1px solid var(--color-border, #e5e6eb); background: var(--glass-bg-hover, #f0f2f7); border-radius: 999px; padding: 10px 22px; font-size: 15px; cursor: pointer; color: var(--color-text, #1f2329); }
+.lp-bigplay:hover { border-color: #3370ff; color: #3370ff; }
+.lp-focus-input { max-width: 340px; margin: 16px auto 0; display: block; text-align: center; font-size: 16px; padding: 9px 12px; }
+.lp-focus-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
+.lp-dots { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; }
+.lp-dot { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--color-border, #e5e6eb); background: var(--glass-bg); font-size: 11px; cursor: pointer; color: #8f959e; padding: 0; }
+.lp-dot.done { background: #3370ff; border-color: #3370ff; color: #fff; }
+.lp-dot.cur { border-color: #3370ff; color: #3370ff; font-weight: 600; box-shadow: 0 0 0 2px #3370ff22; }
 .lp-kind { margin-left: 6px; font-size: 10px; color: #3370ff; background: #f0f5ff; border-radius: 4px; padding: 1px 6px; }
-.lp-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.lp-opt { text-align: left; border: 1px solid #e5e6eb; border-radius: 6px; padding: 6px 9px; font-size: 12px; cursor: pointer; background: #fafbfc; color: #1f2329; }
+.lp-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+.lp-opt { text-align: left; border: 1px solid var(--color-border, #e5e6eb); border-radius: 8px; padding: 10px 12px; font-size: 13px; cursor: pointer; background: var(--glass-bg); color: var(--color-text, #1f2329); transition: border-color 0.15s; }
+.lp-opt:hover { border-color: #3370ff; }
 .lp-opt.picked { border-color: #3370ff; background: #f0f5ff; }
 .lp-result { font-size: 13px; }
 .lp-result.pass { color: #0f8a3d; }
