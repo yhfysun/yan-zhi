@@ -1307,6 +1307,71 @@ function wrapEmbedIntent(url: string): string {
   } catch { return url; }   // 编码失败就退回直接打开，不比现状更差
 }
 
+/**
+ * 挂载时先认领主进程已有的 tab。
+ *
+ * Agent 首次 navigate 的时序是：主进程 createBrowserTab(tab-1) → 广播 tabCreated →
+ * 渲染层展开预览面板 → BrowserPanel 才挂载。面板自己的 store 此时仍为空；若直接
+ * newTab() 就会再建一个空白 tab-2 并激活，用户看到的就是“预览窗口停在浏览器首页”。
+ * 因此必须先问主进程要当前空间已有的 tab（含目标 URL），有则恢复；只有确实没有才新建。
+ */
+async function adoptExistingTabsFromMain(): Promise<boolean> {
+  if (!isElectron) return false;
+  const bv = (window as any).electronAPI?.browserView;
+  if (!bv?.listTabs) return false;
+  let raw: any;
+  try {
+    raw = await bv.listTabs(browserScope);
+  } catch {
+    return false;
+  }
+  const rows: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.tabs) ? raw.tabs : []);
+  const mine = rows.filter((r) => {
+    const sc = String(r?.scope || 'preview');
+    return sc === browserScope || isSamePreviewFamily(sc, browserScope);
+  });
+  if (!mine.length) return false;
+
+  for (const r of mine) {
+    const id = String(r?.tabId || '');
+    if (!id) continue;
+    const url = String(r?.url || '');
+    const existing = tabs.value.find((t) => t.id === id);
+    if (existing) {
+      if (!existing.url && url) existing.url = url;
+      if (!existing.srcUrl && url) existing.srcUrl = wrapEmbedIntent(url);
+      if (!existing.title && r?.title) existing.title = String(r.title);
+      continue;
+    }
+    tabs.value.push({
+      id,
+      url,
+      srcUrl: wrapEmbedIntent(url),
+      title: String(r?.title || ''),
+      loading: !!r?.loading,
+      urlInput: url,
+      history: url ? [url] : [],
+      histIndex: url ? 0 : -1,
+      pageZoom: 1,
+      canBack: false,
+      canForward: false,
+      suspended: !!r?.suspended,
+    });
+  }
+
+  const preferred = mine.find((r) => r?.active)
+    || mine.find((r) => String(r?.url || ''))
+    || mine[0];
+  const preferredId = String(preferred?.tabId || '');
+  if (preferredId && tabs.value.some((t) => t.id === preferredId)) {
+    if (activeTabId.value !== preferredId) {
+      activeTabId.value = '';
+      await switchTab(preferredId);
+    }
+  }
+  return tabs.value.length > 0;
+}
+
 async function newTab(url?: string) {
   hideTabCtx();
   const api = (window as any).electronAPI;
@@ -3309,8 +3374,10 @@ onMounted(async () => {
       activeTabId.value = '';
       await switchTab(restoreId);
     } else {
-      // 初始化第一个标签页
-      await newTab();
+      // 先认领主进程已有的 tab（Agent 首导航通常已经建好并带着目标 URL）。
+      // 只有主进程也没有 tab 时，才创建空白起始页。
+      const adopted = await adoptExistingTabsFromMain();
+      if (!adopted) await newTab();
     }
   } catch (err) {
     console.error('[BrowserPanel] 挂载期建 tab 失败（不影响监听器注册）：', err);

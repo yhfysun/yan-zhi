@@ -847,6 +847,7 @@ import ChatTaskChangeSummary from './ChatTaskChangeSummary.vue';
 import UserAttachmentList from './UserAttachmentList.vue';
 import { splitUserContent, type UserAttachment, type UserQuotedLink } from '../../utils/user-attachments';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
+import { resolveModelDisplayName } from '../../utils/model-display';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, visibleRounds, ensureRoundVisible, formatTime, collapsedMessages, toggleMsgCollapse,
@@ -996,7 +997,7 @@ const costNotice = computed(() => costStore.activeNotice(store.currentConvId));
 /** 当前会话使用的模型：卡片头展示用；没选模型时为空，不占位 */
 const currentConvModel = computed(() => {
   const conv = (store.conversations as Array<{ id: string; modelId?: string }>).find((c) => c.id === store.currentConvId);
-  return conv?.modelId || '';
+  return resolveModelDisplayName(platformStore.models, conv?.modelId);
 });
 
 function onDismissCostNotice() {

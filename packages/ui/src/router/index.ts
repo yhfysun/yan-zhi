@@ -4,7 +4,7 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { loadPluginView } from '../plugin-runtime';
-import { SHELL_VIEW_LOADERS } from '../generated/build-modes';
+import { MODE_VIEW_LOADERS, SHELL_VIEW_LOADERS } from '../generated/build-modes';
 import { isCapacitor } from '../api/client';
 import { useAuthStore } from '../stores/auth';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
@@ -149,13 +149,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Chat.vue'),
     meta: { title: '任务' },
   },
-  {
-    // 学习模式（docs/英语学习模式方案-2026-11-08.md）：词书闯关 + AI 陪练入口 + 错误本
-    path: '/learning',
-    name: 'learning',
-    component: () => import('../views/Learning.vue'),
-    meta: { title: '学习' },
-  },
+  // 学习模式（docs/英语学习模式方案-2026-11-08.md）：词书闯关 + AI 陪练入口 + 错误本。
+  // 组件 loader 由构建期生成表提供；lite/basic 未选 learning 时该分支为空，chunk 不产出。
+  ...(MODE_VIEW_LOADERS.learning
+    ? [{
+        path: '/learning',
+        name: 'learning',
+        component: MODE_VIEW_LOADERS.learning,
+        meta: { title: '学习' },
+      } as RouteRecordRaw]
+    : []),
   {
     // 办公工作台（P2）：文件树 / 文档画布 / AI 右栏；入口在顶栏「工作台」。
     // 与 /chat 同属 office 模式（MODE_ROUTE_KEYS 已映射），切换不回聊天页布局。

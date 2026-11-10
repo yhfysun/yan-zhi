@@ -51,44 +51,21 @@
       <el-form-item label="API Key">
         <el-input v-model="platformConfigForm.apiKey" type="password" show-password :placeholder="platformConfigEditId ? '留空则不修改' : 'sk-...'" />
       </el-form-item>
-      <template v-if="!platformConfigEditId">
-        <el-form-item label="模型 ID">
-          <el-input v-model="platformConfigForm.modelId" :placeholder="cfgFetched.length ? '可从拉取列表勾选，或手动填写' : '如：gpt-4o-mini / deepseek-chat'" />
-        </el-form-item>
-        <el-form-item label="模型别名">
-          <el-input v-model="platformConfigForm.alias" placeholder="可选，展示在模型列表中的名称" />
-        </el-form-item>
-        <el-form-item label="上下文窗口">
-          <el-input-number v-model="platformConfigForm.contextWindow" :min="1024" :max="1000000" :step="1024" />
-        </el-form-item>
-      </template>
     </el-form>
 
     <!-- 测试连接 / 拉取模型：与「模型平台」页同一套口径（2026-10-18 用户实报「拉取模型的怎么没了」） -->
     <StatusActionBar :status="cfgStatus" :status-type="cfgStatusType">
       <el-button :loading="cfgTesting" :icon="Connection" @click="cfgTest">测试连接</el-button>
-      <!-- 新增态：预拉远程列表勾选带入；编辑态：直接全量同步（去重安全） -->
-      <el-button v-if="!platformConfigEditId" :loading="cfgFetching" :icon="Download" @click="cfgFetch">拉取模型列表</el-button>
-      <el-button v-else :loading="cfgSyncing" :icon="Download" @click="cfgSync">拉取远程模型</el-button>
+      <el-button v-if="platformConfigEditId" :loading="cfgSyncing" :icon="Download" @click="cfgSync">拉取远程模型</el-button>
     </StatusActionBar>
 
-    <!-- 新增态拉取结果：勾选后随保存一起创建（不勾 = 回退手填的模型 ID） -->
-    <div v-if="!platformConfigEditId && cfgFetched.length > 0" class="cfg-fetched">
-      <el-checkbox
-        :model-value="cfgCheckedIds.length > 0 && cfgCheckedIds.length === cfgFetched.length"
-        :indeterminate="cfgCheckedIds.length > 0 && cfgCheckedIds.length < cfgFetched.length"
-        @change="cfgCheckAll"
-      >全选（{{ cfgCheckedIds.length }}/{{ cfgFetched.length }}）</el-checkbox>
-      <el-checkbox-group v-model="cfgCheckedIds" class="cfg-fetched-list">
-        <el-checkbox v-for="m in cfgFetched" :key="m.id" :value="m.id">
-          <span class="cfg-fetched-id">{{ m.id }}</span>
-        </el-checkbox>
-      </el-checkbox-group>
+    <div v-if="!platformConfigEditId" class="cfg-auto-pull-tip">
+      保存后会直接拉取远端模型列表，无需提前填写模型 ID。
     </div>
 
     <template #footer>
       <el-button @click="onPlatformConfigCancel">取消</el-button>
-      <el-button type="primary" :loading="platformConfigSaving" @click="onPlatformConfigSubmit(cfgCheckedIds)">{{ platformConfigEditId ? '保存' : '保存并创建' }}</el-button>
+      <el-button type="primary" :loading="platformConfigSaving" @click="onPlatformConfigSubmit">{{ platformConfigEditId ? '保存' : '保存并拉取模型' }}</el-button>
     </template>
   </el-dialog>
 
@@ -142,10 +119,7 @@ const presetLocked = computed(() => {
 const cfgTesting = ref(false);
 const cfgStatus = ref('');
 const cfgStatusType = ref<'ok' | 'err'>('ok');
-const cfgFetching = ref(false);
 const cfgSyncing = ref(false);
-const cfgFetched = ref<Array<{ id: string; type?: string }>>([]);
-const cfgCheckedIds = ref<string[]>([]);
 
 async function cfgTest() {
   const f = platformConfigForm.value;
@@ -162,31 +136,6 @@ async function cfgTest() {
     if (r.ok) ElMessage.success(r.msg); else ElMessage.error(r.msg);
   } finally {
     cfgTesting.value = false;
-  }
-}
-
-async function cfgFetch() {
-  const f = platformConfigForm.value;
-  if (!f.apiUrl.trim()) { ElMessage.warning('请先填写 API URL'); return; }
-  cfgFetching.value = true;
-  cfgStatus.value = '';
-  cfgFetched.value = [];
-  cfgCheckedIds.value = [];
-  try {
-    const r = await platformStore.fetchModelsPreview({ apiUrl: f.apiUrl.trim(), apiKey: f.apiKey.trim() });
-    if (r.ok) {
-      cfgFetched.value = r.models;
-      cfgCheckedIds.value = r.models.map((m: { id: string }) => m.id);
-      cfgStatus.value = r.msg;
-      cfgStatusType.value = 'ok';
-      ElMessage.success(`拉取到 ${r.models.length} 个模型`);
-    } else {
-      cfgStatus.value = r.msg;
-      cfgStatusType.value = 'err';
-      ElMessage.error(r.msg);
-    }
-  } finally {
-    cfgFetching.value = false;
   }
 }
 
@@ -209,24 +158,15 @@ async function cfgSync() {
     cfgSyncing.value = false;
   }
 }
-
-function cfgCheckAll(v: any) {
-  cfgCheckedIds.value = v ? cfgFetched.value.map((m) => m.id) : [];
-}
 </script>
 
 <style scoped>
-.cfg-fetched {
-  margin-top: 8px;
-  border: 1px solid var(--color-border-light);
-  border-radius: 8px;
-  padding: 8px 12px;
-  max-height: 200px;
-  overflow-y: auto;
-  background: var(--color-bg-secondary);
+.cfg-auto-pull-tip {
+  margin-top: 4px;
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+  line-height: 1.5;
 }
-.cfg-fetched-list { display: flex; flex-direction: column; gap: 2px; }
-.cfg-fetched-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; overflow-wrap: anywhere; } /* 模型 ID 长串断词 */
 
 /* ===== 快照统计尾注（2026-10-20）：字符数 / token / 花费 + 复制 ===== */
 .snapshot-meta {

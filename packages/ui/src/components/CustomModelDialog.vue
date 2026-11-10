@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="自定义模型"
+    title="自定义平台"
     width="560px"
     top="8vh"
     destroy-on-close
@@ -9,6 +9,9 @@
     @closed="reset"
   >
     <el-form label-width="110px" @submit.prevent>
+      <el-form-item label="平台名称" required>
+        <el-input v-model="form.name" maxlength="64" show-word-limit placeholder="如：公司中转站 / 私有 DeepSeek" />
+      </el-form-item>
       <el-form-item label="API 格式" required>
         <el-select v-model="form.apiFormat" style="width: 100%">
           <el-option v-for="f in API_FORMATS" :key="f.value" :label="f.label" :value="f.value" />
@@ -18,37 +21,21 @@
         <el-input v-model="form.apiUrl" :placeholder="defaultUrlFor(form.apiFormat)" />
         <div class="cm-tip">基础地址即可，系统自动拼接端点路径（OpenAI 格式默认填官方地址）</div>
       </el-form-item>
-      <el-form-item label="模型 ID" required>
-        <el-input v-model="form.modelId" placeholder="如 deepseek-v4-pro / my-relay/gpt-x" maxlength="128" />
-      </el-form-item>
-      <el-form-item label="模型展示名称">
-        <el-input v-model="form.displayName" :maxlength="64" show-word-limit placeholder="留空则用模型 ID" />
-      </el-form-item>
       <el-form-item label="API 密钥" required>
         <el-input v-model="form.apiKey" type="password" show-password placeholder="sk-..." />
       </el-form-item>
-      <el-form-item label="价格（可选）">
-        <div class="cm-price-grid">
-          <div class="cm-price-item"><span class="cm-price-label">输入</span>
-            <el-input-number v-model="form.pInput" :min="0" :precision="2" :step="1" size="small" controls-position="right" style="width:110px" /></div>
-          <div class="cm-price-item"><span class="cm-price-label">缓存命中</span>
-            <el-input-number v-model="form.pCacheRead" :min="0" :precision="2" :step="0.5" size="small" controls-position="right" style="width:110px" /></div>
-          <div class="cm-price-item"><span class="cm-price-label">缓存写入</span>
-            <el-input-number v-model="form.pCacheWrite" :min="0" :precision="2" :step="0.5" size="small" controls-position="right" style="width:110px" /></div>
-          <div class="cm-price-item"><span class="cm-price-label">输出</span>
-            <el-input-number v-model="form.pOutput" :min="0" :precision="2" :step="1" size="small" controls-position="right" style="width:110px" /></div>
-          <div class="cm-tip cm-price-unit">元 / 百万 tokens（厂商价目表口径，手填不易错 1000 倍）</div>
-        </div>
-      </el-form-item>
       <el-form-item label="连通性测试">
         <el-button size="small" :loading="testing" :disabled="!form.apiUrl.trim()" @click="testConnect">
-          {{ testMsg || '测试连接（会发起一次真实请求，消耗少量 token）' }}
+          {{ testMsg || '测试连接（拉取模型列表）' }}
         </el-button>
       </el-form-item>
     </el-form>
+    <div class="cm-tip cm-auto-pull">
+      保存后会直接请求远端 /models 并同步可用模型；拉取失败时平台仍会保留，可在详情页重试。
+    </div>
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">创建</el-button>
+      <el-button type="primary" :loading="saving" @click="save">保存并拉取模型</el-button>
     </template>
   </el-dialog>
 </template>
@@ -59,19 +46,17 @@ import { ElMessage } from 'element-plus';
 import { usePlatformStore } from '../stores';
 
 /**
- * 「自定义模型」一步式对话框（2026-10-17 方案 §2.4）。
+ * 「自定义平台」对话框。
  *
- * ★ 以前要「新增平台 → 进详情 → 新增模型」三步，这里一个对话框 + 一个事务接口
- *   （POST /platforms/custom-model：平台 + 模型 + Key 同批落地，不留半成品）。
- * ★ 价格单位是**元/百万**（厂商价目表口径）—— 老表单的 元/千 在后续单位迁移批次统一，
- *   新写入一律带 unit:'per_1m'，读侧 normalizePricing 已有兜底。
+ * 平台连接信息使用通用 POST /platforms 创建；保存成功后立即请求远端 /models
+ * 并走 fetchRemoteModels 入库。模型不再要求用户手填，也不再和平台创建绑成事务。
  */
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{
   'update:modelValue': [v: boolean];
-  /** 创建成功（platformId, modelId） */
-  created: [platformId: string, modelId: string];
+  /** 平台创建成功（模型由随后的自动拉取同步） */
+  created: [platformId: string];
 }>();
 
 const platformStore = usePlatformStore();
@@ -88,26 +73,19 @@ function defaultUrlFor(fmt: string): string {
 }
 
 const form = reactive({
+  name: '',
   apiFormat: 'openai' as string,
   apiUrl: '',
-  modelId: '',
-  displayName: '',
   apiKey: '',
-  pInput: 0,
-  pCacheRead: 0,
-  pCacheWrite: 0,
-  pOutput: 0,
 });
 const testing = ref(false);
 const testMsg = ref('');
 const saving = ref(false);
 
 function reset() {
+  form.name = '';
   form.apiUrl = '';
-  form.modelId = '';
-  form.displayName = '';
   form.apiKey = '';
-  form.pInput = 0; form.pCacheRead = 0; form.pCacheWrite = 0; form.pOutput = 0;
   testMsg.value = '';
 }
 
@@ -123,32 +101,33 @@ async function testConnect() {
 }
 
 async function save() {
+  if (!form.name.trim()) { ElMessage.warning('请填写平台名称'); return; }
   if (!form.apiUrl.trim()) { ElMessage.warning('请填写 API 地址'); return; }
-  if (!form.modelId.trim()) { ElMessage.warning('请填写模型 ID'); return; }
   if (!form.apiKey.trim()) { ElMessage.warning('请填写 API 密钥'); return; }
   saving.value = true;
   try {
-    const { api } = await import('../api/client');
-    const hasPrice = form.pInput > 0 || form.pOutput > 0 || form.pCacheRead > 0 || form.pCacheWrite > 0;
-    const r = await api.post<any>('/platforms/custom-model', {
-      apiFormat: form.apiFormat,
-      modelId: form.modelId.trim(),
-      displayName: form.displayName.trim() || undefined,
+    const platformId = await platformStore.addPlatform({
+      name: form.name.trim(),
+      protocol: form.apiFormat as any,
       apiUrl: form.apiUrl.trim(),
-      apiKey: form.apiKey.trim(),
-      pricing: hasPrice ? {
-        unit: 'per_1m', currency: 'CNY', configured: true,
-        input: form.pInput, output: form.pOutput,
-        cacheRead: form.pCacheRead > 0 ? form.pCacheRead : undefined,
-        cacheWrite: form.pCacheWrite > 0 ? form.pCacheWrite : undefined,
-      } : undefined,
+      apiKeyEnc: form.apiKey.trim(),
+      headers: {},
+      status: 'unknown',
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
     });
-    const d = ('data' in r ? r.data : r) as any;
-    ElMessage.success(`已创建平台与模型「${form.displayName.trim() || form.modelId.trim()}」`);
-    emit('created', d?.platformId || '', d?.modelId || '');
+    try {
+      const ids = await platformStore.fetchRemoteModels(platformId);
+      ElMessage.success(ids.length > 0
+        ? `平台「${form.name.trim()}」已创建，已拉取 ${ids.length} 个模型`
+        : `平台「${form.name.trim()}」已创建，远端暂未返回模型`);
+    } catch (e: any) {
+      ElMessage.warning(`平台「${form.name.trim()}」已创建，但自动拉取模型失败：${e?.message || e}`);
+    }
+    emit('created', platformId);
     emit('update:modelValue', false);
   } catch (e: any) {
-    ElMessage.error(e?.message || '创建失败');
+    ElMessage.error(e?.message || '创建平台失败');
   } finally {
     saving.value = false;
   }
@@ -157,12 +136,6 @@ async function save() {
 
 <style scoped>
 .cm-tip { font-size: 11px; color: var(--el-text-color-secondary, #909399); line-height: 1.5; }
-.cm-price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; width: 100%; }
-.cm-price-item { display: flex; align-items: center; gap: 8px; }
-.cm-price-label { font-size: 12px; color: var(--el-text-color-regular, #cfd3dc); flex-shrink: 0; }
-.cm-price-unit { grid-column: 1 / -1; }
-/* ★ ≤600px 价格网格收单列：双列 110px 写死输入框在窄弹窗里挤压标签 */
-@media (max-width: 600px) {
-  .cm-price-grid { grid-template-columns: 1fr; }
-}
+.cm-auto-pull { margin: -4px 0 4px 110px; }
+@media (max-width: 600px) { .cm-auto-pull { margin-left: 0; } }
 </style>

@@ -229,7 +229,7 @@ const FEATURE_DETAILS: Record<string, FeatureDetail> = {
   },
   models: {
     purpose: 'OpenAI 与 Anthropic 双协议配置中心，支持模型自动拉取、连通性测试、健康检查与默认模型设置。',
-    usage: '添加平台 → 配置 API Key 与 Base URL → 点击"拉取模型"获取可用模型列表 → 测试连接 → 将目标模型设为默认。',
+    usage: '添加平台 → 配置 API Key 与 Base URL → 保存后自动拉取模型 → 测试连接 → 将目标模型设为默认。',
     buttons: [
       '添加平台：新建 OpenAI/Anthropic 兼容平台配置',
       '测试连接：验证 API Key 与网络连通性',

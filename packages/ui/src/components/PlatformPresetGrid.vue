@@ -3,7 +3,7 @@
     <!-- 常驻页面时显示自带头部；收进「新增平台」弹窗时标题由 dialog 提供，:show-head="false" -->
     <div v-if="showHead" class="preset-grid-head">
       <span class="preset-grid-title">快速添加厂商</span>
-      <span class="preset-grid-hint">点厂商卡 → 填 Key 即用；没找到？用「自定义模型」或手动填表</span>
+      <span class="preset-grid-hint">点厂商卡 → 填 Key 即用；没找到？用「自定义平台」或手动填表</span>
     </div>
     <div class="preset-grid">
       <div
@@ -22,12 +22,12 @@
         <span v-if="p.added" class="preset-added-tag">已添加</span>
         <el-icon v-else class="preset-plus"><Plus /></el-icon>
       </div>
-      <!-- 自定义模型：一步式（方案 §2.4） -->
+      <!-- 自定义平台：建平台后自动拉取模型 -->
       <div class="preset-card is-custom" @click="emit('custom')">
         <div class="preset-icon is-custom-icon"><el-icon><MagicStick /></el-icon></div>
         <div class="preset-info">
-          <div class="preset-name">自定义模型</div>
-          <div class="preset-note">中转站 / 私有部署 / 任意 OpenAI 兼容端点，一步创建</div>
+          <div class="preset-name">自定义平台</div>
+          <div class="preset-note">中转站 / 私有部署 / 任意兼容端点，保存后自动拉取模型</div>
         </div>
         <el-icon class="preset-plus"><Plus /></el-icon>
       </div>
@@ -69,7 +69,7 @@ const emit = defineEmits<{
   pick: [item: CatalogItem];
   /** 点了已添加的厂商 → 直接进平台详情 */
   open: [platformId: string];
-  /** 点了「自定义模型」 */
+  /** 点了「自定义平台」 */
   custom: [];
 }>();
 

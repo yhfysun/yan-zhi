@@ -2,7 +2,16 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType, ModelPools } from '@yan-zhi/shared';
-import { uid, DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
+import {
+  uid,
+  DEFAULT_AGENT_PARAMS,
+  BROWSER_DELEGATION_PROMPT,
+  PAGE_AGENT_BROWSER_TOOLS,
+  PAGE_AGENT_ID,
+  PAGE_AGENT_SKILL_IDS,
+  PAGE_AGENT_SUPPORT_TOOLS,
+  WEB_PAGE_OPERATION_SKILL_ID,
+} from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { getWithRetry } from './platform';
 import { useAuthStore } from './auth';
@@ -79,6 +88,9 @@ const DEFAULT_AGENT_SKILL_IDS = [
   'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
   'skill_image_processing', 'skill_file_convert',
   'skill_desktop_app_automation',
+  'skill_web_task_automation', WEB_PAGE_OPERATION_SKILL_ID,
+  'skill_office_finance', 'skill_office_hr', 'skill_office_operation',
+  'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
 ];
 
 /** 联网查询委派指引块 —— 默认助手提示词统一引用，v9 迁移按此标记增量追加 */
@@ -94,6 +106,7 @@ const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
 - dataAgent 会先检索本体语义层拿到本体 code，再按查询意图只读取数，结果以 markdown 表格返回；行数不够它会自行翻页。
 - 需要深度统计分析或交付表格/图表文件时，在委派 input 里说明，dataAgent 会用 python_exec / file_write 完成。
 - 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
+const WEB_PAGE_OPERATION_PROMPT_BLOCK = BROWSER_DELEGATION_PROMPT;
 
 const DEFAULT_AGENT_DATA = {
   name: '日常办公助手',
@@ -113,11 +126,10 @@ const DEFAULT_AGENT_DATA = {
 - 工具返回的信息可能不完整，多轮调用获取全面数据
 - 用中文回复，代码需标注语言
 - 回复简洁有效，不输出无关内容
-- 浏览器工具（browser_*）：点击/输入前必须先调 browser_get_page_content（或 browser_get_page_info）获取带编号的可交互元素列表，再用 index 参数定位目标；严禁不传 index/selector 的空参 browser_click/browser_type
-
 【子智能体与浏览器工具约束】
 - call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
-- 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
+- 浏览器操作只能委派 pageAgent 完成；你和其他非 pageAgent 智能体都不得直接调用 browser_* 工具。
+- 登录页、非标准表单和复杂网页流程按下方【网页登录与页面操作】执行；不要因为会话默认只读就拒绝可授权的页面操作。
 
 【模型选型】
 - 任务需要特定模型能力（图片/视频生成、视觉识别、深度推理、长上下文等）时，先调 list_models 查询可用平台/模型及其 type/capabilities/description，再在 call_agent 里传 platformId + modelId 指定子智能体用哪个模型；不指定则子智能体用自身配置或主智能体当前模型。
@@ -126,7 +138,9 @@ const DEFAULT_AGENT_DATA = {
 ` +
     WEB_QUERY_PROMPT_BLOCK +
     '\n\n' +
-    DATA_QUERY_PROMPT_BLOCK,
+    DATA_QUERY_PROMPT_BLOCK +
+    '\n\n' +
+    WEB_PAGE_OPERATION_PROMPT_BLOCK,
   temperature: 0.7,
   maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: 1.0,
@@ -152,47 +166,10 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 const DEFAULT_AGENT_VERSION = 11;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
-/** pageAgent 固定 ID：内置智能体，浏览器操作助手 */
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
-
-/** pageAgent 挂载的浏览器工具集。
- *
- *  ★★★ 这份是**服务端定义的副本**，唯一权威在 `apps/server/src/db.ts` 的
- *    `PAGE_AGENT_BUILTIN_TOOLS`（服务端 `force_sync: true` 会覆盖库里的定义）。
- *    此前本副本漏了 `browser_get_page_info` / `browser_get_dom` / `browser_get_visible_text`
- *    三件套，而 db.ts:1124-1126 明确写着这三个「**必须挂载**」——因为提示词主动推荐它们，
- *    没挂 = 模型照提示词调用却撞「工具不存在」= 白跑一轮。守门测试：
- *    `apps/server/test/page-agent-tool-mount-consistency.test.ts` 的 C 项（从源码文本
- *    派生两侧清单并断言集合相等），改这里请同步改 db.ts，否则 C 项会红。
- */
+/** pageAgent 挂载的完整工具集由 shared 单一定义提供。 */
 const PAGE_AGENT_BUILTIN_TOOLS = [
-  // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
-  'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
-  // 多标签管理（与服务端 db.ts 对齐；技能会直接要求 get/new/switch/close）
-  'browser_get_tabs', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab',
-  'browser_wait_for',
-  // 读页分工三件套（2026-10-13 补齐，此前与本副本漂移）：坐标 / 层级树 / 纯正文
-  'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
-  // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
-  'browser_scroll',
-  // P1-5 代码模式（2026-10-07）：固定重复流程收敛为脚本一次执行（与 server db.ts 收口清单对齐）
-  'browser_run_script',
-  // P2-2 纯视觉兜底路线（2026-10-07）：截图 + 视觉识别（DOM 失效时的 MolmoWeb 式兜底）
-  'browser_screenshot', 'image_analyze',
-  // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘
-  //   / 2026-10-14 补 file_read 及文件检索/精准改 + python_exec/js_exec/cmd_exec 基础能力：
-  //   此前 pageAgent 只有 file_write，读本地文件只能拿 browser_navigate(file://…) 凑）
-  'browser_upload', 'file_read', 'file_write', 'file_list', 'file_grep', 'file_edit',
-  'python_exec', 'js_exec', 'cmd_exec',
-  // 与 server db.ts 对齐（2026-10-11 F1）：表单批量填写/提交（此前漏挂载 → 只能逐个 browser_type）
-  'browser_fill_form', 'browser_submit_form',
-  // 任务 1（2026-10-28）：网络 JSON 直采（与 server db.ts 对齐）
-  'browser_get_api_data',
-  // 站点配方（2026-10-24 P2-2）：form-fill 通用批量填表（备用选择器回退 + 回读核验在代码里跑）
-  'browser_run_recipe',
-  'browser_run_page_operation',
-  // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
-  'ask_user',
+  ...PAGE_AGENT_BROWSER_TOOLS,
+  ...PAGE_AGENT_SUPPORT_TOOLS,
 ];
 
 const PAGE_AGENT_DATA = {
@@ -202,6 +179,7 @@ const PAGE_AGENT_DATA = {
   systemPrompt: `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（可用工具以本智能体**实际挂载清单**「PAGE_AGENT_BUILTIN_TOOLS」为准，不在清单里的浏览器工具一律不可用。★ 下面只展开最常用的几个；其余（读页三件套 / 滚动 / 代码模式 / 截图 / 表单批量填写 / 上传 / 落盘等）见服务端 db.ts 的 PAGE_AGENT_SYSTEM_PROMPT —— 服务端定义是唯一权威，本副本仅作前端兜底。★ 注意本段是模板字符串，正文不得出现反引号字符）：
+完整 browser_* 工具面：${PAGE_AGENT_BROWSER_TOOLS.join(' / ')}
 - browser_navigate: 导航到指定 URL
 - browser_type: 在输入框输入文本（支持回车提交搜索/表单）
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
@@ -233,6 +211,11 @@ const PAGE_AGENT_DATA = {
 7. 实时操作（网页游戏/连续快速点击）：先用 browser_observe 读状态（引擎、canvas 尺寸、12x8 网格颜色），能靠文本判断就不截图；确实需要认图标/文字时才 browser_screenshot。canvas 游戏没有 DOM 可点，用浏览器坐标 + browser_click 的 x/y 并传 fast:true（跳过页面就绪等待与 250ms 稳定等待，改用真实输入事件）；按键同理传 fast:true。fast 只在实时场景用，普通网页操作传它会丢失 pageChanged 判定。
 
 【登录与人工干预】
+- 只读权限不是浏览器不可用：导航、读页、等待、截图可直接执行；点击、输入、填表、提交首次会弹授权卡。需要操作时正常发起一次，不要提前判定“登录页进不去”。
+- 先识别登录类型：原生账号密码、二维码、短信验证码、OAuth/SSO、iframe/Shadow DOM 登录。二维码、短信、滑块、二次验证和账号密码由用户在浏览器面板接管。
+- 原生登录表单优先一次 browser_fill_form；受控输入失败时改为 click + type，并回读值。
+- 自定义下拉/combobox 先 click 展开，再 browser_get_page_content 找选项 index 后 click；不要对伪 select 调原生下拉工具。
+- 登录成功必须有证据：URL 离开登录页、出现用户头像/工作台入口，或明确的成功提示；只点到按钮不算成功。
 - 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
 - 禁止代填验证码等只能由用户本人完成的信息。
 
@@ -253,6 +236,7 @@ const PAGE_AGENT_DATA = {
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
+  skillIds: [...PAGE_AGENT_SKILL_IDS],
   config: { maxReActSteps: 500 },
 };
 

@@ -84,6 +84,7 @@ import {
 import SolarSystem from '../components/home/SolarSystem.vue';
 import EarthMap from '../components/home/EarthMap.vue';
 import FeatureGuide from '../components/home/FeatureGuide.vue';
+import { isModeAvailable } from '../stores/mode';
 
 /** 功能信息（与 FeatureGuide.vue 的 FeatureInfo 接口保持一致） */
 interface FeatureInfo {
@@ -168,9 +169,11 @@ interface HomeMenuItem {
   key: string;
 }
 
-const menuItems: HomeMenuItem[] = [
+const menuItems = computed<HomeMenuItem[]>(() => [
   { path: '/chat', name: '任务', desc: '与大模型多任务并行、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
-  { path: '/learning', name: '学习模式', desc: '英语闯关陪练：字母音标到四六级雅思托福 11 门课程 + AI 陪练 + 语法微课', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' },
+  ...(isModeAvailable('learning')
+    ? [{ path: '/learning', name: '学习模式', desc: '英语闯关陪练：字母音标到四六级雅思托福 11 门课程 + AI 陪练 + 语法微课', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' }]
+    : []),
   { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
   { path: '/knowledge', name: '知识库', desc: '文档切块向量化、语义检索，命中自动注入对话', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
@@ -184,10 +187,10 @@ const menuItems: HomeMenuItem[] = [
   { path: '/memory', name: '记忆管理', desc: '三层自动记忆：每日 / 会话 / 长期向量，自动抽取与注入', icon: Memo, iconName: 'Memo', color: '#7C2D12', key: 'memory' },
   { path: '/distill', name: 'Skill 蒸馏', desc: '从对话记录蒸馏出可复用的 Skill · 三屏工作台', icon: MagicStick, iconName: 'MagicStick', color: '#9333EA', key: 'distill' },
   { path: '/settings', name: '设置', desc: '通用与数据：主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings' },
-];
+]);
 
 /** 打开功能详情弹窗 */
-function openGuide(item: typeof menuItems[number]) {
+function openGuide(item: HomeMenuItem) {
   currentFeature.value = {
     key: item.key,
     name: item.name,

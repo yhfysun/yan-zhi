@@ -142,8 +142,21 @@ async function save() {
       apiKey: form.apiKey.trim(),
     });
     const data = ('data' in r ? r.data : r) as any;
-    ElMessage.success(data?.existed ? `已使用现有的 ${props.preset.name} 平台` : `${props.preset.name} 已添加`);
-    emit('saved', data?.id || data?.platformId || '');
+    const platformId = data?.id || data?.platformId || '';
+    const baseMessage = data?.existed ? `已使用现有的 ${props.preset.name} 平台` : `${props.preset.name} 已添加`;
+    if (platformId) {
+      try {
+        const ids = await platformStore.fetchRemoteModels(platformId);
+        ElMessage.success(ids.length > 0
+          ? `${baseMessage}，已拉取 ${ids.length} 个模型`
+          : `${baseMessage}，远端暂未返回模型`);
+      } catch (e: any) {
+        ElMessage.warning(`${baseMessage}，但自动拉取模型失败：${e?.message || e}`);
+      }
+    } else {
+      ElMessage.success(baseMessage);
+    }
+    emit('saved', platformId);
     emit('update:modelValue', false);
   } catch (e: any) {
     ElMessage.error(e?.message || '添加失败');

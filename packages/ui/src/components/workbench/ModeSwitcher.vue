@@ -14,8 +14,7 @@
   <!-- 独立模式窗口里整条隐藏（打开即锁定单模式，用户拍板 2026-10-18）；
        主窗口即使只有一个可见模式也要渲染弹出按钮（单模式同样可弹独立窗口）。 -->
   <span v-if="!locked" class="mode-switcher-anchor">
-    <!-- 只有一个可见模式时不渲染下拉（阉割版仅办公：单选下拉无意义，且多一个无内容的浮层入口）。
-         用 v-if 而非把内容置空 —— 后者会留下一个可点但空白的气泡。 -->
+    <!-- 多个模式：按钮 + 下拉；只有一个模式（lite）：保留定位按钮，但不渲染无意义的下拉。 -->
     <el-popover
       v-if="hasChoice"
       v-model:visible="open"
@@ -42,6 +41,17 @@
       </template>
       <HoverMenu :items="menuItems" :width="216" @select="onPick" />
     </el-popover>
+    <button
+      v-else
+      class="title-nav-item mode-switcher"
+      :class="{ active: onModeRoute }"
+      type="button"
+      :title="triggerTitle"
+      @click="onSingleModeClick"
+    >
+      <el-icon :size="15"><component :is="currentIcon" /></el-icon>
+      <span class="mode-label">{{ shortLabel(currentDef) }}</span>
+    </button>
     <!-- 独立窗口弹出按钮（Trae 式）：把当前模式弹到独立 OS 窗口，窗口内锁定该模式 -->
     <button
       class="title-nav-item mode-popout"
@@ -123,6 +133,15 @@ const isTouchLike = (() => {
 function onTriggerClick() {
   if (isTouchLike) return;
   // 用户拍板 2026-09-16：在 /home（办公模式）点「办公」→ 跳 /chat；在 /code 点「开发」→ 已在则视为刷新定位。
+  goCurrentMode();
+}
+
+/** 单模式包没有下拉，点击按钮必须直接回到该模式页面（触屏同样可用）。 */
+function onSingleModeClick() {
+  goCurrentMode();
+}
+
+function goCurrentMode() {
   suppress();
   router.push(modeRoute(activeMode.value));
 }

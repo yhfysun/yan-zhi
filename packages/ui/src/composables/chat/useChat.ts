@@ -324,7 +324,7 @@ function createChat() {  const router = useRouter();
   }
 
   /**
-   * 打开模型平台配置弹窗：手动新建平台 + 模型，保存后自动拉取模型列表并设为默认。
+   * 打开模型平台配置弹窗：新建/编辑平台，保存后自动拉取模型列表并设为默认。
    */
   function openPlatformConfig() {
     const agent = agentStore.selectedAgent;
@@ -354,19 +354,13 @@ function createChat() {  const router = useRouter();
   }
 
   /**
-   * 打开模型平台配置弹窗：手动新建平台 + 模型，保存后自动拉取模型列表并设为默认。
-   * @param checkedModelIds 新增态「拉取模型列表」勾选的模型（空/未拉取 = 回退手填的 modelId）
+   * 保存模型平台：新增时只建平台，随后自动拉取远端模型并优先选用第一个对话模型。
    */
-  async function onPlatformConfigSubmit(checkedModelIds?: string[]) {
+  async function onPlatformConfigSubmit() {
     const f = platformConfigForm.value;
     const isEdit = !!platformConfigEditId.value;
     if (!f.name.trim() || !f.apiUrl.trim()) {
       ElMessage.warning('平台名称和 API URL 为必填');
-      return;
-    }
-    const checked = (checkedModelIds || []).filter((x) => x && x.trim());
-    if (!isEdit && !f.modelId.trim() && checked.length === 0) {
-      ElMessage.warning('模型 ID 为必填（或先拉取模型列表勾选）');
       return;
     }
     platformConfigSaving.value = true;
@@ -401,41 +395,16 @@ function createChat() {  const router = useRouter();
           pauseMinMs: f.pauseMinMs,
           pauseMaxMs: f.pauseMaxMs,
         });
-        if (checked.length > 0) {
-          // 拉取列表勾选了多个：全部带入（首个稍后自动设默认）
-          for (const mid of checked) {
-            await platformStore.addModel({
-              platformId,
-              modelId: mid,
-              alias: mid.split('/').pop() || mid,
-              type: 'llm' as any,
-              contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
-              enabled: true,
-              isDefault: false,
-              capabilities: ['function_call'],
-            });
-          }
-        } else {
-          await platformStore.addModel({
-            platformId,
-            modelId: f.modelId.trim(),
-            alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
-            type: 'llm' as any,
-            contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
-            enabled: true,
-            isDefault: false,
-            capabilities: ['function_call'],
-          });
-        }
       }
-      // 平台创建/更新后自动拉取远程模型列表（失败仅提示，回退手动填写的模型）
+      // 平台创建/更新后自动拉取远程模型列表；平台先落库，拉取失败也不会留下“创建失败”的假象。
       let remoteIds: string[] = [];
+      let syncError = '';
       try {
         remoteIds = await platformStore.fetchRemoteModels(platformId);
       } catch (e: any) {
-        ElMessage.warning('拉取远程模型失败：' + (e?.message || '未知错误') + '，已回退到手动填写的模型');
+        syncError = e?.message || String(e);
       }
-      // 优先选远程列表里第一个可用的对话模型；拉取失败/无可用模型时回退手动填写的模型
+      // 优先选远程列表里第一个可用的对话模型；编辑态/工具预填提供 modelId 时再兼容回退。
       const pickedModel = remoteIds.length > 0
         ? platformStore.models.find((m) => m.platformId === platformId && m.enabled && CHAT_MODEL_TYPES.includes(m.type))
         : undefined;
@@ -452,12 +421,15 @@ function createChat() {  const router = useRouter();
         ? `已更新模型平台「${f.name.trim()}」配置`
         : pickedModel
           ? `已创建模型平台「${f.name.trim()}」，拉取到 ${remoteIds.length} 个模型并默认选用 ${model?.modelId || f.modelId.trim()}`
-          : `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
+          : syncError
+            ? `已创建模型平台「${f.name.trim()}」，但自动拉取模型失败：${syncError}`
+            : `已创建模型平台「${f.name.trim()}」，远端暂未返回可用模型`;
       if (store.pendingPlatformConfig) {
         store.submitPlatformConfig({ cancelled: false, platformId, modelId: model?.modelId || f.modelId.trim(), message });
       }
       manualPlatformConfigVisible.value = false;
-      ElMessage.success(message);
+      if (syncError) ElMessage.warning(message);
+      else ElMessage.success(message);
       resetPlatformConfigForm();
     } catch (e: any) {
       ElMessage.error(isEdit ? '更新失败: ' + (e?.message || e) : '创建失败: ' + (e?.message || e));

@@ -183,10 +183,14 @@
 
       <StatusActionBar :status="formStatus" :status-type="formStatusType">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
-        <!-- 新增态：预拉列表勾选带入；编辑态：直接全量同步远程模型（去重安全） -->
-        <el-button v-if="!editingId" :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
+        <!-- 新增态：可先预览并只勾选部分模型；不勾时保存后自动同步全部远程模型 -->
+        <el-button v-if="!editingId" :loading="fetching" :icon="Download" @click="fetchModels">拉取模型（可选）</el-button>
         <el-button v-else :loading="syncing" :icon="Download" @click="syncRemoteModels">拉取远程模型</el-button>
       </StatusActionBar>
+
+      <div v-if="!editingId" class="form-tip model-autosync-tip">
+        不用先选模型：直接保存会请求远端 /models 并自动同步；也可以先拉取，只导入需要的模型。
+      </div>
 
       <div v-if="!editingId && fetchedModels.length > 0" class="fetched-models">
         <div class="fetched-header">
@@ -255,7 +259,7 @@
 
     <!-- 「添加 {厂商}」对话框（宫格未添加项点击后弹出） -->
     <AddPresetDialog v-model="showAddPreset" :preset="addPresetTarget" @saved="onPresetSaved" />
-    <!-- 「自定义模型」一步式对话框（平台 + 模型 + Key 一个事务） -->
+    <!-- 「自定义平台」对话框：建平台 + Key，保存后自动拉取模型 -->
     <CustomModelDialog v-model="showCustom" @created="onCustomCreated" />
 
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
@@ -289,7 +293,7 @@ const store = usePlatformStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
 
-// ── 内置厂商宫格 / 自定义模型（2026-10-17 方案 §2.3/§2.4；2026-10-18 宫格收进「新增平台」弹窗） ──
+// ── 内置厂商宫格 / 自定义平台（2026-10-18 宫格收进「新增平台」弹窗） ──
 const presetGridRef = ref<InstanceType<typeof PlatformPresetGrid> | null>(null);
 const showVendorPicker = ref(false);
 const showAddPreset = ref(false);
@@ -313,7 +317,7 @@ function onPresetOpen(platformId: string) {
   openPlatform(platformId);
 }
 
-/** 第一步里点了「自定义模型」→ 关掉选择弹窗，进一步式创建 */
+/** 第一步里点了「自定义平台」→ 关掉选择弹窗，进入建平台流程 */
 function onCustomPick() {
   showVendorPicker.value = false;
   showCustom.value = true;
@@ -335,17 +339,20 @@ function backToVendorPicker() {
 }
 
 /** 厂商添加成功：关掉选择弹窗，刷新宫格「已添加」态 + 平台列表（新平台立即可见） */
-async function onPresetSaved() {
+async function onPresetSaved(platformId: string) {
   showVendorPicker.value = false;
   void presetGridRef.value?.refresh();
   await store.loadPlatforms();
+  await refreshModelCounts();
+  if (platformId) openPlatform(platformId);
 }
 
-/** 自定义模型创建成功：同上，并直接打开该平台详情（用户下一步通常是设默认） */
+/** 自定义平台创建成功：刷新平台/计数，并直接打开详情查看已拉取模型 */
 async function onCustomCreated(platformId: string) {
   showVendorPicker.value = false;
   void presetGridRef.value?.refresh();
   await store.loadPlatforms();
+  await refreshModelCounts();
   if (platformId) openPlatform(platformId);
 }
 
@@ -628,18 +635,31 @@ async function save() {
           await store.addApiKey(platformId, k.apiKey.trim(), k.label.trim() || undefined);
         }
       }
-      for (const modelId of checkedModelIds.value) {
-        await store.addModel({
-          platformId,
-          modelId,
-          alias: modelId.split('/').pop() || modelId,
-          type: (fetchedModels.value.find((m: any) => m.id === modelId)?.type || 'llm') as ModelType,
-          contextWindow: DEFAULT_CONTEXT_WINDOW,
-          enabled: true,
-          isDefault: false,
-        });
+      if (checkedModelIds.value.length > 0) {
+        for (const modelId of checkedModelIds.value) {
+          await store.addModel({
+            platformId,
+            modelId,
+            alias: modelId.split('/').pop() || modelId,
+            type: (fetchedModels.value.find((m: any) => m.id === modelId)?.type || 'llm') as ModelType,
+            contextWindow: DEFAULT_CONTEXT_WINDOW,
+            enabled: true,
+            isDefault: false,
+          });
+        }
+        ElMessage.success(`已添加平台，含 ${checkedModelIds.value.length} 个模型`);
+      } else {
+        try {
+          const remoteIds = await store.fetchRemoteModels(platformId);
+          ElMessage.success(remoteIds.length > 0
+            ? `已添加平台，自动拉取到 ${remoteIds.length} 个模型`
+            : '已添加平台，远端暂未返回模型');
+        } catch (e: any) {
+          const msg = e?.message || String(e);
+          setStatus(`平台已添加，但自动拉取模型失败：${msg}`, 'err');
+          ElMessage.warning(`平台已添加，但自动拉取模型失败：${msg}`);
+        }
       }
-      ElMessage.success(`已添加平台${checkedModelIds.value.length > 0 ? `，含 ${checkedModelIds.value.length} 个模型` : ''}`);
     }
     // 平台/模型刚发生过增删 → 计数清单过期，关闭前重拉（否则卡片显示旧数）
     await refreshModelCounts();
@@ -848,6 +868,7 @@ async function toggleShare(p: any) {
 .card-actions .el-button + .el-button { margin-left: 0; }
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .form-tip code { background: rgba(59, 130, 246, 0.1); padding: 1px 4px; border-radius: 3px; font-family: "JetBrains Mono", "Cascadia Code", monospace; }
+.model-autosync-tip { margin: -2px 0 10px 90px; }
 
 /* Desktop show button, mobile hide it */
 .add-btn-desktop { }
