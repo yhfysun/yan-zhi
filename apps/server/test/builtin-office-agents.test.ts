@@ -148,10 +148,14 @@ describe('内置办公岗位智能体 · 挂载的工具与技能必须真实存
 });
 
 describe('翻译助手 · 能力与硬约束', () => {
-  it('挂齐「读资料 + 看图 + 看网页 + 批处理」四类工具', () => {
-    for (const t of ['file_to_markdown', 'api_tool_ocr', 'image_analyze', 'browser_get_page_content', 'python_exec']) {
+  it('挂齐「读资料 + 看图 + 委派看网页 + 批处理」四类工具', () => {
+    for (const t of ['file_to_markdown', 'api_tool_ocr', 'image_analyze', 'call_agent', 'python_exec']) {
       expect(TRANSLATE_AGENT_BUILTIN_TOOLS, `缺 ${t}`).toContain(t);
     }
+    expect(
+      TRANSLATE_AGENT_BUILTIN_TOOLS.filter((t) => t.startsWith('browser_')),
+      '翻译助手不得绕过 pageAgent 直接操作浏览器',
+    ).toEqual([]);
   });
 
   it('挂上行翻译方法论 skill', () => {

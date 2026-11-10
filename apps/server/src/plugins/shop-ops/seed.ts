@@ -1,6 +1,7 @@
 // ★ mode-pluginization P4「种子归位」：本文件由 apps/server/src/builtin-shop-agents.ts 整体迁入，
 //   并补上店铺模式场景行。业务口径与提示词未改一个字（归位不改行为）。
 import type { BuiltinSceneDef } from '../../builtin-scene-defs.js';
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
 
 // 店铺运营专属内置智能体定义（纯数据模块，**不 import db**）。
 //
@@ -19,14 +20,11 @@ import type { BuiltinSceneDef } from '../../builtin-scene-defs.js';
 /** 店铺运营助手 id（前端 config/scenes.ts 的 shop 场景卡与 mode.ts 的 fallbackAgent 引用它） */
 export const SHOP_AGENT_ID = 'a_builtin_shop_agent';
 
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
-
 // 挂载口径：
 // - file 三件：选品清单/测算表/诊断报告落盘（category="deliverable"）
 // - python_exec：利润测算、CSV 台账（复用 skill_xlsx_data_processing 的方法学）
 // - image_analyze：看用户给的后台截图/竞品主图/详情页截图（只有路径，必须调它才看得见）
 // - compare_products：跨平台同款匹配与到手价归一化（选品分析的核心引擎，**不要手工比对标题**）
-// - browser 两件：直接看平台搜索页/详情页；多步操作委派 pageAgent
 // - pageAgent：登录态站点的一切操作（首次由用户在浏览器面板自行登录）+ 平台规则现查
 // - shop 业务工具：P0 本地业务库（商品/订单/发货/库存）已落地 —— 读用 *list/*dashboard，
 //   写用受闸门约束的动作（先出变更单、用户确认后才执行）。平台侧动作仍走 pageAgent。
@@ -39,8 +37,6 @@ export const SHOP_AGENT_BUILTIN_TOOLS = [
   'image_analyze',
   // 跨平台同款匹配 + 到手价归一化（选品分析的核心）
   'compare_products',
-  // 看网页原文；多步网站操作委派 pageAgent
-  'browser_navigate', 'browser_get_page_content', 'browser_run_recipe',
   // 委派 pageAgent 抓数 / 现查平台规则
   'call_agent', 'list_sub_agents', 'spawn_subagent',
   // 店铺连接与本地业务库（P0 已落地）
@@ -120,8 +116,8 @@ export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAg
 3. **账号与资质**：按平台现查材料清单。账号注册、实名认证、验证码、收款绑定和最终提交由用户本人完成；你负责打开官方入口、逐步指引、核对字段。
 4. **开店后立即衔接经营**：平台开店完成并登记连接后，继续做选品、货源、Listing、定价、库存/履约和首单检查，不要重新从“你卖什么”问起。
 5. **短路径执行**：简单查询直接调用对应工具；只有平台规则、页面数据或多步网页操作才委派 pageAgent。工具已经返回结果后，不重复调用同一工具求证。
-6. **浏览器导航纪律**：同一任务对同一 URL 只调用一次 browser_navigate。若返回“浏览器页面未就绪”，不得再次 navigate；先 browser_get_tabs 查看已有 tab，再用 browser_get_page_content / browser_wait_for 按 tabId 等待或读取。预览面板始终无法创建时，停止重试并明确让用户点击右上角“浏览器预览”。
-7. **抖店资质短路径**：查抖店经营主体、类目准入、保证金或资质时，优先调用 browser_run_recipe：recipe="doudian-shop-qualification"，params 传 subject（个人身份/个体工商户/企业）与 category（具体类目）。配方失败后先读现场并如实报告，不要退回连续手工点击重试。
+6. **浏览器委派纪律**：所有页面动作统一委派 pageAgent；同一任务对同一 URL 只让它导航一次。若返回“浏览器页面未就绪”，要求它先 browser_get_tabs，再用 browser_get_page_content / browser_wait_for 按 tabId 等待，不得连续重复 navigate。
+7. **抖店资质短路径**：查抖店经营主体、类目准入、保证金或资质时，委派 pageAgent 调用 browser_run_recipe：recipe="doudian-shop-qualification"，params 传 subject（个人身份/个体工商户/企业）与 category（具体类目）。配方失败后先读现场并如实报告，不要退回连续手工点击重试。
 
 ## 硬约束
 - **写操作一律先出变更单**：改价 / 改库存 / 上下架 / 新建或编辑商品 / 发货，必须先用对应工具（不带 confirmed）把变更单交给用户，**用户明确同意后**再原样重试并带 confirmed: true；生产店铺再加 approveProduction: true。绝不允许自己批准自己。获批后本地业务库命中时工具会直接改库并回读（控制台实时可见）；平台侧动作按指引由 pageAgent 完成。
@@ -180,7 +176,7 @@ export const shopModeScene: BuiltinSceneDef = {
       '- 账号注册、登录、实名认证、验证码、收款与付款由用户本人完成；你负责打开官方入口、逐步指引和核对，不代填敏感信息。',
       '- 改价/改库存/上下架/建品/发货等写操作先出变更单，用户确认后执行；不要再说“当前版本只能只读”。',
       '- 工具调用走短路径：简单查询直接执行，平台规则与多步网页操作才委派 pageAgent；已有结果不重复查。',
-      '- 浏览器导航同一 URL 只做一次；页面未就绪时改用 browser_get_tabs / browser_get_page_content 等待，不得连续重复 browser_navigate。',
+      '- 所有页面动作统一委派 pageAgent；同一 URL 只让它导航一次，页面未就绪时让它用 browser_get_tabs / browser_get_page_content 等待。',
       '- 主体分类只是通用记录口径：抖店当前明确支持个人身份且不要求营业执照；其他平台必须按各自站点、类目和官方入驻页核验，禁止把抖店规则直接套用。',
       '- 创建店铺必须进入平台实际开店创建流程；材料/费用查询页只用于核对，不能把看材料页当成开店完成。',
     ].join('\n'),

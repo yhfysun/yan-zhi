@@ -4,7 +4,18 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
-import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
+import {
+  BROWSER_DELEGATION_PROMPT,
+  formatTaskTypeContext,
+  formatTaskTypeSpecContext,
+  formatParentTaskTypeSpecContext,
+  DEFAULT_CONFIRM_BATCH_SIZE,
+  formatCostNotice,
+  isMissingUsage,
+  estimateTokens,
+  PAGE_AGENT_ID,
+  WEB_PAGE_OPERATION_SKILL_ID,
+} from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, setBrowserToolWorkspaceDir, DEFAULT_SKIP_DIRS, BrowserRunRecipeTool, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
@@ -332,12 +343,14 @@ export const FRONTEND_TOOL_TIMEOUT_MS = 2 * 60 * 1000;
  */
 const BROWSER_SLOW_TOOLS = new Set([
   'browser_navigate', 'browser_click', 'browser_type', 'browser_upload',
-  'browser_submit_form', 'browser_fill_form', 'browser_action_and_observe',
+  'browser_submit_form', 'browser_fill_form',
   'browser_login_saved', 'browser_download', 'browser_wait_for', 'browser_drag',
   // 配方一次性跑完上传→转码→填表→发布，必须给足慢档（默认未登记也走慢档，这里显式登记）
   'browser_run_recipe',
   // PageAsset operation 包装同一个 recipe，同样需要完整慢档预算
   'browser_run_page_operation',
+  // 确定性输入循环可能连续跑多轮
+  'browser_run_loop',
 ]);
 const BROWSER_FAST_TOOLS = new Set([
   'browser_get_page_content', 'browser_get_visible_text', 'browser_get_page_info',
@@ -1138,7 +1151,11 @@ async function runToolCallAndPersist(opts: {
     const executeOnce = async () => {
       emit(task, { type: 'tool:start', toolName, args, ...subEvt });
       try {
-        return await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut, ownership?.browserFlowKey);
+        return await executeTool(
+          task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut,
+          ownership?.browserFlowKey,
+          ownership?.subAgentId || task.agentId || null,
+        );
       } catch (e: any) {
         if (isAbortError(e)) {
           try {
@@ -4671,7 +4688,7 @@ async function runReActLoop(task: LlmTask, params: {
             const cArgs = parseToolArguments(tc.function?.arguments).args as any;
             emit(task, { type: 'tool:start', toolName: name, args: cArgs });
             try {
-              const r = await executeTool(task, registry, name, cArgs, tc.id || '', UI_TOOLS, 0, toolsBuilt, {});
+              const r = await executeTool(task, registry, name, cArgs, tc.id || '', UI_TOOLS, 0, toolsBuilt, {}, undefined, task.agentId || null);
               concurrentResults.set(String(tc.id || ''), r);
             } catch (e: any) {
               // 中止要整体上抛（与串行路径一致）；其余错误记为结果，让主循环按序落库
@@ -5419,6 +5436,8 @@ async function executeTool(
    * （主循环与并发批都不传；子智能体由 `runToolCallAndPersist` 从 ownership 带下来）。
    */
   browserFlowKey?: string,
+  /** 当前真正执行该工具的智能体：主任务 = task.agentId；子智能体 = ownership.subAgentId。 */
+  executingAgentId?: string | null,
 ): Promise<string> {
   // 会话级权限闸（readonly）：写类/不可控工具**不再硬拒**（2026-10-18 授权制语义升级）——
   // 命中即走 `_tool_authorize` 授权卡请求用户批准，批准后本任务内该工具放行；
@@ -5450,6 +5469,18 @@ async function executeTool(
       logger.warn(`[live] 直播模式拦截: conv=${task.conversationId} tool=${toolName}`);
       return live.reason;
     }
+  }
+
+  // ★ 浏览器单入口（产品级硬约束）：只有 pageAgent 能执行 browser_*。
+  //   工具面已提前过滤；这里再拦一次，防止旧提示词/旧库定义/文本模式模型按名字绕过。
+  //   非 pageAgent 收到明确替代路径，而不是 30s 未知工具超时或“浏览器不可用”。
+  if (toolName.startsWith('browser_') && String(executingAgentId || task.agentId || '') !== PAGE_AGENT_ID) {
+    logger.warn(
+      `[llm-task] 浏览器单入口拦截: conv=${task.conversationId} agent=${executingAgentId || task.agentId || '-'} tool=${toolName}`,
+    );
+    return `浏览器工具 \`${toolName}\` 只能由 pageAgent 执行。当前智能体不能直接操作浏览器。`
+      + `请改为调用 call_agent { agentId: "${PAGE_AGENT_ID}", input: "<目标站点 + 当前状态 + 要完成的动作 + 成功判据>" }，`
+      + `由 pageAgent 完成页面动作并返回证据。`;
   }
 
   const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);
@@ -7385,10 +7416,13 @@ async function runSubAgentImpl(
   // 构建子智能体工具列表
   const registry = getToolRegistry();
   const builtinIds: string[] = (() => { try { return JSON.parse(agent.builtin_tool_ids || '[]'); } catch { return []; } })();
+  const canUseBrowserTools = resolvedId === PAGE_AGENT_ID;
   const subTools: any[] = [];
   const seen = new Set<string>();
   for (const name of builtinIds) {
     if (seen.has(name)) continue;
+    // 浏览器单入口：只有 pageAgent 子智能体能看到 browser_*；旧定义残留在这里统一摘掉。
+    if (!canUseBrowserTools && name.startsWith('browser_')) continue;
     // 子智能体不能再派生（深度仅 1 层）：排除委派类工具。
     // ★ spawn_subagent 必须一起排除 —— 它已挂在内置智能体的清单里（office/task-mode/db），
     //   而那些智能体也可能被 call_agent 当成子智能体调用：不排除的话工具会**暴露给子智能体**。
@@ -7486,7 +7520,8 @@ async function runSubAgentImpl(
   const browserField = resolveConversationMode(task.conversationId) === 'office'
     ? await loadBrowserFieldContext(task.conversationId)
     : '';
-  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId), browserField]
+  const browserEntryRule = resolvedId === PAGE_AGENT_ID ? '' : BROWSER_DELEGATION_PROMPT;
+  const systemPrompt = [systemPromptBase, browserEntryRule, buildSubAgentSharedSections(resolvedId, task.conversationId), browserField]
     .filter(Boolean).join('\n\n');
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
@@ -8631,6 +8666,12 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     }
     const isHarness = !agent?.type || agent.type === 'harness';
 
+    // 浏览器单入口：非 pageAgent 智能体统一注入同一份委派规则。
+    // 这是产品级硬约束，不依赖各智能体自己的旧提示词是否已更新。
+    if (agentId !== PAGE_AGENT_ID) {
+      basePrompt += (basePrompt ? '\n\n' : '') + BROWSER_DELEGATION_PROMPT;
+    }
+
     // 工具描述（提示词模式才注入；原生 tools 模型走 schema）
     {
       const registry = getToolRegistry();
@@ -8640,7 +8681,8 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       let toolIds: string[] = [];
       const agentRow = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
       const agentToolIds: string[] = agentRow?.builtin_tool_ids ? JSON.parse(agentRow.builtin_tool_ids) : [];
-      toolIds = [...new Set([...agentToolIds, ...convMounts.builtinToolIds])];
+      toolIds = [...new Set([...agentToolIds, ...convMounts.builtinToolIds])]
+        .filter((name) => agentId === PAGE_AGENT_ID || !name.startsWith('browser_'));
       for (const name of toolIds) {
         if (!includeUiTools && UI_TOOL_NAMES.has(name)) continue;
         const tool = registry.get(name);
@@ -8762,6 +8804,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     //   此前是**无差别全量注入 body**（每个截断 2000 字）：挂 8 个 skill ≈ 硬塞 16000 字，
     //   既把上下文预算吃光、又让模型在无关流程上分心 —— 而 `triggers` 字段**后端从未被消费**。
     const agentSkillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
+    if (agentId !== PAGE_AGENT_ID) agentSkillIds.push(WEB_PAGE_OPERATION_SKILL_ID);
     const skillIds = [...new Set([...agentSkillIds, ...convMounts.skillIds])];
     // 项目技能目录（.yan-zhi/skills 下的 .md，P2-8）：优先级**高于**同名挂载技能 ——
     // 项目自带的 SOP 是团队为这个仓库定制的，比通用/商城技能更贴近当前工作区。
@@ -9419,7 +9462,8 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     const agent = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     toolIds = agent?.builtin_tool_ids ? JSON.parse(agent.builtin_tool_ids) : [];
   }
-  toolIds = [...new Set([...toolIds, ...convMounts.builtinToolIds])];
+  toolIds = [...new Set([...toolIds, ...convMounts.builtinToolIds])]
+    .filter((name) => agentId === PAGE_AGENT_ID || !name.startsWith('browser_'));
   for (const name of toolIds) {
     if (skipUi(name)) continue;
     if (!registry.has(name)) continue;
@@ -9434,7 +9478,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
 
   // Skill 引用 PageAsset 时，自动暴露唯一执行入口。资产定义仍由 skill 引用/悬挂关系决定，
   // 这里只补工具面，避免“流程里写了 page asset、模型却看不到执行工具”的断链。
-  if (!seen.has('browser_run_page_operation') && registry.has('browser_run_page_operation')) {
+  if (agentId === PAGE_AGENT_ID && !seen.has('browser_run_page_operation') && registry.has('browser_run_page_operation')) {
     const assetSkillIds = new Set<string>();
     if (agentId) {
       const row = db.prepare('SELECT skill_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
@@ -9471,6 +9515,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     for (const name of registry.names()) {
       if (skipUi(name)) continue;
       if (name.startsWith('plugin_')) continue;
+      if (name.startsWith('browser_')) continue;
       if (seen.has(name)) continue;
       seen.add(name);
       const def = registry.get(name)!;

@@ -9,10 +9,11 @@
 //   且引流内容与带货选品本来就要互相咬合（引流内容决定进来什么人，什么人决定卖什么）。
 //   分工靠两个 skill 收敛：skill_douyin_sell（图文带货变现）+ skill_douyin_traffic（风口选题涨粉）。
 
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
+
 /** 抖音运营助手 id（前端 config/scenes.ts 的 douyin 场景卡引用它） */
 export const DOUYIN_AGENT_ID = 'a_builtin_douyin_agent';
 
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
 const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 
 // 挂载口径：
@@ -20,7 +21,6 @@ const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 // - python_exec：佣金测算、发布排期表、数据汇总
 // - image_analyze：看用户给的参考图文/竞品截图/后台数据截图（只有路径，必须调它才看得见）
 // - api_image_generate：封面图/商品图/图文轮播素材（有成片需求时先 list_models 挑图生模型）
-// - browser 两件：直接看抖音网页版热点/搜索页；多步操作委派 pageAgent
 // - pageAgent：查平台规则（带货规则/广告法口径）、追热点、扒竞品结构
 // - publishAgent：用户明确要求发布时，执行平台页面动作（不重复确认）
 export const DOUYIN_AGENT_BUILTIN_TOOLS = [
@@ -34,11 +34,6 @@ export const DOUYIN_AGENT_BUILTIN_TOOLS = [
   'novel_tuiwen', 'music_compose',
   // 图文素材生成（封面/商品图/轮播图）
   'api_image_generate',
-  // 看网页原文（抖音热点/搜索页）；多步网站操作委派 pageAgent
-  // browser_get_tabs：自查自己开了哪些页、收尾关中间页 —— 2026-10-27 实测未授权被拒（conv c79811d2）
-  'browser_navigate', 'browser_get_page_content', 'browser_get_tabs',
-  // 已登记的抖音页面优先走 PageAsset operation
-  'browser_run_page_operation',
   // 委派 pageAgent 查平台规则/热点/竞品；list_models 用于挑选图片生成模型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划
@@ -89,7 +84,7 @@ export const DOUYIN_AGENT_SYSTEM_PROMPT = `你是「抖音运营助手」（douy
 - 所有交付 file_write 落盘，对话里只给摘要 + 路径。
 
 ## 发布
-- 用户要求发布时，先调用 api_page_asset_resolve 定位 douyin 的 social.content.publish.video，再用 api_page_asset_get 确认 operation。页面动作统一调用 browser_run_page_operation，禁止回到 browser_run_recipe。
+- 用户要求发布时，先调用 api_page_asset_resolve 定位 douyin 的 social.content.publish.video，再用 api_page_asset_get 确认 operation；随后委派 publishAgent 或 pageAgent 执行。你不直接调用 browser_*，也不回到 browser_run_recipe。
 - 固定为「publish-video submit=false 准备草稿 → set-cover（可选）→ 回读 → submit-current 提交」。\`submit-current\` 只点当前页发布，不会重传或重置表单；不要用 publish-video submit=true 覆盖已修好的草稿。
 - 也可以 call_agent { agentId: "a_builtin_publish_agent", input: "<自包含指令：平台 / 文件路径 / 标题 / 话题 / 合集 / 评论动作>" } 委派发布执行员；
   委派时指令必须自包含（子执行者看不到本会话上下文），并验收回执证据后再进入下一步。
@@ -112,7 +107,7 @@ export const DOUYIN_AGENT_SYSTEM_PROMPT = `你是「抖音运营助手」（douy
 - 需要平台规则/热点/竞品信息时委派 pageAgent 联网核实（call_agent { agentId: "a_builtin_page_agent", input: "<具体任务 + 关键词>" }），最多 2~3 次，查不到就如实说明。
 - 大任务先用 task_plan/task_step 拆解；交付文件用 file_write（category="deliverable"），对话里给结论摘要 + 路径。
 - **编辑作品有次数限制**：修改已发布作品时，话题/描述改到一半、页面状态不确定 → 一律点「取消」退出，**绝不保存**；
-  话题升级优先调用 browser_run_page_operation（assetId=social.douyin.creator，operationId=upgrade-topics，幂等、失败即停），**不要自己写脚本反复清空描述框**。
+  话题升级要求 pageAgent 调用 browser_run_page_operation（assetId=social.douyin.creator，operationId=upgrade-topics，幂等、失败即停），**不要自己写脚本或反复清空描述框**。
 - 输出用中文，结论先行，结构清晰。`;
 
 /**

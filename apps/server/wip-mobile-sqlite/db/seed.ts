@@ -1,3 +1,6 @@
+// DEPRECATED / UNUSED：历史移动端 SQLite 试验种子，不是当前移动端启动链。
+// 当前移动端初始化走 packages/core/src/db/schema.ts 的 initSchema + seedBuiltinSkills；
+// 桌面端走 apps/server/src/db.ts。这里保留仅作迁移对照，禁止在新构建中引用。
 // apps/server/src/db/seed.ts
 // 从 db.ts 自动抽取的建表/迁移/seed。两个 driver (sqlite-driver / capacitor-driver)
 // 都通过这个函数跑初始化，保证两个平台 schema 一致。

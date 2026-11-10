@@ -5,6 +5,7 @@ export * from './page-assets/types';
 export * from './page-assets/validate';
 export * from './page-assets/builtins';
 export * from './page-assets/runtime';
+export * from './page-agent';
 
 // 内置模型价格参考表（纯数据，与厂商目录同层）
 // ★ P0 必备：没有价格数据 ⇒ 费用恒 ¥0 ⇒ 阈值永不触发（见 model-pricing-presets.ts 文件头）

@@ -8,6 +8,9 @@
 //
 // 改这里的工具名 = 改所有任务模式智能体的工具面，必须同步相关守门测试
 // （media-fetch-tools / space-memory-progress / conversation-self-config）。
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
+
+export { PAGE_AGENT_ID };
 
 /** 任务模式共用的交互与规划工具（确认点全靠它们落地） */
 export const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user'];
@@ -69,6 +72,3 @@ export const COMMON_SPACE_TOOLS = ['api_space_list', 'api_space_set_task_type', 
  *   只读会话里会被拦 —— 这是对的，声明与实现一致。
  */
 export const COMMON_MEMORY_TOOLS = ['api_space_memory_read', 'api_space_memory_append'];
-
-/** 委派目标：浏览器操作助手（各任务模式智能体共用） */
-export const PAGE_AGENT_ID = 'a_builtin_page_agent';

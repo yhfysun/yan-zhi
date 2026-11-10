@@ -90,6 +90,7 @@ import {
   inferCapabilitiesFromModelId,
   DEFAULT_CONTEXT_WINDOW,
   bumpModelContextWindowToDefault,
+  repointOrphanLegacyAgensReferences,
   syncAgensModelCatalog,
 } from '../src/agens-platform/service.js';
 
@@ -199,5 +200,33 @@ describe('目录补齐时按名称补媒体能力', () => {
     expect(video).toBeDefined();
     expect(JSON.parse(video!.params[7])).toEqual(['video']);
     expect(video!.params[6]).toBe(1048576); // 新模型默认窗口 = 1M
+  });
+});
+
+describe('旧 agnes-* 平台孤儿引用自愈', () => {
+  it('把业务表引用从 agnes-<user> 改回当前 agens-<user>，并纠正模型主键前缀', () => {
+    const result = repointOrphanLegacyAgensReferences('guest', 'agens-guest');
+    expect(result.changes).toBe(20); // mock 每张表返回 4；agent/conversation/scheduled_task/goal_run/goal_schedule
+
+    const updates = hoisted.allMatching(/^UPDATE (agent|conversation|scheduled_task|goal_run|goal_schedule)/i);
+    expect(updates.map((e) => e.sql.match(/^UPDATE ([a-z_]+)/i)?.[1])).toEqual([
+      'agent', 'conversation', 'scheduled_task', 'goal_run', 'goal_schedule',
+    ]);
+    for (const u of updates) {
+      expect(u.sql).toMatch(/model_id = CASE/);
+      expect(u.params).toEqual([
+        'agens-guest',
+        'agnes-guest-%',
+        'agnes-guest-',
+        'agens-guest-',
+        'agnes-guest',
+      ]);
+    }
+  });
+
+  it('当前规范 id 与旧 id 相同或入参为空时不做更新', () => {
+    hoisted.sqlLog.length = 0;
+    expect(repointOrphanLegacyAgensReferences('', 'agens-guest').changes).toBe(0);
+    expect(hoisted.allMatching(/^UPDATE (agent|conversation|scheduled_task|goal_run|goal_schedule)/i)).toHaveLength(0);
   });
 });

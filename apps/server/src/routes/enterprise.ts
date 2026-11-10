@@ -17,14 +17,7 @@ import {
   deleteMcpProvider, discoverMcpConnectorTools, listMcpCallLogs, listMcpConnectors,
   listMcpProviders, listMcpTools, updateMcpConnector, updateMcpProvider, updateMcpTool,
 } from '../enterprise/mcp-hub.js';
-import {
-  appendRuntimeEvents, authenticateRuntimeNode, cancelRuntimeTask, claimRuntimeTask,
-  completeRuntimeTask, createRuntimeNode, createRuntimeTask, createWorkspace,
-  deleteRuntimeNode, getRuntimeTask, getWorkspace, heartbeatRuntimeNode, listRuntimeArtifacts,
-  listRuntimeEvents, listRuntimeNodes, listRuntimeTasks, listWorkspaces, registerRuntimeNode,
-  resolveWorkspacePreviewTarget, stopWorkspace, unregisterWorkspacePort,
-  updateRuntimeNode, updateWorkspaceState, WorkspacePreviewError,
-} from '../enterprise/runtime.js';
+import { WorkspacePreviewError } from '../enterprise/runtime.js';
 import { getEnterpriseRepository } from '../enterprise/repository.js';
 import {
   createDesignResource, deleteDesignResource, listDesignResources, updateDesignResource,
@@ -296,27 +289,45 @@ enterpriseOAuthRouter.get('/callback', async (req, res) => {
   }
 });
 
-enterpriseAdminRouter.get('/runtime/nodes', requirePerm('admin.runtime.manage'), (_req, res) => {
-  ok(res, listRuntimeNodes('', { all: true }));
+enterpriseAdminRouter.get('/runtime/nodes', requirePerm('admin.runtime.manage'), async (_req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listRuntimeNodes('', { all: true }));
+  } catch (e) { fail(res, e); }
 });
-enterpriseAdminRouter.post('/runtime/nodes', requirePerm('admin.runtime.manage'), (req, res) => {
-  try { ok(res, createRuntimeNode(req.user!.userId, body(req) as any), 201); } catch (e) { fail(res, e); }
+enterpriseAdminRouter.post('/runtime/nodes', requirePerm('admin.runtime.manage'), async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.createRuntimeNode(req.user!.userId, body(req) as any), 201);
+  } catch (e) { fail(res, e); }
 });
-enterpriseAdminRouter.patch('/runtime/nodes/:id', requirePerm('admin.runtime.manage'), (req, res) => {
-  try { ok(res, updateRuntimeNode(req.params.id, body(req) as any)); } catch (e) { fail(res, e); }
+enterpriseAdminRouter.patch('/runtime/nodes/:id', requirePerm('admin.runtime.manage'), async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.updateRuntimeNode(req.params.id, body(req) as any));
+  } catch (e) { fail(res, e); }
 });
-enterpriseAdminRouter.delete('/runtime/nodes/:id', requirePerm('admin.runtime.manage'), (req, res) => {
-  deleteRuntimeNode(req.params.id);
-  ok(res, { ok: true });
+enterpriseAdminRouter.delete('/runtime/nodes/:id', requirePerm('admin.runtime.manage'), async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    await repo.deleteRuntimeNode(req.params.id);
+    ok(res, { ok: true });
+  } catch (e) { fail(res, e); }
 });
-enterpriseAdminRouter.get('/runtime/tasks', requirePerm('admin.runtime.manage'), (req, res) => {
-  ok(res, listRuntimeTasks('', { all: true, limit: Number(req.query.limit) || 100 }));
+enterpriseAdminRouter.get('/runtime/tasks', requirePerm('admin.runtime.manage'), async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listRuntimeTasks('', { all: true, limit: Number(req.query.limit) || 100 }));
+  } catch (e) { fail(res, e); }
 });
 enterpriseAdminRouter.get('/repository/health', requirePerm('admin.runtime.manage'), async (_req, res) => {
   try { ok(res, await (await getEnterpriseRepository()).health()); } catch (e) { fail(res, e); }
 });
-enterpriseAdminRouter.get('/runtime/workspaces', requirePerm('admin.runtime.manage'), (_req, res) => {
-  ok(res, listWorkspaces('', { all: true }));
+enterpriseAdminRouter.get('/runtime/workspaces', requirePerm('admin.runtime.manage'), async (_req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listWorkspaces('', { all: true }));
+  } catch (e) { fail(res, e); }
 });
 
 export const enterpriseUserRouter = Router();
@@ -377,32 +388,53 @@ enterpriseUserRouter.post('/mcp/:id', async (req, res) => {
   }
 });
 
-enterpriseUserRouter.get('/runtime/nodes', (req, res) => {
-  ok(res, listRuntimeNodes(req.user!.userId));
+enterpriseUserRouter.get('/runtime/nodes', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listRuntimeNodes(req.user!.userId));
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/tasks', (req, res) => {
-  ok(res, listRuntimeTasks(req.user!.userId, { limit: Number(req.query.limit) || 100 }));
+enterpriseUserRouter.get('/runtime/tasks', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.listRuntimeTasks(req.user!.userId, { limit: Number(req.query.limit) || 100 }));
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.post('/runtime/tasks', (req, res) => {
-  try { ok(res, createRuntimeTask(req.user!.userId, body(req) as any), 201); } catch (e) { fail(res, e); }
+enterpriseUserRouter.post('/runtime/tasks', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.createRuntimeTask(req.user!.userId, body(req) as any), 201);
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/tasks/:id', (req, res) => {
-  const task = getRuntimeTask(req.params.id, req.user!.userId);
-  if (!task) { fail(res, new Error('任务不存在'), 404); return; }
-  ok(res, task);
+enterpriseUserRouter.get('/runtime/tasks/:id', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    const task = await repo.getRuntimeTask(req.params.id, req.user!.userId);
+    if (!task) { fail(res, new Error('任务不存在'), 404); return; }
+    ok(res, task);
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/tasks/:id/events', (req, res) => {
-  const task = getRuntimeTask(req.params.id, req.user!.userId);
-  if (!task) { fail(res, new Error('任务不存在'), 404); return; }
-  ok(res, listRuntimeEvents(req.params.id, Number(req.query.sinceSeq) || 0));
+enterpriseUserRouter.get('/runtime/tasks/:id/events', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    const task = await repo.getRuntimeTask(req.params.id, req.user!.userId);
+    if (!task) { fail(res, new Error('任务不存在'), 404); return; }
+    ok(res, await repo.listRuntimeEvents(req.params.id, Number(req.query.sinceSeq) || 0));
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/tasks/:id/artifacts', (req, res) => {
-  const task = getRuntimeTask(req.params.id, req.user!.userId);
-  if (!task) { fail(res, new Error('任务不存在'), 404); return; }
-  ok(res, listRuntimeArtifacts(req.params.id));
+enterpriseUserRouter.get('/runtime/tasks/:id/artifacts', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    const task = await repo.getRuntimeTask(req.params.id, req.user!.userId);
+    if (!task) { fail(res, new Error('任务不存在'), 404); return; }
+    ok(res, await repo.listRuntimeArtifacts(req.params.id));
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.post('/runtime/tasks/:id/cancel', (req, res) => {
-  try { ok(res, cancelRuntimeTask(req.user!.userId, req.params.id)); } catch (e) { fail(res, e); }
+enterpriseUserRouter.post('/runtime/tasks/:id/cancel', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.cancelRuntimeTask(req.user!.userId, req.params.id));
+  } catch (e) { fail(res, e); }
 });
 // Task 7：工作区列表走 repository（默认 SQLite 委托唯一实现；PG 模式走 pg）。
 // 这是"收口真的生效"的验证点：换后端时该端点行为一致，且不改其它路由。
@@ -412,16 +444,25 @@ enterpriseUserRouter.get('/runtime/workspaces', async (req, res) => {
     ok(res, await repo.listWorkspaces(req.user!.userId));
   } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.post('/runtime/workspaces', (req, res) => {
-  try { ok(res, createWorkspace(req.user!.userId, body(req) as any), 201); } catch (e) { fail(res, e); }
+enterpriseUserRouter.post('/runtime/workspaces', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.createWorkspace(req.user!.userId, body(req) as any), 201);
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.get('/runtime/workspaces/:id', (req, res) => {
-  const row = getWorkspace(req.params.id, req.user!.userId);
-  if (!row) { fail(res, new Error('工作区不存在'), 404); return; }
-  ok(res, row);
+enterpriseUserRouter.get('/runtime/workspaces/:id', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    const row = await repo.getWorkspace(req.params.id, req.user!.userId);
+    if (!row) { fail(res, new Error('工作区不存在'), 404); return; }
+    ok(res, row);
+  } catch (e) { fail(res, e); }
 });
-enterpriseUserRouter.post('/runtime/workspaces/:id/stop', (req, res) => {
-  try { ok(res, stopWorkspace(req.user!.userId, req.params.id)); } catch (e) { fail(res, e); }
+enterpriseUserRouter.post('/runtime/workspaces/:id/stop', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.stopWorkspace(req.user!.userId, req.params.id));
+  } catch (e) { fail(res, e); }
 });
 
 /**
@@ -435,9 +476,11 @@ const SAFE_PREVIEW_RESPONSE_HEADERS = [
 
 async function handleWorkspacePreview(req: Request, res: Response) {
   const port = Number(req.params.port);
-  let target: ReturnType<typeof resolveWorkspacePreviewTarget>;
+  let repo: Awaited<ReturnType<typeof getEnterpriseRepository>> | null = null;
+  let target: any;
   try {
-    target = resolveWorkspacePreviewTarget(req.user!.userId, req.params.id, port);
+    repo = await getEnterpriseRepository();
+    target = await repo.resolveWorkspacePreviewTarget(req.user!.userId, req.params.id, port);
   } catch (e) {
     const err = e as WorkspacePreviewError;
     res.status(err.status || 400).json({ error: err.message, code: err.code || 'PREVIEW_DENIED' });
@@ -483,7 +526,9 @@ async function handleWorkspacePreview(req: Request, res: Response) {
     res.status(upstream.status).send(body);
   } catch {
     // 端口关闭 / 容器已停止：摘掉登记，后续请求立即被 PORT_NOT_REGISTERED 拒绝。
-    unregisterWorkspacePort(req.params.id, port);
+    if (repo) {
+      try { await repo.unregisterWorkspacePort(req.params.id, port); } catch { /* 登记已不存在 */ }
+    }
     res.status(502).json({ error: '工作区端口不可达，预览已关闭', code: 'PREVIEW_UPSTREAM_UNREACHABLE' });
   }
 }
@@ -498,35 +543,41 @@ function nodeToken(req: Request): string {
   return m?.[1] || '';
 }
 
-function requireNode(req: Request, res: Response, next: NextFunction) {
-  const node = authenticateRuntimeNode(nodeToken(req));
-  if (!node) {
-    res.status(401).json({ error: '节点令牌无效', code: 'INVALID_NODE_TOKEN' });
-    return;
-  }
-  req.runtimeNode = node;
-  next();
-}
-
 export const enterpriseRuntimeRouter = Router();
-enterpriseRuntimeRouter.post('/register', (req, res) => {
-  try { ok(res, registerRuntimeNode(nodeToken(req), body(req))); } catch (e) { fail(res, e, 401); }
-});
-enterpriseRuntimeRouter.post('/heartbeat', requireNode, (_req, res) => {
-  try { ok(res, heartbeatRuntimeNode(nodeToken(_req))); } catch (e) { fail(res, e, 401); }
-});
-enterpriseRuntimeRouter.get('/tasks/next', requireNode, (req, res) => {
-  try { ok(res, claimRuntimeTask(nodeToken(req))); } catch (e) { fail(res, e, 401); }
-});
-enterpriseRuntimeRouter.post('/tasks/:id/events', requireNode, (req, res) => {
+enterpriseRuntimeRouter.post('/register', async (req, res) => {
   try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.registerRuntimeNode(nodeToken(req), body(req)));
+  } catch (e) { fail(res, e, 401); }
+});
+enterpriseRuntimeRouter.post('/heartbeat', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.heartbeatRuntimeNode(nodeToken(req)));
+  } catch (e) { fail(res, e, 401); }
+});
+enterpriseRuntimeRouter.get('/tasks/next', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.claimRuntimeTask(nodeToken(req)));
+  } catch (e) { fail(res, e, 401); }
+});
+enterpriseRuntimeRouter.post('/tasks/:id/events', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
     const events = Array.isArray(body(req).events) ? body(req).events : [];
-    ok(res, { inserted: appendRuntimeEvents(nodeToken(req), req.params.id, events) });
+    ok(res, { inserted: await repo.appendRuntimeEvents(nodeToken(req), req.params.id, events) });
   } catch (e) { fail(res, e); }
 });
-enterpriseRuntimeRouter.post('/tasks/:id/complete', requireNode, (req, res) => {
-  try { ok(res, completeRuntimeTask(nodeToken(req), req.params.id, body(req) as any)); } catch (e) { fail(res, e); }
+enterpriseRuntimeRouter.post('/tasks/:id/complete', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.completeRuntimeTask(nodeToken(req), req.params.id, body(req) as any));
+  } catch (e) { fail(res, e); }
 });
-enterpriseRuntimeRouter.post('/workspaces/:id/state', requireNode, (req, res) => {
-  try { ok(res, updateWorkspaceState(nodeToken(req), req.params.id, body(req) as any)); } catch (e) { fail(res, e); }
+enterpriseRuntimeRouter.post('/workspaces/:id/state', async (req, res) => {
+  try {
+    const repo = await getEnterpriseRepository();
+    ok(res, await repo.updateWorkspaceState(nodeToken(req), req.params.id, body(req) as any));
+  } catch (e) { fail(res, e); }
 });

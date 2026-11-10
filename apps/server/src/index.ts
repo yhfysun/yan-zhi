@@ -110,8 +110,9 @@ import llmLogsRoutes from './routes/llm-logs.js';
 import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
 import { enterpriseAdminRouter, enterpriseOAuthRouter, enterpriseRuntimeRouter, enterpriseUserRouter } from './routes/enterprise.js';
-import { startRuntimeJanitor } from './enterprise/runtime.js';
-import { currentRepositoryBackend, getEnterpriseRepository } from './enterprise/repository.js';
+import {
+  currentRepositoryBackend, getEnterpriseRepository, startRuntimeRepositoryJanitor,
+} from './enterprise/repository.js';
 import { handleRuntimeWsUpgrade } from './enterprise/runtime-ws.js';
 import { ensureEnterpriseSchema } from './enterprise/schema.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
@@ -681,11 +682,18 @@ httpServer.on('upgrade', (req, socket, head) => {
   // 运行节点 WS 控制通道（Task 5）：自带 yzn.* 节点令牌认证 + license 校验（runtime-ws 内部）。
   // ★ 必须在通用 wsUpgradeAuthorized（multi JWT 闸）之前分发 —— 节点令牌不是 JWT，那道闸认不了它。
   if ((req.url || '').startsWith('/api/runtime/v1/ws')) {
-    if (!handleRuntimeWsUpgrade(req, socket, head)) {
-      logger.warn('[ws] 拒绝节点 WS 升级（节点令牌无效或 license 校验失败）');
-      try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
-      socket.destroy();
-    }
+    void handleRuntimeWsUpgrade(req, socket, head)
+      .then((handled) => {
+        if (handled) return;
+        logger.warn('[ws] 拒绝节点 WS 升级（节点令牌无效或 license 校验失败）');
+        try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
+        socket.destroy();
+      })
+      .catch((e) => {
+        logger.warn('[ws] 节点 WS 认证异常:', e?.message || e);
+        try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
+        socket.destroy();
+      });
     return;
   }
   // ★ multi 模式 WS 鉴权闸（2026-11-01）：upgrade 不走 Express 中间件链，authMiddleware
@@ -796,6 +804,7 @@ try {
 try {
   const r = syncAgensPlatformForAllUsers();
   if (r.renamed.length) logger.info(`[agens] 已纠正历史平台 id 拼写: ${r.renamed.join(', ')}`);
+  if (r.repointed.length) logger.info(`[agens] 已修复旧平台孤儿引用: ${r.repointed.join(', ')}`);
   if (r.seeded.length) logger.info(`[agens] 已为用户初始化平台: ${r.seeded.join(', ')}`);
   if (r.addedModels.length) logger.info(`[agens] 已补齐新模型: ${[...new Set(r.addedModels)].join(', ')}`);
   if (r.capsFilled.length) logger.info(`[agens] 已按模型名补齐能力: ${[...new Set(r.capsFilled)].join(', ')}`);
@@ -928,7 +937,7 @@ startMemoryDreamingScheduler();
 
 // 企业工作节点巡检：离线状态回收 + 过期工作区停止
 try {
-  startRuntimeJanitor();
+  startRuntimeRepositoryJanitor();
 } catch (e) {
   logger.warn('[runtime] 节点巡检启动失败:', e);
 }
@@ -969,7 +978,15 @@ try {
     const { injectServerHostBridge } = await import('./host-bridge.js');
     injectServerHostBridge();
     const mgr = getPluginManager(nodeAdapter);
+    const excludedPlugins = excludedPluginIds();
     await mgr.init();
+    // DB 里可能仍保存着上一版 Pro 的 enabled 状态。当前构建未包含的插件必须先移出
+    // 本次运行内存，否则它们会继续出现在 /api/plugins、贡献运行时模式，甚至让前端
+    // 去加载并不存在的 yz://plugin/<id>/frontend/index.mjs。
+    const evicted = await mgr.evictUnavailable(excludedPlugins);
+    if (evicted.length) {
+      logger.info(`[plugin] 本次构建未包含的插件已从运行时隐藏（保留数据库偏好）: ${evicted.join(', ')}`);
+    }
     // 注册内置插件。mode-pluginization P1：git-explorer / skins 已有「预构建插件包」形态
     // （build-plugins.mjs → plugins/builtin/<id>/），**包优先、源码兜底** ——
     // 包缺失（未跑构建的 dev/CI）走源码注册，行为与历史完全一致。
@@ -977,7 +994,6 @@ try {
     // ★ P5 打包选择集：未选插件不注册 —— 包里的插件目录已被 prune 移出，但源码兜底
     //   注册仍会把它们拉起来（目录没了、插件还在）。排除名单来自 edition.json.pluginsExcluded
     //   （main.cjs → YZ_BUILD_PLUGINS_EXCLUDED）；开发态/存量包没有该 env = 空集。
-    const excludedPlugins = excludedPluginIds();
     if (excludedPlugins.size) {
       logger.info(`[plugin] 本次构建排除 ${excludedPlugins.size} 个插件，跳过注册:`, [...excludedPlugins].join(', '));
     }

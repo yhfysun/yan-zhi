@@ -206,4 +206,13 @@ describe('⑤ 冷启动开面板必须带目标 URL（实报配方全灭的根�
     expect(ctp, '★ createTabPage 未把目标 URL 交给 ensureWebviewViaShell → 只能靠 lastKnownUrl')
       .toMatch(/ensureWebviewViaShell\(browser,\s*url \|\| hintUrl,\s*convId\)/);
   });
+
+  it('★★★ 冷启动桥超时必须覆盖桌面端 30s 建页窗口', async () => {
+    const mod = await import('../src/routes/browser.js').catch(() => null);
+    const timeout = Number((mod as any)?.COLD_START_PANEL_OPEN_TIMEOUT_MS);
+    expect(Number.isFinite(timeout), '★ 未导出冷启动超时常量').toBe(true);
+    expect(timeout, '★ 服务端又比桌面端 6×5s 建页窗口先超时，首启会误报打不开').toBeGreaterThanOrEqual(30_000);
+    const body = bodyOf(BROWSER, 'async function ensureWebviewViaShell', 'ensureWebviewViaShell');
+    expect(body).toMatch(/COLD_START_PANEL_OPEN_TIMEOUT_MS/);
+  });
 });

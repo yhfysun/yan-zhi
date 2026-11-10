@@ -18,7 +18,21 @@ import { CONVERSATION_USAGE_SCHEMA, USAGE_EVENT_SCHEMA } from './usage-ledger-sq
 import { builtinSceneDefs, type BuiltinSceneDef } from './builtin-scene-defs.js';
 // 任务类型内置种子 —— 直接 re-export shared 的 TASK_TYPES（单一数据源，不另抄一份）
 import { builtinTaskTypeDefs, taskTypeToRow, taskTypeFromRow } from './builtin-task-type-defs.js';
-import type { TaskTypeSpec } from '@yan-zhi/shared';
+import {
+  BROWSER_DELEGATION_PROMPT,
+  PAGE_AGENT_BROWSER_TOOLS,
+  PAGE_AGENT_ID,
+  PAGE_AGENT_SKILL_IDS,
+  PAGE_AGENT_SUPPORT_TOOLS,
+  WEB_PAGE_OPERATION_BODY,
+  WEB_PAGE_OPERATION_DESC,
+  WEB_PAGE_OPERATION_SKILL_ID,
+  WEB_PAGE_OPERATION_TRIGGERS,
+  WEB_TASK_AUTOMATION_BODY,
+  WEB_TASK_AUTOMATION_DESC,
+  WEB_TASK_AUTOMATION_TRIGGERS,
+  type TaskTypeSpec,
+} from '@yan-zhi/shared';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
@@ -1310,15 +1324,8 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'api_media_fetch', 'api_media_normalize',
   // 有声小说推文视频生成（章节txt + 背景视频 → 标题/字幕/配音 4:3 成片）
   'novel_tuiwen',
-  // 浏览器核心工具（阶段三：默认助手可直接调用，复杂多步任务仍可委派 pageAgent）
-  'browser_navigate', 'browser_get_page_info', 'browser_action_and_observe',
-  'browser_click', 'browser_type', 'browser_press_key',
-  // 批量填表（2026-10-24）：默认助手此前有 click/type 却没有 fill_form，
-  // 填一张表单只能逐字段操作；而原生 checkbox 的点击护栏会引导改用本工具 ——
-  // 提示词/护栏指向什么，工具面就必须挂什么。
-  'browser_fill_form',
-  'browser_get_visible_text', 'browser_wait_for', 'browser_screenshot',
-  'browser_upload',
+  // 浏览器操作不在任何非 pageAgent 智能体上直接挂载。
+  // 页面能力统一由 pageAgent 持有；这里只保留 call_agent 作为唯一入口。
   // 电脑使用（computer-use 内置插件，默认启用；本机 GUI 自动化：截屏/鼠标/键盘/窗口）
   'plugin_computer-use__computer_screenshot',
   'plugin_computer-use__computer_list_windows',
@@ -1366,69 +1373,17 @@ const DEFAULT_AGENT_SKILL_IDS = [
   'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
   'skill_image_processing', 'skill_file_convert',
   'skill_desktop_app_automation',
+  // 网页任务：通用网站自动化 + 登录/非标准表单专项。
+  'skill_web_task_automation', WEB_PAGE_OPERATION_SKILL_ID,
   // 办公岗位 skill（openspec 5h，2026-10-17）：默认助理挂办公六条
   'skill_office_finance', 'skill_office_hr', 'skill_office_operation',
   'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
 ];
-// pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
-// 含 v4 回补的 browser_scroll、v5 新增的 browser_run_script：四件套 + scroll + ask_user + run_script）。
-// 修复：旧版 36 个 browser_* 全量挂载 + 桌面端 get_dom 只回 "DOM 节点数"，
-// 导致子智能体拿不到链接内容，无限重试 browser_get_dom / browser_extract_list 直到用户手动终止。
+// pageAgent 持有唯一完整浏览器工具面；其他智能体通过 call_agent 委派。
+// 工具名与前端 fallback 共用 @yan-zhi/shared 的单一定义，避免两边各抄一份后漂移。
 const PAGE_AGENT_BUILTIN_TOOLS = [
-  // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
-  'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
-  // 多标签管理：技能会要求 pageAgent 并行开页、按 tabId 读取、收尾只关自己打开的页。
-  // 2026-11-02 日志反复出现“子智能体调用未授予工具被拒: browser_get_tabs”，根因就是这里缺挂载。
-  'browser_get_tabs', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab',
-  // 页面未就绪 / 异步加载时先等待再读，避免模型重复 navigate。
-  'browser_wait_for',
-  // ★★★ 2026-10-09 修（B2，high）：下面三个**必须挂载** —— 因为提示词正文（见
-  //   PAGE_AGENT_PROMPT 的「读页工具分工」段）**主动推荐**模型使用它们，
-  //   而此前挂载清单里没有 → 模型照提示词调用 → 命中"工具不存在"分支白跑一轮，
-  //   用户看到的是"模型反复调用不存在的工具 / 卡住"。
-  //   ★ 判据：**提示词推荐什么，工具面就必须挂什么**（三处一致性：挂载清单/工具声明/推荐段）。
-  //   （这三者此前漂移过，是最难查的一类"静默失效"；守门测试见
-  //    apps/server/test/page-agent-tool-mount-consistency.test.ts）
-  'browser_get_page_info',   // 元素坐标（按坐标点击/判断可见/配合截图标注）
-  'browser_get_dom',         // 父子层级树（看清元素归属、弹窗/portal 容器）
-  'browser_get_visible_text',// 纯正文（只读内容、抽长文，输出最小）
-  // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
-  'browser_scroll',
-  // P1-5 代码模式（2026-10-07）：固定重复流程（翻页收集/批量提取/触发懒加载）收敛为脚本一次执行
-  'browser_run_script',
-  // 文件上传（2026-10-07）：filechooser 模式，pageAgent 可代用户挂本地文件（如视频上传）
-  'browser_upload',
-  // ★ 表单批量填写/提交（2026-10-11，F1）：实现早已完整（fields 数组一次填多字段，
-  //   text/select/checkbox/radio/label 全支持，失败字段逐条上报），此前漏挂载导致
-  //   pageAgent 只能逐个 browser_type 填表 —— 典型"能力在、入口断"。已在 WRITE_TOOLS。
-  'browser_fill_form', 'browser_submit_form',
-  // 任务 1（2026-10-28）：网络 JSON 响应直采 —— 页面自然发生的 XHR/fetch JSON 存入缓冲，
-  //   按 URL 模式直取结构化数据，替代"读 DOM 猜结构 / 手写 fetch 脚本"。
-  'browser_get_api_data',
-  // ★ 站点配方（2026-10-24，P2-2）：form-fill 配方 = 通用批量填表（备用选择器回退 + 回读核验在代码里跑），
-  //   字段多 / 类名带 hash / 要"填完点保存并确认"的表单用它，比反复调 fill_form 少很多轮。
-  'browser_run_recipe',
-  // PageAsset operation（2026-11-05）：已登记站点优先走资产化流程
-  'browser_run_page_operation',
-  // 读文件（2026-10-14）：pageAgent 此前**只挂 file_write、没有 file_read** —— 需要读本地文件
-  //   （父智能体落盘的成品文案/章节/经验档）时无工具可用，只能拿浏览器凑：
-  //   browser_navigate(file://…) 会把本地路径当页面开进预览面板、fetch(file://) 也读不到
-  //   （实测 conv 96125908 就是为此把 .yan-zhi/experience/sites/douyin.md 开进了预览浏览器）。
-  //   ⇒ 补 file_read（只读，低风险）。三处必须同步：本数组 + 下方提示词工具段 + 前端 agent.ts。
-  'file_read',
-  // 文件读写/检索基础能力（2026-10-14 用户要求「基础能力都要有」）：列目录 / 全文检索 / 精准改文件
-  'file_list', 'file_grep', 'file_edit',
-  // 落盘（2026-10-09）：推文产线里 pageAgent 抓到章节正文后要自己写盘（此前只能贴回对话，
-  // 长章节有截断风险）。readonly 会话仍会被 checkToolPermission 运行时拒绝，不影响只读语义。
-  'file_write',
-  // 代码/命令执行基础能力（2026-10-14 用户要求）：Python / JS / 系统命令
-  //   ⚠️ 这三个在本机执行，权限高于纯浏览器操作；只读会话由 checkToolPermission 运行时拒绝。
-  'python_exec', 'js_exec', 'cmd_exec',
-  // P2-2 纯视觉兜底路线（2026-10-07）：DOM 路径失效时的 MolmoWeb 式「截图→识别→坐标动作」循环
-  // （image_analyze 虽在 UI_TOOL_NAMES，但在线任务的 includeUiTools=true 时不过滤，pageAgent 在线委派可用）
-  'browser_screenshot', 'image_analyze',
-  // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
-  'ask_user',
+  ...PAGE_AGENT_BROWSER_TOOLS,
+  ...PAGE_AGENT_SUPPORT_TOOLS,
 ];
 // 默认智能体的 system_prompt 必须存进 server 端（后端 buildSystemPromptForBackend 直接读 agent.system_prompt 列，不再前端注入）
 // 联网查询委派指引块：默认助手提示词统一引用，旧库迁移按此标记增量追加（与前端 agent.ts 的 WEB_QUERY_PROMPT_BLOCK 保持一致）
@@ -1443,6 +1398,9 @@ const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
 - dataAgent 会先检索本体语义层拿到本体 code，再按查询意图只读取数，结果以 markdown 表格返回；行数不够它会自行翻页。
 - 需要深度统计分析或交付表格/图表文件时，在委派 input 里说明，dataAgent 会用 python_exec / file_write 完成。
 - 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
+// 网页登录/页面操作指引块：所有智能体共用 shared 中的单一定义。
+// 旧库按标记增量追加，避免普通种子的 COALESCE 让老用户永远拿不到新说明。
+const WEB_PAGE_OPERATION_PROMPT_BLOCK = BROWSER_DELEGATION_PROMPT;
 const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能体。遵循以下规则：
 
 1. **思考**：分析用户需求并决定下一步操作。
@@ -1459,7 +1417,8 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 
 【子智能体与浏览器工具约束】
 - call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
-- 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
+- 浏览器操作只能委派 pageAgent 完成；你和其他非 pageAgent 智能体都不得直接调用 browser_* 工具。
+- 登录页、非标准表单和复杂网页流程按下方【网页登录与页面操作】执行；不要因为会话默认只读就拒绝可授权的页面操作。
 
 【电脑使用（computer_* 工具）约束】
 - computer_* 工具直接操控本机鼠标/键盘/窗口，属于高危操作：仅在用户明确要求"操作本机应用/桌面"时使用，先 computer_list_windows + computer_screenshot 定位目标，再行动。
@@ -1473,12 +1432,13 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - list_models 返回里带 ★ 的是**当前智能体/平台/全局候选池内**的模型（按顺序即优先级）：**优先从带 ★ 的模型里挑**；要某类能力优先用池内模型时，传 slot 参数（llm/vision/image/video）可只列该候选池的模型。
 - 长任务不必自己预防限流：主任务在遇到 429/5xx/超时等**可重试**错误时会自动沿候选池切换到下一个模型续跑；业务性报错（参数错误/模型不存在）不会切换，需自行修正参数。
 
-` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
+` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（以下为**你实际已挂载**的全部工具，其他浏览器工具不可用。★ 与挂载清单
 PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = 模型照提示词调用却撞"工具不存在",
 是最常见的"白跑一轮 / 看起来卡住"来源。★ 注意本段是模板字符串，正文不得出现反引号字符）：
+完整 browser_* 工具面：${PAGE_AGENT_BROWSER_TOOLS.join(' / ')}
 ★ 工具名必须**逐字照抄**上面清单里的写法：不得凭印象泛化、拼接或拼写变形
 （例如把 get_page_info 记成 get_info、把两个工具名拼在一起）。调用不存在的工具名只会白费一步。
 - browser_navigate: 导航到指定 URL
@@ -1573,7 +1533,12 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - "按钮点到了"不是成功证据，只有页面状态变化或成功提示才算。
 
 【登录与人工干预】
-- 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
+- 只读权限不是浏览器不可用：browser_navigate / browser_get_page_content / browser_get_page_info / browser_get_visible_text / browser_wait_for / browser_screenshot 都可直接执行；browser_click / browser_type / browser_fill_form / browser_submit_form 首次调用会弹授权卡。需要操作时正常发起一次，不要提前判定“登录页进不去”，也不要把截图说成被禁止。
+- 先识别登录类型：原生账号密码、二维码、短信验证码、OAuth/SSO、iframe/Shadow DOM 登录。二维码、短信、滑块、二次验证和账号密码由用户在浏览器面板接管，pageAgent 只负责打开页面、等待和复核。
+- 原生登录表单：两个及以上字段用一次 browser_fill_form，提交用 browser_submit_form 或点击明确的登录按钮；受控输入失败时改为 click + type，并回读值。
+- 非标准控件：自定义下拉/combobox 先 click 展开，再 browser_get_page_content 找选项 index 后 click；不要对伪 select 调原生下拉工具。弹窗/抽屉字段先滚动到可见再操作。
+- 登录成功必须有证据：URL 离开登录页、出现用户头像/工作台入口，或出现明确的成功提示。只点到按钮不算成功。
+- “需要登录”不是最终结论。先完成可执行的导航/填写/点击；遇到必须人工完成时才 ask_user，用户确认后 browser_get_page_content 复核再继续。
 - 禁止代填验证码等只能由用户本人完成的信息。
 
 【站点经验自进化（重要）】
@@ -2152,8 +2117,6 @@ const DESIGN_AGENT_BUILTIN_TOOLS = [
   'file_read', 'file_write', 'file_list',
   // 图片处理与视觉识别（python Pillow 生成/处理；image_analyze 识别截图/素材）
   'python_exec', 'image_analyze',
-  // 浏览器核心三件（打开参考站看一眼；多步操作委派 pageAgent）
-  'browser_navigate', 'browser_get_page_content',
   // 子智能体（pageAgent 联网找灵感/操作文生图平台）与模型选型（挑图片生成模型）
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 用户交互与任务规划
@@ -2546,9 +2509,45 @@ export const seedAgents: Array<Record<string, unknown>> = [
     config_json: JSON.stringify({ maxReActSteps: 500, autoContinueMaxRounds: 2 }),
   },
 ];
+
+/**
+ * 浏览器单入口归一化：内置种子无论新旧版本写了什么，都只允许 pageAgent 持有 browser_*；
+ * 其他智能体统一补公共页面操作 skill，实际页面动作走 call_agent。
+ */
+function normalizeAgentDefinitionForBrowserEntry(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const id = typeof input.id === 'string' ? input.id : '';
+  if (!id) return input;
+  const parseIds = (raw: unknown): string[] => {
+    if (Array.isArray(raw)) return raw.map(String);
+    try {
+      const parsed = JSON.parse(String(raw || '[]'));
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  };
+  const tools = parseIds(input.builtin_tool_ids);
+  const skills = parseIds(input.skill_ids);
+  if (id === PAGE_AGENT_ID) {
+    return {
+      ...input,
+      builtin_tool_ids: JSON.stringify([...PAGE_AGENT_BROWSER_TOOLS, ...PAGE_AGENT_SUPPORT_TOOLS]),
+      skill_ids: JSON.stringify([...new Set([...skills, ...PAGE_AGENT_SKILL_IDS])]),
+    };
+  }
+  return {
+    ...input,
+    builtin_tool_ids: JSON.stringify(tools.filter((name) => !name.startsWith('browser_'))),
+    skill_ids: JSON.stringify([...new Set([...skills, WEB_PAGE_OPERATION_SKILL_ID])]),
+  };
+}
+
 /** 内置智能体 upsert（基座种子与插件运行时补种共用；幂等） */
 function upsertAgentDefs(list: Array<Record<string, unknown>>): void {
-  for (const a of list) {
+  for (const raw of list) {
+  const a = normalizeAgentDefinitionForBrowserEntry(raw);
   try {
     const has = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id as string);
     if (has) {
@@ -2573,7 +2572,42 @@ function upsertAgentDefs(list: Array<Record<string, unknown>>): void {
   }
 }
 
+/**
+ * 把已经落库的智能体也迁到浏览器单入口模型。
+ *
+ * 只改种子定义不够：用户升级前已有的旧库行、插件补种行、甚至历史上手动改过挂载的
+ * 自定义智能体都会继续带着 browser_*。运行时虽然会过滤/拦截，但数据层仍显示“可调用”，
+ * 还会让后续导出、审计和界面误判。这里在启动 seed 之后统一收敛：
+ *   · pageAgent：工具面补到 shared 的完整清单；
+ *   · 其他智能体：移除全部 browser_*，并补公共页面操作 skill。
+ */
+function normalizeExistingAgentBrowserAccess(): void {
+  try {
+    const rows = db.prepare('SELECT id, builtin_tool_ids, skill_ids FROM agent').all() as Array<{
+      id: string;
+      builtin_tool_ids?: string | null;
+      skill_ids?: string | null;
+    }>;
+    const update = db.prepare('UPDATE agent SET builtin_tool_ids = ?, skill_ids = ? WHERE id = ?');
+    for (const row of rows) {
+      const normalized = normalizeAgentDefinitionForBrowserEntry({
+        id: row.id,
+        builtin_tool_ids: row.builtin_tool_ids || '[]',
+        skill_ids: row.skill_ids || '[]',
+      });
+      const nextTools = String(normalized.builtin_tool_ids || '[]');
+      const nextSkills = String(normalized.skill_ids || '[]');
+      if (nextTools !== (row.builtin_tool_ids || '[]') || nextSkills !== (row.skill_ids || '[]')) {
+        update.run(nextTools, nextSkills, row.id);
+      }
+    }
+  } catch (e) {
+    logger.warn('[db] 浏览器单入口数据迁移失败（运行期仍会拦截）:', e instanceof Error ? e.message : e);
+  }
+}
+
 upsertAgentDefs(seedAgents);
+normalizeExistingAgentBrowserAccess();
 
 // 四模式归属（openspec 8b.1/8b.2）：不新增数据库列，写进 config_json.mode，
 // 供前端智能体选择器按模式分组（agent_kind='sub' 的子体仍会被选择器过滤掉）。
@@ -2662,6 +2696,20 @@ try {
       const next = (row.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
       db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
     }
+  }
+} catch {}
+
+// 旧库增量迁移：默认助手补充网页登录/页面操作指引。
+// 场景：老用户升级 lite 包后，工具与技能已经存在，但旧 system_prompt 里没有这段，
+// 模型仍会按旧认知把浏览器表单操作当成不可用能力。
+try {
+  const MARKER = '【网页登录与页面操作 · 委派 pageAgent】';
+  const row = db.prepare("SELECT system_prompt FROM agent WHERE id = 'a_default_assistant'").get() as
+    | { system_prompt?: string | null }
+    | undefined;
+  if (row && !(row.system_prompt || '').includes(MARKER)) {
+    const next = (row.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK;
+    db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
   }
 } catch {}
 
@@ -2845,34 +2893,53 @@ for (const t of seedCustomTools) {
   }
 }
 
-// 预置内置 skill：网站自动化任务（web-task-automation）—— pageAgent + 记住密码 + 定时任务
-try {
-  const skillId = 'skill_web_task_automation';
-  const hasSkill = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
+// 预置内置 skill：网站自动化任务 + 网页登录/非标准表单操作。
+// ★ 正文全部来自 @yan-zhi/shared 的单一定义；初始种、旧库升级、恢复默认三处共用。
+
+function upsertStandaloneBuiltinSkill(def: {
+  id: string;
+  name: string;
+  description: string;
+  triggers: string[];
+  body: string;
+  category: string;
+}): void {
+  const hasSkill = db.prepare('SELECT id FROM skill WHERE id = ?').get(def.id);
   if (!hasSkill) {
     db.prepare(
-      'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, author, enabled, installs, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, author, enabled, installs, source, is_public, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
-      skillId, 'guest', '网站自动化任务',
-      '用 pageAgent 驱动浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，支持用已存密码自动登录，可配合定时任务每日执行。',
-      JSON.stringify(['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化']),
-      `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
-      '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
+      def.id, 'guest', def.name, def.description, JSON.stringify(def.triggers), def.body,
+      def.category, 'yan-zhi', 1, 0, 'builtin', 1, Date.now(),
+    );
+    return;
+  }
+  if (overwriteEnabled) {
+    db.prepare("UPDATE skill SET name = ?, body = ?, description = ?, triggers_json = ?, category = ?, source = 'builtin', is_public = 1 WHERE id = ?").run(
+      def.name, def.body, def.description, JSON.stringify(def.triggers), def.category, def.id,
     );
   } else {
-    // 内置 skill 属产品定义：文档与工具收口（六件套）保持同步，覆盖旧版残留。
-    // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动的 body/描述/触发词。
-    if (overwriteEnabled) {
-      db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
-        `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
-        '用 pageAgent 驱动浏览器完成登录、签到、领积分、搜索、提取内容等网站自动化任务，可配合定时任务每日执行。',
-        JSON.stringify(['每日签到', '自动登录', '领取积分', '网站自动化']),
-        skillId,
-      );
-    } else {
-      db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
-    }
+    db.prepare("UPDATE skill SET source = 'builtin', is_public = 1 WHERE id = ?").run(def.id);
   }
+}
+
+try {
+  upsertStandaloneBuiltinSkill({
+    id: 'skill_web_task_automation',
+    name: '网站自动化任务',
+    description: WEB_TASK_AUTOMATION_DESC,
+    triggers: WEB_TASK_AUTOMATION_TRIGGERS,
+    body: WEB_TASK_AUTOMATION_BODY,
+    category: '自动化',
+  });
+  upsertStandaloneBuiltinSkill({
+    id: 'skill_web_page_operation',
+    name: '网页登录与页面操作',
+    description: WEB_PAGE_OPERATION_DESC,
+    triggers: WEB_PAGE_OPERATION_TRIGGERS,
+    body: WEB_PAGE_OPERATION_BODY,
+    category: '自动化',
+  });
 } catch {}
 
 // 预置内置 skill：多平台内容发布（2026-11-05）—— 同一公共 capability 适配抖音/快手/小红书。
@@ -6289,14 +6356,21 @@ try {
 // 用户改过内置 agent 提示词 / skill 文档后，可一键恢复成代码内置默认值。
 // 默认来源：agent 用 seedAgents，批量 skill 用 builtinSkillDefaults；3 个单独 skill 见下方内联。
 
-/** 3 个单独内置 skill 的默认定义（与 seed 保持一致的单一来源，供 reset 恢复） */
+/** 单独内置 skill 的默认定义（与 seed 共用同一组正文常量，供 reset 恢复） */
 const STANDALONE_SKILL_DEFAULTS: Record<string, { name: string; description: string; triggers: string[]; body: string; category: string }> = {
   skill_web_task_automation: {
     name: '网站自动化任务',
     category: '自动化',
-    description: '用 pageAgent 驱动浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，支持用已存密码自动登录，可配合定时任务每日执行。',
-    triggers: ['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化'],
-    body: `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
+    description: WEB_TASK_AUTOMATION_DESC,
+    triggers: WEB_TASK_AUTOMATION_TRIGGERS,
+    body: WEB_TASK_AUTOMATION_BODY,
+  },
+  skill_web_page_operation: {
+    name: '网页登录与页面操作',
+    category: '自动化',
+    description: WEB_PAGE_OPERATION_DESC,
+    triggers: WEB_PAGE_OPERATION_TRIGGERS,
+    body: WEB_PAGE_OPERATION_BODY,
   },
   skill_jimeng_daily_checkin: {
     name: '即梦每日签到',

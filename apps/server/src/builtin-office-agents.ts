@@ -13,12 +13,12 @@
 // 因为术语一致性/回译校验、经营测算/合规红线这些方法论需要专属提示词与专属技能，
 // 复用默认助手会让两类完全不同的任务互相串味。
 
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
+
 /** 翻译助手 id（前端 config/scenes.ts 的 translate 场景卡引用它） */
 export const TRANSLATE_AGENT_ID = 'a_builtin_translate_agent';
 /** 个人生意助手 id（前端 config/scenes.ts 的 business 场景卡引用它） */
 export const BUSINESS_AGENT_ID = 'a_builtin_business_agent';
-
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
 
 // ===== 翻译助手：各国语言资料的翻译与本地化 =====
 // 挂载：读资料（含 office/pdf 转 md）+ OCR/视觉（扫描件与图片）+ 浏览器看网页原文 + python 批处理 + 交付落盘。
@@ -30,8 +30,6 @@ export const TRANSLATE_AGENT_BUILTIN_TOOLS = [
   'office_create', 'office_read', 'office_write', 'office_search',
   // 图片/扫描件里的文字：OCR 取文字，image_analyze 看版式与图文内容
   'api_tool_ocr', 'image_analyze',
-  // 需要翻译网页原文时直接看页面内容（多步网站操作仍委派 pageAgent）
-  'browser_navigate', 'browser_get_page_content',
   // 批量处理 / 术语表统计 / 编码与格式转换 / 生成对照表
   'python_exec',
   // 委派 pageAgent 查术语与官方译名；list_models 用于长文或小语种选型
@@ -56,7 +54,7 @@ export const TRANSLATE_AGENT_SYSTEM_PROMPT = `你是「翻译助手」（transla
 2. **读资料**：
    - .docx / .xlsx / .pptx / .pdf 文件必须先 file_to_markdown 转成 md 再 file_read 读，不要直接读二进制办公文件。
    - 图片、扫描件、拍照件里的文字：先 api_tool_ocr 取文字（按语种传 lang，如 eng / jpn / kor / rus / fra / deu / spa；中英混排用 chi_sim+eng），再用 image_analyze 看版式、表格结构与图文关系。
-   - 需要翻译网页原文时用 browser_navigate + browser_get_page_content 取正文。（多步网站操作委派 pageAgent）
+   - 需要翻译网页原文时委派 pageAgent 打开页面并返回正文；你不直接调用 browser_*。
 3. **建术语表**：动笔前先把反复出现的专有名词、机构名、人名、产品名、行业术语列成对照表（源词 → 译词 → 依据），全篇锁定同一译法。用户有既有译法或行业惯例时以用户的为准。
 4. **分块翻译**：长文档按章节/自然段分块处理，保持跨块上下文与指代一致；不要在一次输出里压缩或跳过内容。
 5. **自检（交付前必做）**：
@@ -89,8 +87,6 @@ export const BUSINESS_AGENT_BUILTIN_TOOLS = [
   'python_exec',
   // 看图：门店照片、菜单、招牌、竞品截图、后台数据截图（只有路径，必须调它才看得见）
   'image_analyze',
-  // 看网页原文：平台规则、政策文件、竞品页面（多步操作委派 pageAgent）
-  'browser_navigate', 'browser_get_page_content',
   // 委派 pageAgent 查政策/平台规则/行情；list_models 用于长文或复杂测算选型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划

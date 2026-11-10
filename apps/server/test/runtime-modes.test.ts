@@ -4,6 +4,9 @@
 // 漏登记的表现很隐蔽 —— 插件启用、入口在，但会话一落库就被改判 office、或授权接口
 // 不放行导致模式下拉里永远没有它。
 import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   refreshRuntimeModes,
   setRuntimePluginModes,
@@ -41,5 +44,16 @@ describe('runtime-modes', () => {
     expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'learning', 'report']);
     // 运行时模式不受授权档表约束（表里根本不可能有未知模式），由插件启停把关
     expect(allowedModes('lite', 'lite')).toEqual(['office', 'report']);
+  });
+
+  it('构建排除的插件必须先移出运行时，避免旧 DB enabled 状态污染模式菜单', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = fs.readFileSync(path.resolve(here, '..', 'src', 'index.ts'), 'utf8');
+    const init = src.indexOf('await mgr.init()');
+    const evict = src.indexOf('await mgr.evictUnavailable(excludedPlugins)');
+    const refresh = src.indexOf('refreshRuntimeModes(mgr)');
+    expect(init).toBeGreaterThanOrEqual(0);
+    expect(evict).toBeGreaterThan(init);
+    expect(refresh).toBeGreaterThan(evict);
   });
 });

@@ -92,9 +92,9 @@ beforeAll(async () => {
   registerRuntimeNode(nodeToken, { platform: 'linux', arch: 'x64', version: 'v24', capabilities: ['command'] });
 
   httpServer = http.createServer((req, res) => { res.writeHead(404).end(); });
-  httpServer.on('upgrade', (req, socket, head) => {
+  httpServer.on('upgrade', async (req, socket, head) => {
     if (!(req.url || '').startsWith('/api/runtime/v1/ws')) { socket.destroy(); return; }
-    if (!handleRuntimeWsUpgrade(req, socket, head)) {
+    if (!(await handleRuntimeWsUpgrade(req, socket, head))) {
       try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
       socket.destroy();
     }

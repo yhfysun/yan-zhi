@@ -28,12 +28,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  PAGE_AGENT_BROWSER_TOOLS,
+  PAGE_AGENT_SUPPORT_TOOLS,
+  WEB_PAGE_OPERATION_BODY,
+  WEB_PAGE_OPERATION_SKILL_ID,
+  WEB_TASK_AUTOMATION_BODY,
+} from '@yan-zhi/shared';
+import { PUBLISH_AGENT_BUILTIN_TOOLS } from '../src/builtin-publish-agent.js';
+import { DOUYIN_AGENT_BUILTIN_TOOLS } from '../src/builtin-douyin-agents.js';
+import {
+  BUSINESS_AGENT_BUILTIN_TOOLS,
+  TRANSLATE_AGENT_BUILTIN_TOOLS,
+} from '../src/builtin-office-agents.js';
+import {
+  AUDIOBOOK_AGENT_BUILTIN_TOOLS,
+  DUBBING_AGENT_BUILTIN_TOOLS,
+  NOVEL_AGENT_BUILTIN_TOOLS,
+  NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS,
+  SCRIPT_AGENT_BUILTIN_TOOLS,
+} from '../src/builtin-task-mode-agents.js';
+import { SHOP_AGENT_BUILTIN_TOOLS } from '../src/plugins/shop-ops/seed.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..', '..', '..'); // apps/server/test → 仓库根
 const DB_SRC = path.join(ROOT, 'apps', 'server', 'src', 'db.ts');
 const BROWSER_IMPL = path.join(ROOT, 'packages', 'core', 'src', 'tool', 'builtin', 'browser', 'index.ts');
 const UI_AGENT_SRC = path.join(ROOT, 'packages', 'ui', 'src', 'stores', 'agent.ts');
+const LTM_SRC = path.join(ROOT, 'apps', 'server', 'src', 'llm-task-manager.ts');
 
 /** 子智能体的公共 api_* 补充（llm-task-manager.ts 的 SUB_ALWAYS_API_TOOLS）——
  *  这些不在挂载清单里但确实可用，所以「提示词提到」不算漂移。 */
@@ -56,10 +78,19 @@ function parseStringList(body: string): string[] {
   return [...cleaned.matchAll(/'([A-Za-z0-9_]+)'/g)].map((x) => x[1]);
 }
 
-/** db.ts 里 PAGE_AGENT_BUILTIN_TOOLS 数组 */
-function parseMountedTools(dbSrc: string): string[] {
-  const m = dbSrc.match(/const PAGE_AGENT_BUILTIN_TOOLS = \[([\s\S]*?)\n\];/);
-  expect(m, 'db.ts 里找不到 PAGE_AGENT_BUILTIN_TOOLS 数组（改名/改格式后本测试需同步）').toBeTruthy();
+const MOUNTED_PAGE_AGENT_TOOLS = [...PAGE_AGENT_BROWSER_TOOLS, ...PAGE_AGENT_SUPPORT_TOOLS];
+
+/** 日常办公助手实际挂载的浏览器工具（只取 browser_*）。 */
+function parseDefaultBrowserTools(dbSrc: string): string[] {
+  const m = dbSrc.match(/const DEFAULT_AGENT_BUILTIN_TOOLS = \[([\s\S]*?)\n\];/);
+  expect(m, 'db.ts 里找不到 DEFAULT_AGENT_BUILTIN_TOOLS 数组').toBeTruthy();
+  return parseStringList((m as RegExpMatchArray)[1]).filter((n) => n.startsWith('browser_'));
+}
+
+/** 默认助手内置 skill 清单。 */
+function parseDefaultSkillIds(src: string): string[] {
+  const m = src.match(/const DEFAULT_AGENT_SKILL_IDS = \[([\s\S]*?)\n\];/);
+  expect(m, '找不到 DEFAULT_AGENT_SKILL_IDS 数组').toBeTruthy();
   return parseStringList((m as RegExpMatchArray)[1]);
 }
 
@@ -80,17 +111,10 @@ function declaredBrowserTools(src: string): Set<string> {
   return new Set([...src.matchAll(/name\s*[:=]\s*'(browser_[a-z0-9_]+)'/g)].map((x) => x[1]));
 }
 
-/** packages/ui/src/stores/agent.ts 里的前端副本 */
-function parseUiCopy(src: string): string[] {
-  const m = src.match(/PAGE_AGENT_BUILTIN_TOOLS\s*=\s*\[([\s\S]*?)\n\];/);
-  if (!m) return [];
-  return parseStringList((m as RegExpMatchArray)[1]);
-}
-
 describe('pageAgent 三处一致性（守门）', () => {
   it('A. 提示词提到的工具，必须都在挂载清单或子智能体公共补充里', () => {
     const dbSrc = readOrFail(DB_SRC);
-    const mounted = new Set(parseMountedTools(dbSrc));
+    const mounted = new Set(MOUNTED_PAGE_AGENT_TOOLS);
     const allowed = new Set([...mounted, ...SUB_AGENT_SUPPLEMENT]);
 
     const dangling = mentionedTools(parsePrompt(dbSrc)).filter((t) => !allowed.has(t));
@@ -102,7 +126,7 @@ describe('pageAgent 三处一致性（守门）', () => {
   });
 
   it('B. 挂载的 browser_* 都必须真实存在（防「挂了却没实现」）', () => {
-    const mounted = parseMountedTools(readOrFail(DB_SRC));
+    const mounted = MOUNTED_PAGE_AGENT_TOOLS;
     const declared = declaredBrowserTools(readOrFail(BROWSER_IMPL));
 
     const missing = mounted.filter((t) => t.startsWith('browser_') && !declared.has(t));
@@ -113,7 +137,7 @@ describe('pageAgent 三处一致性（守门）', () => {
   });
 
   it('B2. 多标签管理工具必须挂载（技能会直接指导 pageAgent 使用）', () => {
-    const mounted = new Set(parseMountedTools(readOrFail(DB_SRC)));
+    const mounted = new Set(MOUNTED_PAGE_AGENT_TOOLS);
     const required = [
       'browser_get_tabs',
       'browser_new_tab',
@@ -136,12 +160,97 @@ describe('pageAgent 三处一致性（守门）', () => {
     expect(prompt).toContain('browser_get_tabs');
   });
 
-  it('C. 前端副本的挂载清单必须与服务端逐项一致', () => {
-    const server = parseMountedTools(readOrFail(DB_SRC));
-    const ui = parseUiCopy(readOrFail(UI_AGENT_SRC));
+  it('B4. 浏览器单入口：日常办公助手不得直接挂载任何 browser_*', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const mounted = parseDefaultBrowserTools(dbSrc);
+    expect(mounted, '★ 浏览器只能由 pageAgent 操作，默认助手仍在直挂 browser_*').toEqual([]);
+  });
 
-    expect(ui.length, '前端 agent.ts 里没解析到 PAGE_AGENT_BUILTIN_TOOLS（改名后本测试需同步）').toBeGreaterThan(0);
-    expect([...new Set(ui)].sort()).toEqual([...new Set(server)].sort());
+  it('B5. 日常办公助手必须挂载通用网页任务与登录/表单专项 skill', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const uiSrc = readOrFail(UI_AGENT_SRC);
+    const serverSkills = parseDefaultSkillIds(dbSrc);
+    const uiSkills = parseDefaultSkillIds(uiSrc);
+
+    expect(serverSkills).toContain('skill_web_task_automation');
+    expect(dbSrc).toMatch(/const DEFAULT_AGENT_SKILL_IDS = \[[\s\S]*?WEB_PAGE_OPERATION_SKILL_ID/);
+    expect(uiSrc).toMatch(/const DEFAULT_AGENT_SKILL_IDS = \[[\s\S]*?WEB_PAGE_OPERATION_SKILL_ID/);
+    expect([...new Set(uiSkills)].sort()).toEqual([...new Set(serverSkills)].sort());
+
+    expect(WEB_TASK_AUTOMATION_BODY, '★ 网站自动化技能仍把 pageAgent 写成只有六件套').not.toContain('仅挂载六件套');
+    expect(WEB_TASK_AUTOMATION_BODY).toContain('browser_fill_form');
+    expect(WEB_TASK_AUTOMATION_BODY).toContain('browser_submit_form');
+    expect(WEB_PAGE_OPERATION_BODY).toContain('只读权限不是浏览器不可用');
+    expect(WEB_PAGE_OPERATION_BODY).toContain('自定义下拉');
+    expect(WEB_PAGE_OPERATION_BODY).toContain('browser_get_page_content');
+  });
+
+  it('C. 前端副本的挂载清单必须与服务端逐项一致', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const ui = readOrFail(UI_AGENT_SRC);
+    expect(dbSrc, '服务端 pageAgent 未复用 shared 工具清单')
+      .toMatch(/const PAGE_AGENT_BUILTIN_TOOLS = \[[\s\S]*?PAGE_AGENT_BROWSER_TOOLS[\s\S]*?PAGE_AGENT_SUPPORT_TOOLS/);
+    expect(ui, '前端 pageAgent 未复用 shared 工具清单')
+      .toMatch(/const PAGE_AGENT_BUILTIN_TOOLS = \[[\s\S]*?PAGE_AGENT_BROWSER_TOOLS[\s\S]*?PAGE_AGENT_SUPPORT_TOOLS/);
+  });
+
+  it('C2. shared 工具名全部真实存在，且公共 skill id 唯一', () => {
+    const declared = declaredBrowserTools(readOrFail(BROWSER_IMPL));
+    const missing = PAGE_AGENT_BROWSER_TOOLS.filter((n) => !declared.has(n));
+    expect(missing, `shared 中有 core 未声明的浏览器工具：${missing.join(', ')}`).toEqual([]);
+    expect(WEB_PAGE_OPERATION_SKILL_ID).toBe('skill_web_page_operation');
+  });
+
+  it('C3. core 声明的全部 browser_* 都必须挂到 pageAgent（防 pageAgent 工具面不全）', () => {
+    const declared = declaredBrowserTools(readOrFail(BROWSER_IMPL));
+    const mounted = new Set(PAGE_AGENT_BROWSER_TOOLS);
+    const missing = [...declared].filter((name) => !mounted.has(name)).sort();
+    expect(
+      missing,
+      `pageAgent 漏挂 core 已实现的浏览器工具：${missing.join(', ')}。` +
+        ' pageAgent 必须是唯一且最全的浏览器执行入口。',
+    ).toEqual([]);
+  });
+
+  it('E. 单入口必须有运行期硬约束：非 pageAgent 的 browser_* 被过滤且被拦截', () => {
+    const ltm = readOrFail(LTM_SRC);
+    expect(ltm, 'buildToolsForBackend 未过滤非 pageAgent 的浏览器工具')
+      .toMatch(/filter\(\(name\)\s*=>\s*agentId\s*===\s*PAGE_AGENT_ID\s*\|\|\s*!name\.startsWith\('browser_'\)\)/);
+    expect(ltm, '子智能体工具面未过滤非 pageAgent 的浏览器工具')
+      .toMatch(/!canUseBrowserTools\s*&&\s*name\.startsWith\('browser_'\)/);
+    expect(ltm, 'executeTool 缺少浏览器单入口运行期拦截')
+      .toMatch(/toolName\.startsWith\('browser_'\)[\s\S]{0,180}!==\s*PAGE_AGENT_ID/);
+  });
+
+  it('F. 所有非 pageAgent 内置智能体统一补公共 skill', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    expect(dbSrc, 'DB 种子归一化未给非 pageAgent 自动补公共 skill')
+      .toMatch(/WEB_PAGE_OPERATION_SKILL_ID/);
+    expect(dbSrc, 'DB 种子归一化未剥离非 pageAgent 的 browser_*')
+      .toMatch(/tools\.filter\(\(name\)\s*=>\s*!name\.startsWith\('browser_'\)\)/);
+    expect(dbSrc, '旧库中的已落库智能体没有被迁移到浏览器单入口')
+      .toMatch(/normalizeExistingAgentBrowserAccess\(\)/);
+  });
+
+  it('G. 非 pageAgent 内置智能体的源码工具面不再直接挂 browser_*', () => {
+    const faces: Array<[string, readonly string[]]> = [
+      ['发布执行员', PUBLISH_AGENT_BUILTIN_TOOLS],
+      ['抖音运营助手', DOUYIN_AGENT_BUILTIN_TOOLS],
+      ['翻译助手', TRANSLATE_AGENT_BUILTIN_TOOLS],
+      ['个人生意助手', BUSINESS_AGENT_BUILTIN_TOOLS],
+      ['小说助手', NOVEL_AGENT_BUILTIN_TOOLS],
+      ['脚本助手', SCRIPT_AGENT_BUILTIN_TOOLS],
+      ['有声书助手', AUDIOBOOK_AGENT_BUILTIN_TOOLS],
+      ['配音助手', DUBBING_AGENT_BUILTIN_TOOLS],
+      ['小说推文助手', NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS],
+      ['店铺运营助手', SHOP_AGENT_BUILTIN_TOOLS],
+    ];
+    for (const [name, tools] of faces) {
+      expect(
+        tools.filter((tool) => tool.startsWith('browser_')),
+        `${name} 不应直接挂浏览器工具；统一通过 call_agent 委派 pageAgent`,
+      ).toEqual([]);
+    }
   });
 
   it('D. 两处提示词模板串必须完整（防「正文里出现反引号把模板提前截断」）', () => {

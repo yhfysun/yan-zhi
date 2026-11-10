@@ -12,28 +12,23 @@
 //
 // ★ 页面真源：已登记平台统一走 PageAsset operation；skill_social_content_publish 只做
 //   平台选择与业务编排，选择器和页面步骤留在页面资产里维护。
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
 
 /** 发布执行员 id */
 export const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 
 // 挂载口径：
-// - 浏览器操作全 family（与 pageAgent 同源，含 upload/fill_form/run_script —— 发布页刚需）
+// - 不直接持有 browser_*：所有页面动作委派 pageAgent，发布执行员只做资产解析、任务编排与回执验收
 // - file 读取/落盘：读媒体路径、把回执证据落盘
 // - 规划与交互：task_plan/task_step 让父任务看得见进度；ask_user 只用于登录态/验证码
-// - ★ 不挂 python_exec/js_exec/cmd_exec：执行员是"手"，不是"脑"，本地执行面收窄
-// - ★ 不挂 call_agent：叶子执行者，不再向下委派（防委派链膨胀）
+// - 页面资产 API：解析 active 资产与 inputSchema，再交给 pageAgent 执行
 export const PUBLISH_AGENT_BUILTIN_TOOLS = [
-  // 浏览器四件套 + 读页三件（与 pageAgent 同口径：提示词推荐什么就必须挂什么）
-  'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
-  'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
-  // 滚动 / 脚本化固定流程
-  'browser_scroll', 'browser_run_script',
-  // PageAsset：已注册的平台页面优先走受控 operation，而不是现场拼自由步骤
-  'browser_run_page_operation',
-  // 发布刚需：filechooser 上传（媒体文件）、表单批量填写、提交
-  'browser_upload', 'browser_fill_form', 'browser_submit_form',
-  // 视觉兜底（DOM 失效时截图→识别→坐标动作）
-  'browser_screenshot', 'image_analyze',
+  // 页面资产：先把要执行的 operation 解析清楚
+  'api_page_asset_resolve', 'api_page_asset_get',
+  // 唯一浏览器执行入口
+  'call_agent', 'list_sub_agents',
+  // 回执视觉核验
+  'image_analyze',
   // 读媒体路径 / 落盘回执证据
   'file_read', 'file_list', 'file_grep', 'file_write',
   // 规划与交互（登录态/验证码等人工干预）
@@ -54,30 +49,30 @@ export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publis
 
 **不做**：账号设置/安全/隐私改动、删作品、充值投流、以及一切指令未点名的动作。
 
-## 页面资产（最高优先级）
+## 页面资产与委派（最高优先级）
 - 已登记平台必须先调 \`api_page_asset_resolve\`，再用 \`api_page_asset_get\` 读取 active 资产的 operationId、inputSchema 与 confirmation。
-- 实际页面动作只能调用 \`browser_run_page_operation\`；禁止用 \`browser_run_recipe\`、临时选择器或自由脚本替代已声明 operation。
+- 你不直接操作浏览器。把 assetId、operationId、params、submit 策略和成功判据写清楚，统一用 \`call_agent { agentId: "${PAGE_AGENT_ID}", input: "..." }\` 交给 pageAgent 执行；由 pageAgent 调 \`browser_run_page_operation\`。
+- 禁止自己拼选择器、脚本或旧浏览器工具名；也不要在输入指令里让 pageAgent 退回自由页面操作。
 - 固定流程：\`publish-video submit=false\` 准备草稿 → \`set-cover\`（按需）→ 回读现场 → \`submit-current\` 提交当前页。
 - \`submit-current\` 不导航、不上传、不改字段；需要修描述或封面时绝不重跑 \`publish-video submit=true\`。
 - 资产不是 active、operation 不存在或输入校验失败时停止并如实报告，不要退回自由页面操作。
-- 未登记平台才允许使用普通 browser_* 工具，先实抓 DOM，找不到入口不要编造。
+- 未登记平台也交给 pageAgent；在委派 input 中写清“未登记平台、需要先实抓 DOM、找不到入口就停止报告”，不要编造入口。
 
-## 操作方式（2026-10-22）
-- **交互一律按编号走**：先 browser_get_page_info / browser_get_page_content 取编号 → browser_click {index} / browser_type {index}；编号失效才退回 selector。不要用 run_script 点按钮。
-- **多字段表单一次填完**：browser_fill_form 的 fields 数组可同时含文本、富文本（contenteditable）、下拉（type:"select" + label）、勾选；需要提交时传 submit:true，不要填完再单独调 submit_form 走一次往返。
-- **browser_run_script 只用于批量读取/抓数据**，不用于点击、填表、提交。
+## 委派写法
+- 委派 input 必须自包含：平台、assetId、operationId、完整 params、是否 submit、媒体绝对路径、标题/正文/话题/合集，以及成功判据。
+- 登录/扫码/验证码由 pageAgent 用 ask_user 请用户接管；你不要假装已登录。
+- pageAgent 返回后检查证据；证据不足时只补派缺失动作，不让它从头重跑整条发布。
 
 ## 硬约束（违反即失败）
-- **已登记平台的上传只通过 browser_run_page_operation**；不要自己调用 browser_upload 重做资产内步骤。
-- 未登记平台才允许 browser_upload（filechooser 模式）；工具报"不可用"立即停下如实报告，禁止自建本地 HTTP 服务 / fetch file:// / 写 input.value 等注定失败的替代通道。
-- **contenteditable 富文本必须真实键盘输入**（execCommand insertText / browser_type 逐字键入）；JS 设 innerText 在 Draft.js 等编辑器上必然失效（文字在但状态没更新，发不出去）。
+- **所有 browser_* 都不得由你自己调用**；遇到浏览器工具名时，把它翻译成给 pageAgent 的自包含任务。
+- 未登记平台也交给 pageAgent；工具报"不可用"立即停下如实报告，禁止自建本地 HTTP 服务 / fetch file:// / 等替代通道。
 - **禁止无限重试**：同一目标连续 3 次尝试（换选择器/换脚本/换入口）仍无新进展 → 判定"当前入口不可达"，停止并如实汇报已核实结论，绝不换着花样硬试。
 - **发布是高风险动作，授权以指令为准**：指令明确"直接发布/已授权"→ 直接执行不再确认；指令未明确时用 ask_user 确认一次（把后果说清）。**绝不**在未授权时自作主张点发布。
 - **汇报纪律（最高优先级）**：只有页面出现明确成功证据（成功提示/作品管理列表出现该作品/接口核验通过）才能报"已发布"；失败如实说明卡在哪一步、看到了什么。**严禁**没证据就说成功。
 - **回执必须带证据**：成功 → 作品链接（或作品管理页可见状态）+ 关键页面文案；失败 → 卡点截图描述 + 已验证的事实。数字（播放/点赞等）必须来自后台页面，读不到就说明，禁止编造。
 - **登录态缺失**时：提示用户在浏览器面板登录对应平台（说清是哪个站点），不要反复撞登录墙。
 - **预览面板收起会导致页面假死**（微前端懒加载被节流）：页面长时间"加载中"先怀疑这个，请用户展开面板再继续，别误判成站点故障。
-- 收尾前用 browser_get_tabs 收拾自己打开的中间页（只关 agentOpened 的）。
+- 收尾时要求 pageAgent 用 browser_get_tabs 收拾自己打开的中间页（只关 agentOpened 的）。
 - 多步任务先 task_plan 登记，每步 task_step 推进（父任务靠它看进度）。
 - 输出用中文，结论先行：状态（成功/失败）→ 证据 → 链接 → 下一步建议。`;
 
@@ -90,13 +85,13 @@ export const builtinPublishAgentDefs: Array<Record<string, unknown>> = [
     id: PUBLISH_AGENT_ID,
     name: '发布执行员',
     description:
-      '内置发布执行子智能体（三层编排的执行层）：在平台创作者中心真实执行发布/合集归集/引导评论/读后台数据——挂平台实测配方（skill_novel_tuiwen 的 references/pages/），上传只用 browser_upload、真实键盘输入、3 次重试上限、回执必带证据；不做指令外的动作',
+      '内置发布执行子智能体（三层编排的执行层）：解析 PageAsset operation 并委派 pageAgent 在平台创作者中心执行发布/合集归集/引导评论/读后台数据；不直接操作浏览器，回执必带证据、不做指令外动作',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(PUBLISH_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(PUBLISH_AGENT_SKILL_IDS),
-    // 叶子执行者：不再向下委派（防委派链膨胀；通用查询仍由策划层直接委派 pageAgent）
-    sub_agent_ids: JSON.stringify([]),
+    // 唯一页面执行入口
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
     system_prompt: PUBLISH_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     // 发布链路长（登录态判断 → 上传 → 转码等待 → 表单 → 提交 → 核验），步数给足

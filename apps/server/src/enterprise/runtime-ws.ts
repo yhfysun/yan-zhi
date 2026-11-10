@@ -14,10 +14,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { isLicenseGuardEnabled, extractLicenseCode, verifyLicenseCached, isGuardExemptPath } from '../license-guard.js';
-import {
-  appendRuntimeEvents, authenticateRuntimeNode, claimRuntimeTask, completeRuntimeTask,
-  markRuntimeNodeOffline, touchRuntimeNode, updateWorkspaceState,
-} from './runtime.js';
+import { getEnterpriseRepository } from './repository.js';
 
 const runtimeWsServer = new WebSocketServer({ noServer: true });
 
@@ -56,18 +53,22 @@ function licenseValid(req: IncomingMessage): boolean {
  * 升级入口：认证通过返回 true（已完成 handleUpgrade），失败返回 false（调用方 401 + destroy）。
  * ★ 必须挂在通用 wsUpgradeAuthorized 之前 —— 节点令牌不是 JWT，multi 模式的 JWT 闸认不了它。
  */
-export function handleRuntimeWsUpgrade(req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): boolean {
+export async function handleRuntimeWsUpgrade(
+  req: IncomingMessage,
+  socket: import('node:stream').Duplex,
+  head: Buffer,
+): Promise<boolean> {
   const token = extractNodeToken(req);
-  const node = authenticateQuietly(token);
+  const node = await authenticateQuietly(token);
   if (!node || !licenseValid(req)) return false;
   runtimeWsServer.handleUpgrade(req, socket, head, (ws) => bindRuntimeSocket(ws, node.id, token));
   return true;
 }
 
-function authenticateQuietly(token: string): { id: string } | null {
+async function authenticateQuietly(token: string): Promise<{ id: string } | null> {
   try {
-    // 直接复用 HTTP 的节点认证（哈希比对），不在本文件另写一套判定。
-    const node = authenticateRuntimeNode(token);
+    const repo = await getEnterpriseRepository();
+    const node = await repo.authenticateRuntimeNode(token);
     return node ? { id: node.id } : null;
   } catch {
     return null;
@@ -84,27 +85,28 @@ export async function handleRuntimeFrame(
   frame: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
   const type = String(frame?.type || '');
+  const repo = await getEnterpriseRepository();
   switch (type) {
     case 'ready': {
       // ready 兼作心跳：即使没有任务也保活。
-      touchRuntimeNode(token);
-      const task = claimRuntimeTask(token);
+      await repo.touchRuntimeNode(token);
+      const task = await repo.claimRuntimeTask(token);
       if (!task) return [];
       return [{ type: 'task', task }];
     }
     case 'heartbeat': {
-      touchRuntimeNode(token);
+      await repo.touchRuntimeNode(token);
       return [{ type: 'heartbeat_acked', serverTime: Date.now() }];
     }
     case 'events': {
       const taskId = String(frame.taskId || '');
       const events = Array.isArray(frame.events) ? (frame.events as any[]) : [];
-      const inserted = appendRuntimeEvents(token, taskId, events);
+      const inserted = await repo.appendRuntimeEvents(token, taskId, events);
       return [{ type: 'events_acked', taskId, inserted }];
     }
     case 'complete': {
       const taskId = String(frame.taskId || '');
-      completeRuntimeTask(token, taskId, {
+      await repo.completeRuntimeTask(token, taskId, {
         state: frame.state as never,
         result: frame.result,
         error: (frame.error as string) ?? null,
@@ -115,7 +117,7 @@ export async function handleRuntimeFrame(
     }
     case 'workspace_state': {
       const workspaceId = String(frame.workspaceId || '');
-      updateWorkspaceState(token, workspaceId, frame.body as never);
+      await repo.updateWorkspaceState(token, workspaceId, frame.body as never);
       return [{ type: 'workspace_state_acked', workspaceId }];
     }
     default:
@@ -134,7 +136,12 @@ function bindRuntimeSocket(ws: WebSocket, nodeId: string, token: string): void {
   const set = new Set<WebSocket>([ws]);
   connections.set(nodeId, set);
   // 触达一次心跳：registered 到达即视为在线。
-  try { touchRuntimeNode(token); } catch { /* 令牌失效时靠后续帧报错 */ }
+  void (async () => {
+    try {
+      const repo = await getEnterpriseRepository();
+      await repo.touchRuntimeNode(token);
+    } catch { /* 令牌失效时靠后续帧报错 */ }
+  })();
   sendFrame(ws, { type: 'registered', nodeId, serverTime: Date.now() });
 
   ws.on('message', (raw) => {
@@ -155,7 +162,12 @@ function bindRuntimeSocket(ws: WebSocket, nodeId: string, token: string): void {
       if (cur.size === 0) {
         connections.delete(nodeId);
         // 该节点已无任何 WS 连接：立即离线（janitor 2 分钟兜底仍然保留）。
-        try { markRuntimeNodeOffline(nodeId); } catch { /* 节点可能已删除 */ }
+        void (async () => {
+          try {
+            const repo = await getEnterpriseRepository();
+            await repo.markRuntimeNodeOffline(nodeId);
+          } catch { /* 节点可能已删除 */ }
+        })();
       }
     }
   });

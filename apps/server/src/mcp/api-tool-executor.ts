@@ -75,13 +75,7 @@ import { localSpeak, pcmToWav, parseLocalVoice, pickSpeakerForRole, resolveSherp
 import { listTtsPacks } from '../services/tts-packs.js';
 import { listTeamResourceCatalog } from '../enterprise/resources.js';
 import { callMcpToolDirect, listMcpConnectors, listMcpTools } from '../enterprise/mcp-hub.js';
-import {
-  createRuntimeTask,
-  createWorkspace,
-  getRuntimeTask,
-  listRuntimeEvents,
-  listRuntimeNodes,
-} from '../enterprise/runtime.js';
+import { getEnterpriseRepository } from '../enterprise/repository.js';
 import { listDesignResources } from '../enterprise/design-resources.js';
 
 /**
@@ -4855,12 +4849,15 @@ export async function executeApiTool(
           return fail(e?.message || String(e));
         }
       }
-      case 'api_enterprise_runtime_nodes':
-        return ok(listRuntimeNodes(requireUser(userId)));
+      case 'api_enterprise_runtime_nodes': {
+        const repo = await getEnterpriseRepository();
+        return ok(await repo.listRuntimeNodes(requireUser(userId)));
+      }
       case 'api_enterprise_runtime_task_create': {
         const uid = requireUser(userId);
         try {
-          return ok(createRuntimeTask(uid, {
+          const repo = await getEnterpriseRepository();
+          return ok(await repo.createRuntimeTask(uid, {
             nodeId: str(args, 'nodeId'),
             kind: 'command',
             payload: {
@@ -4875,17 +4872,19 @@ export async function executeApiTool(
       }
       case 'api_enterprise_runtime_task_status': {
         const uid = requireUser(userId);
-        const task = getRuntimeTask(str(args, 'taskId'), uid);
+        const repo = await getEnterpriseRepository();
+        const task = await repo.getRuntimeTask(str(args, 'taskId'), uid);
         if (!task) return fail('远程任务不存在或无权访问');
         return ok({
           ...task,
-          events: args.includeEvents === false ? undefined : listRuntimeEvents(task.id, 0, 200),
+          events: args.includeEvents === false ? undefined : await repo.listRuntimeEvents(task.id, 0, 200),
         });
       }
       case 'api_enterprise_workspace_create': {
         const uid = requireUser(userId);
         try {
-          return ok(createWorkspace(uid, {
+          const repo = await getEnterpriseRepository();
+          return ok(await repo.createWorkspace(uid, {
             nodeId: str(args, 'nodeId'),
             name: str(args, 'name'),
             ttlMinutes: num(args, 'ttlMinutes', 120),

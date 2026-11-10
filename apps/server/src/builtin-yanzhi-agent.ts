@@ -9,10 +9,11 @@
 //   弹出独立执行窗口（app_open_window）、对执行过程录屏（screen_record），
 //   产出「言智 App 演示视频」用于推广；同时承担科普/图文内容选题与生产排期。
 
+import { PAGE_AGENT_ID } from '@yan-zhi/shared';
+
 /** 言智代言官 id */
 export const YANZHI_AGENT_ID = 'a_builtin_yanzhi_agent';
 
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
 // 发布执行员（2026-10-18 三层编排）：平台页面动作（发布/归集/评论/读数）专职委派给它
 const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 

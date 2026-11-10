@@ -33,6 +33,8 @@ const WRITE_TOOLS = new Set([
   'browser_fill_form', 'browser_submit_form', 'browser_select_option',
   'browser_check', 'browser_uncheck', 'browser_drag', 'browser_scroll_into_view',
   'browser_upload', 'browser_download', 'browser_login_saved',
+  // 脚本与确定性循环都能点击/输入/改页面，按写操作授权
+  'browser_run_script', 'browser_run_loop',
   // 配方会执行上传/填表/点发布（可能改变远端状态）——按写操作管控
   'browser_run_recipe',
   'browser_run_page_operation',
@@ -385,6 +387,8 @@ export function permissionModePrompt(mode: PermissionMode): string {
   return [
     `- 权限矩阵：沙箱=${policy.sandbox}，审批=${policy.approval}；${policy.summary}`,
     '- 只读权限模式（授权制，2026-10-18）：本次会话被用户限制为只读。读取文件、查看目录、联网检索、浏览网页内容、向用户提问均可直接执行。',
+    '- 浏览器读类动作可直接执行：browser_navigate（打开页面本身不改变远端业务数据）、browser_get_page_content、browser_get_page_info、browser_get_dom、browser_get_visible_text、browser_get_tabs、browser_wait_for、browser_screenshot。不要把这些误判成被禁止。',
+    '- 浏览器写类动作仍可正常发起：browser_click、browser_type、browser_fill_form、browser_submit_form、browser_upload 等首次调用会弹授权卡。登录页/表单任务不要因为当前是只读就提前拒绝。',
     '写类操作（改/删文件、执行命令与代码、浏览器页面操作、发消息、委派子智能体等）**仍可发起，但首次调用会向用户弹授权卡**：',
     '用户批准后本任务内该工具放行；**被拒或未响应时不要重试同一调用**，改为向用户说明理由、等待用户明确同意或换用只读方案。',
     '不要为了绕开授权把一个写操作拆成多次只读调用 —— 那样既拿不到结果，也只会打扰用户。',

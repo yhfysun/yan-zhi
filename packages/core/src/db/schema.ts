@@ -1,4 +1,13 @@
 // 数据库表结构定义（SQLite DDL，三端共用）
+import {
+  WEB_TASK_AUTOMATION_BODY,
+  WEB_TASK_AUTOMATION_DESC,
+  WEB_TASK_AUTOMATION_TRIGGERS,
+  WEB_PAGE_OPERATION_BODY,
+  WEB_PAGE_OPERATION_DESC,
+  WEB_PAGE_OPERATION_SKILL_ID,
+  WEB_PAGE_OPERATION_TRIGGERS,
+} from '@yan-zhi/shared';
 /**
  * 浏览器「页面指令」表 DDL —— **单一来源**（2026-10-16 · 页面内对话与页面指令方案 §5 P1）。
  *
@@ -779,30 +788,22 @@ export const BUILTIN_SKILLS_SEED = [
   {
     id: 'skill_web_task_automation',
     name: '网站自动化任务',
-    description: '用 pageAgent 驱动浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，支持用已存密码自动登录，可配合定时任务每日执行。',
+    description: WEB_TASK_AUTOMATION_DESC,
     source: 'builtin',
-    triggers: ['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化'],
+    triggers: WEB_TASK_AUTOMATION_TRIGGERS,
     category: '自动化',
     author: 'yan-zhi',
-    bodyMd: `# 网站自动化任务
-
-用内置 pageAgent 驱动真实浏览器完成网站操作任务。配合「浏览器记住密码」可自动登录已保存凭证的站点；配合「定时任务」可每日自动执行。
-
-## 流程
-1. 确认目标站点密码已在「浏览器 → 密码管理」保存
-2. 委派 pageAgent：
-   - browser_login_saved { host } 自动登录
-   - browser_get_page_info 了解页面
-   - browser_fill_form / browser_click / browser_search / browser_submit_form 执行操作
-   - browser_next_page 翻页
-   - browser_get_visible_text 获取结果
-3. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）
-
-## 示例
-- 每日签到：browser_login_saved → 找签到按钮 → browser_click → 确认积分
-- 制作视频：browser_login_saved → 进创作页 → browser_fill_form 填文案 → 生成 → 等待完成
-
-详见 .claude/skills/web-task-automation/SKILL.md`,
+    bodyMd: WEB_TASK_AUTOMATION_BODY,
+  },
+  {
+    id: WEB_PAGE_OPERATION_SKILL_ID,
+    name: '网页登录与页面操作',
+    description: WEB_PAGE_OPERATION_DESC,
+    source: 'builtin',
+    triggers: WEB_PAGE_OPERATION_TRIGGERS,
+    category: '自动化',
+    author: 'yan-zhi',
+    bodyMd: WEB_PAGE_OPERATION_BODY,
   },
   {
     id: 'skill_jimeng_daily_checkin',
@@ -820,18 +821,11 @@ export const BUILTIN_SKILLS_SEED = [
 - 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。
 - 登录只走扫码（ask_user 提示用户扫码），禁止代填手机号/验证码。
 - 登录态由 persist:browser-view partition 持久化，首次扫码后复用。
-
-## 登录说明
-即梦用抖音扫码/手机号验证码登录（非账密表单）。pageAgent 通过 ask_user 弹窗让用户在浏览器面板扫码，登录后 cookie 保留可复用。优先扫码，不要代填验证码。
+- 浏览器唯一执行入口是 pageAgent；其他智能体只负责委派，不直接调用 browser_*。
 
 ## 流程
-1. browser_navigate { url: "https://jimeng.jianying.com/" }
-2. browser_get_page_info → 检查登录状态（有头像=已登录，有登录按钮=未登录）
-3. 若未登录：ask_user { question: "请在浏览器面板中扫码登录即梦，登录完成后点击确认" } → 用户扫码+确认 → browser_get_page_info 确认已登录
-4. browser_get_page_info → 找"签到/打卡/领灵感"按钮
-5. browser_click { selector: "签到按钮" }
-6. browser_get_visible_text → 确认"签到成功/获得 X 灵感值"（若"今日已签到"则正常结束）
-7. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"
+1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/，检查登录状态；未登录则 ask_user 请用户扫码；进入领积分入口并签到，用页面内容确认结果。" }
+2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"
 
 详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
   },

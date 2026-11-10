@@ -7,9 +7,9 @@
  *      id 改一个字，三处全部指向不存在的智能体（call_agent 会报"不存在或不可用"）。
  *   2) force_sync 必须为 true —— 内置定义以代码为准，改了提示词旧库必须拿到新版。
  *   3) 挂载的 PageAsset 编排 skill 必须真实存在——skill 挂空 = 执行员不知道先解析资产。
- *   4) 工具面收口：浏览器全家桶必须有（upload/fill_form 是发布刚需），
- *      本地执行面（python/js/cmd）必须没有——执行员是"手"不是"脑"。
- *   5) 业务红线必须写死在提示词：真实键盘输入、browser_upload only、3 次重试上限、
+ *   4) 工具面收口：不得直接持有 browser_*，页面动作统一委派 pageAgent；
+ *      本地执行面（python/js/cmd）必须没有——执行员做编排与验收，不做本地执行。
+ *   5) 业务红线必须写死在提示词：自包含委派、3 次重试上限、
  *      汇报纪律（回执必带证据）。
  *
  * 本测试只 import 纯数据模块（不 import db，避免打开 SQLite / 依赖 better-sqlite3）。
@@ -42,6 +42,7 @@ const KNOWN_TOOL_NAMES = new Set([
   'call_agent', 'spawn_subagent', 'list_sub_agents', 'list_models',
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze',
+  'api_page_asset_resolve', 'api_page_asset_get',
   // 浏览器（与 pageAgent 挂载同口径，见 db.ts PAGE_AGENT_BUILTIN_TOOLS）
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
   'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
@@ -106,8 +107,8 @@ describe('发布执行员 · seed 条目结构', () => {
     expect(JSON.parse(String(builtinPublishAgentDefs[0].config_json))).toEqual({ maxReActSteps: 500 });
   });
 
-  it('叶子执行者：不挂子智能体（防委派链膨胀）', () => {
-    expect(JSON.parse(String(builtinPublishAgentDefs[0].sub_agent_ids))).toEqual([]);
+  it('页面动作只委派 pageAgent', () => {
+    expect(JSON.parse(String(builtinPublishAgentDefs[0].sub_agent_ids))).toEqual(['a_builtin_page_agent']);
   });
 
   it('name / description / system_prompt 都非空', () => {
@@ -124,11 +125,11 @@ describe('发布执行员 · 工具面收口', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('★ PageAsset 发布刚需工具齐全，且不再暴露旧发布配方入口', () => {
-    for (const t of ['browser_run_page_operation', 'browser_upload', 'browser_fill_form', 'browser_run_script', 'browser_screenshot', 'image_analyze']) {
+  it('★ PageAsset 解析与委派工具齐全，且不直接持有 browser_*', () => {
+    for (const t of ['api_page_asset_resolve', 'api_page_asset_get', 'call_agent', 'list_sub_agents', 'image_analyze']) {
       expect(PUBLISH_AGENT_BUILTIN_TOOLS, `缺 ${t}`).toContain(t);
     }
-    expect(PUBLISH_AGENT_BUILTIN_TOOLS).not.toContain('browser_run_recipe');
+    expect(PUBLISH_AGENT_BUILTIN_TOOLS.filter((t) => t.startsWith('browser_'))).toEqual([]);
   });
 
   it('★ 本地执行面收窄：不挂 python/js/cmd（执行员是"手"不是"脑"）', () => {
@@ -137,8 +138,8 @@ describe('发布执行员 · 工具面收口', () => {
     }
   });
 
-  it('★ 不挂 call_agent（叶子执行者，不再向下委派）', () => {
-    expect(PUBLISH_AGENT_BUILTIN_TOOLS).not.toContain('call_agent');
+  it('★ 必须挂 call_agent（pageAgent 是唯一页面执行入口）', () => {
+    expect(PUBLISH_AGENT_BUILTIN_TOOLS).toContain('call_agent');
   });
 
   it('读媒体与落盘回执证据：file_read / file_list / file_write 必须有', () => {
@@ -155,17 +156,18 @@ describe('发布执行员 · 工具面收口', () => {
 });
 
 describe('发布执行员 · 提示词红线', () => {
-  it('已登记平台只用 PageAsset operation，未登记平台才允许 browser_upload', () => {
+  it('已登记平台解析 PageAsset 后委派 pageAgent', () => {
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('a_builtin_page_agent');
     expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('browser_run_page_operation');
     expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('submit-current');
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('禁止用 `browser_run_recipe`');
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('未登记平台才允许 browser_upload');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('你不直接操作浏览器');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('所有 browser_* 都不得由你自己调用');
     expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('file://');
   });
 
-  it('contenteditable 真实键盘输入（JS 设 innerText 必然失效）', () => {
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('真实键盘');
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('innerText');
+  it('委派 input 必须自包含', () => {
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('委派 input 必须自包含');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('成功判据');
   });
 
   it('3 次重试上限（禁止无限硬试）', () => {

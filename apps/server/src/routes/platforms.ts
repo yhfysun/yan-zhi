@@ -345,13 +345,25 @@ router.patch('/models/:mid', (req: Request, res: Response) => {
   // 可见性是使用偏好，内置模型同样可切；别名/默认值/上下文窗口等配置才只读
   if (req.body.visible !== undefined) {
     db.prepare('UPDATE model SET visible = ? WHERE id = ?').run(req.body.visible ? 1 : 0, mid);
-    const others = ['alias', 'isDefault', 'contextWindow', 'capabilities', 'pricing', 'description']
+    const others = ['modelId', 'alias', 'type', 'isDefault', 'contextWindow', 'capabilities', 'pricing', 'description']
       .some((k) => req.body[k] !== undefined);
     if (!others) { res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(mid)) }); return; }
   }
   if (row.is_builtin) { res.status(403).json({ error: '内置模型不可编辑' }); return; }
   const sets: string[] = [];
   const vals: any[] = [];
+  if (req.body.modelId !== undefined) {
+    const modelId = String(req.body.modelId || '').trim();
+    if (!modelId) { res.status(400).json({ error: 'modelId 不能为空' }); return; }
+    sets.push('model_id = ?');
+    vals.push(modelId);
+  }
+  if (req.body.type !== undefined) {
+    const type = String(req.body.type || '').trim();
+    if (!type) { res.status(400).json({ error: '模型类型不能为空' }); return; }
+    sets.push('type = ?');
+    vals.push(type);
+  }
   if (req.body.alias !== undefined) { sets.push('alias = ?'); vals.push(req.body.alias); }
   if (req.body.isDefault !== undefined) { sets.push('is_default = ?'); vals.push(req.body.isDefault ? 1 : 0); }
   if (req.body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(req.body.enabled ? 1 : 0); }

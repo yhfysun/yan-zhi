@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { PAGE_AGENT_BROWSER_TOOLS } from '@yan-zhi/shared';
 
 const SERVER_SRC = resolve(__dirname, '..');
 const REPO = resolve(SERVER_SRC, '..', '..');
@@ -186,25 +187,19 @@ describe('③ 记忆文件必须有上限治理（对齐 WorkBuddy 的"有界"�
 // ────────────────────────────────────────────────────────────
 describe('④ pageAgent 提示词与工具面必须一致（推荐了就要挂）', () => {
   it('★★ 提示词推荐的三件读页工具必须都在挂载清单里', () => {
-    const mountIdx = anchor(DB, 'const PAGE_AGENT_BUILTIN_TOOLS = [', '挂载清单');
-    const mount = DB.slice(mountIdx, DB.indexOf('];', mountIdx));
     for (const t of ['browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text']) {
-      expect(mount, `★ 提示词推荐了 ${t} 却没挂载 → 模型照提示词调用却撞"工具不存在"`)
-        .toMatch(new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      expect(PAGE_AGENT_BROWSER_TOOLS, `★ 提示词推荐了 ${t} 却没挂载`)
+        .toContain(t);
     }
   });
 
   it('★★ 提示词里声明的工具必须与挂载清单逐项一致（不能少声明已挂的）', () => {
-    const mountIdx = anchor(DB, 'const PAGE_AGENT_BUILTIN_TOOLS = [', '挂载清单');
-    const mount = DB.slice(mountIdx, DB.indexOf('];', mountIdx));
     const promptIdx = anchor(DB, 'const PAGE_AGENT_SYSTEM_PROMPT =', 'pageAgent 提示词');
     const prompt = DB.slice(promptIdx, DB.indexOf('工作流程：', promptIdx));
-    // 逐个核：挂载清单里的 browser_* 必须都在提示词里出现（否则模型不知道自己有这个工具）
-    const mounted = (mount.match(/'browser_[a-z_]+'/g) || []).map((s) => s.replace(/'/g, ''));
-    expect(mounted.length, '★ 挂载清单解析失败').toBeGreaterThan(5);
-    for (const t of mounted) {
-      expect(prompt, `★ 挂了 ${t} 但提示词里没声明 → 模型不知道能用它`).toContain(t);
-    }
+    expect(
+      prompt,
+      '★ pageAgent 提示词没有声明完整 browser_* 工具面（不能只列常用几个）',
+    ).toContain("完整 browser_* 工具面：${PAGE_AGENT_BROWSER_TOOLS.join(' / ')}");
   });
 
   it('★★ 提示词不得再写"仅以下九个"这类与实际挂载不符的表述', () => {

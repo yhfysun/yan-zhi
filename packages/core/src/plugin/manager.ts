@@ -84,6 +84,27 @@ export class PluginManager {
     return this.plugins.get(id);
   }
 
+  /**
+   * 从本次运行内存中移除未包含在当前构建里的插件。
+   *
+   * ★ 不删数据库行：用户从 Lite 升到 Pro 后，原先 enabled 的偏好仍应保留。
+   * ★ 必须同时 deactivate：loadFromDb 会先按 DB 的 enabled 恢复插件并注册 contributes；
+   *   只从 Map 删除会留下幽灵模式/路由，前端仍会尝试加载不存在的插件包。
+   */
+  async evictUnavailable(ids: Iterable<string>): Promise<string[]> {
+    const removed: string[] = [];
+    for (const id of new Set(ids)) {
+      const plugin = this.plugins.get(id);
+      if (!plugin) continue;
+      await this.deactivate(plugin);
+      this.plugins.delete(id);
+      this.modules.delete(id);
+      this.entryPaths.delete(id);
+      removed.push(id);
+    }
+    return removed;
+  }
+
   /** 注册内置插件（manifest + 入口模块或路径），持久化并按需激活 */
   async registerBuiltin(
     manifest: PluginManifest,

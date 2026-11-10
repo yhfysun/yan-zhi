@@ -9,6 +9,7 @@
  * 5. 工具不存在时的错误处理
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { PAGE_AGENT_BROWSER_TOOLS, PAGE_AGENT_SUPPORT_TOOLS } from '@yan-zhi/shared';
 
 // ── mock fetch（模拟后端 /api/browser/* 响应）──────────────────────────────
 const mockFetch = vi.fn();
@@ -32,37 +33,15 @@ beforeAll(async () => {
   BrowserGetVisibleTextTool = mod.BrowserGetVisibleTextTool;
 });
 
-// ── pageAgent 配置（从 db.ts 复制，避免 import 整个 db 模块）────────────────
-//
-// ⚠️⚠️ 以下常量是**手抄的过时快照，请勿据此判断真实挂载面**（2026-10-13 标注）。
-//   实测偏差：本清单含 36 个 browser_*，其中 `browser_get_a11y_tree` **根本不存在**
-//   （全仓无实现）；同时**缺** browser_get_page_content / browser_fill_form /
-//   browser_run_script / browser_scroll / browser_upload / browser_screenshot /
-//   image_analyze / file_write 等——服务端挂载的 16 项里它只对上一部分。
-//   本文件之所以仍全绿，是因为它拿这份抄件跟**另一份同样手抄的推荐清单**对账
-//   （自洽但错误）= 典型的"假绿"。
-//   ★ 真正的一致性守门在 `apps/server/test/page-agent-tool-mount-consistency.test.ts`
-//     （从源码文本派生两侧清单，不手抄）。下面这些常量仅留给本文件既有的
-//     「工具类是否可实例化」等断言使用，不要再往这里加新工具名。
-const PAGE_AGENT_BUILTIN_TOOLS = [
-  'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
-  'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',
-  'browser_wait', 'browser_screenshot', 'browser_fill_form', 'browser_submit_form',
-  'browser_search', 'browser_next_page', 'browser_prev_page', 'browser_wait_for',
-  'browser_get_visible_text', 'browser_select_option', 'browser_check', 'browser_uncheck',
-  'browser_get_page_info', 'browser_login_saved', 'browser_new_tab', 'browser_switch_tab',
-  'browser_close_tab', 'browser_get_tabs', 'browser_wait_for_request', 'browser_get_network_log',
-  'browser_extract_list', 'browser_visual_locate', 'browser_upload', 'browser_download',
-  'browser_scroll_into_view', 'browser_is_visible', 'browser_drag', 'browser_get_a11y_tree',
-  'ask_user',
-];
+// pageAgent 的唯一工具清单来自 shared，不再在测试里手抄。
+const PAGE_AGENT_BUILTIN_TOOLS = [...PAGE_AGENT_BROWSER_TOOLS, ...PAGE_AGENT_SUPPORT_TOOLS];
 
 // 系统提示词中推荐的工具（从 db.ts PAGE_AGENT_SYSTEM_PROMPT 提取）
 const RECOMMENDED_TOOLS_IN_PROMPT = [
-  'browser_get_page_info', 'browser_navigate', 'browser_click', 'browser_type',
-  'browser_press_key', 'browser_wait_for', 'browser_get_visible_text', 'browser_search',
-  'browser_fill_form', 'browser_submit_form', 'browser_next_page', 'browser_prev_page',
-  'browser_screenshot', 'browser_login_saved', 'ask_user',
+  'browser_navigate', 'browser_get_page_content', 'browser_get_page_info',
+  'browser_click', 'browser_type', 'browser_press_key', 'browser_wait_for',
+  'browser_get_visible_text', 'browser_fill_form', 'browser_submit_form',
+  'browser_get_tabs', 'browser_screenshot', 'ask_user',
 ];
 
 describe('pageAgent 浏览器工具参数解析', () => {

@@ -48,12 +48,11 @@ describe('店铺助手工具面一致性', () => {
     ).toEqual([]);
   });
 
-  it('页面未就绪时必须停止重复导航，改用标签页工具等待', () => {
-    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('同一 URL 只调用一次 browser_navigate');
-    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得再次 navigate');
+  it('页面动作统一委派 pageAgent，未就绪时由 pageAgent 等待而不是重复导航', () => {
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('所有页面动作统一委派 pageAgent');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('browser_get_tabs');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('doudian-shop-qualification');
-    expect(SHOP_AGENT_BUILTIN_TOOLS).toContain('browser_run_recipe');
+    expect(SHOP_AGENT_BUILTIN_TOOLS.filter((name) => name.startsWith('browser_'))).toEqual([]);
   });
 
   it('用户当前问题优先于历史计划，记忆不得冒充用户已确认事实', () => {

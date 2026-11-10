@@ -150,6 +150,50 @@ export function renameLegacyAgensPlatformId(userId: string): boolean {
 }
 
 /**
+ * 旧拼写平台行已被删、但智能体/会话/任务仍引用 `agnes-${userId}` 时，把引用改回
+ * 当前的 `agens-${userId}`。这是保留用户数据升级时最常见的一类孤儿引用：
+ * 平台表已重建，但业务表仍携带旧 id，表现就是「平台不存在或已删除」。
+ *
+ * 同时纠正历史主键模型 id 的前缀（agnes-<user>-<model> → agens-<user>-<model>）。
+ * 幂等，重复执行无副作用。
+ */
+export function repointOrphanLegacyAgensReferences(
+  userId: string,
+  canonicalPlatformId: string,
+): { changes: number } {
+  const legacyPlatformIdValue = legacyPlatformId(userId);
+  if (!userId || !canonicalPlatformId || legacyPlatformIdValue === canonicalPlatformId) {
+    return { changes: 0 };
+  }
+
+  const legacyModelPrefix = `${legacyPlatformIdValue}-`;
+  const canonicalModelPrefix = `${canonicalPlatformId}-`;
+  const tables = ['agent', 'conversation', 'scheduled_task', 'goal_run', 'goal_schedule'];
+  let changes = 0;
+  db.transaction(() => {
+    for (const table of tables) {
+      const result = db.prepare(
+        `UPDATE ${table}
+            SET platform_id = ?,
+                model_id = CASE
+                  WHEN model_id LIKE ? THEN REPLACE(model_id, ?, ?)
+                  ELSE model_id
+                END
+          WHERE platform_id = ?`,
+      ).run(
+        canonicalPlatformId,
+        `${legacyModelPrefix}%`,
+        legacyModelPrefix,
+        canonicalModelPrefix,
+        legacyPlatformIdValue,
+      );
+      changes += Number(result.changes || 0);
+    }
+  })();
+  return { changes };
+}
+
+/**
  * 已存在的 agnes 平台：补齐接口新增但本地缺失的模型（INSERT OR IGNORE，不覆盖已有行），
  * 并做启动自愈：平台显示名 'agens' → 'agnes'、别名前缀 'agens ' → 'agnes '、
  * 媒体模型能力按名称补齐（model_id 含 image/video 的行自动带上对应能力，只增不减）
@@ -360,6 +404,7 @@ export function syncAgensPlatformForAllUsers(): {
   skipped: string[];
   migrated: string[];
   renamed: string[];
+  repointed: string[];
   addedModels: string[];
   capsFilled: string[];
 } {
@@ -368,12 +413,16 @@ export function syncAgensPlatformForAllUsers(): {
   const skipped: string[] = [];
   const migrated: string[] = [];
   const renamed: string[] = [];
+  const repointed: string[] = [];
   const addedModels: string[] = [];
   const capsFilled: string[] = [];
   for (const u of users) {
     if (renameLegacyAgensPlatformId(u.id)) renamed.push(u.id);
     dedupeAgensPlatforms(u.id);
     const r = ensureAgensPlatform(u.id);
+    if (repointOrphanLegacyAgensReferences(u.id, r.platformId).changes > 0) {
+      repointed.push(u.id);
+    }
     if (r.created) {
       seeded.push(u.id);
     } else {
@@ -384,5 +433,5 @@ export function syncAgensPlatformForAllUsers(): {
       if (migrateAgensDefaultModel(u.id)) migrated.push(u.id);
     }
   }
-  return { seeded, skipped, migrated, renamed, addedModels, capsFilled };
+  return { seeded, skipped, migrated, renamed, repointed, addedModels, capsFilled };
 }

@@ -532,12 +532,22 @@ async function ensureWebviewViaShell(_browser: any, url?: string, convId?: strin
   if (!convId || !target || !/^https?:\/\//i.test(target)) return false;
   if (!browserBridgeAvailable()) return false;
   try {
-    await callBrowserBridgeRaw(convId, 'browser_navigate', { url: target }, 20_000);
+    await callBrowserBridgeRaw(convId, 'browser_navigate', { url: target }, COLD_START_PANEL_OPEN_TIMEOUT_MS);
     return true;
   } catch {
     return false;
   }
 }
+
+/**
+ * 冷启动打开预览面板的桥超时。
+ *
+ * 桌面端首次 navigate 会在主进程里广播 tabCreated，并最多等待 6 × 5s 让渲染层建出 guest。
+ * 服务端此前只等 20s，短于桌面端自身的 30s 建页窗口：首启稍慢时服务端先判失败，
+ * 随即返回“没有可用的网页 target”，用户看到的就是第一次打不开浏览器，第二次才正常。
+ * 这里必须覆盖桌面端完整窗口，并留出 IPC / HTTP 余量。
+ */
+export const COLD_START_PANEL_OPEN_TIMEOUT_MS = 45_000;
 
 /** 创建一个新的 context + page（多标签页基础单元），可选导航到 url
  *

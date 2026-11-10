@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import { primaryOrgOfUser } from './quota.js';
 import './schema.js';
 
-function hashToken(token: string): string {
+export function hashRuntimeNodeToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
@@ -12,7 +12,7 @@ function parseJson<T>(raw: unknown, fallback: T): T {
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
 
-function nodeView(row: any) {
+export function runtimeNodeView(row: any) {
   return {
     ...row,
     capabilities: parseJson(row.capabilities_json, []),
@@ -44,9 +44,9 @@ export function createRuntimeNode(userId: string, input: RuntimeNodeInput): { no
   ).run(
     id, userId, input.orgId || primaryOrgOfUser(userId), name,
     input.platform || null, input.arch || null, input.version || null,
-    JSON.stringify(input.capabilities || []), hashToken(token), now, now,
+    JSON.stringify(input.capabilities || []), hashRuntimeNodeToken(token), now, now,
   );
-  return { node: nodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(id)), token };
+  return { node: runtimeNodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(id)), token };
 }
 
 export function authenticateRuntimeNode(token: string): any | null {
@@ -54,7 +54,7 @@ export function authenticateRuntimeNode(token: string): any | null {
   if (!m) return null;
   const row = db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(m[1]) as any;
   if (!row) return null;
-  const digest = hashToken(token);
+  const digest = hashRuntimeNodeToken(token);
   if (!row.token_hash || digest.length !== row.token_hash.length) return null;
   const a = Buffer.from(digest, 'hex');
   const b = Buffer.from(row.token_hash, 'hex');
@@ -82,7 +82,7 @@ export function registerRuntimeNode(token: string, input: {
     JSON.stringify(input.capabilities || parseJson(node.capabilities_json, [])),
     previewHost, now, now, node.id,
   );
-  return nodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(node.id));
+  return runtimeNodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(node.id));
 }
 
 /** 预览基址白名单：只接受主机名/IP 字面量，杜绝把代理目标拼成任意内网 URL。 */
@@ -132,9 +132,23 @@ export function resolveWorkspacePreviewTarget(
   port: number,
   now = Date.now(),
 ): WorkspacePreviewTarget {
+  const ws = db.prepare('SELECT * FROM runtime_workspace WHERE id = ?').get(workspaceId) as any;
+  const node = ws
+    ? db.prepare('SELECT preview_host FROM runtime_node WHERE id = ?').get(ws.node_id) as any
+    : null;
+  return workspacePreviewTargetFromRows(userId, ws, node, port, now);
+}
+
+/** 纯判定出口：SQLite/PG 只负责取行，权限/状态/TTL/端口/host 规则必须共用这里。 */
+export function workspacePreviewTargetFromRows(
+  userId: string,
+  ws: any,
+  node: any,
+  port: number,
+  now = Date.now(),
+): WorkspacePreviewTarget {
   const p = Number(port);
   if (!Number.isInteger(p) || p < 1 || p > 65535) throw new WorkspacePreviewError('INVALID_PORT', '预览端口无效');
-  const ws = db.prepare('SELECT * FROM runtime_workspace WHERE id = ?').get(workspaceId) as any;
   if (!ws || ws.owner_user_id !== userId) {
     throw new WorkspacePreviewError('WORKSPACE_FORBIDDEN', '工作区不存在或无权预览', 404);
   }
@@ -146,7 +160,6 @@ export function resolveWorkspacePreviewTarget(
   }
   const ports = parseJson<number[]>(ws.ports_json, []).map(Number);
   if (!ports.includes(p)) throw new WorkspacePreviewError('PORT_NOT_REGISTERED', '端口未登记或已关闭', 404);
-  const node = db.prepare('SELECT preview_host FROM runtime_node WHERE id = ?').get(ws.node_id) as any;
   let host: string;
   try { host = assertPreviewHost(node?.preview_host || '127.0.0.1'); }
   catch (e) { throw new WorkspacePreviewError('INVALID_PREVIEW_HOST', (e as Error).message, 502); }
@@ -169,7 +182,7 @@ export function heartbeatRuntimeNode(token: string): any {
   db.prepare("UPDATE runtime_node SET status = 'online', last_seen_at = ?, updated_at = ? WHERE id = ?")
     .run(now, now, node.id);
   expireStaleRuntimeNodes();
-  return nodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(node.id));
+  return runtimeNodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(node.id));
 }
 
 /** 轻量保活（WS 通道用）：只更新心跳，不触发离线巡检（janitor 已在跑，逐帧巡检是浪费）。 */
@@ -199,7 +212,7 @@ export function listRuntimeNodes(userId: string, opts: { all?: boolean } = {}): 
   const rows = opts.all
     ? db.prepare('SELECT * FROM runtime_node ORDER BY created_at DESC').all()
     : db.prepare('SELECT * FROM runtime_node WHERE owner_user_id = ? ORDER BY created_at DESC').all(userId);
-  return rows.map(nodeView);
+  return rows.map(runtimeNodeView);
 }
 
 export function updateRuntimeNode(id: string, input: Partial<RuntimeNodeInput> & { enabled?: boolean }): any {
@@ -215,11 +228,11 @@ export function updateRuntimeNode(id: string, input: Partial<RuntimeNodeInput> &
   if (input.version !== undefined) put('version', input.version);
   if (input.capabilities !== undefined) put('capabilities_json', JSON.stringify(input.capabilities));
   if (input.enabled !== undefined) put('status', input.enabled ? 'offline' : 'disabled');
-  if (!sets.length) return nodeView(row);
+  if (!sets.length) return runtimeNodeView(row);
   put('updated_at', Date.now());
   vals.push(id);
   db.prepare(`UPDATE runtime_node SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  return nodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(id));
+  return runtimeNodeView(db.prepare('SELECT * FROM runtime_node WHERE id = ?').get(id));
 }
 
 export function deleteRuntimeNode(id: string): void {
@@ -234,6 +247,14 @@ export interface RuntimeTaskInput {
   conversationId?: string | null;
   taskId?: string | null;
   workspaceId?: string | null;
+}
+
+export interface RuntimeTaskCompleteInput {
+  state?: 'completed' | 'failed' | 'cancelled';
+  result?: unknown;
+  error?: string | null;
+  exitCode?: number | null;
+  artifacts?: Array<{ name: string; path?: string; mimeType?: string; sizeBytes?: number; sha256?: string }>;
 }
 
 export function createRuntimeTask(userId: string, input: RuntimeTaskInput): any {
@@ -301,13 +322,7 @@ export function appendRuntimeEvents(token: string, taskId: string, events: Array
   return tx();
 }
 
-export function completeRuntimeTask(token: string, taskId: string, input: {
-  state?: 'completed' | 'failed' | 'cancelled';
-  result?: unknown;
-  error?: string | null;
-  exitCode?: number | null;
-  artifacts?: Array<{ name: string; path?: string; mimeType?: string; sizeBytes?: number; sha256?: string }>;
-}): any {
+export function completeRuntimeTask(token: string, taskId: string, input: RuntimeTaskCompleteInput): any {
   const node = authenticateRuntimeNode(token);
   if (!node) throw new Error('节点令牌无效');
   const task = db.prepare('SELECT * FROM runtime_task WHERE id = ? AND node_id = ?').get(taskId, node.id) as any;
@@ -343,15 +358,18 @@ export function completeRuntimeTask(token: string, taskId: string, input: {
 }
 
 export function cancelRuntimeTask(userId: string, id: string): any {
-  const row = db.prepare('SELECT * FROM runtime_task WHERE id = ? AND owner_user_id = ?').get(id, userId) as any;
-  if (!row) throw new Error('任务不存在或无权操作');
-  if (row.state === 'queued' || row.state === 'running') {
-    db.prepare("UPDATE runtime_task SET state = 'cancelled', ended_at = ? WHERE id = ?").run(Date.now(), id);
-  }
-  return runtimeTaskView(db.prepare('SELECT * FROM runtime_task WHERE id = ?').get(id));
+  const tx = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM runtime_task WHERE id = ? AND owner_user_id = ?').get(id, userId) as any;
+    if (!row) throw new Error('任务不存在或无权操作');
+    if (row.state === 'queued' || row.state === 'running') {
+      db.prepare("UPDATE runtime_task SET state = 'cancelled', ended_at = ? WHERE id = ?").run(Date.now(), id);
+    }
+    return runtimeTaskView(db.prepare('SELECT * FROM runtime_task WHERE id = ?').get(id));
+  });
+  return tx();
 }
 
-function runtimeTaskView(row: any) {
+export function runtimeTaskView(row: any) {
   if (!row) return null;
   let result: unknown = null;
   if (row.result_json) {
@@ -399,11 +417,11 @@ export function listRuntimeArtifacts(taskId: string): any[] {
  *   带 image 就走容器，不带才是目录。两个物理实现是因为控制面是 TS/ESM、节点是 CJS 脚本，
  *   由 enterprise-workspace-container.test.ts 用断言钉住两者一致，避免一侧偷偷改规则。
  */
-function workspaceModeFor(image: unknown): 'container' | 'directory' {
+export function workspaceModeFor(image: unknown): 'container' | 'directory' {
   return String(image || '').trim() ? 'container' : 'directory';
 }
 
-export function createWorkspace(userId: string, input: {
+export interface RuntimeWorkspaceInput {
   nodeId: string;
   name: string;
   image?: string;
@@ -414,7 +432,9 @@ export function createWorkspace(userId: string, input: {
   keepDir?: boolean;
   /** 容器模式下要发布的端口；节点启动容器后按实际映射回传登记。 */
   ports?: number[];
-}): any {
+}
+
+export function createWorkspace(userId: string, input: RuntimeWorkspaceInput): any {
   const node = db.prepare('SELECT * FROM runtime_node WHERE id = ? AND owner_user_id = ?').get(input.nodeId, userId) as any;
   if (!node) throw new Error('工作节点不存在或无权使用');
   const id = randomUUID();
@@ -483,7 +503,7 @@ export function listWorkspaces(userId: string, opts: { all?: boolean } = {}): an
   return (rows as any[]).map(workspaceView);
 }
 
-export function updateWorkspaceState(token: string, workspaceId: string, input: {
+export interface RuntimeWorkspaceStateInput {
   status: 'running' | 'stopped' | 'failed';
   path?: string;
   ports?: number[];
@@ -491,7 +511,9 @@ export function updateWorkspaceState(token: string, workspaceId: string, input: 
   containerId?: string;
   containerName?: string;
   runtimeMode?: 'container' | 'directory';
-}): any {
+}
+
+export function updateWorkspaceState(token: string, workspaceId: string, input: RuntimeWorkspaceStateInput): any {
   const node = authenticateRuntimeNode(token);
   if (!node) throw new Error('节点令牌无效');
   const row = db.prepare('SELECT * FROM runtime_workspace WHERE id = ? AND node_id = ?').get(workspaceId, node.id) as any;
@@ -516,9 +538,11 @@ export function updateWorkspaceState(token: string, workspaceId: string, input: 
 }
 
 export function stopWorkspace(userId: string, workspaceId: string): any {
-  const row = db.prepare('SELECT * FROM runtime_workspace WHERE id = ? AND owner_user_id = ?').get(workspaceId, userId) as any;
-  if (!row) throw new Error('工作区不存在或无权操作');
-  if (row.status !== 'stopped') {
+  const tx = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM runtime_workspace WHERE id = ? AND owner_user_id = ?').get(workspaceId, userId) as any;
+    if (!row) throw new Error('工作区不存在或无权操作');
+    // stopping/stopped 都是已收敛状态；重复点击不能重复投递停止任务。
+    if (row.status === 'stopped' || row.status === 'stopping') return;
     createRuntimeTask(userId, {
       nodeId: row.node_id,
       workspaceId,
@@ -533,7 +557,8 @@ export function stopWorkspace(userId: string, workspaceId: string): any {
       },
     });
     db.prepare("UPDATE runtime_workspace SET status = 'stopping', updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
-  }
+  });
+  tx();
   return getWorkspace(workspaceId, userId);
 }
 
