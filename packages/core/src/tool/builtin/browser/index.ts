@@ -1413,30 +1413,32 @@ export class BrowserDownloadTool implements BuiltInTool {
   name = 'browser_download';
   description = '触发下载并等待完成，返回保存路径；不传 url/selector 时列出最近的下载记录。'
     + '★ 点「导出/下载」类按钮时，文件会**自动落盘**（不会弹系统「另存为」框），保存路径已直接写进 browser_click 回执的 downloaded 字段 —— 拿到路径就用文件工具读取，不要重复点导出。'
-    + '本工具的 list 模式用于事后查询（例如下载是页面异步生成、点击时还没开始）。';
+    + '本工具的 list 模式用于事后查询（例如下载是页面异步生成、点击时还没开始）。'
+    + '以 state=completed 且 exists=true 作为成功判据；progressing 表示仍在下载，cancelled/interrupted 表示失败。';
   inputSchema = {
     type: 'object',
     properties: {
       url: { type: 'string', description: 'URL to navigate to trigger download (optional if using selector).' },
       selector: { type: 'string', description: 'CSS selector of a link/button to click to trigger download (optional if using url).' },
+      index: { type: 'number', description: 'Element index from browser_get_page_content to click and trigger download.' },
       savePath: { type: 'string', description: 'Path to save the downloaded file (optional). 相对路径基于工作目录；不传则存到 <工作目录>/downloads/（无工作目录时存到系统下载目录）。' },
       limit: { type: 'number', description: '仅查询模式：返回最近的 N 条下载记录（默认 10，最多 50）。' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      if (!args.url && !args.selector) {
+      if (!args.url && !args.selector && args.index == null) {
         const data = await callBrowserApi('/action', 'POST', { action: 'downloads', limit: args.limit }) as any;
         if (data?.error) return err(data.error);
         const records = Array.isArray(data?.records) ? data.records : [];
         if (!records.length) return ok(`最近没有下载记录。下载目录: ${data?.dir || '(未知)'}`);
         const lines = records.map((r: any) =>
-          `- ${r.filename}（${r.state}${r.bytes ? `，${Math.round(Number(r.bytes) / 1024)}KB` : ''}）\n  ${r.savedPath}`);
+          `- ${r.filename}（state=${r.state}，exists=${r.exists === true}${r.bytes ? `，${Math.round(Number(r.bytes) / 1024)}KB` : ''}）\n  ${r.savedPath}`);
         return ok(`最近下载（目录: ${data?.dir || '(未知)'}）：\n${lines.join('\n')}`);
       }
-      const data = await callBrowserApi('/action', 'POST', { action: 'download', url: args.url, selector: args.selector, savePath: args.savePath }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'download', url: args.url, selector: args.selector, index: args.index, savePath: args.savePath }) as any;
       if (data?.error) return err(data.error);
-      return ok(`下载完成: ${data.filename}\n保存路径: ${data.savedPath}`);
+      return ok(`下载完成: ${data.filename}\n保存路径: ${data.savedPath}\n状态: ${data.state || 'completed'}\n文件存在: ${data.exists === true}`);
     } catch (e: any) { return err(e?.message || '文件下载失败'); }
   }
 }

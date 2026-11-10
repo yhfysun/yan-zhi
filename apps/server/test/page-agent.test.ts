@@ -22,6 +22,7 @@ let BrowserTypeTool: any;
 let BrowserGetPageInfoTool: any;
 let BrowserPressKeyTool: any;
 let BrowserGetVisibleTextTool: any;
+let BrowserDownloadTool: any;
 
 beforeAll(async () => {
   const mod = await import('../../../packages/core/src/tool/builtin/browser/index.js');
@@ -31,6 +32,7 @@ beforeAll(async () => {
   BrowserGetPageInfoTool = mod.BrowserGetPageInfoTool;
   BrowserPressKeyTool = mod.BrowserPressKeyTool;
   BrowserGetVisibleTextTool = mod.BrowserGetVisibleTextTool;
+  BrowserDownloadTool = mod.BrowserDownloadTool;
 });
 
 // pageAgent 的唯一工具清单来自 shared，不再在测试里手抄。
@@ -211,6 +213,44 @@ describe('pageAgent 浏览器工具参数解析', () => {
     const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(fetchBody.action).toBe('press');
     expect(fetchBody.key).toBe('Enter');
+  });
+
+  it('browser_download: 无参数或只传 limit 时查询最近下载，不误触发 download', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          dir: 'D:/ws/downloads',
+          records: [{ filename: 'a.xlsx', savedPath: 'D:/ws/downloads/a.xlsx', state: 'completed', exists: true, bytes: 10 }],
+        },
+      }),
+    });
+
+    const tool = new BrowserDownloadTool();
+    const result = await tool.execute({ limit: 10 });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('downloads');
+    expect(result.content[0].text).toContain('state=completed');
+    expect(result.content[0].text).toContain('exists=true');
+  });
+
+  it('browser_download: index 是合法的触发方式', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: { filename: 'a.xlsx', savedPath: 'D:/ws/downloads/a.xlsx', state: 'completed', exists: true, bytes: 10 },
+      }),
+    });
+
+    const tool = new BrowserDownloadTool();
+    const result = await tool.execute({ index: 36 });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('download');
+    expect(fetchBody.index).toBe(36);
   });
 });
 

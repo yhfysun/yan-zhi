@@ -1462,6 +1462,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 优先用 get_page_content 回显的高质量选择器（id/testid/aria/name/placeholder）；元素行没带 <selector> 段的用 index——hash class 下一次读取就漂移，不要凭印象猜），selectors 可给备用选择器，下拉优先 label。可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
 - browser_run_page_operation: 已登记站点优先走页面资产。先看可用页面资产引用，再用 assetId + operationId + params 执行；禁止用自由选择器或脚本替代已声明 operation。
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
+- browser_download: 点导出/下载按钮后先看 browser_click 回执的 downloaded 字段。若页面异步生成文件或回执仍为 progressing，调用 browser_download 不传参数查询最近下载；只有 state=completed 且 exists=true 才能判定成功，progressing 是在下载，cancelled/interrupted 是失败。禁止因为看不到系统下载弹窗或不知道路径就重复点击导出。
+- 文件跨系统流转（高频办公流程）：源系统下载文件后，先用 file_read / office_read / python_exec 验证内容和条数，再 browser_upload 上传到目标系统，提交后回读目标页面的成功提示或更新条数；交付时同时报告源文件 savedPath、目标系统、上传结果和更新数量。
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
 - file_read: 读本地文件（工作目录内）——需要复用父任务落盘的成品文案/章节/经验档，或核对文件内容时用它。★ 不要用 browser_navigate 打开 file:// 去读文件：那会把本地路径当页面开进预览面板，且加载必然失败；读文件一律用本工具。
 - file_list: 列目录/文件清单（工作目录内）——定位素材/稿件/输出文件在哪。

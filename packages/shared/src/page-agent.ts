@@ -85,8 +85,8 @@ export const BROWSER_DELEGATION_PROMPT = `【网页登录与页面操作 · 委�
 - 页面任务结束后验收 pageAgent 的证据：URL 变化、成功提示、页面状态或返回数据；不要仅凭“已点击”宣称完成。
 - 不要告诉用户 pageAgent 只有六件套；它持有完整浏览器工具面。也不要自己拼旧工具名或另写浏览器流程。`;
 
-export const WEB_TASK_AUTOMATION_DESC = '用 pageAgent 驱动真实浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，可配合定时任务每日执行。';
-export const WEB_TASK_AUTOMATION_TRIGGERS = ['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化', 'pageAgent'];
+export const WEB_TASK_AUTOMATION_DESC = '用 pageAgent 驱动真实浏览器完成登录、签到、下载、上传、跨系统同步、填表、搜索、翻页、提交等网站自动化任务，可配合定时任务每日执行。';
+export const WEB_TASK_AUTOMATION_TRIGGERS = ['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化', '浏览器下载', '下载后上传', '跨系统同步', 'pageAgent'];
 export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 
 用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 已挂载导航、读页、点击、输入、批量填表、提交、多标签、上传、等待、截图、视觉定位、接口直采和站点配方等完整工具面，不再只有六件套。配合「定时任务」可每日自动执行。
@@ -97,7 +97,19 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 3. browser_wait_for 或 browser_get_page_content 等待并读取页面，拿正文、表单状态、可交互元素编号与稳定 selector。
 4. 两点及以上字段优先一次 browser_fill_form；提交用 browser_submit_form 或点击明确的提交按钮。
 5. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
-6. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
+6. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
+7. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
+8. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
+
+## 办公文件跨系统流转场景
+- 浏览器下载：报表/流水/工单/发票导出后自动落盘，返回绝对路径、bytes、state、exists。
+- 下载后上传：源系统下载 Excel/CSV/PDF，校验条数和日期，再上传到财务、ERP、CRM 或客服系统。
+- 数据更新：一个系统导出名单，另一个系统导入并更新客户、合同、订单或投诉记录，最后回读更新条数。
+- 对账核验：下载银行流水与业务台账，按订单号/金额/日期比对，再上传差异清单并记录异常。
+- 批量办公：发票/合同下载后 OCR 或结构化读取，字段映射到供应商门户/报销系统，提交后保存回执。
+- 定时同步：每日下载昨日数据，去重后上传目标系统，报告新增、更新、跳过和失败数量。
+
+固定闭环：源系统下载 -> 验证文件存在与内容 -> 目标系统上传 -> 提交 -> 回读结果 -> 报告文件路径和更新条数。
 
 ## 登录与权限
 - 只读权限可直接导航、读页、截图、等待；点击/输入/填表/提交首次会请求用户授权，这是正常流程，不是浏览器不可用。

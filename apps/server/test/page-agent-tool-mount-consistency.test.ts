@@ -185,6 +185,17 @@ describe('pageAgent 三处一致性（守门）', () => {
     expect(WEB_PAGE_OPERATION_BODY).toContain('browser_get_page_content');
   });
 
+  it('B6. 文件下载必须进入页面智能体提示词，并区分开始/完成/失败', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const prompt = parsePrompt(dbSrc);
+    expect(prompt).toContain('browser_download');
+    expect(prompt).toContain('state=completed');
+    expect(prompt).toContain('exists=true');
+    expect(prompt).toContain('browser_upload');
+    expect(WEB_TASK_AUTOMATION_BODY).toContain('浏览器下载');
+    expect(WEB_TASK_AUTOMATION_BODY).toContain('下载后上传');
+  });
+
   it('C. 前端副本的挂载清单必须与服务端逐项一致', () => {
     const dbSrc = readOrFail(DB_SRC);
     const ui = readOrFail(UI_AGENT_SRC);

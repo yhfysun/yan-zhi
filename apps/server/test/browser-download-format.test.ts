@@ -11,7 +11,13 @@ describe('formatBridgeResult —— 下载类', () => {
     const { formatBridgeResult } = await import('../src/browser-bridge.js');
     const text = formatBridgeResult('click', {
       success: true,
-      downloaded: { filename: '作品列表导出.xlsx', savedPath: 'D:/ws/downloads/作品列表导出.xlsx', bytes: 4096 },
+      downloaded: {
+        filename: '作品列表导出.xlsx',
+        savedPath: 'D:/ws/downloads/作品列表导出.xlsx',
+        bytes: 4096,
+        state: 'completed',
+        exists: true,
+      },
     });
     expect(text).toContain('已自动下载');
     expect(text).toContain('D:/ws/downloads/作品列表导出.xlsx');

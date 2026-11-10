@@ -64,6 +64,23 @@
               <el-button v-if="bakedServerBase && serverBaseDraft !== bakedServerBase" size="small" text @click="serverBaseDraft = ''">恢复出厂</el-button>
             </div>
           </SettingRow>
+          <SettingRow
+            v-if="isElectronDesktop"
+            label="浏览器下载目录"
+            tip="未设置时首次下载会弹窗选择；设置后智能体下载与导出文件统一落到该目录。文件仍可按完整路径交给后续上传流程"
+            tip-after
+          >
+            <div class="server-base-row">
+              <el-input
+                :model-value="browserDownloadDir"
+                placeholder="未设置，首次下载会弹窗选择"
+                readonly
+                style="width: 340px"
+              />
+              <el-button size="small" type="primary" plain :loading="browserDownloadDirBusy" @click="pickBrowserDownloadDir">选择目录</el-button>
+              <el-button v-if="browserDownloadDir" size="small" text @click="clearBrowserDownloadDir">清除</el-button>
+            </div>
+          </SettingRow>
           <SettingRow label="深色模式" tip="切换深色/浅色主题" tip-after>
             <el-switch v-model="darkMode" @change="toggleDarkMode" />
           </SettingRow>
@@ -989,7 +1006,7 @@ function toggleThemeQuick() {
   settingsStore.update({ darkMode: next });
 }
 import type { ThemeName } from '../stores/settings';
-import { api, API_BASE, buildRequestHeaders, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
+import { api, API_BASE, buildRequestHeaders, isCapacitor, isElectron, getMobileApiBase, setMobileApiBase } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
@@ -998,6 +1015,10 @@ import UserHooksPanel from '../components/settings/UserHooksPanel.vue';
 import BrowserExtensionsPanel from '../components/settings/BrowserExtensionsPanel.vue';
 
 const settingsStore = useSettingsStore();
+const isElectronDesktop = isElectron;
+const browserDownloadDir = ref('');
+const browserDownloadDirBusy = ref(false);
+let offBrowserDownloadDirChanged: (() => void) | null = null;
 const platformStore = usePlatformStore();
 const modelPoolStore = useModelPoolStore();
 const pluginStore = usePluginStore();
@@ -1025,6 +1046,58 @@ watch(
   () => applyQueryPane(),
 );
 onMounted(applyQueryPane);
+
+async function loadBrowserDownloadDir() {
+  const bv = (window as any).electronAPI?.browserView;
+  if (!bv?.getDownloadDir) return;
+  try {
+    const r = await bv.getDownloadDir();
+    if (r?.ok) browserDownloadDir.value = String(r.dir || '');
+  } catch { /* 主进程旧版本没有该 IPC 时保持未设置 */ }
+}
+
+async function pickBrowserDownloadDir() {
+  const bv = (window as any).electronAPI?.browserView;
+  if (!bv?.pickDownloadDir) return;
+  browserDownloadDirBusy.value = true;
+  try {
+    const r = await bv.pickDownloadDir();
+    if (r?.ok) {
+      browserDownloadDir.value = String(r.dir || '');
+      ElMessage.success('浏览器下载目录已保存');
+    }
+  } catch (e: any) {
+    ElMessage.error('选择下载目录失败: ' + (e?.message || e));
+  } finally {
+    browserDownloadDirBusy.value = false;
+  }
+}
+
+async function clearBrowserDownloadDir() {
+  const bv = (window as any).electronAPI?.browserView;
+  if (!bv?.clearDownloadDir) return;
+  try {
+    await bv.clearDownloadDir();
+    browserDownloadDir.value = '';
+    ElMessage.success('已清除下载目录；下次下载会重新弹窗选择');
+  } catch (e: any) {
+    ElMessage.error('清除下载目录失败: ' + (e?.message || e));
+  }
+}
+onMounted(() => {
+  void loadBrowserDownloadDir();
+  const bv = (window as any).electronAPI?.browserView;
+  if (bv?.onDownloadDirChanged) {
+    offBrowserDownloadDirChanged = bv.onDownloadDirChanged((dir: string) => {
+      browserDownloadDir.value = String(dir || '');
+    });
+  }
+});
+
+onBeforeUnmount(() => {
+  try { offBrowserDownloadDirChanged?.(); } catch { /* ignore */ }
+  offBrowserDownloadDirChanged = null;
+});
 
 // pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
 // ★ immediate 必须有（2026-10-17 用户实报「数据菜单串到通用里面」）：Settings 实例由

@@ -5,6 +5,8 @@ packages:
 # pnpm 10+ 起这些设置只从本文件读取，package.json 的 "pnpm" 字段已废弃
 overrides:
   canvas: "-"
+  # 1.10+ 的 CJS 产物含 Node 24 不支持的 import.source，tesseract OCR 会拖崩后端。
+  wasm-feature-detect: 1.8.0
 
 # pnpm 10+ 默认不执行任何依赖的安装脚本，逐个放行才与 pnpm 9 的行为一致
 allowBuilds:

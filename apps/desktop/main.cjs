@@ -299,6 +299,7 @@ ipcMain.handle('shared-server:set-mode', async (_event, mode) => {
     // detached 守护模式：无句柄可杀，旧后端会继续占着端口（复用守卫会接回它）
     detachedLeftover = true;
   }
+  isQuitting = true;
   app.relaunch();
   app.exit(0);
   return { ok: true, restarting: true, detachedLeftover };
@@ -511,6 +512,12 @@ function sharedDataDir(sub) {
 }
 
 let serverProcess = null;
+let serverRestartTimer = null;
+let backendRestartInFlight = false;
+let backendRestartAttempts = 0;
+let backendRestartResetTimer = null;
+const BACKEND_AUTO_RESTART_MAX = 2;
+const BACKEND_RESTART_TIMEOUT_MS = 45000;
 let tray = null;
 
 // ★★★ 启动加载壳（splash，2026-10-12）：后端健康检查期间显示，主窗 ready-to-show 后销毁。
@@ -1491,6 +1498,62 @@ async function isServerAlive() {
   } catch { return false; }
 }
 
+/**
+ * 后端异常退出后的受控恢复。
+ *
+ * 现场：OCR 依赖在 Node 24 下解析失败，后端 code=1 退出；主窗口还停在原页面，
+ * 聊天 WS 只会无限重连，刷新页面也没有后端可连，最终表现为卡死白屏。
+ * 这里只恢复“由本进程启动且非守护模式”的后端；用户主动退出绝不再拉起。
+ */
+function scheduleBackendRestart(code, detached = false) {
+  if (detached || isQuitting || SHELL_MODE) return;
+  if (backendRestartInFlight || serverRestartTimer) return;
+  if (backendRestartAttempts >= BACKEND_AUTO_RESTART_MAX) {
+    console.error(`[后端恢复] 已达到自动重启上限 ${BACKEND_AUTO_RESTART_MAX} 次，停止重试（code=${code}）`);
+    return;
+  }
+
+  backendRestartAttempts += 1;
+  const attempt = backendRestartAttempts;
+  const delayMs = attempt * 1000;
+  console.warn(`[后端恢复] 检测到异常退出 code=${code}，${delayMs}ms 后自动重启（${attempt}/${BACKEND_AUTO_RESTART_MAX}）`);
+
+  serverRestartTimer = setTimeout(async () => {
+    serverRestartTimer = null;
+    if (isQuitting) return;
+    backendRestartInFlight = true;
+    try {
+      await startServer();
+      const deadline = Date.now() + BACKEND_RESTART_TIMEOUT_MS;
+      while (!isQuitting && Date.now() < deadline) {
+        if (await isServerAlive()) {
+          console.log('[后端恢复] 服务已恢复，刷新主窗口');
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.reloadIgnoringCache();
+            }
+          } catch (err) {
+            console.warn('[后端恢复] 刷新主窗口失败:', err && err.message);
+          }
+          clearTimeout(backendRestartResetTimer);
+          backendRestartResetTimer = setTimeout(() => {
+            backendRestartAttempts = 0;
+          }, 60000);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (err) {
+      console.error('[后端恢复] 重启失败:', err);
+    } finally {
+      backendRestartInFlight = false;
+    }
+    if (!isQuitting && backendRestartAttempts < BACKEND_AUTO_RESTART_MAX) {
+      scheduleBackendRestart(code, false);
+    }
+  }, delayMs);
+}
+
 async function startServer() {
   if (SHELL_MODE) {
     console.log('[后端] 轻量壳模式，跳过本地后端启动');
@@ -1592,6 +1655,10 @@ async function startServer() {
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
+    serverProcess.on('exit', (code) => {
+      serverProcess = null;
+      scheduleBackendRestart(code, detached);
+    });
     if (detached && serverProcess) {
       serverProcess.unref();
       serverProcess = null; // 退出时 before-quit 不再杀它
@@ -1628,6 +1695,9 @@ async function startServer() {
     serverProcess.on('exit', (code) => {
       const line = `\n===== [${stamp()}] 后端退出 code=${code} =====\n`;
       if (logFd !== null) fs.writeSync(logFd, line); else logStream?.write(line);
+      serverProcess = null;
+      if (logStream) logStream.end();
+      scheduleBackendRestart(code, detached);
     });
     if (detached && serverProcess) {
       serverProcess.unref();
@@ -6188,15 +6258,17 @@ function panelReallyHidden(wc) {
 //   （后续动作还会被这层模态拖到总闸超时）；而 Playwright 链路
 //   （apps/server/src/routes/browser.ts 的 attachPageListeners）早已自动落盘 ——
 //   两条执行面行为不一致。
-// ★ 口径：**智能体动作活动窗口内**触发的下载一律自动落盘、永不弹框：
-//     工具调用带了 `__workspaceDir`（服务端/渲染层随动作下发）→ <工作目录>/downloads/
-//     否则 → 系统下载目录/言知下载/
+// ★ 口径：**智能体动作活动窗口内**触发的下载一律自动落盘、不弹「另存为」：
+//     用户设置过浏览器下载目录 → 直接使用该目录
+//     未设置 → 首次下载弹系统目录选择器；选定后持久化，取消则本次回退默认目录
+//     默认目录：工具带了 `__workspaceDir` → <工作目录>/downloads/，否则系统下载目录/言知下载/
 //   用户自己点工具栏（没有 agent 动作）触发的下载保持 Electron 默认（弹另存为），
 //   不改变手动浏览体验。
 // ★ 为什么按"活动窗口"而不是"谁点的"：blob 下载在 JS 点击返回后**才**开始，
 //   主进程无法把 will-download 与某次点击精确配对；给一个 60s 的活动窗口最稳。
 // ============================================================
 const DOWNLOAD_ACTIVITY_GRACE_MS = 60000;
+const DOWNLOAD_CLICK_WAIT_MS = 10000;
 const DOWNLOAD_RECORDS_MAX = 50;
 const DOWNLOAD_FALLBACK_SUBDIR = '言知下载';
 const downloadRecords = [];      // 最近下载（新→旧），供 downloads action 查询
@@ -6204,6 +6276,10 @@ const downloadWaiters = new Set(); // download action 的等待者（收到落�
 let downloadSeq = 0;
 let agentBrowserActivityUntil = 0;
 let lastAgentWorkspaceDir = '';
+let configuredBrowserDownloadDir = '';
+let browserDownloadDirLoaded = false;
+let browserDownloadDirPrompt = null;
+let downloadDirPromptDismissed = false;
 /** download action 显式 savePath 的临时覆盖（执行期间有效，见 case 'download'） */
 let pendingDownloadSavePath = '';
 
@@ -6212,8 +6288,69 @@ function markAgentBrowserActivity() {
   agentBrowserActivityUntil = Date.now() + DOWNLOAD_ACTIVITY_GRACE_MS;
 }
 
-/** 落盘目录：工作目录优先，兜底系统下载目录（用户明确拍板的口径） */
+function loadConfiguredBrowserDownloadDir() {
+  if (browserDownloadDirLoaded) return configuredBrowserDownloadDir;
+  browserDownloadDirLoaded = true;
+  try {
+    const saved = readHostConfig().browserDownloadDir;
+    configuredBrowserDownloadDir = typeof saved === 'string' ? saved.trim() : '';
+  } catch {
+    configuredBrowserDownloadDir = '';
+  }
+  return configuredBrowserDownloadDir;
+}
+
+function broadcastBrowserDownloadDir(dir) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browser-download:dir-changed', dir || '');
+    }
+  } catch { /* 窗口关闭时不影响下载 */ }
+}
+
+function setConfiguredBrowserDownloadDir(dir, notify = true) {
+  configuredBrowserDownloadDir = String(dir || '').trim();
+  browserDownloadDirLoaded = true;
+  if (!configuredBrowserDownloadDir) downloadDirPromptDismissed = false;
+  try {
+    writeHostConfig({ browserDownloadDir: configuredBrowserDownloadDir });
+  } catch (err) {
+    console.warn('[browser-download] 保存下载目录失败:', err && err.message);
+  }
+  if (notify) broadcastBrowserDownloadDir(configuredBrowserDownloadDir);
+  return configuredBrowserDownloadDir;
+}
+
+/** 首次下载未配置目录时，暂停下载并让用户选择；同一时间只允许一个选择框。 */
+function promptForBrowserDownloadDir() {
+  if (browserDownloadDirPrompt) return browserDownloadDirPrompt;
+  const title = '选择浏览器下载目录';
+  const opts = {
+    title,
+    buttonLabel: '使用此目录',
+    properties: ['openDirectory', 'createDirectory'],
+  };
+  browserDownloadDirPrompt = (async () => {
+    try {
+      const picked = mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showOpenDialog(mainWindow, opts)
+        : await dialog.showOpenDialog(opts);
+      if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return '';
+      return setConfiguredBrowserDownloadDir(picked.filePaths[0]);
+    } catch (err) {
+      console.warn('[browser-download] 选择下载目录失败:', err && err.message);
+      return '';
+    } finally {
+      browserDownloadDirPrompt = null;
+    }
+  })();
+  return browserDownloadDirPrompt;
+}
+
+/** 落盘目录：显式设置优先，其次工作目录，最后系统下载目录。 */
 function resolveDownloadDir(workspaceDir) {
+  const configured = loadConfiguredBrowserDownloadDir();
+  if (configured) return configured;
   const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
   if (ws) return path.join(ws, 'downloads');
   try { return path.join(app.getPath('downloads'), DOWNLOAD_FALLBACK_SUBDIR); }
@@ -6234,10 +6371,15 @@ function uniqueDownloadPath(dir, filename) {
   return candidate;
 }
 
-/** 记一条下载并交给等待者（download action / 点击后探测） */
-function pushDownloadRecord(rec) {
-  downloadRecords.unshift(rec);
+/** 下载刚开始就登记，让模型能立即看到目标路径和 progressing 状态。 */
+function registerDownloadRecord(rec) {
+  if (!downloadRecords.some((r) => r.id === rec.id)) downloadRecords.unshift(rec);
   if (downloadRecords.length > DOWNLOAD_RECORDS_MAX) downloadRecords.pop();
+}
+
+/** 下载进入终态后更新同一条记录，并唤醒等待者。 */
+function pushDownloadRecord(rec) {
+  registerDownloadRecord(rec);
   // 不清空整个集合：并发下载时，前一条记录不该清掉"等后一条"的等待者；
   // 每个等待者自己判断 seq 并在 finish() 里移除（超时也会移除）。
   for (const waiter of [...downloadWaiters]) {
@@ -6273,13 +6415,22 @@ const downloadHandlerSessions = new WeakSet();
 function installBrowserDownloadHandler(sess) {
   if (!sess || downloadHandlerSessions.has(sess)) return;
   downloadHandlerSessions.add(sess);
-  sess.on('will-download', (_event, item) => {
+  sess.on('will-download', async (_event, item) => {
     // 非智能体活动窗口：用户手动下载 —— 保持 Electron 默认（弹另存为）
     if (Date.now() > agentBrowserActivityUntil) return;
+    let pausedForPrompt = false;
+    if (!pendingDownloadSavePath && !loadConfiguredBrowserDownloadDir() && !downloadDirPromptDismissed) {
+      try { item.pause(); pausedForPrompt = true; } catch { /* 某些 Electron 版本不允许暂停时忽略 */ }
+      const picked = await promptForBrowserDownloadDir();
+      if (!picked) downloadDirPromptDismissed = true;
+    }
     const filename = item.getFilename();
     const target = pendingDownloadSavePath || uniqueDownloadPath(resolveDownloadDir(lastAgentWorkspaceDir), filename);
     try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch { /* 目录建不出来时交给 Electron 报错 */ }
     item.setSavePath(target);
+    if (pausedForPrompt) {
+      try { item.resume(); } catch { /* 已结束/不支持恢复时忽略 */ }
+    }
     const rec = {
       id: ++downloadSeq,
       filename,
@@ -6287,12 +6438,15 @@ function installBrowserDownloadHandler(sess) {
       url: item.getURL(),
       bytes: 0,
       state: 'progressing',
+      exists: false,
       time: Date.now(),
     };
+    registerDownloadRecord(rec);
     item.on('updated', () => { rec.bytes = item.getReceivedBytes(); });
     item.once('done', (_e, state) => {
       rec.state = state; // completed | cancelled | interrupted
       rec.bytes = item.getReceivedBytes();
+      rec.exists = state === 'completed' && fs.existsSync(target);
       rec.time = Date.now();
       if (rec.state === 'completed') console.log(`[browser-download] ${rec.filename} → ${rec.savedPath} (${rec.bytes}B)`);
       else console.warn(`[browser-download] ${rec.filename} ${rec.state}`);
@@ -6309,7 +6463,7 @@ function installBrowserDownloadHandler(sess) {
  *   而原生「另存为」框还会把任务彻底卡死。
  * ★ 延迟代价只落在"像导出/下载的按钮"上：其它点击只做一次内存扫描（微秒级），不加等待。
  */
-async function attachDownloadToClickResult(clickResult, beforeSeq) {
+async function attachDownloadToClickResult(clickResult, beforeSeq, waitMs = DOWNLOAD_CLICK_WAIT_MS) {
   if (!clickResult || typeof clickResult !== 'object'
     || clickResult.status === 'not_found'
     || clickResult.status === 'invalid_args' || clickResult.status === 'stale_index') {
@@ -6320,27 +6474,66 @@ async function attachDownloadToClickResult(clickResult, beforeSeq) {
   //   放进来会让每次保存白等 3 秒 —— 那不是下载。
   const looksDownload = /导出|下载|报表|export|download|report|csv|excel|xlsx/i.test(hint)
     || /^(blob:|data:)/i.test(String(clickResult.href || ''));
-  // 快路径：下载可能已经完成（小文件 blob 极快）
+  // 下载一开始就登记，所以这里先拿路径；若仍在 progressing，再等一个有限窗口。
   let rec = downloadRecords.find((r) => r.id > beforeSeq) || null;
-  if (!rec && looksDownload) {
-    rec = await awaitDownloadSince(beforeSeq, 3000);
+  if (looksDownload && (!rec || rec.state === 'progressing')) {
+    const finished = await awaitDownloadSince(beforeSeq, waitMs);
+    if (finished) rec = finished;
   }
   if (!rec) {
     if (looksDownload) {
       return {
         ...clickResult,
-        note: `${clickResult.note ? clickResult.note + ' ' : ''}该按钮可能触发下载，但 3 秒内未开始。若文件仍在生成，稍后用 browser_download 不传参数查询最近下载记录。`,
+        note: `${clickResult.note ? clickResult.note + ' ' : ''}该按钮可能触发下载，但 ${Math.round(waitMs / 1000)} 秒内未开始。若文件仍在生成，稍后用 browser_download 不传参数查询最近下载记录。`,
       };
     }
     return clickResult;
   }
+  const downloaded = {
+    filename: rec.filename,
+    savedPath: rec.savedPath,
+    bytes: rec.bytes,
+    state: rec.state,
+    exists: rec.exists === true,
+  };
+  if (rec.state === 'completed' && rec.exists === true) {
+    return {
+      ...clickResult,
+      downloaded,
+      note: `${clickResult.note ? clickResult.note + ' ' : ''}已自动下载「${rec.filename}」到 ${rec.savedPath}（状态=completed，exists=true，未弹保存框）。后续直接用文件工具按此路径读取，不要重复点击导出。`,
+    };
+  }
+  if (rec.state === 'progressing') {
+    return {
+      ...clickResult,
+      downloaded,
+      note: `${clickResult.note ? clickResult.note + ' ' : ''}下载已开始，但文件仍在下载：${rec.savedPath}（${rec.bytes || 0}B）。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`,
+    };
+  }
   return {
     ...clickResult,
-    downloaded: { filename: rec.filename, savedPath: rec.savedPath, bytes: rec.bytes },
-    note: `${clickResult.note ? clickResult.note + ' ' : ''}已自动下载「${rec.filename}」到 ${rec.savedPath}（未弹保存框）。后续直接用文件工具按此路径读取，不要重复点击导出。`,
+    downloaded,
+    note: `${clickResult.note ? clickResult.note + ' ' : ''}下载未完成（状态=${rec.state}）：${rec.savedPath || rec.filename}。不要重复点击，检查网络或稍后查询下载记录。`,
   };
 }
 // ===DOWNLOAD-AUTOSAVE-END===
+
+ipcMain.handle('browser-download:get-dir', () => ({
+  ok: true,
+  dir: loadConfiguredBrowserDownloadDir(),
+}));
+
+ipcMain.handle('browser-download:pick-dir', async () => {
+  const dir = await promptForBrowserDownloadDir();
+  return dir
+    ? { ok: true, dir }
+    : { ok: false, canceled: true };
+});
+
+ipcMain.handle('browser-download:clear-dir', () => {
+  setConfiguredBrowserDownloadDir('');
+  return { ok: true, dir: '' };
+});
 
 // ============================================================
 // 浏览器批注（P0，2026-10-28）
@@ -9586,7 +9779,10 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           if (rec.state !== 'completed') {
             return { error: rec.state === 'cancelled' ? '下载被取消' : '下载中断', filename: rec.filename, savedPath: rec.savedPath };
           }
-          return { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes };
+          if (!rec.exists) {
+            return { error: '下载状态为 completed，但目标文件不存在', filename: rec.filename, savedPath: rec.savedPath, state: rec.state, exists: false };
+          }
+          return { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes, state: rec.state, exists: true };
         } finally {
           pendingDownloadSavePath = '';
         }
@@ -9600,6 +9796,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             filename: r.filename,
             savedPath: r.savedPath,
             state: r.state,
+            exists: r.exists === true,
             bytes: r.bytes,
             time: r.time,
           })),

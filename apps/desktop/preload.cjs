@@ -537,6 +537,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
+    // 浏览器下载目录：未设置时首次下载由主进程弹目录选择器
+    getDownloadDir: () => ipcRenderer.invoke('browser-download:get-dir'),
+    pickDownloadDir: () => ipcRenderer.invoke('browser-download:pick-dir'),
+    clearDownloadDir: () => ipcRenderer.invoke('browser-download:clear-dir'),
+    onDownloadDirChanged: (callback) => {
+      const h = (_e, dir) => callback(dir);
+      ipcRenderer.on('browser-download:dir-changed', h);
+      return () => ipcRenderer.removeListener('browser-download:dir-changed', h);
+    },
     // ★ B5（2026-10-10）：查询桌面端支持哪些 action（单一真相源在主进程，
     //   渲染层据此推导映射，避免两份硬编码清单漂移 → "能力在、入口断"）。
     actions: () => ipcRenderer.invoke('browserView:actions'),

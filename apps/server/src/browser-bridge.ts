@@ -315,7 +315,15 @@ export function formatBridgeResult(action: string, r: any): string {
   if (action === 'click') {
     const dl = r.downloaded;
     if (dl?.savedPath) {
-      return `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（已落盘，直接用文件工具读取，不要重复点导出）`
+      if ((!dl.state || dl.state === 'completed') && dl.exists !== false) {
+        return `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（状态=completed，exists=true；直接用文件工具读取，不要重复点导出）`
+          + (r.note ? `\n${r.note}` : '');
+      }
+      if (dl.state === 'progressing') {
+        return `点击成功；下载已开始，文件仍在写入：${dl.savedPath}。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`
+          + (r.note ? `\n${r.note}` : '');
+      }
+      return `点击成功，但下载未完成（状态=${dl.state || 'unknown'}）：${dl.savedPath}。不要重复点击，改用 browser_download 查询状态。`
         + (r.note ? `\n${r.note}` : '');
     }
     if (r.note && r.success) return `点击成功\n${r.note}`;
@@ -323,10 +331,10 @@ export function formatBridgeResult(action: string, r: any): string {
   if (action === 'downloads') {
     const recs = Array.isArray(r.records) ? r.records : [];
     if (!recs.length) return `最近没有下载记录（目录: ${r.dir || '-'}）`;
-    return `最近下载（目录: ${r.dir || '-'}）：\n${recs.map((x: any) => `- ${x.filename}（${x.state}）→ ${x.savedPath}`).join('\n')}`;
+    return `最近下载（目录: ${r.dir || '-'}）：\n${recs.map((x: any) => `- ${x.filename}（state=${x.state}，exists=${x.exists === true}，${x.bytes || 0}B）→ ${x.savedPath}`).join('\n')}`;
   }
   if (action === 'download') {
-    return r.error ? String(r.error) : `下载完成: ${r.filename}\n保存路径: ${r.savedPath}`;
+    return r.error ? String(r.error) : `下载完成: ${r.filename}\n保存路径: ${r.savedPath}\n状态: ${r.state || 'completed'}\n文件存在: ${r.exists === true}`;
   }
   if (r.success) return `${action} 执行成功`;
   return JSON.stringify(r).slice(0, 500);

@@ -26,6 +26,7 @@ import { latestTransitionFor } from './modeTransitions';
 import { trimStartIndex, syncPagingAfterTrim } from './history-window';
 // 浏览器动作 → 人话（实况条展示「正在点击「发布」」，而不是干巴巴的"执行中"）
 import { describeBrowserAction } from '../composables/chat/browser-step-label';
+import { normalizeBrowserDownloadAction } from './browser-action';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
 // 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
@@ -2859,10 +2860,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           } catch { /* 查询失败 → 退回兜底（不影响既有行为） */ }
         }
         if (action) {
-          // browser_download 不带 url/selector = 「列出最近下载」（桌面端 action 名为 downloads）
-          if (fullName === 'browser_download' && !(args as any)?.url && !(args as any)?.selector) {
-            action = 'downloads';
-          }
+          action = normalizeBrowserDownloadAction(fullName, args as Record<string, unknown>, action) ?? action;
           try {
             const actTabId = await resolvePreviewTabId(ctx?.convId);
             // ★ 2026-10-08：upload/screenshot 放宽竞速窗口到 65s —— 主进程对这两个 action 的总闸
@@ -2968,14 +2966,20 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'click') {
                 // 导出/下载按钮：文件已自动落盘，路径直接给模型（见 main.cjs attachDownloadToClickResult）
                 const dl = (result as any).downloaded;
-                text = dl?.savedPath
-                  ? `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（已落盘，直接用文件工具读取，不要重复点导出）`
-                  : JSON.stringify(result).slice(0, 500);
+                if (dl && (!dl.state || dl.state === 'completed') && dl.exists !== false) {
+                  text = `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（状态=completed，exists=true；直接用文件工具读取，不要重复点导出）`;
+                } else if (dl?.state === 'progressing') {
+                  text = `点击成功；下载已开始，文件仍在写入：${dl.savedPath}。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`;
+                } else if (dl?.state) {
+                  text = `点击成功，但下载未完成（状态=${dl.state}）：${dl.savedPath || dl.filename || '未知文件'}。不要重复点击，检查网络或改用 browser_download 查询。`;
+                } else {
+                  text = JSON.stringify(result).slice(0, 500);
+                }
               } else if (action === 'downloads') {
                 const recs = Array.isArray((result as any).records) ? (result as any).records : [];
                 const dir = (result as any).dir || '-';
                 text = recs.length
-                  ? `最近下载（目录: ${dir}）：\n${recs.map((r: any) => `- ${r.filename}（${r.state}）→ ${r.savedPath}`).join('\n')}`
+                  ? `最近下载（目录: ${dir}）：\n${recs.map((r: any) => `- ${r.filename}（state=${r.state}，exists=${r.exists === true}，${r.bytes || 0}B）→ ${r.savedPath}`).join('\n')}`
                   : `最近没有下载记录（目录: ${dir}）`;
               } else {
                 text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
