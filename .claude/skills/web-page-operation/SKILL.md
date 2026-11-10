@@ -41,6 +41,7 @@ metadata:
 - 成功判据是 `state=completed` 且 `exists=true`；`progressing` 继续等待，`cancelled/interrupted` 按失败处理。
 - 下载路径拿到后先用文件工具校验内容，再用 `browser_upload` 上传到另一个系统，提交后回读成功提示或更新条数。
 - 非标准上传：只有按钮时用 `clickSelector/clickIndex`；自定义拖放区用 `dropSelector/dropIndex`；隐藏 input、Shadow DOM、iframe 内的 input 由工具扫描后按 index 精确投递。
+- 不按标签判断文件入口：`div/span/role=button` 也可能触发下载或上传；上传不要先 `browser_click` 打开原生文件框。
 
 ## 委派模板
 

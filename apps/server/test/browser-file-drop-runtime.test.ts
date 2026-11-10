@@ -138,4 +138,38 @@ describe.skipIf(!hasChromium)('真实 Chromium 文件拖放与 Shadow DOM input'
     const download = await event;
     expect(download.suggestedFilename()).toBe('iframe-blob.txt');
   });
+
+  it('div 按钮通过 click 事件触发下载同样会被捕获', async () => {
+    await page.setContent(`<!doctype html><div id="export" role="button">导出</div>
+      <script>
+        document.getElementById('export').onclick = () => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob(['div export body'], { type: 'text/plain' }));
+          a.download = 'div-export.txt';
+          a.click();
+        };
+      </script>`);
+    const event = page.waitForEvent('download', { timeout: 5000 });
+    await page.locator('#export').click();
+    const download = await event;
+    expect(download.suggestedFilename()).toBe('div-export.txt');
+  });
+
+  it('div 按钮打开动态 file input 时仍触发 filechooser', async () => {
+    await page.setContent(`<!doctype html><div id="upload" role="button">上传文件</div>
+      <script>
+        window.__uploaded = '';
+        document.getElementById('upload').onclick = () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.onchange = () => { window.__uploaded = input.files[0]?.name || ''; };
+          input.click();
+        };
+      </script>`);
+    const event = page.waitForEvent('filechooser', { timeout: 5000 });
+    await page.locator('#upload').click();
+    const chooser = await event;
+    await chooser.setFiles([filePath]);
+    await expect.poll(() => page.evaluate(() => (window as any).__uploaded)).toBe(path.basename(filePath));
+  });
 });

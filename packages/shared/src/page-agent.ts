@@ -102,6 +102,8 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 8. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
 
 ## 非标准上传入口
+- 元素标签不影响文件事件：div/span/role=button/图标按钮只要绑定 click 也可能是下载或上传入口。
+- 下载入口用 browser_click 后读 downloaded 或查 browser_download；上传入口不要先 browser_click 打开原生文件框，直接 browser_upload 传 clickSelector/clickIndex。
 - 点按钮才弹原生文件框：browser_upload 传 clickSelector 或 clickIndex。
 - 页面有隐藏/多个 input[type=file]：按 fileInputs 的 accept/near 选准 index；Shadow DOM/嵌套文档同样会扫描。
 - 自定义拖放上传区：传 dropSelector 或 dropIndex，让工具用真实本地文件触发 dragenter/dragover/drop。

@@ -6269,6 +6269,7 @@ function panelReallyHidden(wc) {
 // ============================================================
 const DOWNLOAD_ACTIVITY_GRACE_MS = 60000;
 const DOWNLOAD_CLICK_WAIT_MS = 10000;
+const DOWNLOAD_SILENT_PROBE_MS = 150;
 const DOWNLOAD_RECORDS_MAX = 50;
 const DOWNLOAD_FALLBACK_SUBDIR = '言知下载';
 const downloadRecords = [];      // 最近下载（新→旧），供 downloads action 查询
@@ -6469,18 +6470,33 @@ async function attachDownloadToClickResult(clickResult, beforeSeq, waitMs = DOWN
     || clickResult.status === 'invalid_args' || clickResult.status === 'stale_index') {
     return clickResult;
   }
-  const hint = `${clickResult.text || ''} ${clickResult.href || ''}`;
+  const hint = [
+    clickResult.text || '',
+    clickResult.href || '',
+    clickResult.ariaLabel || '',
+    clickResult.role || '',
+    clickResult.className || '',
+    clickResult.downloadAttr || '',
+  ].join(' ');
   // ★ 关键词只收"导出/下载"语义：`保存 / save` 是普通表单按钮的常见文案（保存草稿等），
   //   放进来会让每次保存白等 3 秒 —— 那不是下载。
   const looksDownload = /导出|下载|报表|export|download|report|csv|excel|xlsx/i.test(hint)
     || /^(blob:|data:)/i.test(String(clickResult.href || ''));
+  const looksUpload = /上传|导入文件|选择文件|upload/i.test(hint);
   // 下载一开始就登记，所以这里先拿路径；若仍在 progressing，再等一个有限窗口。
   let rec = downloadRecords.find((r) => r.id > beforeSeq) || null;
-  if (looksDownload && (!rec || rec.state === 'progressing')) {
-    const finished = await awaitDownloadSince(beforeSeq, waitMs);
+  if (!rec || rec.state === 'progressing') {
+    const probeMs = looksDownload ? waitMs : DOWNLOAD_SILENT_PROBE_MS;
+    const finished = await awaitDownloadSince(beforeSeq, probeMs);
     if (finished) rec = finished;
   }
   if (!rec) {
+    if (looksUpload) {
+      return {
+        ...clickResult,
+        note: `${clickResult.note ? clickResult.note + ' ' : ''}该控件像上传入口，元素标签不影响工具选择。不要继续 browser_click 打开原生文件框；请改用 browser_upload，并传 clickSelector/clickIndex 指向这个 div/元素。`,
+      };
+    }
     if (looksDownload) {
       return {
         ...clickResult,
@@ -8200,7 +8216,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
               var res={success:true,via:'dom-click',tag:el.tagName.toLowerCase(),
                 text:(el.textContent||'').trim().slice(0,40),
-                href:(el.getAttribute?el.getAttribute('href')||'':'')};
+                href:(el.getAttribute?el.getAttribute('href')||'':''),
+                ariaLabel:(el.getAttribute?el.getAttribute('aria-label')||'':''),
+                role:(el.getAttribute?el.getAttribute('role')||'':''),
+                className:(typeof el.className==='string'?el.className:''),
+                downloadAttr:(el.getAttribute?el.getAttribute('download')||'':'')};
               if(occ){res.occluded=true;res.autoDismissed=autoDismissed;res.covering=coveringInfo;
                 res.note='目标中心被悬浮层遮挡；'+(autoDismissed?'已尝试自动关闭遮挡层，':'未找到可关闭的遮挡层，')+'已直接对目标派发 DOM 点击。请用 get_page_content 复核是否真的生效（未生效说明遮挡层仍阻断，需手动关闭后重试）。';}
               return res;
@@ -8211,7 +8231,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               var tag=A.clickAt(x,y);
               var res2={success:true,via:'real-mouse',tag:tag,
                 text:(el.textContent||'').trim().slice(0,40),
-                href:(el.getAttribute?el.getAttribute('href')||'':'')};
+                href:(el.getAttribute?el.getAttribute('href')||'':''),
+                ariaLabel:(el.getAttribute?el.getAttribute('aria-label')||'':''),
+                role:(el.getAttribute?el.getAttribute('role')||'':''),
+                className:(typeof el.className==='string'?el.className:''),
+                downloadAttr:(el.getAttribute?el.getAttribute('download')||'':'')};
               if(occ){res2.occluded=true;res2.autoDismissed=autoDismissed;res2.covering=coveringInfo;}
               return res2;
             }

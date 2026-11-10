@@ -233,6 +233,49 @@ test('③ 仍在下载时不能谎报完成，必须给出进度和查询路径'
   assert.doesNotMatch(out.note, /已自动下载/);
 });
 
+test('③ div/span 图标按钮只靠 aria-label 也要识别下载意图', async () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const out = await api.attachDownloadToClickResult(
+    { success: true, tag: 'div', text: '', ariaLabel: '导出报表' },
+    0,
+    0,
+  );
+  assert.match(out.note, /可能触发下载/);
+});
+
+test('③ 普通 div 点击后异步触发下载也要短暂等待并回传路径', async () => {
+  const exists = [];
+  const api = loadBlock({ exists, downloadsDir: '/fake/Downloads' });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+
+  const pending = api.attachDownloadToClickResult(
+    { success: true, tag: 'div', text: '生成文件' },
+    0,
+    30,
+  );
+  const item = makeItem('async.xlsx');
+  sess.emit('will-download', {}, item);
+  exists.push(item.savedPath);
+  item.doneCb({}, 'completed');
+
+  const out = await pending;
+  assert.strictEqual(out.downloaded.filename, 'async.xlsx');
+  assert.strictEqual(out.downloaded.state, 'completed');
+});
+
+test('③ 误点 div 上传入口时回执要引导改用 browser_upload', async () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const out = await api.attachDownloadToClickResult(
+    { success: true, tag: 'div', text: '', ariaLabel: '上传文件' },
+    0,
+    0,
+  );
+  assert.match(out.note, /browser_upload/);
+  assert.match(out.note, /clickSelector/);
+});
+
 test('③ 活动窗口外（用户手动下载）：不接管，保持 Electron 默认', () => {
   const api = loadBlock();
   const sess = new EventEmitter();

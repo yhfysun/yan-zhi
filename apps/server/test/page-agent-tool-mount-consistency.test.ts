@@ -196,6 +196,15 @@ describe('pageAgent 三处一致性（守门）', () => {
     expect(WEB_TASK_AUTOMATION_BODY).toContain('下载后上传');
   });
 
+  it('B7. div/span/role=button 的文件入口必须要求使用事件与专用工具', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const prompt = parsePrompt(dbSrc);
+    expect(prompt).toContain('div');
+    expect(prompt).toContain('role=button');
+    expect(prompt).toContain('不要先 browser_click');
+    expect(prompt).toContain('元素标签不影响');
+  });
+
   it('C. 前端副本的挂载清单必须与服务端逐项一致', () => {
     const dbSrc = readOrFail(DB_SRC);
     const ui = readOrFail(UI_AGENT_SRC);

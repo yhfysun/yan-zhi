@@ -33,6 +33,8 @@ pageAgent 已挂载完整的浏览器核心工具，不再只有六件套：
 
 ## 非标准上传
 
+- 不要按标签判断：`div`、`span`、`role=button`、纯图标按钮都可能绑定文件 click 事件。
+- 上传入口直接 `browser_upload({ clickSelector })`，不要先用 `browser_click` 打开原生文件框。
 - 只有“上传”按钮、点击后弹系统文件框：传 `clickSelector` / `clickIndex`，走 filechooser 拦截。
 - 有隐藏或多个 `input[type=file]`：按文件名附近的文案和 `accept` 选准 index；Shadow DOM、iframe 内也会扫描。
 - 自定义拖拽区、只有“拖文件到这里”：传 `dropSelector` / `dropIndex`，由工具发送真实本地文件 dragenter/dragover/drop。
