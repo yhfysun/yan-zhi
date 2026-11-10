@@ -38,8 +38,9 @@
 
 ## 待办
 
-- [ ] Task 7 剩余：把全仓 SQLite 方言 SQL 逐路由迁到 repository（当前 PG 只覆盖企业运行时域）
-- [ ] 提供 PostgreSQL 实例，跑 `YZ_TEST_PG_URL=... vitest run test/enterprise-repository-pg.test.ts` 完成一致性验证
+- [x] Task 7 企业运行时域代码收口：节点、任务、事件、产物、工作区、端口预览、WS、MCP 工具与巡检全部经 repository
+- [ ] Task 7 后续非运行时域：团队资源 / 配额 / 审计 / MCP 管理 / 设计资源等管理端 SQL 仍为 SQLite，需独立迁移
+- [x] 2026-11-10 用临时 `postgres:16-alpine` 实例跑通 `enterprise-repository-pg.test.ts`，12/12 通过
 
 ## 已推送提交（Task 1-4）
 
@@ -203,6 +204,33 @@
   **企业运行时域（工作区/任务/事件）**；其余管理端路由在 PG 模式下仍走 SQLite，
   完整多后端需要按 repository 逐路由异步化 + 方言化（已列入待办）。
   `pg@8.23.0` 已在 `apps/server/package.json`，无需新增依赖。
+- 2026-11-10 增量：运行时读取路径已继续收口到 repository —— 管理端工作区/任务列表、
+  用户端工作区详情、任务列表/详情/事件/产物均经 `EnterpriseRepository`；PG 侧补齐任务
+  JSONB/BIGINT 归一、产物表及 `conversation_id` / `task_id` / `exit_code` 幂等迁移。
+  验证：repository 契约 15/15、企业相关 4 文件 51/51、server tsc 干净。
+- 2026-11-10 写路径增量：任务取消与工作区停止改走 repository；SQLite/PG 均加事务边界，
+  重复停止不再重复入队，越权与已结束任务保持幂等。新增真实 Express 路由测试覆盖成功、
+  越权、重复取消、重复停止和不存在任务；PG 事务绑定 repository 复用同一连接，外层回滚
+  可撤销嵌套写。验证：repository 契约 20/20、写路由 6/6、企业相关 5 文件 62/62、
+  临时 PG 16 实例 9/9、server tsc 与 build 通过。
+- 2026-11-10 运行时控制面收口：节点创建/认证/注册/心跳/更新/删除、任务创建/领取/事件/完成/产物、
+  工作区创建/状态回传/TTL 停止、端口预览/注销、WS 帧、MCP API 工具与后台巡检全部经 repository。
+  真实 HTTP 覆盖管理端、用户端和节点 Agent 全链路；企业测试 9 文件 106/106，临时 PG 16 实例
+  12/12，server tsc 与 build 通过。运行时域不再存在生产路由直连 SQLite。
+- 2026-11-10 现场日志回归（下载 / 白屏）：
+  - 下载实报：18:56:06 点击导出，18:56:46 文件已保存到「言知下载」，但 pageAgent 在
+    18:56:15/21 用无参数或仅 limit 的 `browser_download` 查询时仍被当成 `download`，无法读取记录。
+    现改为无 url/selector/index 一律走 `downloads`；下载开始即登记路径，点击回执最多等 10 秒，
+    以 `state=completed` 且 `exists=true` 为成功，`progressing` 明确提示仍在写入。
+  - 下载目录：未配置时首次下载暂停并弹原生目录选择器；选定后持久化到 host-config，后续直接使用。
+    用户取消则本次回退默认目录且本会话不再重复打断；设置页新增「浏览器下载目录」选择/清除入口。
+  - 白屏实报：19:00:44 后端因 tesseract.js 的 `wasm-feature-detect` 在 Node 24 下解析
+    `import.source` 而 code=1 退出，主窗只能无限重连。现固定兼容版本 1.8.0，并增加非守护模式
+    后端异常退出自动重启（最多 2 次）与恢复后的主窗刷新。
+  - pageAgent 新增办公文件跨系统流转闭环：浏览器下载 -> 文件校验 -> browser_upload ->
+    提交回读 -> 报告源路径和更新条数；技能同步补充报表、流水、工单、发票、CRM、采购等场景。
+  - 验证：server 相关 61/61、desktop 626/626、UI 相关 13/13；server/core/shared/ui/desktop
+    typecheck 通过。
 
 - 已知边界（原"轻量壳不支持 SSO"）**已修复**：回调支持 popup 模式（postMessage(token)+自动
   关闭 + CSP），`Login.vue` 弹窗接入并校验 event.origin=后端源，弹窗被拦时整页跳转兜底；
