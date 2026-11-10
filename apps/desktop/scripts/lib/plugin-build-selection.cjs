@@ -81,6 +81,33 @@ function modeKeysForSelection(catalog, ids, modesCatalog = loadModesCatalog()) {
   return Object.keys(modesCatalog.modes || {}).filter((m) => keys.has(m));
 }
 
+/**
+ * 构建期模式集合：显式 --modes 最高优先；否则取「插件贡献模式 ∪ 档位预设模式」。
+ *
+ * ★ 必须并上档位预设：learning 这类内置模式没有插件依赖，只从插件推导会静默漏掉，
+ *   最终打出“完整档却缺学习模式”的包。
+ */
+function resolveBuildModes({
+  pluginsCatalog,
+  pluginIds,
+  editions,
+  modesCatalog = loadModesCatalog(),
+  explicitModes = null,
+}) {
+  const all = Object.keys(modesCatalog.modes || {});
+  if (Array.isArray(explicitModes) && explicitModes.length) {
+    const picked = new Set(explicitModes);
+    return all.filter((m) => picked.has(m));
+  }
+
+  const picked = new Set(modeKeysForSelection(pluginsCatalog, pluginIds, modesCatalog));
+  const presets = modesCatalog.editionPresets || {};
+  for (const edition of editions || []) {
+    for (const mode of presets[edition] || []) picked.add(mode);
+  }
+  return all.filter((m) => picked.has(m));
+}
+
 /** 三档预设里某几档的插件并集（按 catalog 顺序）。 */
 function unionPresets(catalog, editions) {
   const presets = catalog.editionPresets || {};
@@ -108,5 +135,6 @@ module.exports = {
   optionalPluginIds,
   allPluginIds,
   modeKeysForSelection,
+  resolveBuildModes,
   unionPresets,
 };

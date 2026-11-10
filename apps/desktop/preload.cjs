@@ -541,6 +541,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //   渲染层据此推导映射，避免两份硬编码清单漂移 → "能力在、入口断"）。
     actions: () => ipcRenderer.invoke('browserView:actions'),
     createTab: (scope) => ipcRenderer.invoke('browserView:createTab', scope),
+    listTabs: (scope) => ipcRenderer.invoke('browserView:listTabs', scope),
     closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
     // 关闭指定 scope 下的所有 tab（多会话隔离：切换会话/卸载 BrowserPanel 时调用，避免 tab 堆积）
     closeAllTabs: (scope, fromUi) => ipcRenderer.invoke('browserView:closeAllTabs', scope, fromUi),

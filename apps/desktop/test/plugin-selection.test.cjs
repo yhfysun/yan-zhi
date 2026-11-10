@@ -6,6 +6,12 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { resolvePluginSelection } = require('../../../scripts/lib/plugin-selection.cjs');
+const {
+  loadCatalog,
+  loadModesCatalog,
+  unionPresets,
+  resolveBuildModes,
+} = require('../scripts/lib/plugin-build-selection.cjs');
 
 /** 与 build/plugins.catalog.json 同构的最小清单（带 requires / core / modeKey） */
 const catalog = {
@@ -95,4 +101,20 @@ test('可选插件：点名才带，默认 / all / 档位预设都不含它', ()
   assert.ok(resolvePluginSelection({ catalog, optional, plugins: 'office-core' }).excluded.includes('desktop-manager'));
   // 可选插件不参与分组关键字，写错名字必须报错而不是静默忽略
   assert.throws(() => resolvePluginSelection({ catalog, optional, plugins: 'desktop' }), /未知插件/);
+});
+
+test('构建模式 = 插件模式 ∪ 档位预设，完整档不能漏掉无插件的 learning', () => {
+  const pluginsCatalog = loadCatalog();
+  const modesCatalog = loadModesCatalog();
+  const modesFor = (edition) => resolveBuildModes({
+    pluginsCatalog,
+    pluginIds: unionPresets(pluginsCatalog, [edition]),
+    editions: [edition],
+    modesCatalog,
+  });
+
+  assert.deepEqual(modesFor('lite'), ['office']);
+  assert.deepEqual(modesFor('basic'), ['office', 'dev', 'wf', 'learning']);
+  assert.deepEqual(modesFor('pro'), Object.keys(modesCatalog.modes));
+  assert.ok(modesFor('pro').includes('learning'));
 });

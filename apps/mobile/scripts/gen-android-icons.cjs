@@ -5,7 +5,7 @@
  *
  *   项目里**从来没有**任何图标生成脚本 —— `apps/mobile/android/.../res/mipmap-*`
  *   一直是 Capacitor 脚手架默认产物：
- *     · 位图（09-05 用旧的蓝色大脑图生成过一次，之后言智 logo 换成书法「言」字，
+ *     · 位图（09-05 用旧的蓝色大脑图生成过一次，之后言智 logo 换成白底黑「言」字，
  *       但没人重新生成）；
  *   · `mipmap-anydpi-v26` 下的 ic_launcher 与 ic_launcher_round 描述文件，
  *     以及 `drawable` / `drawable-v24` 下的前景背景 vector
@@ -34,7 +34,7 @@ const MOBILE_DIR = path.join(__dirname, '..');
 const REPO_ROOT = path.join(MOBILE_DIR, '..', '..');
 const RES_DIR = path.join(MOBILE_DIR, 'android', 'app', 'src', 'main', 'res');
 
-/** 源图：言智 logo（1024×1024 RGBA，米白底 + 黑「言」字） */
+/** 源图：言智 logo（1024×1024 RGBA，白底 + 黑「言」字） */
 const DEFAULT_SOURCE = path.join(REPO_ROOT, 'assets', 'icons', 'icon.png');
 
 /** legacy 启动图标尺寸（Android 官方 mipmap 密度表） */
@@ -48,12 +48,12 @@ const ADAPTIVE_SIZES = {
 /**
  * adaptive 前景里 logo 占画布的比例。
  * Android 只保证中间 66/108 ≈ 61% 不被裁切；留一点余量取 0.60，
- * 避免「言」字的书法笔画尖角被圆角遮罩切掉。
+ * 避免「言」字的笔画边缘被圆角遮罩切掉。
  */
 const ADAPTIVE_CONTENT_RATIO = 0.60;
 
-/** 品牌背景色（与 logo 的米白底一致，保证圆角裁剪处颜色连续） */
-const BRAND_BG = '#F5F2EC';
+/** 品牌背景色（与 logo 的白底一致，保证圆角裁剪处颜色连续） */
+const BRAND_BG = '#FFFFFF';
 
 function resolveSharp() {
   // sharp 在 pnpm 虚拟 store 里，不能直接 require('sharp')。
@@ -175,10 +175,10 @@ function circleMaskSvg(size) {
   write(path.join(RES_DIR, 'mipmap-anydpi-v26', 'ic_launcher_round.xml'), Buffer.from(adaptiveXml, 'utf8'));
 
   // ---------- 3. 背景色 ----------
-  // ★ 覆盖脚手架默认的 #000000 / 青绿 #26A69A，与 logo 米白底一致。
+  // ★ 覆盖脚手架默认的 #000000 / 青绿 #26A69A，与 logo 白底一致。
   const bgXml = `<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 言智 logo 底色（米白）。adaptive icon 的 background 层。 -->
+    <!-- 言智 logo 底色（白）。adaptive icon 的 background 层。 -->
     <color name="ic_launcher_background">${BRAND_BG}</color>
 </resources>
 `;

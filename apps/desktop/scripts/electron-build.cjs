@@ -188,6 +188,26 @@ function resolvePluginsCsv() {
 const PLUGINS_CSV = resolvePluginsCsv();
 const { spawnSync } = require('child_process');
 
+/**
+ * 单档打包结束后恢复全量模式表。
+ *
+ * prepare-edition-build 会把 build-modes.ts 裁成当前档位；不恢复会让后续开发/其他档位
+ * 误用上一档的裁剪表。恢复发生在 electron-builder 进程退出后，不影响已经生成的安装包。
+ */
+let modeTableRestored = false;
+function restoreModeTable() {
+  if (modeTableRestored) return;
+  modeTableRestored = true;
+  const r = spawnSync(process.execPath, [
+    path.join(repoRoot, 'scripts', 'select-modes.cjs'),
+    '--restore',
+  ], { cwd: desktopDir, stdio: 'ignore' });
+  if (r.status !== 0) {
+    console.warn('[electron-build] 警告：恢复全量模式表失败，请执行 node scripts/select-modes.cjs --restore');
+  }
+}
+process.on('exit', restoreModeTable);
+
 function runPluginStage(action, extraArgs = []) {
   const script = path.join(desktopDir, 'scripts', 'stage-plugins.mjs');
   const args = [script, action, `--root=${BUILTIN_PLUGINS_DIR}`, ...(PLUGINS_CSV ? [`--plugins=${PLUGINS_CSV}`] : []), ...extraArgs];

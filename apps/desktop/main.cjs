@@ -52,8 +52,9 @@ protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
 let mainWindow = null;
 /**
- * 后台停靠（2026-10-23）：agent 跑浏览器任务期间，用户最小化/关闭窗口时不真正最小化，
- * 而是把窗口移出屏幕（仍 visible + 不占任务栏），托盘恢复。
+ * 后台停靠（2026-10-23）：agent 跑浏览器任务期间，关闭窗口到托盘时把窗口移出屏幕
+ * （仍 visible，页面继续渲染），托盘恢复。最小化默认走系统真最小化；只有显式设置
+ * YZ_BROWSER_MINIMIZE_DOCK=1 时才把最小化也改为停靠。
  *
  * ★ 实测依据（apps/desktop/experiments/bg-runtime，Electron 44.7.2 + webview guest）：
  *   窗口最小化后 `document.visibilityState` **恒为 hidden**，`setBackgroundThrottling(false)`
@@ -72,6 +73,16 @@ let lastBrowserActionAt = 0;
  * ★ 与渲染层 `BROWSER_LIVE_GRACE_MS` 同值：三条 UI 判据同一口径。
  */
 const BROWSER_ACTION_GRACE_MS = 45 * 1000;
+/**
+ * 浏览器任务运行中，最小化是否改用“移出屏幕停靠”。
+ *
+ * ★ 默认关闭（2026-11-10 用户实报）：其他应用在自动化浏览器时都能正常最小化，
+ *   再从任务栏点回来。此前本应用把所有“浏览器任务中的最小化”静默改成 -32000 停靠，
+ *   用户看到的就是最小化按钮不生效。默认尊重系统最小化语义。
+ * ★ 极端微前端确实可能依赖 document.visibilityState=visible。需要兼容时显式设置
+ *   YZ_BROWSER_MINIMIZE_DOCK=1，只影响最小化路径，不影响关窗到托盘。
+ */
+const BROWSER_MINIMIZE_DOCK = process.env.YZ_BROWSER_MINIMIZE_DOCK === '1';
 /** 托盘菜单刷新钩子（createTray 注册；后台停靠/恢复时调用） */
 let refreshTrayMenu = () => {};
 let extensionManager = null;
@@ -1917,7 +1928,7 @@ function createWindow() {
   mainWindow.on('minimize', () => {
     // 已停靠时再点任务栏图标 = 想把它叫回来（停靠态窗口本身是"可见但移出屏幕"，任务栏仍有点）
     if (dockedOffscreen) { leaveBackgroundDock(); return; }
-    if (browserWorkInProgress() && enterBackgroundDock()) return;
+    if (BROWSER_MINIMIZE_DOCK && browserWorkInProgress() && enterBackgroundDock()) return;
     applyGuestThrottling();
   });
   mainWindow.on('restore', () => applyGuestThrottling());
@@ -2720,14 +2731,12 @@ function childUrl(hashRoute) {
 ipcMain.on('window-minimize', (event) => {
   const w = winOf(event);
   if (!w) return;
-  // 没有 agent 在自动化 → 就是普通最小化（用户预期优先）
-  if (w !== mainWindow || !browserWorkInProgress()) { w.minimize(); return; }
+  // 默认尊重系统最小化；只有显式开启兼容停靠且确实在自动化时才改走后台停靠。
+  if (w !== mainWindow || !BROWSER_MINIMIZE_DOCK || !browserWorkInProgress()) { w.minimize(); return; }
   // 已停靠：按钮不可见，但兜底成「叫回前台」
   if (dockedOffscreen) { leaveBackgroundDock(); return; }
-  // ★ 2026-10-27 用户拍板：**最小化不再弹任何确认框**（原先是「后台运行 / 仍然最小化 / 取消」三选一，
-  //   用户实报「pageAgent 都停了最小化还有提醒」「最小化不能有提醒」）。
-  //   有 agent 在自动化 → 直接后台停靠：窗口移出屏幕、页面继续渲染、任务栏按钮保留，点一下即回来；
-  //   真最小化只会让 visibilityState=hidden，抖音创作者页那类微前端会停在"加载中"，所以不真最小化。
+  // 仅在显式兼容模式下才走后台停靠：窗口移出屏幕、页面继续渲染、任务栏按钮保留。
+  // 默认最小化已在上面直接返回，不再弹确认框。
   if (!enterBackgroundDock()) { try { w.minimize(); } catch { /* 已销毁 */ } }
 });
 ipcMain.on('window-maximize', (event) => {
@@ -3673,6 +3682,52 @@ function createBrowserTab(scope, ownerWinId) {
 }
 
 ipcMain.handle('browserView:createTab', (e, scope) => createBrowserTab(scope, e && e.sender ? e.sender.id : 0));
+
+/**
+ * 列出某个空间在主进程里已经存在的 tab。
+ *
+ * 为什么必须补这条：Agent 首次 navigate 时，主进程会**先** createBrowserTab 并广播
+ * tabCreated；BrowserPanel 往往在广播之后才挂载，自己的 store 仍是空的。此前面板挂载时
+ * 直接 newTab()，于是又建了一个空白 tab 并把它激活 —— 用户看到预览面板停在起始主页，
+ * Agent 真正要用的 tab 在后台存在却没被显示。挂载时先认领主进程已有 tab，只有确实没有
+ * 才新建空白页，才能从结构上消除这个竞态。
+ */
+ipcMain.handle('browserView:listTabs', (_e, scope) => {
+  const wantScope = scope || 'preview';
+  const rows = [];
+  if (isWebviewEngine()) {
+    for (const [tabId, meta] of webviewTabs) {
+      if ((meta.scope || 'preview') !== wantScope) continue;
+      const wc = guestWebContents(tabId);
+      rows.push({
+        tabId,
+        url: (wc && wc.getURL()) || meta.url || broadcastTabUrl.get(String(tabId)) || '',
+        title: (wc && wc.getTitle()) || '',
+        scope: meta.scope || 'preview',
+        agentOpened: meta.agentOpened === true,
+        active: tabId === activeTabForScope(wantScope),
+        suspended: meta.suspended === true,
+        loading: !!(wc && typeof wc.isLoading === 'function' && wc.isLoading()),
+      });
+    }
+    return { tabs: rows };
+  }
+  for (const [tabId, entry] of browserViews) {
+    if (!entry || (entry.scope || 'preview') !== wantScope) continue;
+    const wc = entry.view && entry.view.webContents;
+    rows.push({
+      tabId,
+      url: (wc && wc.getURL()) || entry.url || broadcastTabUrl.get(String(tabId)) || '',
+      title: (wc && wc.getTitle()) || '',
+      scope: entry.scope || 'preview',
+      agentOpened: entry.agentOpened === true,
+      active: tabId === activeTabForScope(wantScope),
+      suspended: entry.suspended === true,
+      loading: !!(wc && typeof wc.isLoading === 'function' && wc.isLoading()),
+    });
+  }
+  return { tabs: rows };
+});
 
 // 关闭标签页，销毁对应 BrowserView
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
@@ -6838,9 +6893,10 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     lastBrowserActionAt = Date.now();
     // 编号层跟着 pageAgent 走：有动作就亮、停手 4s 自动收起（见 scheduleHighlightIdleHide）
     if (highlightEnabled) scheduleHighlightIdleHide();
-    // 用户先最小化/关窗、任务后开始：动作到达时补一次停靠。否则页面停在 hidden，
-    // creator.douyin.com 这类微前端根本不挂载，后续动作必然超时。
-    if (!dockedOffscreen && isWindowOffView()) enterBackgroundDock();
+    // 默认最小化后保持真最小化，只关掉后台节流让 rAF/定时器继续跑。
+    // 只有显式开启兼容停靠时才在动作到达后补一次移出屏幕。
+    if (BROWSER_MINIMIZE_DOCK && !dockedOffscreen && isWindowOffView()) enterBackgroundDock();
+    else applyGuestThrottling();
   }
   // ★ 2026-10-26：编号层活性记账对**两条执行路径**都要生效（桥路径 convId 非空；
   //   SSE 委托路径 convId 为 null 但 agent 工具会带 __workspaceDir）。用户自己点工具栏两者都没有 ⇒ 不记账。
@@ -7007,7 +7063,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         //   ★ 这是**收窄**而非放宽：本分支只在"agent 要用页"时跑；复用也只复用**本流登记过**的页
         //     （登记只发生在 agent 动作成功之后）⇒ 不会把用户手开的页标成 agent 的。
         const selfMeta = webviewTabs.get(String(tabId));
-        if (selfMeta) selfMeta.agentOpened = true;
+        if (selfMeta) {
+          selfMeta.agentOpened = true;
+          // 面板可能在这条导航之后才挂载；listTabs 必须能拿回目标 URL，
+          // 否则它只能看到“有一个 tab 但不知道要去哪”，又会停回起始主页。
+          selfMeta.url = cleanUrl;
+        }
       }
       // ★★★ 2026-10-10 二次根因修复：**改用 `browserView:tabCreated` 通道**（与 `new_tab` 同口径）。
       //
@@ -9207,6 +9268,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             // ★ agentOpened: true —— 这条路径是 agent 工具链（browser_new_tab / navigate openInNewTab），
             //   标记后它才**允许被 agent 关闭**（权限闸门见 close_tab 分支）。用户手开的 tab 永远是 false。
             meta.agentOpened = true;
+            if (target) meta.url = target;
           }
           // ★★★ 开新页要不要抢用户视野 —— 两条来源：
           //   ① 后台流（`bg:`）：它的页是给 agent 自己用的，一律不抢；

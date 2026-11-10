@@ -25,15 +25,24 @@ describe('Windows 安装器进度页', () => {
     assert.match(INSTALLER, /!macro customHeader[\s\S]*?ShowInstDetails show[\s\S]*?InstProgressFlags smooth/);
   });
 
-  test('安装开始时显示“准备安装并解压”状态', () => {
+  test('安装开始时显示阶段一状态', () => {
     assert.match(INSTALLER, /MUI_PAGE_CUSTOMFUNCTION_SHOW yzInstallPageShow/);
-    assert.match(INSTALLER, /正在准备安装并解压应用文件/);
+    assert.match(INSTALLER, /\[1\/4\] 正在检查安装环境/);
+  });
+
+  test('空白详情区显示安装位置和四阶段说明', () => {
+    assert.match(INSTALLER, /SetDetailsPrint listonly/);
+    assert.match(INSTALLER, /DetailPrint "安装位置：\$INSTDIR"/);
+    assert.match(INSTALLER, /\[1\/4\] 准备安装环境/);
+    assert.match(INSTALLER, /\[2\/4\] 解压应用文件/);
+    assert.match(INSTALLER, /\[3\/4\] 创建快捷方式/);
+    assert.match(INSTALLER, /\[4\/4\] 完成安装/);
   });
 
   test('文件解压完成后切换到快捷方式和收尾阶段', () => {
     assert.match(INSTALLER, /!macro customFiles_x64[\s\S]*?yzMarkFilesExtracted/);
-    assert.match(INSTALLER, /应用文件已解压，正在创建快捷方式并完成安装/);
-    assert.match(INSTALLER, /正在完成系统设置/);
+    assert.match(INSTALLER, /\[3\/4\] 应用文件已解压，正在创建快捷方式并写入安装信息/);
+    assert.match(INSTALLER, /\[4\/4\] 正在完成最后设置并检查安装结果/);
   });
 
   test('所有 Windows NSIS 配置都接入自定义安装脚本', () => {

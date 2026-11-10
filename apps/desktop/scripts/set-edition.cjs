@@ -24,7 +24,7 @@ const {
   loadCatalog: loadPluginCatalog,
   loadModesCatalog,
   resolveSelection,
-  modeKeysForSelection,
+  resolveBuildModes,
 } = require('./lib/plugin-build-selection.cjs');
 const { loadPetCatalog, resolvePetSelection } = require('../../../scripts/lib/pet-selection.cjs');
 
@@ -69,31 +69,29 @@ try {
   process.exit(1);
 }
 
-// ★ 构建内容模式：与插件同源。
-//   · 显式 YZ_BUILD_MODES（package --modes）优先，但只保留**选中插件贡献的模式**
-//     （两者不一致时以插件为准：插件不在包里，模式就是空壳入口）；
-//   · 否则由插件选择集推导（office-core→office、ops-shell→ops…）。
+// ★ 构建内容模式：插件贡献模式 ∪ 档位预设模式。
+//   · 显式 YZ_BUILD_MODES（package --modes）最高优先；
+//   · 否则 learning 这类无插件内置模式必须从档位预设补齐，不能只按插件推导。
 //   写进 edition.json 后，main.cjs 通过 YZ_BUILD_MODES 传给后端，
 //   license.ts 用它算「物理编译进来的模式 ∩ 授权档」。
 const modesCatalogForResolve = readCatalog();
-const pluginModes = modeKeysForSelection(pluginCatalog, pluginSelection.ids, modesCatalog);
 let buildModes;
 const explicitModes = parseModesArg(process.env.YZ_BUILD_MODES);
 if (explicitModes) {
   try {
-    const requested = resolveModes({ catalog: modesCatalogForResolve, modes: explicitModes });
-    buildModes = requested.filter((m) => pluginModes.includes(m));
-    const dropped = requested.filter((m) => !pluginModes.includes(m));
-    if (dropped.length) {
-      console.warn(`[set-edition] 模式 ${dropped.join(', ')} 未被选中插件包含，已排除出本包`);
-    }
+    resolveModes({ catalog: modesCatalogForResolve, modes: explicitModes });
   } catch (e) {
     console.error(`[set-edition] 模式参数非法: ${e.message}`);
     process.exit(1);
   }
-} else {
-  buildModes = pluginModes;
 }
+buildModes = resolveBuildModes({
+  pluginsCatalog: pluginCatalog,
+  pluginIds: pluginSelection.ids,
+  editions: [edition],
+  modesCatalog,
+  explicitModes,
+});
 if (!buildModes.length) {
   console.error('[set-edition] 构建模式为空：选中插件里没有任何模式插件（至少要有 office-core）');
   process.exit(1);

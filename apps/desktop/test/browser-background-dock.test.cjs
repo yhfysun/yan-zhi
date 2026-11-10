@@ -10,7 +10,8 @@
  *      "未到点就 return"丢掉，以及 MutationObserver 不监听 class/style。
  *   ③ 带标注截图失败时覆盖层清理不执行，编号永久留在页面上。
  *
- * 本测试钉住：窗口最小化时走后台停靠、节流判定同源、编号层补尾随重绘、覆盖层 finally 清理。
+ * 本测试钉住：默认最小化走系统语义；只有显式兼容停靠才移出屏幕；节流判定同源、
+ * 编号层补尾随重绘、覆盖层 finally 清理。
  */
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
@@ -20,7 +21,7 @@ const path = require('node:path');
 const DESKTOP = path.resolve(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(DESKTOP, 'main.cjs'), 'utf8');
 
-describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', () => {
+describe('后台停靠：关窗/显式兼容停靠，不影响默认最小化', () => {
   test('声明了 dockedOffscreen 与 enterBackgroundDock/leaveBackgroundDock', () => {
     assert.match(mainSrc, /let dockedOffscreen = null;/, '缺 dockedOffscreen 声明');
     assert.match(mainSrc, /function enterBackgroundDock\(\)/, '缺 enterBackgroundDock');
@@ -57,16 +58,18 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     assert.ok(showAt > -1 && boundsAt > showAt, '位置必须在 show/restore 之后落，否则会被系统还原位置覆盖');
   });
 
-  test('★ 自定义标题栏的最小化按钮：自动化中静默后台停靠，其余普通最小化（不弹任何确认框）', () => {
+  test('★ 自定义标题栏的最小化按钮：默认始终真最小化，只有 opt-in 才后台停靠', () => {
     const idx = mainSrc.indexOf("ipcMain.on('window-minimize'");
     assert.ok(idx > -1, '未找到 window-minimize handler');
     const body = mainSrc.slice(idx, idx + 1600);
-    // 没有 agent 在自动化：用户预期优先，直接最小化
-    assert.match(body, /!browserWorkInProgress\(\)\) \{ w\.minimize\(\); return; \}/, '无自动化时必须直接最小化');
-    // 有 agent 在自动化：直接停靠（真最小化会让微前端停在"加载中"）
-    assert.match(body, /if \(!enterBackgroundDock\(\)\)/, '自动化中最小化必须后台停靠');
-    // ★ 2026-10-27 用户拍板：最小化不得再弹确认框（实报「最小化不能有提醒」）
+    assert.match(body, /!BROWSER_MINIMIZE_DOCK \|\| !browserWorkInProgress\(\)\) \{ w\.minimize\(\); return; \}/,
+      '默认必须尊重系统最小化，不能因浏览器任务偷偷改为停靠');
+    assert.match(body, /if \(!enterBackgroundDock\(\)\)/, '进入停靠失败时必须回退到普通最小化');
     assert.ok(!/showMessageBox/.test(body), '★ 最小化不得再弹「浏览器任务运行中」确认框');
+  });
+
+  test('★ 兼容停靠默认关闭（用户要求像其他应用一样正常最小化）', () => {
+    assert.match(mainSrc, /const BROWSER_MINIMIZE_DOCK = process\.env\.YZ_BROWSER_MINIMIZE_DOCK === '1'/);
   });
 
   test('★ 没有存活网页时不算「任务在跑」（预览页没开不该弹最小化确认）', () => {
@@ -106,12 +109,14 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     );
   });
 
-  test('★ 用户先最小化、任务后开始：动作到达时补停靠', () => {
+  test('★ 用户先最小化、任务后开始：默认不强制停靠，只关闭节流；opt-in 才补停靠', () => {
     const idx = mainSrc.indexOf('async function runBrowserAction');
     assert.ok(idx > -1, '未找到 runBrowserAction');
     const body = mainSrc.slice(idx, idx + 4000);
     assert.match(body, /if \(convId\) \{[\s\S]{0,200}lastBrowserActionAt = Date\.now\(\)/, '必须只对 agent 路径记账');
-    assert.match(body, /isWindowOffView\(\)\) enterBackgroundDock\(\)/, '★ 动作到达时窗口不在视野必须补停靠');
+    assert.match(body, /BROWSER_MINIMIZE_DOCK && !dockedOffscreen && isWindowOffView\(\)\) enterBackgroundDock\(\)/,
+      '默认不得把用户真最小化的窗口改成停靠');
+    assert.match(body, /else applyGuestThrottling\(\)/, '默认最小化后必须关闭节流保持任务运行');
   });
 
   test('托盘恢复要认停靠态（停靠时 isVisible 仍为 true）', () => {
@@ -155,7 +160,7 @@ describe('节流判定同源：任何新 guest 都按窗口可见性设置', () 
 
   test('hide/show 与 minimize/restore 都重算节流', () => {
     for (const ev of ['minimize', 'restore', 'hide', 'show']) {
-      assert.match(mainSrc, new RegExp(`mainWindow\\.on\\('${ev}'[\\s\\S]{0,200}applyGuestThrottling`), `${ev} 事件必须重算节流`);
+      assert.match(mainSrc, new RegExp(`mainWindow\\.on\\('${ev}'[\\s\\S]{0,600}applyGuestThrottling`), `${ev} 事件必须重算节流`);
     }
   });
 });

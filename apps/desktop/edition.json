@@ -9,7 +9,8 @@
     "sec",
     "wf",
     "clip",
-    "shop"
+    "shop",
+    "learning"
   ],
   "plugins": [
     "office-core",
@@ -24,10 +25,12 @@
     "git-explorer",
     "computer-use",
     "remote-control",
-    "skins",
+    "android-mirror",
+    "skins"
+  ],
+  "pluginsExcluded": [
     "desktop-manager"
   ],
-  "pluginsExcluded": [],
   "pets": [
     "boba",
     "tiko",
@@ -43,5 +46,5 @@
     "shino",
     "sakurada"
   ],
-  "artifactSuffix": "-pro-office-dev-ops-sec-wf-clip-shop"
+  "artifactSuffix": "-pro"
 }

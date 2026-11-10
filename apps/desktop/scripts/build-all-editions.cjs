@@ -74,9 +74,7 @@ if (separate) {
 const desktopDir = path.join(__dirname, '..');
 const repoRoot = path.resolve(desktopDir, '..', '..');
 const {
-  readCatalog,
   parseModesArg,
-  allModeKeys,
 } = require(path.join(repoRoot, 'scripts', 'lib', 'mode-build.cjs'));
 // ★ P5：插件选择集（唯一解析口，office 锁定 / requires 闭包 / 非法报错）
 const {
@@ -85,7 +83,7 @@ const {
   loadOptionalPlugins,
   selectionFromEnv,
   unionPresets,
-  modeKeysForSelection,
+  resolveBuildModes,
 } = require(path.join(desktopDir, 'scripts', 'lib', 'plugin-build-selection.cjs'));
 const { stageOptionalPlugins, removeStagedOptional } = require(path.join(desktopDir, 'scripts', 'lib', 'optional-plugin-stage.cjs'));
 const { stagePythonRuntime, restorePythonRuntime } = require(path.join(desktopDir, 'scripts', 'lib', 'python-runtime-stage.cjs'));
@@ -322,16 +320,13 @@ const KEEP_PYTHON = BUILD_PLUGINS_UNION.includes('computer-use');
 
 function resolveBuildModesCsv() {
   const explicit = parseModesArg(process.env.YZ_BUILD_MODES);
-  if (explicit) return explicit.join(',');
-  const derived = modeKeysForSelection(PLUGIN_CATALOG, BUILD_PLUGINS_UNION, MODES_CATALOG);
-  if (derived.length) return derived.join(',');
-  const catalog = readCatalog();
-  const picked = new Set();
-  for (const e of editions) {
-    for (const m of catalog.editionPresets?.[e] || []) picked.add(m);
-  }
-  if (!picked.size) return allModeKeys(catalog).join(',');
-  return allModeKeys(catalog).filter((m) => picked.has(m)).join(',');
+  return resolveBuildModes({
+    pluginsCatalog: PLUGIN_CATALOG,
+    pluginIds: BUILD_PLUGINS_UNION,
+    editions,
+    modesCatalog: MODES_CATALOG,
+    explicitModes: explicit,
+  }).join(',');
 }
 
 const BUILD_MODES_CSV = resolveBuildModesCsv();

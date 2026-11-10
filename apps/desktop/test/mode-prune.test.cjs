@@ -115,3 +115,43 @@ test('构建清单记录排除项与标记串', () => {
   assert.equal(manifest.createdAt, '2026-10-23T03:00:00.000Z');
   assert.ok(path.isAbsolute(MANIFEST_PATH));
 });
+
+test('Learning 路由与入口只能读构建期生成表，不能在共享代码里写死', () => {
+  const uiSrc = path.resolve(__dirname, '..', '..', '..', 'packages', 'ui', 'src');
+  const routerSrc = fs.readFileSync(path.join(uiSrc, 'router', 'index.ts'), 'utf8');
+  assert.match(routerSrc, /MODE_VIEW_LOADERS\.learning/);
+  assert.doesNotMatch(routerSrc, /import\(['"]\.\.\/views\/Learning\.vue['"]\)/);
+
+  for (const rel of ['components/WebTopBar.vue', 'views/Home.vue']) {
+    const src = fs.readFileSync(path.join(uiSrc, rel), 'utf8');
+    assert.match(src, /isModeAvailable\(['"]learning['"]\)/, `${rel} 必须按构建/授权状态过滤学习入口`);
+  }
+});
+
+test('单档构建必须先按 edition 生成模式表，再执行 vite build', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8'));
+  for (const [scriptName, edition] of [
+    ['electron:build', 'basic'],
+    ['electron:build:lite', 'lite'],
+    ['electron:build:basic', 'basic'],
+    ['electron:build:pro', 'pro'],
+    ['electron:build:mac', 'basic'],
+  ]) {
+    const cmd = String(pkg.scripts?.[scriptName] || '');
+    const prepare = cmd.indexOf(`prepare-edition-build.cjs ${edition}`);
+    const vite = cmd.indexOf('vite build');
+    const verify = cmd.indexOf('verify-mode-prune.cjs');
+    assert.ok(prepare >= 0, `${scriptName} 必须调用 prepare-edition-build.cjs ${edition}`);
+    assert.ok(vite >= 0, `${scriptName} 必须执行 vite build`);
+    assert.ok(verify > vite, `${scriptName} 必须在 vite build 后执行 verify-mode-prune.cjs`);
+    assert.ok(prepare < vite, `${scriptName} 的档位模式表生成必须在 vite build 之前`);
+  }
+});
+
+test('prepare-edition-build 会同时校验 edition.json 与生成表一致', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'prepare-edition-build.cjs'), 'utf8');
+  assert.match(src, /set-edition\.cjs/);
+  assert.match(src, /select-modes\.cjs/);
+  assert.match(src, /expected = `export const BUILD_MODES/);
+  assert.match(src, /generated\.includes\(expected\)/);
+});
