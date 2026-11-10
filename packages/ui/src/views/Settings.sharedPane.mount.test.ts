@@ -83,7 +83,7 @@ vi.mock('../stores/pet', () => ({
 }));
 vi.mock('../api/client', () => ({
   api: { get: vi.fn(async () => ({ data: { ips: [], port: 3001 } })) },
-  API_BASE: '', isCapacitor: false,
+  API_BASE: '', isCapacitor: false, isElectron: false,
   getMobileApiBase: () => '', setMobileApiBase: () => {},
   getBakedServerBase: () => '', getEffectiveServerBase: () => '',
   getServerBase: () => '', setServerBase: () => '',

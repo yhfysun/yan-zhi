@@ -101,6 +101,13 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 7. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
 8. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
 
+## 非标准上传入口
+- 点按钮才弹原生文件框：browser_upload 传 clickSelector 或 clickIndex。
+- 页面有隐藏/多个 input[type=file]：按 fileInputs 的 accept/near 选准 index；Shadow DOM/嵌套文档同样会扫描。
+- 自定义拖放上传区：传 dropSelector 或 dropIndex，让工具用真实本地文件触发 dragenter/dragover/drop。
+- 只看到“拖文件到这里”而 DOM 里没有 input：优先 dropSelector；不要用 browser_type 或 browser_run_script 伪造 File。
+- 第三方网盘/云文档选择器：先确认 filechooser 是否由 iframe 触发；需要 OAuth 或人工选择时 ask_user，不要反复打开弹窗。
+
 ## 办公文件跨系统流转场景
 - 浏览器下载：报表/流水/工单/发票导出后自动落盘，返回绝对路径、bytes、state、exists。
 - 下载后上传：源系统下载 Excel/CSV/PDF，校验条数和日期，再上传到财务、ERP、CRM 或客服系统。

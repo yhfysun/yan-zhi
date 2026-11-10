@@ -2459,6 +2459,68 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       case 'upload': {
         const fp = String(args.filePath || '');
         if (!fp) { result = { error: 'filePath 为必填项' }; break; }
+        const dropRequested = args.dropSelector != null || args.dropIndex !== undefined
+          || (args.dropX !== undefined && args.dropY !== undefined);
+        if (dropRequested) {
+          try {
+            let dropLocator: any = null;
+            if (args.dropSelector) {
+              const sel = String(args.dropSelector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
+              dropLocator = page.locator(sel).first();
+            } else if (args.dropIndex !== undefined && args.dropIndex !== null) {
+              await page.evaluate(ensureYzReg);
+              const sel = await page.evaluate((idx: number) => {
+                const R = (window as any).__yzReg;
+                const el = R.get(idx);
+                return el && el.isConnected ? R.genSel(el) : null;
+              }, Number(args.dropIndex));
+              if (!sel) { result = { error: `dropIndex ${args.dropIndex} 已失效` }; break; }
+              dropLocator = page.locator(sel).first();
+            }
+            const box = dropLocator ? await dropLocator.boundingBox() : null;
+            const x = Number.isFinite(Number(args.dropX)) ? Number(args.dropX) : (box ? box.x + box.width / 2 : NaN);
+            const y = Number.isFinite(Number(args.dropY)) ? Number(args.dropY) : (box ? box.y + box.height / 2 : NaN);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+              result = { error: '拖放目标定位失败：需要可见的 dropSelector/dropIndex，或 dropX+dropY', code: 'drop_target_not_found' };
+              break;
+            }
+            let droppedViaCdp = false;
+            try {
+              const cdp = await page.context().newCDPSession(page);
+              const data = { items: [], files: [fp], dragOperationsMask: 1 };
+              for (const type of ['dragEnter', 'dragOver', 'drop']) {
+                await cdp.send('Input.dispatchDragEvent', { type, x, y, data });
+              }
+              await cdp.detach().catch(() => {});
+              droppedViaCdp = true;
+            } catch { /* non-Chromium falls back to an in-page DataTransfer */ }
+            if (!droppedViaCdp) {
+              if (!dropLocator) {
+                result = { error: '当前浏览器不支持按坐标拖放；请传 dropSelector/dropIndex', code: 'drop_target_not_found' };
+                break;
+              }
+              const st = await fs.promises.stat(fp).catch(() => null);
+              if (!st || st.size > 25 * 1024 * 1024) {
+                result = { error: '非 Chromium 浏览器的拖放上传仅支持不超过 25MB 的文件', code: 'drop_file_too_large' };
+                break;
+              }
+              const buf = await fs.promises.readFile(fp);
+              const transfer = await page.evaluateHandle(({ name, b64 }: { name: string; b64: string }) => {
+                const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+                const dt = new DataTransfer();
+                dt.items.add(new File([bytes], name));
+                return dt;
+              }, { name: path.basename(fp), b64: buf.toString('base64') });
+              await dropLocator.dispatchEvent('dragenter', { dataTransfer: transfer });
+              await dropLocator.dispatchEvent('dragover', { dataTransfer: transfer });
+              await dropLocator.dispatchEvent('drop', { dataTransfer: transfer });
+            }
+            result = { uploaded: true, via: 'drop', filePath: fp, dropPoint: { x, y } };
+          } catch (e: any) {
+            result = { error: `拖放上传失败: ${e?.message || e}`, code: 'drop_failed' };
+          }
+          break;
+        }
         // filechooser 模式（2026-10-07）：点「上传」按钮 → 拦截文件选择器 → 投递本地文件。
         // 适用按钮不暴露裸 input[type=file] 的站点（抖音创作者平台等，点按钮才动态创建 input）。
         if (args.clickSelector || args.clickIndex !== undefined || args.clickX !== undefined) {

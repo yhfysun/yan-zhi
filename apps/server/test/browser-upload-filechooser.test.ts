@@ -92,6 +92,24 @@ describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
     expect(main).toContain("result.code = 'not_started'");
     expect(main).toContain('不要原样重试');
   });
+
+  it('★★ 非标准上传区：支持把真实本地文件拖放到任意元素', () => {
+    expect(main).toContain('Input.dispatchDragEvent');
+    expect(main).toContain('dispatchFileDrop');
+    expect(main).toMatch(/dropSelector/);
+    expect(main).toMatch(/dropIndex/);
+    expect(main).toMatch(/via:\s*'drop'/);
+    expect(main).toContain('dragEnter');
+    expect(main).toContain('dragOver');
+    expect(main).toMatch(/'dragEnter',\s*'dragOver',\s*'drop'/);
+  });
+
+  it('★★ 隐藏 input 必须扫描 flattened DOM，覆盖 Shadow DOM/嵌套文档', () => {
+    expect(main).toContain('DOM.getFlattenedDocument');
+    expect(main).toContain('collectFileInputIds');
+    expect(main).toContain('nodeName');
+    expect(main).toContain('shadow');
+  });
 });
 
 describe('browser_upload 工具 schema（core）', () => {
@@ -104,6 +122,18 @@ describe('browser_upload 工具 schema（core）', () => {
   it('把 clickX/clickY 透传给服务端 action（否则坐标兜底模式失效）', () => {
     expect(coreTool).toMatch(/clickX:\s*args\.clickX/);
     expect(coreTool).toMatch(/clickY:\s*args\.clickY/);
+  });
+
+  it('暴露 dropSelector/dropIndex/dropX/dropY 四个拖放上传入参', () => {
+    for (const k of ['dropSelector', 'dropIndex', 'dropX', 'dropY']) {
+      expect(coreTool).toContain(`${k}:`);
+    }
+  });
+
+  it('服务端 Playwright 执行面也支持拖放上传', () => {
+    expect(serverBrowser).toContain('Input.dispatchDragEvent');
+    expect(serverBrowser).toContain("via: 'drop'");
+    expect(serverBrowser).toContain('dropSelector');
   });
 });
 

@@ -31,6 +31,14 @@ pageAgent 已挂载完整的浏览器核心工具，不再只有六件套：
 6. 上传：下载后先用 `file_read` / `office_read` / `python_exec` 校验内容，再用 `browser_upload` 上传目标系统，提交后回读结果。
 7. 周期任务使用 `scheduled_task`，绑定日常办公助手，由它委派 pageAgent。
 
+## 非标准上传
+
+- 只有“上传”按钮、点击后弹系统文件框：传 `clickSelector` / `clickIndex`，走 filechooser 拦截。
+- 有隐藏或多个 `input[type=file]`：按文件名附近的文案和 `accept` 选准 index；Shadow DOM、iframe 内也会扫描。
+- 自定义拖拽区、只有“拖文件到这里”：传 `dropSelector` / `dropIndex`，由工具发送真实本地文件 dragenter/dragover/drop。
+- 第三方网盘或云文档 picker：先确认文件选择器是否在 iframe 内；需要 OAuth/人工选择时 `ask_user`。
+- 不要用 JavaScript 伪造 `File` 再调页面接口；浏览器安全边界会让它看起来成功、实际没有本地文件内容。
+
 ## 办公文件流转场景
 
 - 报表下载 -> 数据校验 -> 上传财务/ERP 系统 -> 回读更新条数。

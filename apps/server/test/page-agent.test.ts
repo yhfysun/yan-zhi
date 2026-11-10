@@ -23,6 +23,7 @@ let BrowserGetPageInfoTool: any;
 let BrowserPressKeyTool: any;
 let BrowserGetVisibleTextTool: any;
 let BrowserDownloadTool: any;
+let BrowserUploadTool: any;
 
 beforeAll(async () => {
   const mod = await import('../../../packages/core/src/tool/builtin/browser/index.js');
@@ -33,6 +34,7 @@ beforeAll(async () => {
   BrowserPressKeyTool = mod.BrowserPressKeyTool;
   BrowserGetVisibleTextTool = mod.BrowserGetVisibleTextTool;
   BrowserDownloadTool = mod.BrowserDownloadTool;
+  BrowserUploadTool = mod.BrowserUploadTool;
 });
 
 // pageAgent 的唯一工具清单来自 shared，不再在测试里手抄。
@@ -251,6 +253,26 @@ describe('pageAgent 浏览器工具参数解析', () => {
     const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(fetchBody.action).toBe('download');
     expect(fetchBody.index).toBe(36);
+  });
+
+  it('browser_upload: dropSelector/dropIndex 走非标准拖放上传', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { uploaded: true, via: 'drop', filePath: 'D:/ws/a.xlsx' } }),
+    });
+
+    const tool = new BrowserUploadTool();
+    const result = await tool.execute({
+      filePath: 'D:/ws/a.xlsx',
+      dropSelector: '[data-dropzone="files"]',
+      dropIndex: 12,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('upload');
+    expect(fetchBody.dropSelector).toBe('[data-dropzone="files"]');
+    expect(fetchBody.dropIndex).toBe(12);
   });
 });
 

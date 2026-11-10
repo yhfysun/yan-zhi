@@ -7583,6 +7583,74 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           }
           const send = (method, params) => dbg.sendCommand(method, params);
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const collectFileInputIds = async () => {
+            const ids = new Set();
+            try {
+              const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+              const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+              for (const id of (nodeIds || [])) ids.add(id);
+            } catch { /* flattened scan below remains the fallback */ }
+            try {
+              const flat = await send('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+              for (const node of (flat && flat.nodes) || []) {
+                if (String(node && node.nodeName || '').toUpperCase() !== 'INPUT') continue;
+                const attrs = node.attributes || [];
+                const typeAt = attrs.indexOf('type');
+                const isFile = typeAt >= 0 && String(attrs[typeAt + 1] || '').toLowerCase() === 'file';
+                if (isFile && node.nodeId) ids.add(node.nodeId);
+              }
+            } catch { /* older Electron/CDP without flattened document */ }
+            if (!ids.size) {
+              try {
+                const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+                const visit = (node) => {
+                  if (!node) return;
+                  if (String(node.nodeName || '').toUpperCase() === 'INPUT') {
+                    const attrs = node.attributes || [];
+                    const typeAt = attrs.indexOf('type');
+                    if (typeAt >= 0 && String(attrs[typeAt + 1] || '').toLowerCase() === 'file' && node.nodeId) {
+                      ids.add(node.nodeId);
+                    }
+                  }
+                  for (const child of node.children || []) visit(child);
+                  // Shadow DOM roots may not be included by DOM.querySelectorAll.
+                  for (const shadow of node.shadowRoots || []) visit(shadow);
+                  if (node.contentDocument) visit(node.contentDocument);
+                };
+                visit(root);
+              } catch { /* no DOM tree available */ }
+            }
+            return [...ids];
+          };
+          const resolveDropPoint = async (target) => {
+            if (target.x != null && target.y != null) {
+              return { x: Number(target.x), y: Number(target.y) };
+            }
+            const point = await wc.executeJavaScript(`(function(){
+              var a=${JSON.stringify(target)};
+              var A=window.__yzAssistant;
+              if(!A) return {error:'页面助手未注入'};
+              var el=null;
+              if(a.selector){el=A.resolve(a.selector);}
+              if(!el && a.index!=null){
+                el=(window.__yzElements&&window.__yzElements[a.index])||null;
+                if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]) el=document.querySelector(window.__yzSelMap[a.index]);
+              }
+              if(!el) return {error:'未找到拖放目标（请重新 get_page_content 取 index/selector）'};
+              el.scrollIntoView({block:'center'});
+              var r=el.getBoundingClientRect();
+              if(!(r.width>0&&r.height>0)) return {error:'拖放目标不可见（尺寸为 0）'};
+              return {x:r.left+r.width/2,y:r.top+r.height/2};
+            })()`).catch((e) => ({ error: String((e && e.message) || e) }));
+            return point || { error: '拖放目标定位失败' };
+          };
+          const dispatchFileDrop = async (point) => {
+            const data = { items: [], files: [fp], dragOperationsMask: 1 };
+            for (const type of ['dragEnter', 'dragOver', 'drop']) {
+              await send('Input.dispatchDragEvent', { type, x: point.x, y: point.y, data });
+            }
+            return point;
+          };
           // 探测候选 file input：只判「存活 + 未禁用」，可见性单独记录。
           // ★★ B5（2026-10-11）：可见性只能用来**选哪个**，不能用来**否决能不能注入** ——
           //   React/抖音这类站点的上传 input 常是 display:none / 0x0 的隐藏 input（由按钮 click 触发），
@@ -7694,11 +7762,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             let domPick = null; // { nodeId, visible }
             const probeDomInput = async () => {
               try {
-                const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
-                const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+                const nodeIds = await collectFileInputIds();
                 if (nodeIds && nodeIds.length) { const p = await pickInjectable(nodeIds); if (p) domPick = p; }
               } catch { /* 探测失败不影响 chooser 主路径 */ }
             };
+            let clickPoint = null;
             try {
               const clickArgs = { selector: args.clickSelector, index: args.clickIndex, x: args.clickX, y: args.clickY };
               // 复用页面内助手（与用户看到的点击一致）；__yzAssistant.resolve 只接受 selector，
@@ -7716,11 +7784,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                 if(a.selector){el=A.resolve(a.selector);}
                 if(!el && a.index!=null){el=(window.__yzElements&&window.__yzElements[a.index])||null;
                   if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){el=document.querySelector(window.__yzSelMap[a.index]);}}
-                if(el){el.scrollIntoView({block:'center'});try{var _ur=el.getBoundingClientRect();A.showCursor(_ur.x+_ur.width/2,_ur.y+_ur.height/2,'上传');}catch(e){}el.click();return{clicked:true};}
+                if(el){el.scrollIntoView({block:'center'});var _r=el.getBoundingClientRect();try{A.showCursor(_r.x+_r.width/2,_r.y+_r.height/2,'上传');}catch(e){}el.click();return{clicked:true,x:_r.left+_r.width/2,y:_r.top+_r.height/2};}
                 if(a.x!=null&&a.y!=null){var t=A.clickAt(a.x,a.y);return{clicked:true,via:'real-mouse',tag:t};}
                 return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};
               })()`).catch((e) => ({ error: String((e && e.message) || e) }));
               if (clickRes && clickRes.error) chooserErr = clickRes.error;
+              if (clickRes && clickRes.clicked) clickPoint = { x: clickRes.x, y: clickRes.y };
               // 等 fileChooserOpened（最多 10s，事件一到立即退出）。★ 2026-10-12：并发探测 DOM，
               //   命中即可提前结束，不必为等不到的 chooser 空等 10s（见上）。
               const t0 = Date.now();
@@ -7752,13 +7821,36 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               await send('DOM.setFileInputFiles', { files: [fp], nodeId: domPick.nodeId });
               result = { uploaded: true, via: 'cdp', filePath: fp, hiddenInput: domPick.visible === false, concurrentProbe: true };
             }
+            // ★ 非标准上传组件：按钮只监听 HTML5 drag/drop，不创建 input，也不弹 filechooser。
+            //   在 chooser 和 DOM 探测都落空后，把真实本地文件拖到用户点击的那个区域。
+            if (!result && clickPoint && Number.isFinite(clickPoint.x) && Number.isFinite(clickPoint.y)) {
+              await dispatchFileDrop(clickPoint);
+              result = { uploaded: true, via: 'drop', filePath: fp, autoFallback: true, dropPoint: clickPoint };
+            }
+          }
+
+          // ①b 显式拖放模式：用户/模型已经知道哪里是 drop zone。
+          const explicitDrop = args.dropSelector != null || args.dropIndex !== undefined
+            || (args.dropX !== undefined && args.dropY !== undefined);
+          if (!result && explicitDrop) {
+            const point = await resolveDropPoint({
+              selector: args.dropSelector,
+              index: args.dropIndex,
+              x: args.dropX,
+              y: args.dropY,
+            });
+            if (point.error) {
+              result = { error: point.error, code: 'drop_target_not_found' };
+            } else {
+              await dispatchFileDrop(point);
+              result = { uploaded: true, via: 'drop', filePath: fp, dropPoint: point };
+            }
           }
 
           // ② 回落：DOM 定位 input[type=file]（也覆盖 filechooser 拦截未命中的场景）
           if (!result) {
             if (useChooser) await wait(800); // 等 React 侧动态挂载 input
-            const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
-            const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+            const nodeIds = await collectFileInputIds();
             if (!nodeIds || !nodeIds.length) {
               result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
             } else {

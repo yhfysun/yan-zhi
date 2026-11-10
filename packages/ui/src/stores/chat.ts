@@ -2925,8 +2925,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'upload') {
                 // ★ 2026-10-12（诊断报告 P0-3）：与 server 的 formatBridgeResult 同口径 ——
                 //   带上"页面是否回读到该文件"的核验结论，避免模型因无成功证据而反复重传。
+                const uploadVia = result.via === 'drop' ? '拖放' : (result.via || 'cdp');
                 text = result.uploaded
-                  ? `已注入本地文件（${result.via || 'cdp'}）: ${result.filePath}${result.inputCount > 1 ? `（页面有 ${result.inputCount} 个 file input，用第一个）` : ''}`
+                  ? `已上传本地文件（${uploadVia}）: ${result.filePath}${result.inputCount > 1 ? `（页面有 ${result.inputCount} 个 file input，用第一个）` : ''}`
                     + ((result as any).note ? `\n${(result as any).verified === true ? '✔ ' : 'ℹ '}${(result as any).note}` : '')
                   : (result.error || '文件注入失败');
               } else if (action === 'run_script') {

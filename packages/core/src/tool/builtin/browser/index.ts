@@ -1379,7 +1379,7 @@ export class BrowserVisualLocateTool implements BuiltInTool {
 // ========== C11 文件上传/下载 ==========
 export class BrowserUploadTool implements BuiltInTool {
   name = 'browser_upload';
-  description = 'Upload a local file into a web page. 上传本地文件到网页。两种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露的 input[type=file]，用 index 或 selector 直接定位（多上传口页面——头像/封面/视频——必须用 index 指定目标，别让工具猜）。★ 结果语义：uploaded=true 只代表 CDP 投递完成；verified=true 才代表页面已接管（出现文件名/进度，或网络层有上传请求）。返回 uploaded=false + code=not_started 表示页面没接收：按 fileInputs（index/accept/near/visible）用 index 精确指定再试，或改用 clickSelector 指向上传按钮；同一文件在同一页连续 2 次这种情况会直接熔断（code=upload_loop），此时应停下来换入口或用 index 指定，不要原样重试。';
+  description = 'Upload a local file into a web page. 上传本地文件到网页。三种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露或隐藏的 input[type=file]，用 index 或 selector 直接定位（Shadow DOM/嵌套文档也能扫描；多上传口页面必须指定目标）；③【非标准拖放区】页面只接受拖拽上传、没有 file input 时，用 dropSelector/dropIndex 指定 drop zone，工具会用真实本地文件发送 HTML5 dragenter/dragover/drop。★ 只传 clickSelector 时，若既没弹 filechooser 也没找到 input，也会自动尝试把文件拖放到该按钮/区域。★ 结果语义：uploaded=true 只代表 CDP 投递完成；verified=true 才代表页面已接管（出现文件名/进度，或网络层有上传请求）。返回 uploaded=false + code=not_started 表示页面没接收：按 fileInputs（index/accept/near/visible）用 index 精确指定再试，或改用 clickSelector 指向上传按钮；同一文件在同一页连续 2 次这种情况会直接熔断（code=upload_loop），此时应停下来换入口或用 index 指定，不要原样重试。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1388,6 +1388,10 @@ export class BrowserUploadTool implements BuiltInTool {
       clickIndex: { type: 'number', description: '【filechooser 模式】「上传」按钮的元素编号（来自 browser_get_page_info 的编号列表）。' },
       clickX: { type: 'number', description: '【filechooser 模式·兜底】上传按钮的 X 坐标（与 clickY 搭配，用于选择器/编号都定位不到时）。' },
       clickY: { type: 'number', description: '【filechooser 模式·兜底】上传按钮的 Y 坐标。' },
+      dropSelector: { type: 'string', description: '【非标准拖放模式】文件拖放区的 CSS 选择器。适用于只监听 HTML5 drop、没有 file input 的自定义上传组件。' },
+      dropIndex: { type: 'number', description: '【非标准拖放模式】文件拖放区的元素编号（来自 browser_get_page_content）。' },
+      dropX: { type: 'number', description: '【非标准拖放模式·兜底】拖放区中心 X 坐标。' },
+      dropY: { type: 'number', description: '【非标准拖放模式·兜底】拖放区中心 Y 坐标。' },
       index: { type: 'number', description: '【直接模式】页面上裸露 input[type=file] 的元素编号（来自 browser_get_page_info）。' },
       selector: { type: 'string', description: '【直接模式】页面上裸露 input[type=file] 的 CSS 选择器。' },
     },
@@ -1399,13 +1403,16 @@ export class BrowserUploadTool implements BuiltInTool {
       if (!filePath) return err('filePath 为必填项');
       const hasClick = args.clickSelector !== undefined || args.clickIndex !== undefined
         || (args.clickX !== undefined && args.clickY !== undefined);
-      if (args.index === undefined && !args.selector && !hasClick) return err('需要 clickSelector/clickIndex（filechooser 模式，推荐）或 index/selector（直接定位 input[type=file]）');
+      const hasDrop = args.dropSelector !== undefined || args.dropIndex !== undefined
+        || (args.dropX !== undefined && args.dropY !== undefined);
+      if (args.index === undefined && !args.selector && !hasClick && !hasDrop) return err('需要 clickSelector/clickIndex（filechooser 模式，推荐）、dropSelector/dropIndex（拖放区模式）或 index/selector（直接定位 input[type=file]）');
       const data = await callBrowserApi('/action', 'POST', {
         action: 'upload', index: args.index, selector: args.selector, filePath,
         clickSelector: args.clickSelector, clickIndex: args.clickIndex, clickX: args.clickX, clickY: args.clickY,
+        dropSelector: args.dropSelector, dropIndex: args.dropIndex, dropX: args.dropX, dropY: args.dropY,
       }) as any;
       if (data?.error) return err(data.error);
-      return ok(`已上传文件: ${filePath}${data?.via === 'filechooser' ? '（filechooser 模式）' : ''}`);
+      return ok(`已上传文件: ${filePath}${data?.via === 'filechooser' ? '（filechooser 模式）' : data?.via === 'drop' ? '（拖放模式）' : ''}`);
     } catch (e: any) { return err(e?.message || '文件上传失败'); }
   }
 }

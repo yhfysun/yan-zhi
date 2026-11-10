@@ -224,12 +224,16 @@
     以 `state=completed` 且 `exists=true` 为成功，`progressing` 明确提示仍在写入。
   - 下载目录：未配置时首次下载暂停并弹原生目录选择器；选定后持久化到 host-config，后续直接使用。
     用户取消则本次回退默认目录且本会话不再重复打断；设置页新增「浏览器下载目录」选择/清除入口。
+  - 非标准上传补强：browser_upload 新增 dropSelector/dropIndex/dropX/dropY 拖放模式；点击上传按钮后
+    若 filechooser 与 file input 都落空，自动把真实文件拖到点击区域。隐藏 input 改为扫描 flattened DOM，
+    覆盖 Shadow DOM 与嵌套文档。真实 Chromium 已验证自定义 drop zone、Shadow DOM input、延迟 blob
+    下载和 iframe 下载。
   - 白屏实报：19:00:44 后端因 tesseract.js 的 `wasm-feature-detect` 在 Node 24 下解析
     `import.source` 而 code=1 退出，主窗只能无限重连。现固定兼容版本 1.8.0，并增加非守护模式
     后端异常退出自动重启（最多 2 次）与恢复后的主窗刷新。
   - pageAgent 新增办公文件跨系统流转闭环：浏览器下载 -> 文件校验 -> browser_upload ->
     提交回读 -> 报告源路径和更新条数；技能同步补充报表、流水、工单、发票、CRM、采购等场景。
-  - 验证：server 相关 61/61、desktop 626/626、UI 相关 13/13；server/core/shared/ui/desktop
+  - 验证：server 相关 64/64、desktop 626/626、UI 相关 10/10；server/core/shared/ui/desktop
     typecheck 通过。
 
 - 已知边界（原"轻量壳不支持 SSO"）**已修复**：回调支持 popup 模式（postMessage(token)+自动

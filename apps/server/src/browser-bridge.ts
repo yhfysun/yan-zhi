@@ -298,7 +298,8 @@ export function formatBridgeResult(action: string, r: any): string {
   }
   if (action === 'upload') {
     if (!r.uploaded) return r.error || '文件注入失败';
-    const base = `已注入本地文件（${r.via || 'cdp'}）: ${r.filePath}${r.inputCount > 1 ? `（页面有 ${r.inputCount} 个 file input，用第一个）` : ''}`;
+    const via = r.via === 'drop' ? '拖放' : (r.via || 'cdp');
+    const base = `已上传本地文件（${via}）: ${r.filePath}${r.inputCount > 1 ? `（页面有 ${r.inputCount} 个 file input，用第一个）` : ''}`;
     // ★ 2026-10-12（诊断报告 P0-3）：带上"页面是否回读到该文件"的核验结论。
     //   此前只报"已注入"，模型拿不到成功证据 ⇒ 反复重传（用户实报"上传重试多"）。
     if (r.note) return `${base}\n${r.verified === true ? '✔ ' : 'ℹ '}${r.note}`;
