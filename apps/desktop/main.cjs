@@ -15481,7 +15481,9 @@ app.whenReady().then(async () => {
   const wsOrigins = `ws://127.0.0.1:${API_PORT} ws://localhost:${API_PORT}`;
   const csp = isDev
     ? "default-src 'self'; " +
-      "script-src 'self'; " +
+      // 插件前端从主窗口动态 import('yz://plugin/...')，脚本源必须放行自定义 yz: 协议。
+      // 只放行 yz:（protocol.handle 限定在 builtin/installed 插件根目录），不放开远端脚本或 eval。
+      `script-src 'self' yz: ${API_ORIGIN} http://localhost:${API_PORT}; ` +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
@@ -15498,7 +15500,7 @@ app.whenReady().then(async () => {
       //   所以显式放行本机 API 源。
       `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`
     : "default-src 'self'; " +
-      "script-src 'self'; " +
+      `script-src 'self' yz: ${API_ORIGIN} http://localhost:${API_PORT}; ` +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +

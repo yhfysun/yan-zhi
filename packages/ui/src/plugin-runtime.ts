@@ -13,19 +13,27 @@
  * 办公模式（基座视图）不走本装载器，永不依赖远程模块。
  */
 import type { PluginManifest } from '@yan-zhi/core';
-import { API_BASE } from './api/client';
+import { API_BASE, LOCAL_API_BASE, withMediaAuthQuery } from './api/client';
 
 /** 是否 Electron 渲染层（desktop 入口注入的 electronAPI） */
 export function isElectronHost(): boolean {
   return typeof window !== 'undefined' && !!(window as { electronAPI?: unknown }).electronAPI;
 }
 
-/** 插件包内资源地址：electron 走 yz:// 协议，web 走后端静态服务 */
+/**
+ * 插件包内资源地址。
+ *  · Electron file:// 页面：走 yz://，离线包内直读；
+ *  · Electron dev（http://localhost:1420）：走本机后端 HTTP —— Chromium 不允许
+ *    http(s) 页面跨源动态 import 自定义 yz:// 模块（CSP 放行后仍会报 CORS）；
+ *  · Web / Capacitor：走当前生效的 API_BASE。
+ */
 export function pluginFrontendUrl(pluginId: string, entry: string): string {
   const clean = entry.replace(/^\.?\//, '');
-  return isElectronHost()
-    ? `yz://plugin/${pluginId}/${clean}`
-    : `${API_BASE}/plugin-assets/${pluginId}/${clean}`;
+  if (isElectronHost() && typeof window !== 'undefined' && window.location.protocol === 'file:') {
+    return `yz://plugin/${pluginId}/${clean}`;
+  }
+  const base = isElectronHost() ? LOCAL_API_BASE : API_BASE;
+  return withMediaAuthQuery(`${base}/plugin-assets/${pluginId}/${clean}`);
 }
 
 /** manifest 声明的前端入口：优先 contributes.mode.entry，回落 ui.entry（新形态对象） */

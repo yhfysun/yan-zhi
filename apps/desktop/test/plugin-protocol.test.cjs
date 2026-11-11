@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 
 const { YZ_SCHEME_PRIVILEGES, pluginDirCandidates, resolveYzTarget, safeJoin, PLUGIN_ID_RE } = require('../plugin-protocol.cjs');
+const MAIN_CJS = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
 
 function mkTmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'yz-protocol-'));
@@ -18,6 +19,14 @@ test('privileged scheme 声明（standard + cors，file:// 源跨源模块装载
   assert.strictEqual(YZ_SCHEME_PRIVILEGES.standard, true);
   assert.strictEqual(YZ_SCHEME_PRIVILEGES.corsEnabled, true);
   assert.strictEqual(YZ_SCHEME_PRIVILEGES.supportFetchAPI, true);
+});
+
+test('★ 主窗口 CSP 允许 yz:// 与本机 HTTP 插件前端', () => {
+  // yz:// 页面自身豁免响应头 CSP 还不够：动态 import 发生在主窗口（http/file），
+  // 受主文档 script-src 控制。漏掉 yz: 时 dev-mode / wf-mode / clip-mode / ops-shell /
+  // sec-lab / shop-ops 全部报 "violates script-src 'self'"，插件前端静默装不上。
+  const allowed = MAIN_CJS.match(/script-src 'self' yz: \$\{API_ORIGIN\} http:\/\/localhost:\$\{API_PORT\}/g) || [];
+  assert.ok(allowed.length >= 2, `dev/prod 两个 CSP 分支都必须放行 yz: 与本机 HTTP，实际命中 ${allowed.length}`);
 });
 
 test('safeJoin 拦截路径穿越与绝对路径注入', () => {
