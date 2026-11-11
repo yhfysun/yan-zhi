@@ -76,5 +76,8 @@
   !macro customInstall
     Push "[4/4] 正在完成最后设置并检查安装结果..."
     Call yzSetInstallStatus
+    ; 覆盖升级后让 Explorer 立即重读 exe / 快捷方式图标，避免任务栏继续显示旧图标。
+    nsExec::ExecToLog 'ie4uinit.exe -show'
+    nsExec::ExecToLog 'ie4uinit.exe -ClearIconCache'
   !macroend
 !endif

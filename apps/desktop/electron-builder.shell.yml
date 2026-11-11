@@ -89,3 +89,6 @@ extraResources:
     to: server-base.json
   - from: ../../assets/icons/icon.ico
     to: icon.ico
+  # Windows 任务栏/窗口使用原生 BMP ICO；electron-builder 的 icon.ico 仍负责 exe/安装器。
+  - from: ../../assets/icons/icon-dev.bmp.ico
+    to: icon-window.ico

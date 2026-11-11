@@ -173,6 +173,9 @@ extraResources:
 
   - from: ../../assets/icons/icon.ico
     to: icon.ico
+  # Windows 任务栏/窗口使用原生 BMP ICO；electron-builder 的 icon.ico 仍负责 exe/安装器。
+  - from: ../../assets/icons/icon-dev.bmp.ico
+    to: icon-window.ico
 # ── 体积裁剪：Electron 自带全部语言包，实测 locales/ 占 41MB ──
 # ★ 本项目界面全中文（部分英文术语），原本只保留简体中文 + 英文（历史注释见下）。
 # ★★★ 2026-10-17：electron-builder 打包时会**按 electronLanguages 批量删除其余 ~50 个 .pak**，

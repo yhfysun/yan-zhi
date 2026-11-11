@@ -54,3 +54,25 @@ test('electron-dev ICO contains BMP frames from the approved Windows PNGs', () =
   }
   assert.deepEqual(sizes.sort((a, b) => a - b), [16, 24, 32, 48, 64, 128, 256]);
 });
+
+test('Windows taskbar uses the native BMP ICO in dev and packaged builds', () => {
+  const main = fs.readFileSync(root('apps', 'desktop', 'main.cjs'), 'utf8');
+  assert.match(main, /resourcesPath,\s*'icon-window\.ico'/, 'packaged windows must prefer icon-window.ico');
+  assert.match(main, /assets',\s*'icons',\s*'icon-dev\.bmp\.ico'/, 'dev windows must use icon-dev.bmp.ico');
+  assert.match(main, /function applyWindowIcon\(win\)/, 'window icons must be applied through one helper');
+  assert.match(main, /app\.on\('browser-window-created',\s*\(_e,\s*win\)\s*=>\s*applyWindowIcon\(win\)\)/);
+  assert.match(main, /if \(app\.isPackaged\)\s*\{\s*app\.setAppUserModelId\('com\.yanzhi\.desktop'\)/);
+
+  for (const file of [
+    'apps/desktop/electron-builder.full.yml',
+    'apps/desktop/electron-builder.lite.yml',
+    'apps/desktop/electron-builder.shell.yml',
+  ]) {
+    const yml = fs.readFileSync(root(file), 'utf8');
+    assert.match(
+      yml,
+      /from:\s*\.\.\/\.\.\/assets\/icons\/icon-dev\.bmp\.ico\s*\n\s*to:\s*icon-window\.ico/,
+      `${file} must ship icon-window.ico`,
+    );
+  }
+});

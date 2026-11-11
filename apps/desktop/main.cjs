@@ -1710,18 +1710,33 @@ async function startServer() {
 }
 
 /** 获取应用图标路径（开发/打包两套目录）。
- *  ★ dev 用 icon-dev.bmp.ico 而非 icon.ico/icon.png（2026-10-05 Win32 实测）：
+ *  ★ Windows 任务栏/托盘统一用 icon-dev.bmp.ico（2026-10-05 Win32 实测）：
  *  仓库 icon.ico 是 PNG 压缩 ico、icon.png 是大尺寸 PNG —— 两者经 Electron 转 HICON
- *  后得到 24x24 / 1024x1024 的**坏图标**（WM_GETICON 实测渲染全黑），任务栏因此回退
- *  electron 默认图标。BMP 压缩多尺寸 ico（16-256）是 LoadImage 原生格式，必不翻车。
- *  打包版走 resourcesPath/icon.ico（electron-builder 有自己的 ico 处理链）不受影响。 */
+ *  后可能得到坏图标或回退 Electron 默认图标。BMP 压缩多尺寸 ico（16-256）是
+ *  LoadImage 原生格式，窗口 icon / WM_SETICON / 托盘都能稳定读取。
+ *  打包版由 extraResources 复制成 resources/icon-window.ico，保留 icon.ico 供
+ *  electron-builder 生成 exe 与安装器图标。 */
 function getAppIconPath() {
   if (app.isPackaged) {
+    const windowIco = path.join(process.resourcesPath, 'icon-window.ico');
+    if (fs.existsSync(windowIco)) return windowIco;
     return path.join(process.resourcesPath, 'icon.ico');
   }
   const bmpIco = path.join(__dirname, '..', '..', 'assets', 'icons', 'icon-dev.bmp.ico');
   if (fs.existsSync(bmpIco)) return bmpIco;
   return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.ico');
+}
+
+/** Windows 上显式把品牌图标写到窗口，避免 frame:false / AUMID / DevTools 分组时
+ *  任务栏回退到 electron.exe 的默认原子图标。 */
+function applyWindowIcon(win) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+  try {
+    const iconPath = getAppIconPath();
+    if (fs.existsSync(iconPath)) win.setIcon(iconPath);
+  } catch (e) {
+    if (!app.isPackaged) console.warn('[window-icon] setIcon 失败:', e && e.message);
+  }
 }
 
 // ===== 窗口尺寸/位置记忆（2026-11-02）=====
@@ -1900,16 +1915,9 @@ function createWindow() {
 
   // 首屏渲染完成（可能只是背景色，见上面的闸门注释）——只置标志，不直接 show
   mainWindow.once('ready-to-show', () => {
-    // dev 下窗口 icon 再补一道运行时设置：构造参数 icon 在部分 Windows/驱动组合下
-    // 不落到任务栏按钮（frame:false + 自定义 AUMID 时），setIcon 走 WM_SETICON 强制生效
-    if (!app.isPackaged) {
-      try {
-        const iconPath = getAppIconPath();
-        const iconOk = fs.existsSync(iconPath);
-        console.log('[dev-icon]', iconPath, 'exists=' + iconOk);
-        if (iconOk) mainWindow.setIcon(iconPath);
-      } catch (e) { console.warn('[dev-icon] setIcon 失败:', e && e.message); }
-    }
+    // 构造参数 icon 在部分 Windows/驱动组合下不会落到任务栏按钮，
+    // ready-to-show 再走一次 WM_SETICON；dev 与安装版使用同一套逻辑。
+    applyWindowIcon(mainWindow);
     mainReadyToShow = true;
     revealMainWindow();
   });
@@ -14103,26 +14111,15 @@ app.whenReady().then(async () => {
     }
   }, RENDERER_PROBE_EVERY_MS).unref?.();
   if (process.platform === 'win32') {
-    // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
-    //   千万不要给 dev 设自定义 AUMID —— 自定义 AUMID 没有开始菜单快捷方式时，Explorer
-    //   会放弃窗口 icon 改用 exe 默认图标（electron 黑底原子标），这正是"dev 任务栏默认
-    //   图标"的根因；注册表 IconPath/换哈希 AUMID 都救不回来，已实测证伪。
-    //   分组语义：dev 跑在 electron.exe、安装版是 yan-zhi.exe，exe 路径不同本就不会并组；
-    //   仅同 exe 双 dev 实例才会并组（罕见，可接受）。安装版保持 setAppUserModelId。
-    if (!IS_DEV_INSTANCE) {
+    // ★ 只有真实安装版注册生产 AUMID。dev 绝不能抢 com.yanzhi.desktop：
+    //   Windows 会按 AUMID 回查开始菜单快捷方式；一旦旧的 Electron.lnk 持有同一
+    //   AUMID，安装版任务栏就会显示 electron.exe 的原子图标。
+    if (app.isPackaged) {
       app.setAppUserModelId('com.yanzhi.desktop');
     }
-    // ★ dev 下所有新开窗口（DevTools/悬浮窗等）都自动设置图标（2026-10-06）：
-    //   DevTools 窗口没有 icon，与主窗口同组时会把任务栏组图标拖成 exe 默认
-    //   （实测：关 DevTools 图标即恢复）。统一在窗口创建时补 icon，一劳永逸。
-    if (IS_DEV_INSTANCE) {
-      app.on('browser-window-created', (_e, win) => {
-        try {
-          const p = getAppIconPath();
-          if (fs.existsSync(p)) win.setIcon(p);
-        } catch { /* 观感问题不阻塞 */ }
-      });
-    }
+    // dev / 安装版的所有新窗口（DevTools、悬浮窗等）都补品牌 icon。
+    // DevTools 若与主窗口同组且没有 icon，会把任务栏组图标拖成 exe 默认图标。
+    app.on('browser-window-created', (_e, win) => applyWindowIcon(win));
   }
 
   // ============================================================
