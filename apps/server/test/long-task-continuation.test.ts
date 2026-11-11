@@ -313,7 +313,7 @@ describe('⑧ 达上限总结必须同时产出"是否继续"判据', () => {
 
   it('★ 子智能体调用点必须改用 .text（返回值结构变了）', () => {
     // ★ 2026-10-18：调用点多了 onUsage 记账参数（费用接线），锚点去掉结尾的 `)` 以兼容多行实参
-    const i = anchor(LTM, "summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub'", '子智能体总结调用');
+    const i = anchor(LTM, "summarizeOnMaxSteps(client, currentSubAgentSystemPrompt(), history, maxSteps, 'sub'", '子智能体总结调用');
     const body = LTM.slice(i, i + 240);
     expect(body, '★ 子智能体仍按旧结构取 summary（会拿到 undefined）').toMatch(/summary\.text/);
   });

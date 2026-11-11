@@ -20,8 +20,10 @@ import { builtinSceneDefs, type BuiltinSceneDef } from './builtin-scene-defs.js'
 import { builtinTaskTypeDefs, taskTypeToRow, taskTypeFromRow } from './builtin-task-type-defs.js';
 import {
   BROWSER_DELEGATION_PROMPT,
+  PAGE_AGENT_AUTO_CONTINUE_MAX_ROUNDS,
   PAGE_AGENT_BROWSER_TOOLS,
   PAGE_AGENT_ID,
+  PAGE_AGENT_MAX_REACT_STEPS,
   PAGE_AGENT_SKILL_IDS,
   PAGE_AGENT_SUPPORT_TOOLS,
   WEB_PAGE_OPERATION_BODY,
@@ -1482,15 +1484,24 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
   ★ file_* / python_exec / js_exec / cmd_exec 都直接作用于本机文件与进程：务必把文件写在当前工作目录内，命令要能在无人值守下安全完成。
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
+【浏览器子任务规划与检查点（强制）】
+1. 收到委派后先调用 task_plan，把本次浏览器任务拆成 2-6 个子任务。每个子任务只对应一个可核验结果，例如“打开源系统并确认已登录”“下载报表并取得 savedPath”“上传到目标系统并回读更新条数”；不要把几十个微动作列成几十步。
+2. 每次进入一个子任务先 task_step 标 running；完成或失败后立即标 done/failed，并在 note 写最关键的现场证据：当前 URL、成功提示原文、下载文件绝对路径、上传结果或错误原文。计划是这个子任务唯一稳定的接力棒。
+3. 一个子任务结束后，旧 DOM、旧元素编号和中间推理都可以被压缩；继续前先看当前计划与最近一次页面状态。不要重做已完成步骤，不要凭压缩前记忆重复下载、上传、提交。
+4. 阶段目标是闭环而不是无限尝试：同一步连续两次没有新增证据就标 failed，带着已有产物返回。单次委派可能达到步数边界；此时返回“已完成 / 当前页面 / 关键产物 / 剩余步骤 / 建议下一步”的阶段回执，绝不从头再来。
+5. 本会话的 task_plan/task_step 只属于这次 pageAgent 委派，不写外层业务计划；不同 call_agent 之间不共享未完成计划或临时上下文。计划仍有未完成项时必须明确输出“浏览器阶段计划未完成”，并给出剩余步骤与下一次续跑所需现场。
+
 工作流程：
-1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"）
-2. browser_navigate 打开目标页面
-3. browser_get_page_content 了解页面结构与状态，拿到带编号的可交互元素列表
-4. 用 index 定位目标元素，browser_type 输入 / browser_click 点击（搜索 = 输入关键词后回车或点搜索按钮）
-5. 页面跳转后重新 browser_get_page_content 刷新编号列表，逐步推进
-5a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
-6. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
-7. 返回任务结果摘要（用中文）
+1. 先 task_plan 拆解本次浏览器任务，再把第一项标 running。
+2. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"）
+3. browser_navigate 打开目标页面
+4. browser_get_page_content 了解页面结构与状态，拿到带编号的可交互元素列表
+5. 用 index 定位目标元素，browser_type 输入 / browser_click 点击（搜索 = 输入关键词后回车或点搜索按钮）
+6. 页面跳转后重新 browser_get_page_content 刷新编号列表，逐步推进
+6a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
+7. 每个子任务完成后先 task_step done/failed 并写证据 note，再进入下一项
+8. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
+9. 返回任务结果摘要（用中文）；若计划仍有未完成项，必须返回阶段回执，不能宣称全部完成
 
 【导航失败处理（必须遵守）】
 - 同一 URL 只调用一次 browser_navigate。
@@ -2222,9 +2233,12 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: PAGE_AGENT_SYSTEM_PROMPT,
     // 内置 pageAgent 定义由代码收敛，强制覆盖旧库残留（旧版 36 工具全量挂载导致死循环）
     force_sync: true,
-    // 200→500（2026-10-09）：小说推文链路实测 200 步仍会撞顶（登录/抓书目/逐章抓正文/回填
-    // 全在 pageAgent 身上）；未配置的任务走全局默认，轻量查询靠提示词软预算控制，不靠步数硬顶。
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
+    // 每次委派是有边界的浏览器阶段：160 步到顶先返回检查点，由外层主智能体决定是否继续。
+    // 不启用子体内部自动接力，避免 500×2 这类“跑满约 1000 步仍未收口”的失控路径。
+    config_json: JSON.stringify({
+      maxReActSteps: PAGE_AGENT_MAX_REACT_STEPS,
+      autoContinueMaxRounds: PAGE_AGENT_AUTO_CONTINUE_MAX_ROUNDS,
+    }),
   },
   {
     id: 'a_builtin_data_agent',

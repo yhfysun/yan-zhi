@@ -438,7 +438,7 @@
       <div v-if="inputLocked && planTotal > 0" class="agent-step-panel">
         <div class="agent-step-panel-head">
           <el-icon><List /></el-icon>
-          <span class="agent-step-panel-title">{{ chatStore.planTitle || '任务计划' }}</span>
+          <span class="agent-step-panel-title">{{ chatStore.browserPlanTitle || '任务计划' }}</span>
           <span class="agent-step-count">{{ planDone }}/{{ planTotal }}</span>
         </div>
         <ul class="agent-step-items">
@@ -828,7 +828,7 @@ const liveControlVisible = computed(() =>
   && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
-const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
+const planStepsNow = computed(() => (isPreviewScope ? chatStore.browserPlanSteps : []));
 // ★ 2026-10-24 接入 AgentScope 客户端的「活动标签」：状态条说人话（「正在点击「发布」」），
 //   而不是永远「执行中」。数据源就是既有 browserSteps（此前只记账、无 UI 渲染）；
 //   tool:start 事件带 args，标签在入栈时算好（见 stores/chat.ts + browser-step-label.ts）。

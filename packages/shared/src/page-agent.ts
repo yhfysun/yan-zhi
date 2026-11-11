@@ -9,6 +9,15 @@
 
 export const PAGE_AGENT_ID = 'a_builtin_page_agent';
 export const WEB_PAGE_OPERATION_SKILL_ID = 'skill_web_page_operation';
+/**
+ * pageAgent 单次 call_agent 的硬步数边界。
+ *
+ * 浏览器任务不该用 500/1000 步证明"还能继续跑"：每次委派是一个可验收阶段，
+ * 到边界先返回检查点，由外层主智能体决定是否发起下一次浏览器委派。
+ */
+export const PAGE_AGENT_MAX_REACT_STEPS = 160;
+/** pageAgent 不在子体内部无限自动接力；跨阶段续跑由外层主智能体显式决策。 */
+export const PAGE_AGENT_AUTO_CONTINUE_MAX_ROUNDS = 0;
 
 /** pageAgent 的完整浏览器工具面（与 core 工具声明及桌面执行面保持同步）。 */
 export const PAGE_AGENT_BROWSER_TOOLS = [
@@ -77,6 +86,9 @@ export const PAGE_AGENT_SKILL_IDS = [WEB_PAGE_OPERATION_SKILL_ID] as const;
 export const BROWSER_DELEGATION_PROMPT = `【网页登录与页面操作 · 委派 pageAgent】
 - 浏览器操作唯一入口是 pageAgent，其他智能体不得直接调用 browser_*。
 - 只有 pageAgent（${PAGE_AGENT_ID}）可以直接调用 browser_* 工具；其他智能体不得直接操作浏览器，也不得维护自己的页面动作。
+- 外层主智能体负责整条业务任务，并用自己的 task_plan/task_step 管理全部阶段；需要浏览器时，把当前阶段整理成一次自包含的 call_agent。
+- pageAgent 只在本次委派内规划浏览器子任务，它的 task_plan/task_step 与外层业务计划隔离，绝不会覆盖外层计划。
+- 多步浏览器任务要拆成多个可独立验收的阶段。一次 call_agent 到步数边界仍有剩余工作时，先接收它的阶段回执与检查点，再由外层主智能体发起下一次委派；不要重复已经完成的下载、上传或提交动作。
 - 需要打开、读取、登录、填写、点击、上传、截图、抓接口或执行页面配方时，统一委派：call_agent { agentId: "${PAGE_AGENT_ID}", input: "<目标站点 + 当前状态 + 要完成的动作 + 成功判据>" }。
 - 委派输入必须自包含：写清目标 URL、账号/登录态、要填的字段或要点的按钮、成功判据，以及遇到扫码/验证码/滑块时先 ask_user。
 - 只读权限不等于浏览器不可用：pageAgent 可直接导航、读页、截图、等待；点击/输入/填表/提交首次会弹授权卡。正常发起一次，不要提前判定“登录页进不去”。
@@ -92,14 +104,16 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 已挂载导航、读页、点击、输入、批量填表、提交、多标签、上传、等待、截图、视觉定位、接口直采和站点配方等完整工具面，不再只有六件套。配合「定时任务」可每日自动执行。
 
 ## 执行流程
-1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<目标站点 + 当前状态 + 要完成的动作 + 成功判据>" }
-2. browser_navigate 打开目标站点。首次打开预览面板可能较慢；同一 URL 只导航一次。
-3. browser_wait_for 或 browser_get_page_content 等待并读取页面，拿正文、表单状态、可交互元素编号与稳定 selector。
-4. 两点及以上字段优先一次 browser_fill_form；提交用 browser_submit_form 或点击明确的提交按钮。
-5. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
-6. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
-7. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
-8. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
+1. 外层主智能体先用 task_plan 规划整条业务任务；到浏览器阶段再委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<目标站点 + 当前状态 + 要完成的动作 + 成功判据>" }
+2. pageAgent 在本次委派内单独 task_plan，把浏览器工作拆成下载、校验、上传、回读等可验收子任务；该计划只属于本次 call_agent，不覆盖外层计划。
+3. browser_navigate 打开目标站点。首次打开预览面板可能较慢；同一 URL 只导航一次。
+4. browser_wait_for 或 browser_get_page_content 等待并读取页面，拿正文、表单状态、可交互元素编号与稳定 selector。
+5. 两点及以上字段优先一次 browser_fill_form；提交用 browser_submit_form 或点击明确的提交按钮。
+6. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
+7. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
+8. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
+9. 每个浏览器子任务完成立即 task_step 并写 URL、成功提示、文件路径或更新条数；到达单次委派步数边界时返回阶段回执，由外层决定下一次续跑。
+10. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
 
 ## 非标准上传入口
 - 元素标签不影响文件事件：div/span/role=button/图标按钮只要绑定 click 也可能是下载或上传入口。

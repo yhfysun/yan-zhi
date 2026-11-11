@@ -85,6 +85,7 @@ import {
   loadTaskPlanFromFile,
   backendTaskPlan,
   backendTaskStep,
+  createInMemoryTaskPlanStore,
 } from '../src/services/task-plan-file';
 
 let tmp: string;
@@ -250,5 +251,66 @@ describe('⑥ 未配工作目录 ≠ 写入失败', () => {
 
     const planMsg = await backendTaskPlan('conv_loose', { title: 'T', steps: [{ title: 'a' }] });
     expect(planMsg, '★ 真写失败被静默了 → 用户再也不会知道"跨会话接力"不可用').toContain('写入失败');
+  });
+});
+
+describe('⑦ 子智能体计划使用独立作用域', () => {
+  it('task_plan / task_step 写入内存作用域，不覆盖父会话计划', async () => {
+    hoisted.conversations.conv_loose.task_plan_json = JSON.stringify({
+      title: '外层业务计划',
+      steps: [{ title: '主任务步骤', status: 'running' }],
+      createdAt: 1,
+    });
+    const browserPlan = createInMemoryTaskPlanStore();
+
+    const planMsg = await backendTaskPlan(
+      'conv_loose',
+      { title: '本次浏览器任务', steps: [{ title: '打开源系统' }, { title: '下载报表' }] },
+      undefined,
+      browserPlan,
+    );
+    const stepMsg = await backendTaskStep(
+      'conv_loose',
+      { index: 1, status: 'done', note: '已打开导出页' },
+      browserPlan,
+    );
+
+    expect(planMsg).toContain('本次浏览器任务');
+    expect(stepMsg).toContain('已更新第 1 步');
+    expect(browserPlan.load()?.steps.map((s) => [s.title, s.status])).toEqual([
+      ['打开源系统', 'done'],
+      ['下载报表', 'pending'],
+    ]);
+    expect(JSON.parse(String(hoisted.conversations.conv_loose.task_plan_json)).title).toBe('外层业务计划');
+    expect(fs.existsSync(path.join(tmp, PLAN_REL)), '子计划不应镜像覆盖父任务的 plan.md').toBe(false);
+  });
+
+  it('两次 pageAgent 调用的内存计划互不可见', async () => {
+    const first = createInMemoryTaskPlanStore();
+    const second = createInMemoryTaskPlanStore();
+
+    await backendTaskPlan('conv_loose', { title: '第一次浏览器调用', steps: [{ title: '下载' }] }, undefined, first);
+
+    expect(first.load()?.title).toBe('第一次浏览器调用');
+    expect(second.load()).toBeNull();
+  });
+
+  it('同一子任务内重规划仍保留已完成步骤状态和计时', async () => {
+    const store = createInMemoryTaskPlanStore();
+    await backendTaskPlan('conv_loose', { title: '浏览器任务', steps: [{ title: '下载' }, { title: '上传' }] }, undefined, store);
+    await backendTaskStep('conv_loose', { index: 1, status: 'done', note: '文件已落盘' }, store);
+
+    await backendTaskPlan(
+      'conv_loose',
+      { title: '浏览器任务（继续）', steps: [{ title: '下载' }, { title: '上传' }, { title: '回读' }] },
+      undefined,
+      store,
+    );
+
+    expect(store.load()?.steps.map((s) => [s.title, s.status, s.note])).toEqual([
+      ['下载', 'done', '文件已落盘'],
+      ['上传', 'pending', undefined],
+      ['回读', 'pending', undefined],
+    ]);
   });
 });

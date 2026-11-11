@@ -3,7 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart, GoalRun, GoalTemplate } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature } from '@yan-zhi/core';
-import { uid } from '@yan-zhi/shared';
+import { uid, PAGE_AGENT_ID } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
 import { useCostStore } from './cost';
@@ -434,6 +434,7 @@ import {
   removePlan,
   syncPlan,
   DRAFT_PLAN_KEY,
+  type Plan,
   type PlanMap,
   type PlanStep as PlanStepT,
 } from './plan-buckets';
@@ -1294,6 +1295,8 @@ export const useChatStore = defineStore('chat', () => {
   // 早先用 planTitle / planSteps 两个全局 ref，A 会话登记的计划会原样出现在 B 会话里（串台）。
   // 分桶与变更规则在 plan-buckets.ts（纯函数），此处只做响应式包装。
   const plansByConv = ref<PlanMap>({});
+  /** pageAgent 本次 call_agent 的独立计划（只用于预览面板，不覆盖聊天区外层计划）。 */
+  const browserSubPlansByConv = ref<Record<string, { parentToolCallId: string; plan: Plan }>>({});
   /** 当前查看会话的计划键；也可显式传会话 id 取别的会话 */
   function planKeyOf(convId?: string | null): string {
     return resolvePlanKey(currentConvId.value, convId);
@@ -1326,6 +1329,9 @@ export const useChatStore = defineStore('chat', () => {
   /** 计划落盘的任务起止时间（服务端唯一写入）—— 耗时直接读记录，不再每次拿消息时间戳算 */
   const planCreatedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.createdAt || 0);
   const planFinishedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.finishedAt || 0);
+  const browserPlan = computed(() => browserSubPlansByConv.value[planKeyOf()]?.plan || null);
+  const browserPlanSteps = computed<PlanStepT[]>(() => browserPlan.value?.steps || planSteps.value);
+  const browserPlanTitle = computed(() => browserPlan.value?.title || planTitle.value);
 
   /** 用户提交越界访问授权卡的决议（once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝） */
   function submitPendingPathAuth(decision: 'once' | 'dir' | 'tool' | 'deny') {
@@ -2165,6 +2171,11 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     resetDetailCaches(id);
     delete roundMetaByConv.value[id];
     plansByConv.value = removePlan(plansByConv.value, id);
+    if (browserSubPlansByConv.value[id]) {
+      const next = { ...browserSubPlansByConv.value };
+      delete next[id];
+      browserSubPlansByConv.value = next;
+    }
     // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
     dropBrowserOpChain(browserOpChains, id);
   }
@@ -3577,6 +3588,17 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             break;
             break;
           }
+          case 'sub_agent:plan': {
+            if (event.agentId !== PAGE_AGENT_ID || !event.parentToolCallId || !event.plan) break;
+            browserSubPlansByConv.value = {
+              ...browserSubPlansByConv.value,
+              [planKeyOf(convId)]: {
+                parentToolCallId: String(event.parentToolCallId),
+                plan: event.plan as Plan,
+              },
+            };
+            break;
+          }
           case 'tool:start': {
             // 仅浏览器类工具推送步骤日志，避免非浏览器工具污染右侧浏览器面板
             if (event.toolName?.startsWith('browser_')) {
@@ -3620,11 +3642,28 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           }
           case 'sub_agent:start': {
             if (event.parentToolCallId) runningToolCallIds.value.add(event.parentToolCallId);
+            if (event.agentId === PAGE_AGENT_ID && event.parentToolCallId) {
+              const key = planKeyOf(convId);
+              const current = browserSubPlansByConv.value[key];
+              if (!current || current.parentToolCallId !== String(event.parentToolCallId)) {
+                const next = { ...browserSubPlansByConv.value };
+                delete next[key];
+                browserSubPlansByConv.value = next;
+              }
+            }
             break;
           }
           case 'sub_agent:end': {
             if (event.parentToolCallId) runningToolCallIds.value.delete(event.parentToolCallId);
             if (event.agentId) st.subAgentMsgIds.delete(subAgentKeyOf(event.agentId, event.parentToolCallId));
+            if (event.agentId === PAGE_AGENT_ID && event.parentToolCallId) {
+              const key = planKeyOf(convId);
+              if (browserSubPlansByConv.value[key]?.parentToolCallId === String(event.parentToolCallId)) {
+                const next = { ...browserSubPlansByConv.value };
+                delete next[key];
+                browserSubPlansByConv.value = next;
+              }
+            }
             break;
           }
           case 'app:open_window': {
@@ -4543,6 +4582,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     submitPendingConfirmation, skipPendingConfirmation, prevPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
     planSteps, planTitle, planOf, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,
+    browserPlanSteps, browserPlanTitle,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     // 会话生命周期（2026-10-16 归档 + 回收站）

@@ -57,7 +57,10 @@ import { extractLearningErrorsFromTask } from './learning/extract.js';
 import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
-import { backendTaskPlan, backendTaskStep, loadPlanJson, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
+import {
+  backendTaskPlan, backendTaskStep, createInMemoryTaskPlanStore, loadPlanJson,
+  loadTaskPlanFromFile, savePlanJson, type TaskPlan, type TaskPlanStore,
+} from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
 import { toSnapshotMessages, buildSnapshotSystemFields, internSnapshotBlob, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
@@ -613,6 +616,14 @@ interface LlmTask {
   /** 子智能体各自的摘要缓存（key = parentToolCallId）—— 与主循环隔离，见子循环处注释。 */
   subSummaryCaches?: Map<string, SummaryCache>;
   /**
+   * 每次 call_agent 独有的任务计划（key = parentToolCallId）。
+   *
+   * 子智能体也会调用 task_plan/task_step；这些写入必须与父会话 task_plan_json 隔离，
+   * 否则 pageAgent 的浏览器步骤会覆盖外层业务计划。parentToolCallId 天然保证不同
+   * pageAgent 调用之间互不可见。
+   */
+  subAgentPlans?: Map<string, TaskPlan>;
+  /**
    * ★★★ 本任务的工作目录（绝对路径，2026-09-30 加）。
    *
    * 为什么必须挂在 task 上：工具执行时要把"工作目录"传给 `ToolContext.workspaceDir`，
@@ -944,6 +955,92 @@ function loadSubAgentMessages(convId: string, parentToolCallId: string): Message
   return rows.map(rowToMsg);
 }
 
+function cloneTaskPlan(plan: TaskPlan | null): TaskPlan | null {
+  return plan ? JSON.parse(JSON.stringify(plan)) as TaskPlan : null;
+}
+
+/** 取得本次子智能体调用独有的计划存储；每次工具调用共享同一 parentToolCallId 槽位。 */
+function subAgentPlanStore(task: LlmTask, parentToolCallId: string): TaskPlanStore {
+  task.subAgentPlans ||= new Map();
+  const initial = cloneTaskPlan(task.subAgentPlans.get(parentToolCallId) || null);
+  const store = createInMemoryTaskPlanStore(initial);
+  return {
+    ...store,
+    save: (plan: TaskPlan) => {
+      const ok = store.save(plan);
+      if (ok) {
+        const saved = store.load();
+        if (saved) task.subAgentPlans!.set(parentToolCallId, cloneTaskPlan(saved)!);
+      }
+      return ok;
+    },
+  };
+}
+
+function getSubAgentPlan(task: LlmTask, parentToolCallId: string): TaskPlan | null {
+  return cloneTaskPlan(task.subAgentPlans?.get(parentToolCallId) || null);
+}
+
+/** 将本次浏览器子计划压成短检查点，随每轮 system prompt 注入，抗上下文压缩。 */
+function buildSubAgentPlanCheckpoint(task: LlmTask, parentToolCallId: string, agentId: string): string {
+  const plan = getSubAgentPlan(task, parentToolCallId);
+  if (!plan?.steps?.length) return '';
+  const done = plan.steps.filter((s) => s.status === 'done').length;
+  const failed = plan.steps.filter((s) => s.status === 'failed').length;
+  const running = plan.steps.find((s) => s.status === 'running');
+  const remaining = plan.steps.filter((s) => s.status === 'pending' || s.status === 'running');
+  const evidence = plan.steps
+    .filter((s) => (s.status === 'done' || s.status === 'failed') && s.note)
+    .slice(-8)
+    .map((s) => `- [${s.status}] ${s.title}：${s.note}`);
+  return [
+    '---',
+    `## ${agentId === PAGE_AGENT_ID ? '浏览器任务检查点' : '子任务检查点'}（本次委派独立作用域）`,
+    `计划：${plan.title || '未命名'}｜已完成 ${done}/${plan.steps.length}，失败 ${failed}`,
+    running ? `当前步骤：${running.title}` : '当前步骤：（无 running 项）',
+    remaining.length ? `剩余步骤：${remaining.slice(0, 8).map((s) => s.title).join(' / ')}` : '剩余步骤：无',
+    ...(evidence.length ? ['关键证据：', ...evidence] : []),
+    '执行纪律：',
+    '- 这份检查点高于被压缩前的临时记忆；先接着未完成项做，绝不重做已完成项。',
+    '- 每完成一个子任务立即 task_step done/failed 并写可核验 note（URL、成功提示、文件路径、回读数量）。',
+    '- 单次委派到步数边界时返回阶段回执，由外层主智能体决定是否发起下一次浏览器任务。',
+  ].join('\n');
+}
+
+function subAgentPlanBoundaryKey(task: LlmTask, parentToolCallId: string): string {
+  const plan = getSubAgentPlan(task, parentToolCallId);
+  if (!plan?.steps?.length) return '';
+  const completed = plan.steps.filter((s) => s.status === 'done' || s.status === 'failed').length;
+  if (!completed) return '';
+  const running = plan.steps.findIndex((s) => s.status === 'running');
+  return `${plan.createdAt || 0}:${completed}:${running}`;
+}
+
+function isTaskPlanTerminal(plan: TaskPlan | null): boolean {
+  return !!plan?.steps?.length && plan.steps.every((s) => s.status === 'done' || s.status === 'failed');
+}
+
+/** 给父智能体的结构化阶段回执，避免“模型说做完了”吞掉未完成浏览器步骤。 */
+function buildSubAgentPlanReceipt(task: LlmTask, parentToolCallId: string): string {
+  const plan = getSubAgentPlan(task, parentToolCallId);
+  if (!plan?.steps?.length) return '';
+  const terminal = isTaskPlanTerminal(plan);
+  const running = plan.steps.find((s) => s.status === 'running');
+  const remaining = plan.steps.filter((s) => s.status === 'pending' || s.status === 'running');
+  const evidence = plan.steps
+    .filter((s) => s.note)
+    .slice(-8)
+    .map((s) => `- [${s.status || 'pending'}] ${s.title}：${s.note}`);
+  return [
+    terminal ? '【浏览器阶段计划已完成】' : '【浏览器阶段计划未完成，可继续】',
+    `计划：${plan.title || '未命名'}`,
+    remaining.length ? `剩余步骤：${remaining.map((s) => s.title).join(' / ')}` : '剩余步骤：无',
+    running ? `当前步骤：${running.title}` : '',
+    ...(evidence.length ? ['关键证据：', ...evidence] : []),
+    terminal ? '外层可继续后续业务步骤。' : '外层应保留已产出的文件与页面现场，基于本回执决定是否发起下一次 pageAgent 委派；不要重复已完成动作。',
+  ].filter(Boolean).join('\n');
+}
+
 // 工具结果单条上限：极端结果（如整页 DOM/网络日志几十上百 KB）入库和进入下轮上下文前先压缩，
 // 保留头尾（头部通常是关键摘要，尾部常有分页/汇总信息），中段丢弃并在原位标注。
 const MAX_TOOL_RESULT_CHARS = 48000;
@@ -1155,6 +1252,7 @@ async function runToolCallAndPersist(opts: {
           task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut,
           ownership?.browserFlowKey,
           ownership?.subAgentId || task.agentId || null,
+          ownership?.parentToolCallId,
         );
       } catch (e: any) {
         if (isAbortError(e)) {
@@ -5438,6 +5536,8 @@ async function executeTool(
   browserFlowKey?: string,
   /** 当前真正执行该工具的智能体：主任务 = task.agentId；子智能体 = ownership.subAgentId。 */
   executingAgentId?: string | null,
+  /** 子智能体调用本次 tool 所属的 call_agent id；用于隔离 task_plan/task_step。 */
+  planScopeId?: string,
 ): Promise<string> {
   // 会话级权限闸（readonly）：写类/不可控工具**不再硬拒**（2026-10-18 授权制语义升级）——
   // 命中即走 `_tool_authorize` 授权卡请求用户批准，批准后本任务内该工具放行；
@@ -5784,12 +5884,25 @@ async function executeTool(
     const isPlanTool = !isMcp && (toolName === 'task_plan' || toolName === 'task_step');
     if (isPlanTool) {
       try {
+        const planStore = planScopeId ? subAgentPlanStore(task, planScopeId) : undefined;
         const receipt = toolName === 'task_plan'
-          ? await backendTaskPlan(task.conversationId, args || {})
-          : await backendTaskStep(task.conversationId, args || {});
+          ? await backendTaskPlan(task.conversationId, args || {}, undefined, planStore)
+          : await backendTaskStep(task.conversationId, args || {}, planStore);
         try {
-          const plan = loadPlanJson(task.conversationId);
-          if (plan) emit(task, { type: 'plan:updated', plan, persisted: true });
+          if (planStore && planScopeId) {
+            const plan = planStore.load();
+            if (plan) {
+              emit(task, {
+                type: 'sub_agent:plan',
+                plan,
+                parentToolCallId: planScopeId,
+                agentId: executingAgentId || null,
+              });
+            }
+          } else {
+            const plan = loadPlanJson(task.conversationId);
+            if (plan) emit(task, { type: 'plan:updated', plan, persisted: true });
+          }
         } catch { /* 推送失败只是卡片没刷新，不该让工具报错（计划已落库） */ }
         return receipt;
       } catch (e: any) {
@@ -7523,6 +7636,10 @@ async function runSubAgentImpl(
   const browserEntryRule = resolvedId === PAGE_AGENT_ID ? '' : BROWSER_DELEGATION_PROMPT;
   const systemPrompt = [systemPromptBase, browserEntryRule, buildSubAgentSharedSections(resolvedId, task.conversationId), browserField]
     .filter(Boolean).join('\n\n');
+  const currentSubAgentSystemPrompt = (): string => {
+    const checkpoint = buildSubAgentPlanCheckpoint(task, parentToolCallId, resolvedId);
+    return checkpoint ? `${systemPrompt}\n\n${checkpoint}` : systemPrompt;
+  };
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
   let tools = supportsTools ? subTools : [];
@@ -7560,6 +7677,13 @@ async function runSubAgentImpl(
   //   （见循环内坑 #8 注），但只做可观测。
   // 「只写了工具名、没写参数体」的工具（见 parseTextModeToolCalls 空参防护）
   let skippedArgToolsSub: string[] = [];
+  // 子任务边界压缩：计划中每多一个终态步骤，下一轮把旧 DOM/动作历史压缩成摘要；
+  // 当前计划检查点始终保留在 system prompt 里。
+  let lastCompressedSubtaskBoundary = '';
+  const clearScopedSubAgentState = () => {
+    task.subAgentPlans?.delete(parentToolCallId);
+    task.subSummaryCaches?.delete(parentToolCallId);
+  };
 
   try {
     // ★ 外层 = 子智能体接力批次；内层 = 单批 ReAct 步数（与主循环同构）
@@ -7576,6 +7700,9 @@ async function runSubAgentImpl(
       //     否则主循环读该会话的"最新摘要"会读到子智能体的，直接把主上下文带偏。
       const subCache = (task.subSummaryCaches ||= new Map()).get(parentToolCallId)
         || (() => { const c = { ids: [] as string[], summary: '' }; (task.subSummaryCaches!).set(parentToolCallId, c); return c; })();
+      const effectiveSystemPrompt = currentSubAgentSystemPrompt();
+      const subtaskBoundaryKey = subAgentPlanBoundaryKey(task, parentToolCallId);
+      const forceSubtaskCompress = !!subtaskBoundaryKey && subtaskBoundaryKey !== lastCompressedSubtaskBoundary;
       const subView = await buildContextView({
         conversationId: task.conversationId,
         userId: task.userId,
@@ -7599,11 +7726,13 @@ async function runSubAgentImpl(
           });
         },
         persist: false,
+        forceCompress: forceSubtaskCompress,
       });
+      if (forceSubtaskCompress) lastCompressedSubtaskBoundary = subtaskBoundaryKey;
       const messagesToSend = subView.messages;
 
       const llmMessages: Message[] = [];
-      llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
+      llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: effectiveSystemPrompt, createdAt: 0 });
       llmMessages.push(...messagesToSend.map(m => ({
         id: m.id, conversationId: '', role: m.role,
         content: m.content, toolCalls: m.toolCalls,
@@ -7643,7 +7772,7 @@ async function runSubAgentImpl(
           presencePenalty: agent.presence_penalty,
         },
         // ★ 2026-10-12 P2：同主循环 —— 已内联时不重复存顶层 systemPrompt（fallback 传原 agent 提示词）
-        ...buildSnapshotSystemFields(llmMessages, systemPrompt),
+        ...buildSnapshotSystemFields(llmMessages, effectiveSystemPrompt),
         // ★ 2026-10-12 P2：tools 改存内容哈希引用（同主循环，读侧回填）
         toolsRef: internSnapshotBlob('tools', JSON.stringify(subTools.map((t: any) => ({ name: t.function.name, description: t.function.description })))),
         // messages 只存 id 引用（同主循环，见 services/context-snapshot.ts 的 O(n²) 说明）
@@ -7842,7 +7971,10 @@ async function runSubAgentImpl(
           continue;
         }
         emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
-        return fullContent || '(无输出)';
+        const planReceipt = buildSubAgentPlanReceipt(task, parentToolCallId);
+        const result = `${fullContent || '(无输出)'}${planReceipt ? `\n\n${planReceipt}` : ''}`;
+        clearScopedSubAgentState();
+        return result;
       }
 
       // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
@@ -7893,7 +8025,7 @@ async function runSubAgentImpl(
         }));
         // kind='main' → 带 CONTINUE 自评指令（子智能体接力同样需要模型自评"还有活没干完"）
         // ★ 费用记账：子智能体的自评按**自己的**模型单价计入同一会话账本（source='sub_agent'）
-        const r = await summarizeOnMaxSteps(client, systemPrompt, history, subStepBudget, 'main',
+        const r = await summarizeOnMaxSteps(client, currentSubAgentSystemPrompt(), history, subStepBudget, 'main',
           (detail, meta) => recordTaskUsage(task, 'sub_agent', detail, meta, { messages: history }));
         shouldContinue = r.shouldContinue;
         if (r.text) {
@@ -7928,7 +8060,7 @@ async function runSubAgentImpl(
         toolCallId: m.toolCallId, createdAt: m.createdAt,
       }));
       // ★ 费用记账：给父智能体的收尾总结同样花钱（source='sub_agent'，同库同单价）
-      const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub',
+      const summary = await summarizeOnMaxSteps(client, currentSubAgentSystemPrompt(), history, maxSteps, 'sub',
         (detail, meta) => recordTaskUsage(task, 'sub_agent', detail, meta, { messages: history }));
       if (summary.text) {
         const note = forceStoppedByLoopGuard
@@ -7937,11 +8069,16 @@ async function runSubAgentImpl(
         resultText = `${summary.text}\n\n${note}`;
       }
     } catch { /* 总结失败回退固定文案 */ }
-    return resultText;
+    const planReceipt = buildSubAgentPlanReceipt(task, parentToolCallId);
+    const result = `${resultText}${planReceipt ? `\n\n${planReceipt}` : ''}`;
+    clearScopedSubAgentState();
+    return result;
   } catch (e: any) {
     if (isAbortError(e)) throw e;
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
-    return `子智能体执行失败: ${e?.message || e}`;
+    const planReceipt = buildSubAgentPlanReceipt(task, parentToolCallId);
+    clearScopedSubAgentState();
+    return `子智能体执行失败: ${e?.message || e}${planReceipt ? `\n\n${planReceipt}` : ''}`;
   }
 }
 

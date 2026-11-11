@@ -6,8 +6,10 @@ import {
   uid,
   DEFAULT_AGENT_PARAMS,
   BROWSER_DELEGATION_PROMPT,
+  PAGE_AGENT_AUTO_CONTINUE_MAX_ROUNDS,
   PAGE_AGENT_BROWSER_TOOLS,
   PAGE_AGENT_ID,
+  PAGE_AGENT_MAX_REACT_STEPS,
   PAGE_AGENT_SKILL_IDS,
   PAGE_AGENT_SUPPORT_TOOLS,
   WEB_PAGE_OPERATION_SKILL_ID,
@@ -191,15 +193,19 @@ const PAGE_AGENT_DATA = {
 - python_exec / js_exec / cmd_exec: 在本机执行 Python / JavaScript(Node) / 系统命令
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
+【浏览器子任务规划与检查点（强制）】
+1. 收到委派后先 task_plan，把本次浏览器任务拆成 2-6 个可独立验收的子任务；每个子任务只对应一个结果。
+2. 每项开始标 running，完成或失败后立即标 done/failed，并在 note 写当前 URL、成功提示、文件路径或错误证据。
+3. 子任务结束后旧 DOM 和中间推理可以被压缩；继续前以计划为接力棒，不重做已完成步骤，不重复下载、上传或提交。
+4. 单次委派达到步数边界时返回阶段回执：已完成 / 当前页面 / 关键产物 / 剩余步骤 / 建议下一步。
+5. 本次 pageAgent 的计划与不同 call_agent 之间彼此隔离，不覆盖外层业务计划。
+
 工作流程：
-1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"）
-2. browser_navigate 打开目标页面
-3. browser_get_page_content 了解页面结构与状态，拿到带编号的可交互元素列表
-4. 用 index 定位目标元素，browser_type 输入 / browser_click 点击（搜索 = 输入关键词后回车或点搜索按钮）
-5. 页面跳转后重新 browser_get_page_content 刷新编号列表，逐步推进
-5a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
-6. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
-7. 返回任务结果摘要（用中文）
+1. 先 task_plan 拆解本次浏览器任务，再把第一项标 running。
+2. browser_navigate 打开目标页面，browser_get_page_content 读取现场。
+3. 用 index 定位并操作；页面变化后重新读页。
+4. 每个子任务完成立即 task_step 并写证据 note，再进入下一项。
+5. 汇总最新页面证据和关键产物；计划未完成时返回阶段回执。
 
 【核心工作方式 — 元素编号定位（最重要）】
 1. 每到一个新页面或弹窗出现后，先 browser_get_page_content 获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
@@ -237,7 +243,10 @@ const PAGE_AGENT_DATA = {
   presencePenalty: 0,
   isBuiltin: true,
   skillIds: [...PAGE_AGENT_SKILL_IDS],
-  config: { maxReActSteps: 500 },
+  config: {
+    maxReActSteps: PAGE_AGENT_MAX_REACT_STEPS,
+    autoContinueMaxRounds: PAGE_AGENT_AUTO_CONTINUE_MAX_ROUNDS,
+  },
 };
 
 // ========== P4.1: dataAgent（内置数据查询分析智能体） ==========

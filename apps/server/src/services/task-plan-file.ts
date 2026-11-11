@@ -55,11 +55,28 @@ export interface TaskPlan {
   steps: TaskPlanStep[];
 }
 
+/**
+ * 计划存储作用域。
+ *
+ * 主智能体使用父会话存储（DB + plan.md）；pageAgent 等子智能体使用一次委派独有的
+ * 内存存储。两者共用同一套计划推进语义，但绝不共享计划对象。
+ */
+export interface TaskPlanStore {
+  load(): TaskPlan | null;
+  save(plan: TaskPlan): boolean;
+  isSameTaskTurn(plan: TaskPlan): boolean;
+  canPersistToFile(): boolean;
+  writeFile(plan: TaskPlan | null): Promise<boolean>;
+  computeWaitMs(from: number, to: number): number;
+}
+
 /** 重规划时保留已完成步骤的计时（服务端内部参数，绝不来自模型入参） */
 export interface PreservedStepTiming {
   /** 从 1 起，与新计划 steps 的下标一致 */
   index: number;
   status: 'done' | 'failed';
+  /** 已完成步骤的证据/结论，重规划时必须一起保留，否则检查点会丢关键产物。 */
+  note?: string;
   startedAt?: number;
   finishedAt?: number;
   activeMs?: number;
@@ -278,6 +295,43 @@ export function loadPlanJson(conversationId: string): TaskPlan | null {
   }
 }
 
+/** 父会话计划作用域（当前默认行为）。 */
+export function createConversationTaskPlanStore(conversationId: string): TaskPlanStore {
+  return {
+    load: () => loadPlanJson(conversationId),
+    save: (plan) => savePlanJson(conversationId, plan),
+    isSameTaskTurn: (plan) => isSameTaskTurn(plan, conversationId),
+    canPersistToFile: () => getTaskPlanPath(conversationId) !== null,
+    writeFile: (plan) => writeTaskPlanFile(conversationId, plan),
+    computeWaitMs: (from, to) => computeWaitMs(conversationId, from, to),
+  };
+}
+
+/**
+ * 一次子智能体调用独有的内存计划作用域。
+ *
+ * parentToolCallId 已保证每次 call_agent 唯一，因此不同 pageAgent 调用天然看不到
+ * 彼此的计划。任务结束即回收，不写父会话 task_plan_json，也不镜像 plan.md。
+ */
+export function createInMemoryTaskPlanStore(initialPlan: TaskPlan | null = null): TaskPlanStore {
+  const clone = (plan: TaskPlan | null): TaskPlan | null =>
+    plan ? JSON.parse(JSON.stringify(plan)) as TaskPlan : null;
+  let current = clone(initialPlan);
+  return {
+    load: () => clone(current),
+    save: (plan) => {
+      current = clone(plan);
+      return true;
+    },
+    // 同一 pageAgent 调用内的重规划属于同一浏览器任务，保留已完成步骤状态与计时。
+    isSameTaskTurn: () => true,
+    canPersistToFile: () => false,
+    writeFile: async () => true,
+    // 子任务耗时只按自身计划窗口计算，不借用父会话活动时间来推断等待。
+    computeWaitMs: () => 0,
+  };
+}
+
 /** 步骤开始时间兜底 —— 模型常跳过 running 直接标 done（2026-10-23 实测：6 步计划全在
  *  结束时一次性标记，每步 startedAt===finishedAt，界面耗时全是「—」）。
  *  时间线连续地取「最近一个已结算的前序步骤的结束点」；没有则退回计划创建时间。 */
@@ -346,6 +400,7 @@ function carriedStepTimings(previous: TaskPlan, steps: TaskPlanStep[]): Preserve
     out.push({
       index: i + 1,
       status: p.status as 'done' | 'failed',
+      ...(p.note ? { note: p.note } : {}),
       ...(Number(p.startedAt) ? { startedAt: Number(p.startedAt) } : {}),
       ...(Number(p.finishedAt) ? { finishedAt: Number(p.finishedAt) } : {}),
       ...(Number(p.activeMs) ? { activeMs: Number(p.activeMs) } : {}),
@@ -364,7 +419,9 @@ export async function backendTaskPlan(
   conversationId: string,
   args: Record<string, unknown>,
   preserved?: PreservedStepTiming[],
+  store?: TaskPlanStore,
 ): Promise<string> {
+  const planStore = store || createConversationTaskPlanStore(conversationId);
   const rawSteps = Array.isArray(args?.steps) ? (args.steps as any[]) : [];
   const steps: TaskPlanStep[] = rawSteps
     .filter((s: any) => s && s.title)
@@ -376,13 +433,14 @@ export async function backendTaskPlan(
   if (!steps.length) return 'task_plan 失败：steps 里没有有效步骤（每项需要 title）';
   // ★ 2026-10-27：模型二次 task_plan 不再清空计时。同一轮内（用户没再说话）视为重规划/继续：
   //   沿用旧计划的 createdAt，并按标题把已完成步骤的状态与耗时搬过来；用户发过新消息才是新任务。
-  const existing = loadPlanJson(conversationId);
-  const replan = preserved === undefined && existing !== null && isSameTaskTurn(existing, conversationId);
+  const existing = planStore.load();
+  const replan = preserved === undefined && existing !== null && planStore.isSameTaskTurn(existing);
   const effectivePreserved = replan ? carriedStepTimings(existing!, steps) : preserved;
   for (const p of effectivePreserved || []) {
     const step = steps[p.index - 1];
     if (!step) continue;
     step.status = p.status;
+    if (p.note) step.note = p.note;
     if (p.startedAt) step.startedAt = p.startedAt;
     if (p.finishedAt) step.finishedAt = p.finishedAt;
     if (p.activeMs) step.activeMs = p.activeMs;
@@ -395,14 +453,14 @@ export async function backendTaskPlan(
     : undefined;
   const plan: TaskPlan = { title: String(args?.title || '任务计划'), steps, createdAt: carriedCreatedAt ?? Date.now() };
   derivePlanTiming(plan);
-  if (!savePlanJson(conversationId, plan)) return 'task_plan 失败：写库失败';
+  if (!planStore.save(plan)) return 'task_plan 失败：写库失败';
   // ★★ 2026-10-26：区分「真的写失败」与「本就没配工作目录」。
   //   `getTaskPlanPath` 在既未挂空间、也没设全局工作目录时返回 null ——
   //   那是**按设计跳过**（见该函数注释），但旧代码把 false 一律渲染成
   //   「工作目录计划文件写入失败」⇒ 未设工作目录的会话每推进一步就收到一次
   //   "失败"回执（实测任务 ba426984 连刷 3 次），模型会以为计划没保存而反复补救。
-  const canPersist = getTaskPlanPath(conversationId) !== null;
-  const ok = await writeTaskPlanFile(conversationId, plan);
+  const canPersist = planStore.canPersistToFile();
+  const ok = await planStore.writeFile(plan);
   const warn = canPersist && !ok ? '（工作目录计划文件写入失败，跨会话接力可能不可用）' : '';
   const kept = replan ? (effectivePreserved?.length || 0) : 0;
   const replanNote = replan
@@ -419,8 +477,13 @@ export async function backendTaskPlan(
  *   done 后又 running（返工）→ 把上一轮时长并入 activeMs、重置 startedAt。
  *   计划级 startedAt/finishedAt 由步骤时间推导，不单独记账。
  */
-export async function backendTaskStep(conversationId: string, args: Record<string, unknown>): Promise<string> {
-  const plan = loadPlanJson(conversationId);
+export async function backendTaskStep(
+  conversationId: string,
+  args: Record<string, unknown>,
+  store?: TaskPlanStore,
+): Promise<string> {
+  const planStore = store || createConversationTaskPlanStore(conversationId);
+  const plan = planStore.load();
   if (!plan) return '当前会话还没有任务计划，请先调用 task_plan 建立计划再推进步骤';
   const steps = plan.steps || [];
   const idx = Number(args?.index);
@@ -463,17 +526,17 @@ export async function backendTaskStep(conversationId: string, args: Record<strin
       step.finishedAt = now;
       // ★ 2026-10-27（C）：结算时把「时间窗里没有任何活动」的长间隙记为等待，
       //   界面用它把「这步干了多久」和「其中等了多久」分开（Top3 按干活时长排序）。
-      const waited = computeWaitMs(conversationId, Number(step.startedAt) || 0, now);
+      const waited = planStore.computeWaitMs(Number(step.startedAt) || 0, now);
       if (waited > 0) step.waitMs = (Number(step.waitMs) || 0) + waited;
     }
   }
   step.status = status;
   if (args?.note != null) step.note = String(args.note);
   derivePlanTiming(plan);
-  if (!savePlanJson(conversationId, plan)) return 'task_step 失败：写库失败';
+  if (!planStore.save(plan)) return 'task_step 失败：写库失败';
   // 与 task_plan 同口径：未配工作目录 = 按设计跳过，不算失败（见上方 ★★ 2026-10-26 注释）
-  const canPersist = getTaskPlanPath(conversationId) !== null;
-  const ok = await writeTaskPlanFile(conversationId, plan);
+  const canPersist = planStore.canPersistToFile();
+  const ok = await planStore.writeFile(plan);
   const warn = canPersist && !ok ? '（工作目录计划文件写入失败）' : '';
   return `已更新第 ${idx} 步状态为 ${status}${warn}`;
 }
