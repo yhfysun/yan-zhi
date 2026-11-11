@@ -13,7 +13,7 @@ import {
   getLearningContext, getCourses, getSubjects,
   checkDrillAnswer, checkReviewAnswer,
 } from '../learning/service.js';
-import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
+import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
@@ -286,9 +286,9 @@ router.get('/courses', (req, res) => {
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// GET /api/learning/scenes —— 场景卡墙（12 张，含建议难度）
-router.get('/scenes', (_req, res) => {
-  res.json({ data: SCENE_CARDS });
+// GET /api/learning/scenes —— 课程专属场景任务（?courseId= 过滤）
+router.get('/scenes', (req, res) => {
+  res.json({ data: listSceneCards(String(req.query.courseId || '')) });
 });
 
 // GET /api/learning/grammar —— 语法点目录（列表：id/标题/级别/分组/一句话规则）
@@ -349,13 +349,13 @@ router.post('/readings/:id/collect', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// POST /api/learning/voice —— 口语跟读识别：{audioBase64, mime, expected?} → whisper(en) 转写
+// POST /api/learning/voice —— 口语跟读识别：{audioBase64, mime, expected?, language?} → whisper 转写
 // 复用剪辑模式的 whisper 基建（clip-asr）——同一套依赖解析与错误指引，不另起炉灶。
 // 带 expected（目标句）时返回词级对齐发音打分（learning/pronunciation.ts 唯一实现）。
 router.post('/voice', async (req, res) => {
   let tmpFile: string | null = null;
   try {
-    const body = req.body as { audioBase64?: string; mime?: string; expected?: string };
+    const body = req.body as { audioBase64?: string; mime?: string; expected?: string; language?: string };
     const b64 = String(body.audioBase64 || '').replace(/^data:[^;]+;base64,/, '');
     if (!b64) { res.status(400).json({ error: 'audioBase64 必填' }); return; }
     const buf = Buffer.from(b64, 'base64');
@@ -364,13 +364,16 @@ router.post('/voice', async (req, res) => {
     const ext = mime.includes('wav') ? '.wav' : mime.includes('mp4') ? '.m4a' : mime.includes('ogg') ? '.ogg' : '.webm';
     tmpFile = path.join(os.tmpdir(), `learning-voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
     await fsp.writeFile(tmpFile, buf);
-    const r = await transcribeClipAudio({ input: tmpFile, language: 'en', duration: 60 });
+    // 场景对练允许中英混说：没有发音目标时交给 whisper 自动判定语言；
+    // 跟读评分必须锁 en，否则中文口音提示会被识别成汉字，词级对齐失去意义。
+    const expected = String(body.expected || '').trim();
+    const language = expected ? 'en' : (String(body.language || '').trim() || 'auto');
+    const r = await transcribeClipAudio({ input: tmpFile, language, duration: 60 });
     if (!r.ok || !r.cues?.length) {
       res.status(r.status || 400).json({ error: r.error || '识别失败', ...(r.extra || {}) });
       return;
     }
     const text = r.cues.map((c) => c.text).join(' ').trim();
-    const expected = String(body.expected || '').trim();
     res.json({
       data: {
         text,

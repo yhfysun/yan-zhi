@@ -545,11 +545,15 @@ router.beforeEach(async (to) => {
   if (isCapacitor && activeMode.value !== 'office' && MOBILE_BLOCKED_PATHS.has(modeRoute(activeMode.value))) {
     setMode('office');
   }
+  // 学习任务必须留在学习模式内完成：场景卡/陪练任何按钮都不应把用户送进办公聊天详情。
+  // 这是交互层的兜底，模式切换器会先 setMode('office') 再导航，不会被误拦。
+  if (to.name === 'chat-detail' && activeMode.value === 'learning') {
+    return { path: '/learning' };
+  }
   // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
   // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。
-  // ★ 只拦「列表页」/chat，不拦 /chat/:convId（2026-11-09 实报：学习模式点「开始陪练」
-  //   → push 会话详情被这道闸弹回 /learning —— 会话建好了、人却留在原地，用户看到
-  //   "按钮没用"连点出 10 条会话。会话详情是明确目标，模式记忆不该抢跳）。
+  // ★ 只拦「列表页」/chat；学习模式自己的 /chat/:convId 已在上方单独挡回 /learning。
+  //   页面内场景/陪练不再依赖聊天详情路由，避免任务跨模式或重复建会话。
   if (
     to.path === '/chat' &&
     activeMode.value !== 'office' &&

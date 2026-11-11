@@ -2,31 +2,11 @@
 // 全部离线预写、随应用分发——LLM 只做「归因到语法点」「按模板补例句」「AI 收词」，
 // 不允许现场编教学内容（方案 §2.4：语法规则预写内置）。
 
-// ── 场景卡 ──────────────────────────────────────────────────────────────────
-
-export type SceneCard = {
-  id: string;
-  title: string;
-  scene: string;        // 一句话场景描述（注入给模型的设定）
-  roles: [string, string]; // [模型扮演, 用户扮演]
-  keyPhrases: string[]; // 目标句型（Learn→Practice→Apply 的 Learn 段）
-  exitHint: string;     // 达成什么算完成
-  cefr: string;         // 建议难度
-};
-
-export const SCENE_CARDS: SceneCard[] = [  { id: 'sc_airport', title: '机场值机', scene: '机场出发大厅值机柜台，用户赶时间，航班 40 分钟后截止托运', roles: ['值机柜员', '赶时间的旅客'], keyPhrases: ['I’d like to check in for flight...', 'Here’s my passport.', 'Can I take ... as carry-on?', 'Is the flight on time?'], exitHint: '完成托运并确认登机口', cefr: 'A2' },
-  { id: 'sc_restaurant', title: '餐厅点单', scene: '西餐厅晚餐，服务员推荐今日特色', roles: ['服务员', '顾客'], keyPhrases: ['Could I see the menu?', 'I’ll have the ...', 'How is the ... cooked?', 'Could we get the bill, please?'], exitHint: '点完主菜饮料并结账', cefr: 'A2' },
-  { id: 'sc_hotel', title: '酒店入住', scene: '酒店前台，用户已预订但订单姓名拼写有出入', roles: ['前台接待', '入住客人'], keyPhrases: ['I have a reservation under...', 'Could you check again, please?', 'What time is breakfast?', 'Is there Wi-Fi in the room?'], exitHint: '解决订单问题并拿到房卡', cefr: 'A2' },
-  { id: 'sc_interview', title: '求职面试', scene: '英语面试，岗位与用户简历相关，面试官追问项目细节', roles: ['面试官', '应聘者'], keyPhrases: ['Thank you for having me.', 'In my last role, I...', 'My biggest strength is...', 'Do you have any questions for me?'], exitHint: '完成自我介绍 + 项目问答 + 反向提问', cefr: 'B1' },
-  { id: 'sc_smalltalk', title: '电梯闲聊', scene: '电梯里遇到外国同事，30 秒到 1 分钟的寒暄', roles: ['外国同事', '用户本人'], keyPhrases: ['How’s it going?', 'Busy week?', 'Any plans for the weekend?', 'Well, this is my floor—nice talking to you!'], exitHint: '自然寒暄并得体结束', cefr: 'A2' },
-  { id: 'sc_doctor', title: '看医生', scene: '诊所问诊，描述症状三天了，医生询问细节并给建议', roles: ['医生', '患者'], keyPhrases: ['I’ve had a ... for three days.', 'It gets worse when...', 'Is it serious?', 'How often should I take this?'], exitHint: '描述症状并听懂医嘱', cefr: 'B1' },
-  { id: 'sc_shopping', title: '退换货', scene: '商店客服处，用户要退一件有瑕疵的商品，没有小票', roles: ['客服', '顾客'], keyPhrases: ['I’d like to return this.', 'It doesn’t work properly.', 'I lost the receipt, but...', 'Could I get a refund or exchange?'], exitHint: '说明问题并争取到退换', cefr: 'B1' },
-  { id: 'sc_meeting', title: '线上会议发言', scene: '项目周会，用户要汇报进度并被追问风险', roles: ['项目经理', '汇报人'], keyPhrases: ['Quick update on my side.', 'We’re on track for...', 'The main risk is...', 'I suggest we...'], exitHint: '完成进度汇报并回应一次追问', cefr: 'B1' },
-  { id: 'sc_phone', title: '客服电话', scene: '打电话给宽带运营商报修，信号差需要拼清楚信息', roles: ['客服专员', '报修用户'], keyPhrases: ['I’m calling about...', 'Sorry, could you repeat that?', 'My account number is...', 'When can a technician come?'], exitHint: '报修成功并确认上门时间', cefr: 'B1' },
-  { id: 'sc_directions', title: '问路', scene: '国外街头，用户手机没电，向路人问路去地铁站', roles: ['热心路人', '迷路游客'], keyPhrases: ['Excuse me, how do I get to...?', 'Is it far from here?', 'Left at the second traffic light?', 'Thanks a lot!'], exitHint: '问清路线并复述确认', cefr: 'A1' },
-  { id: 'sc_negotiate', title: '砍价', scene: '旅游纪念品市场，摊主开价偏高，用户想便宜 20%', roles: ['摊主', '游客'], keyPhrases: ['That’s a bit steep.', 'Could you do ... if I take two?', 'What’s your best price?', 'Deal!'], exitHint: '谈成一笔买卖', cefr: 'B1' },
-  { id: 'sc_party', title: '派对破冰', scene: '朋友聚会上认识新朋友，聊兴趣爱好并互加联系方式', roles: ['新朋友', '用户'], keyPhrases: ['Hi, I don’t think we’ve met.', 'What do you do for fun?', 'How do you know the host?', 'Let’s exchange numbers!'], exitHint: '完成破冰并互留联系方式', cefr: 'A2' },
-];
+// 场景内容单独维护在 ./scenes.ts，保证「课程 → 场景」的内容包不被语法/阅读数据淹没。
+export {
+  SCENE_CARDS, listSceneCards, getSceneCard, renderScenePrompt,
+  type SceneCard, type SceneCardView, type SceneGuide, type SceneLevel,
+} from './scenes.js';
 
 // ── 语法点目录（P1 首版 24 点起步，覆盖最高频痛点；目录可下载扩充） ─────────────
 // 每点内容离线预写：rule 一句话规则 / examples 正例（en+zh）/ pairs 正误对照 / errors 常见错误
@@ -144,25 +124,6 @@ export const READING_PASSAGES: ReadingPassage[] = [
     ],
   },
 ];
-
-// ── 场景卡检索与提示词渲染（llm-task-manager 注入用） ─────────────────────────
-
-export function getSceneCard(id: string): SceneCard | null {
-  return SCENE_CARDS.find((s) => s.id === id) || null;
-}
-
-/** 场景块拼进教学提示词：角色 + 目标句型 + [SCENE_END] 触发条件（提示词 §宪法第 6 条负责收尾格式） */
-export function renderScenePrompt(s: SceneCard): string {
-  return [
-    '## 当前场景（场景任务卡模式）',
-    `场景：${s.scene}`,
-    `你扮演：${s.roles[0]}；用户扮演：${s.roles[1]}。严格按角色说话，不跳出场景。`,
-    `关键句型（开场先列出这 ${s.keyPhrases.length} 句让用户跟读，再进入对话）：`,
-    ...s.keyPhrases.map((k) => `- ${k}`),
-    `完成条件：${s.exitHint}。达成后按教学宪法输出 [SCENE_END] + 评分 JSON（corrections 每条带 grammar_point 可留空）。`,
-    `难度参考：CEFR ${s.cefr}。`,
-  ].join('\n');
-}
 
 // ── 语法点第二批（P1 扩充至 40：覆盖中文母语者中高频痛点） ─────────────────────
 GRAMMAR_POINTS.push(

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
+import { Headphones, Pause, Play, RotateCcw, Volume2 } from 'lucide-vue-next';
 import { api } from '../../api/client';
 
 type ExamType = '考研' | '高考';
@@ -8,10 +9,14 @@ type ExamFilter = '全部' | ExamType;
 type ExamSummary = {
   id: string; title: string; examType: ExamType; year: number; region: string;
   section: string; difficulty: string; durationMinutes: number; tags: string[];
-  questionCount: number;
+  questionCount: number; hasListening: boolean;
 };
 type ExamQuestion = { id: string; stem: string; options: string[] };
-type ExamPaper = Omit<ExamSummary, 'questionCount'> & { passage: string; questions: ExamQuestion[] };
+type ExamPaper = Omit<ExamSummary, 'questionCount' | 'hasListening'> & {
+  passage: string;
+  listeningScript?: string;
+  questions: ExamQuestion[];
+};
 type ExamResult = {
   paperId: string; title: string; correct: number; total: number; score: number;
   details: Array<{
@@ -33,6 +38,8 @@ const answers = ref<Record<string, number>>({});
 const submitting = ref(false);
 const result = ref<ExamResult | null>(null);
 const elapsedSeconds = ref(0);
+const listeningPlaying = ref(false);
+const listeningRate = ref(0.9);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const filteredPapers = computed(() => filter.value === '全部'
@@ -46,6 +53,7 @@ const elapsedText = computed(() => {
   const s = (elapsedSeconds.value % 60).toString().padStart(2, '0');
   return `${m}:${s}`;
 });
+const isListening = computed(() => !!activePaper.value?.listeningScript);
 
 function stopTimer() {
   if (timer) clearInterval(timer);
@@ -78,10 +86,50 @@ async function openPaper(id: string) {
     activePaper.value = paper;
     answers.value = {};
     result.value = null;
+    stopListening();
     startTimer();
+    await nextTick();
+    const pane = document.querySelector<HTMLElement>('.lp-col-mid');
+    if (typeof pane?.scrollTo === 'function') pane.scrollTo({ top: 0 });
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '试卷加载失败');
   }
+}
+
+function stopListening() {
+  listeningPlaying.value = false;
+  try { window.speechSynthesis?.cancel(); } catch { /* 无语音引擎时静默 */ }
+}
+
+function playListening() {
+  const script = String(activePaper.value?.listeningScript || '').trim();
+  if (!script) return;
+  if (listeningPlaying.value) {
+    stopListening();
+    return;
+  }
+  if (!('speechSynthesis' in window)) {
+    ElMessage.warning('当前环境不支持语音播放，请使用支持语音的系统浏览器');
+    return;
+  }
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(script);
+    u.lang = 'en-US';
+    u.rate = listeningRate.value;
+    u.onend = () => { listeningPlaying.value = false; };
+    u.onerror = () => { listeningPlaying.value = false; };
+    listeningPlaying.value = true;
+    window.speechSynthesis.speak(u);
+  } catch {
+    listeningPlaying.value = false;
+    ElMessage.warning('听力播放失败，请检查系统语音引擎');
+  }
+}
+
+function replayListening() {
+  stopListening();
+  playListening();
 }
 
 function choose(questionId: string, index: number) {
@@ -111,6 +159,7 @@ async function submit() {
 
 function backToList() {
   stopTimer();
+  stopListening();
   activePaper.value = null;
   answers.value = {};
   result.value = null;
@@ -118,7 +167,10 @@ function backToList() {
 }
 
 onMounted(loadPapers);
-onBeforeUnmount(stopTimer);
+onBeforeUnmount(() => {
+  stopTimer();
+  stopListening();
+});
 </script>
 
 <template>
@@ -127,7 +179,7 @@ onBeforeUnmount(stopTimer);
       <div class="lp-exam-head">
         <div>
           <h3>历年真题</h3>
-          <p class="lp-exam-sub">考研与高考英语客观题精练，交卷后按题计分并给出逐题解析。</p>
+          <p class="lp-exam-sub">考研与高考英语专项训练，覆盖阅读、听力等客观题；交卷后按题计分并给出逐题解析。</p>
         </div>
         <div class="lp-exam-filters" aria-label="真题类型筛选">
           <button
@@ -141,13 +193,16 @@ onBeforeUnmount(stopTimer);
         <article v-for="p in filteredPapers" :key="p.id" class="lp-exam-card">
           <div class="lp-exam-card-top">
             <span class="lp-exam-type" :class="p.examType === '考研' ? 'postgrad' : 'gaokao'">{{ p.examType }}</span>
-            <span class="lp-exam-year">{{ p.year }}</span>
+            <div class="lp-exam-card-badges">
+              <span v-if="p.hasListening" class="lp-exam-listening-badge"><Headphones :size="11" /> 听力</span>
+              <span class="lp-exam-year">{{ p.year }}</span>
+            </div>
           </div>
           <h4>{{ p.title }}</h4>
           <p class="lp-exam-meta">{{ p.region }} · {{ p.section }} · {{ p.difficulty }}</p>
           <p class="lp-exam-tags">{{ p.tags.join(' / ') }}</p>
           <div class="lp-exam-card-foot">
-            <span>{{ p.questionCount }} 题 · 建议 {{ p.durationMinutes }} 分钟</span>
+            <span>{{ p.questionCount }} 题 · {{ p.section }} · 建议 {{ p.durationMinutes }} 分钟</span>
             <button class="lp-primary" @click="openPaper(p.id)">开始训练</button>
           </div>
         </article>
@@ -167,6 +222,10 @@ onBeforeUnmount(stopTimer);
             <b>{{ result.score }}</b><span>分</span>
           </div>
         </div>
+        <details v-if="isListening && activePaper.listeningScript" class="lp-exam-listening-review">
+          <summary><Volume2 :size="14" /> 查看听力原文</summary>
+          <p>{{ activePaper.listeningScript }}</p>
+        </details>
         <div class="lp-exam-review-list">
           <article
             v-for="(d, i) in result.details" :key="d.questionId"
@@ -202,7 +261,32 @@ onBeforeUnmount(stopTimer);
           <span class="lp-exam-timer">⏱ {{ elapsedText }}</span>
         </div>
         <div class="lp-exam-layout">
-          <article class="lp-exam-passage">
+          <article v-if="isListening" class="lp-exam-listening-panel">
+            <div class="lp-exam-listening-icon"><Headphones :size="28" /></div>
+            <div>
+              <h4>听力材料</h4>
+              <p>原文在交卷前隐藏。建议先完整听一遍，再开始作答。</p>
+            </div>
+            <div class="lp-exam-audio-controls">
+              <button class="lp-exam-play" @click="playListening">
+                <Pause v-if="listeningPlaying" :size="18" />
+                <Play v-else :size="18" />
+                {{ listeningPlaying ? '停止播放' : '播放听力' }}
+              </button>
+              <button class="lp-mini" :disabled="listeningPlaying" @click="replayListening">
+                <RotateCcw :size="13" /> 重播
+              </button>
+              <label class="lp-exam-rate">
+                语速
+                <select v-model.number="listeningRate" :disabled="listeningPlaying">
+                  <option :value="0.75">0.75×</option>
+                  <option :value="0.9">0.9×</option>
+                  <option :value="1">1×</option>
+                </select>
+              </label>
+            </div>
+          </article>
+          <article v-else class="lp-exam-passage">
             <h4>阅读材料</h4>
             <p>{{ activePaper.passage }}</p>
           </article>
@@ -247,9 +331,11 @@ onBeforeUnmount(stopTimer);
 .lp-exam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
 .lp-exam-card { border: 1px solid #e5e6eb; border-radius: 10px; background: #fafbfc; padding: 12px; display: flex; flex-direction: column; gap: 7px; }
 .lp-exam-card-top { display: flex; align-items: center; justify-content: space-between; }
+.lp-exam-card-badges { display: flex; align-items: center; gap: 6px; }
 .lp-exam-type { display: inline-flex; border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 700; margin-right: 6px; }
 .lp-exam-type.postgrad { color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; }
 .lp-exam-type.gaokao { color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; }
+.lp-exam-listening-badge { display: inline-flex; align-items: center; gap: 3px; border: 1px solid #d6e4ff; background: #f0f5ff; color: #245bdb; border-radius: 999px; padding: 2px 7px; font-size: 10px; }
 .lp-exam-year { color: #646a73; font-size: 12px; font-weight: 600; }
 .lp-exam-card h4 { margin: 0; font-size: 14px; line-height: 1.45; }
 .lp-exam-tags { color: #646a73; }
@@ -262,8 +348,17 @@ onBeforeUnmount(stopTimer);
 .lp-exam-runner-head b { display: block; font-size: 14px; margin-bottom: 3px; }
 .lp-exam-timer { color: #3370ff; background: #f0f5ff; border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .lp-exam-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr); gap: 14px; margin-top: 14px; align-items: start; }
-.lp-exam-passage, .lp-exam-question { border: 1px solid #e5e6eb; border-radius: 10px; padding: 12px; background: #fafbfc; }
+.lp-exam-passage, .lp-exam-question, .lp-exam-listening-panel { border: 1px solid #e5e6eb; border-radius: 10px; padding: 12px; background: #fafbfc; }
 .lp-exam-passage { position: sticky; top: 0; max-height: 68vh; overflow-y: auto; }
+.lp-exam-listening-panel { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; background: #f7faff; border-color: #d6e4ff; }
+.lp-exam-listening-panel h4 { margin: 0 0 4px; font-size: 14px; }
+.lp-exam-listening-panel p { margin: 0; color: #646a73; font-size: 12px; line-height: 1.6; }
+.lp-exam-listening-icon { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #e8f1ff; color: #3370ff; }
+.lp-exam-audio-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lp-exam-play { border: 1px solid #3370ff; background: #3370ff; color: #fff; border-radius: 999px; padding: 7px 14px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.lp-exam-audio-controls .lp-mini { display: inline-flex; align-items: center; gap: 4px; }
+.lp-exam-rate { display: inline-flex; align-items: center; gap: 5px; color: #646a73; font-size: 11px; }
+.lp-exam-rate select { border: 1px solid #d0d3d9; border-radius: 5px; background: var(--glass-bg); padding: 4px 5px; font-size: 11px; }
 .lp-exam-passage h4, .lp-exam-question h4 { margin: 0 0 8px; font-size: 13px; line-height: 1.5; }
 .lp-exam-passage p { margin: 0; white-space: pre-wrap; font-size: 13px; line-height: 1.75; color: #4e5469; }
 .lp-exam-questions { display: flex; flex-direction: column; gap: 10px; }
@@ -277,6 +372,9 @@ onBeforeUnmount(stopTimer);
 .lp-exam-score b { font-size: 36px; line-height: 1; }
 .lp-exam-score span { margin-left: 3px; font-size: 13px; }
 .lp-exam-review-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.lp-exam-listening-review { margin-bottom: 12px; border: 1px solid #d6e4ff; border-radius: 8px; background: #f7faff; padding: 9px 11px; font-size: 12px; }
+.lp-exam-listening-review summary { cursor: pointer; display: flex; align-items: center; gap: 5px; color: #245bdb; font-weight: 600; }
+.lp-exam-listening-review p { margin: 8px 0 0; color: #4e5469; line-height: 1.7; white-space: pre-wrap; }
 .lp-exam-review { border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 8px; padding: 9px 11px; font-size: 12px; }
 .lp-exam-review.wrong { border-color: #fecaca; background: #fff7f7; }
 .lp-exam-review-title { display: flex; gap: 7px; margin: 0 0 5px; line-height: 1.5; }
@@ -287,7 +385,7 @@ onBeforeUnmount(stopTimer);
 .lp-hint { color: #8f959e; font-size: 12px; margin: 8px 0 0; }
 @media (max-width: 900px) {
   .lp-exam-layout { grid-template-columns: 1fr; }
-  .lp-exam-passage { position: static; max-height: none; }
+  .lp-exam-passage, .lp-exam-listening-panel { position: static; max-height: none; }
   .lp-exam-head, .lp-exam-runner-head, .lp-exam-card-foot, .lp-exam-submit, .lp-exam-result-head { flex-wrap: wrap; }
 }
 </style>

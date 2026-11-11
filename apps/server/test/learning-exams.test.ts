@@ -18,6 +18,16 @@ describe('历年真题题库', () => {
     expect(new Set(papers.map((p) => p.year)).size).toBeGreaterThanOrEqual(4);
   });
 
+  it('★ 考研复试与高考都提供听力专项，目录标记 hasListening 且题量完整到 8/10 题', () => {
+    const listening = listExamPapers().filter((p) => p.hasListening);
+    expect(listening.some((p) => p.examType === '考研')).toBe(true);
+    expect(listening.some((p) => p.examType === '高考')).toBe(true);
+    const gaokao = listening.find((p) => p.examType === '高考')!;
+    const retest = listening.find((p) => p.examType === '考研')!;
+    expect(gaokao.questionCount).toBe(10);
+    expect(retest.questionCount).toBe(8);
+  });
+
   it('★ 取卷不下发答案与解析，避免前端提前看到正确项', () => {
     const paper = getExamPaper(EXAM_PAPERS[0].id)!;
     expect(paper.questions.length).toBeGreaterThanOrEqual(5);
@@ -26,6 +36,13 @@ describe('历年真题题库', () => {
       expect(q).not.toHaveProperty('explanation');
       expect(q.options.length).toBeGreaterThanOrEqual(4);
     }
+  });
+
+  it('★ 听力卷下发朗读稿供播放，但列表接口不泄露原文', () => {
+    const summary = listExamPapers().find((p) => p.hasListening)!;
+    expect(summary).not.toHaveProperty('listeningScript');
+    const paper = getExamPaper(summary.id)!;
+    expect(paper.listeningScript?.length).toBeGreaterThan(200);
   });
 
   it('★ 交卷按客观题计分，返回逐题解析并写入 exam 学习记录', () => {

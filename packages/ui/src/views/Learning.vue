@@ -4,21 +4,21 @@
 // 此前 Tab 切换时中栏整块换布局导致"样式跳来跳去"，已废弃。
 // 选中课程后关卡地图直接出现在中栏（此前藏在左栏滚动区外，用户感知"点了没用"）。
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { ChevronRight, Clock3, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2 } from 'lucide-vue-next';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
 import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
-import { stripSceneResultBlocks } from '../utils/scene-result';
+import SceneResultCard from '../components/chat/SceneResultCard.vue';
+import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
 /** ★ 与 apps/server/src/builtin-learning-agents.ts 的 LEARNING_AGENT_ID 成对维护（服务端有契约单测） */
 const LEARNING_AGENT_ID = 'a_builtin_learning_coach';
 
-const router = useRouter();
 const chat = useChatStore();
 
 /** api.get/post 返回 ApiError | { data }：统一收窄取 data（失败给 null，页面走静默降级） */
@@ -75,7 +75,7 @@ function switchTab(k: typeof tab.value) {
   tab.value = k;
   if (k === 'coach') void ensureCoachConv(); // 复用/创建陪练会话（不跳路由，内嵌对话）
   if (k === 'words' && activeBook.value) void loadBookWords(true);
-  if (k === 'scenes' && !scenes.value.length) loadScenes();
+  if (k === 'scenes') void ensureSceneCourse();
   if (k === 'grammar' && !grammarList.value.length) loadGrammar();
   if (k === 'reading' && !readings.value.length) loadReadings();
 }
@@ -104,15 +104,23 @@ async function loadAll() {
 type CourseView = { id: string; name: string; stage: string; bookId: string; bookName: string; wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number; dueCount: number; progressPct: number };
 type CourseGroup = { stage: string; courses: CourseView[] };
 const courses = ref<CourseGroup[]>([]);
+const activeCourseId = ref('');
 async function loadCourses() {
   const r = await api.get<{ data: CourseGroup[] }>(`/learning/courses?subject=${encodeURIComponent(subject.value)}`);
   courses.value = unwrap<CourseGroup[]>(r) || [];
+  if (!sceneCourseId.value) {
+    sceneCourseId.value = activeCourseId.value || courses.value[0]?.courses[0]?.id || '';
+  }
+  if (tab.value === 'scenes' && sceneCourseId.value) void loadScenes();
 }
 function openCourse(c: CourseView) {
   // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）；
   // 但用户正在词汇表通读时保持当前 Tab（换书词汇表跟着换，不把人踢回闯关）
-  if (tab.value !== 'words') tab.value = 'drill';
-  void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount });
+  if (tab.value !== 'words' && tab.value !== 'scenes') tab.value = 'drill';
+  activeCourseId.value = c.id;
+  sceneCourseId.value = c.id;
+  if (tab.value === 'scenes') void loadScenes();
+  void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount }, c.id);
 }
 const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom' && (b.subject || '英语') === subject.value));
 
@@ -183,7 +191,8 @@ watch(qIndex, async () => {
   focusInput.value?.focus();
 });
 
-async function openBook(book: Book) {
+async function openBook(book: Book, courseId = '') {
+  activeCourseId.value = courseId;
   activeBook.value = book;
   drillLevel.value = null;
   result.value = null;
@@ -437,27 +446,114 @@ async function submitReview() {
   }
 }
 
-// ── 场景卡（P1-A）──
-type SceneCard = { id: string; title: string; scene: string; roles: [string, string]; keyPhrases: string[]; exitHint: string; cefr: string };
+// ── 课程专属场景卡（场景任务全程留在学习模式内）──
+type SceneGuide = {
+  coachEn: string;
+  coachZh: string;
+  userEn: string;
+  userPhonetic: string;
+  userZh: string;
+};
+type SceneCard = {
+  id: string;
+  courseId: string;
+  courseName: string;
+  stage: string;
+  title: string;
+  theme: string;
+  scene: string;
+  setting: string;
+  roles: [string, string];
+  missions: string[];
+  keyPhrases: string[];
+  exitHint: string;
+  cefr: string;
+  level: '热身' | '挑战' | '实战';
+  minutes: number;
+  tags: string[];
+  guide: SceneGuide;
+};
 const scenes = ref<SceneCard[]>([]);
+const sceneCourseId = ref('');
+const sceneLoading = ref(false);
+const sceneError = ref('');
 const startingScene = ref<string | null>(null);
-async function loadScenes() {
-  const r = await api.get<{ data: SceneCard[] }>('/learning/scenes');
-  scenes.value = unwrap<SceneCard[]>(r) || [];
+const activeScene = ref<SceneCard | null>(null);
+const sceneCourseOptions = computed(() =>
+  courses.value.flatMap((g) => g.courses.map((c) => ({ id: c.id, name: c.name, stage: g.stage }))),
+);
+const sceneCourseName = computed(() => sceneCourseOptions.value.find((c) => c.id === sceneCourseId.value)?.name || '课程场景');
+const sceneLevelText = (level: SceneCard['level']) => (level === '热身' ? '简单' : level === '挑战' ? '中级' : '高级');
+const sceneScriptMode = computed(() => {
+  if (!activeScene.value) return '';
+  return activeScene.value.level === '热身' ? 'simple' : activeScene.value.level === '挑战' ? 'medium' : 'advanced';
+});
+
+async function ensureSceneCourse() {
+  if (!sceneCourseId.value) {
+    sceneCourseId.value = activeCourseId.value || sceneCourseOptions.value[0]?.id || '';
+  }
+  if (sceneCourseId.value) await loadScenes();
 }
+
+async function loadScenes() {
+  if (!sceneCourseId.value) {
+    scenes.value = [];
+    sceneError.value = '请先从左侧选择一门课程';
+    return;
+  }
+  sceneLoading.value = true;
+  sceneError.value = '';
+  try {
+    const r = await api.get<{ data: SceneCard[] }>(`/learning/scenes?courseId=${encodeURIComponent(sceneCourseId.value)}`);
+    scenes.value = unwrap<SceneCard[]>(r) || [];
+    if (!scenes.value.length) sceneError.value = '这门课的场景任务还在准备中';
+  } catch (e) {
+    scenes.value = [];
+    sceneError.value = e instanceof Error ? e.message : '场景加载失败';
+  } finally {
+    sceneLoading.value = false;
+  }
+}
+
+function sceneResultsOf(m: { role: string; content?: string }) {
+  return m.role === 'assistant' ? extractSceneResultBlocks(String(m.content || '')) : [];
+}
+
 async function startScene(scene: SceneCard) {
   if (startingScene.value) return;
   startingScene.value = scene.id;
   try {
+    // 点击按钮本身是用户手势：先申请麦克风权限，等陪练说完第一轮再自动录音。
+    practiceMicEnabled.value = true;
+    await primeCoachMic();
     const convId = await chat.createConversation(`场景：${scene.title}`, {
-      agentId: LEARNING_AGENT_ID, source: 'learning',
-      // learningScene 经 source_meta 透传，服务端 buildSystemPromptForBackend 注入场景块
-      sourceMeta: { learningScene: scene.id } as unknown as { url?: string; host?: string; scope?: string },
+      agentId: LEARNING_AGENT_ID,
+      source: 'learning',
+      sourceMeta: {
+        learningScene: scene.id,
+        learningCourseId: scene.courseId,
+      } as unknown as { url?: string; host?: string; scope?: string },
     });
-    await router.push({ name: 'chat-detail', params: { convId } });
+    coachConvId.value = convId;
+    activeScene.value = scene;
+    await chat.loadMessages(convId);
+    tab.value = 'coach';
+    await nextTick();
+    await sendCoach(`I am ready. Please start the "${scene.title}" scenario as ${scene.roles[0]}.`);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? `场景启动失败：${e.message}` : '场景启动失败，请稍后重试');
   } finally {
     startingScene.value = null;
   }
+}
+
+function askSceneHint() {
+  if (!activeScene.value || coachSending.value) return;
+  const target = sceneScriptMode.value === 'advanced'
+    ? '请根据当前场景和我上一句的意思，给我一句自然、可直接跟读的英文'
+    : `请提示我怎么说“${activeScene.value.guide.userEn}”`;
+  void sendCoach(`${target}。先给英文，再给一句中文解释，然后继续角色对话。`);
 }
 
 // ── 语法微课（P1-B）：列表行内展开，不跳页 ──
@@ -569,6 +665,13 @@ async function startCoaching() {
   if (startingChat.value) return;
   startingChat.value = true;
   try {
+    // 自由陪练不沿用上一个场景会话，确保两种任务各自独立。
+    if (activeScene.value) {
+      activeScene.value = null;
+      coachConvId.value = '';
+    }
+    practiceMicEnabled.value = true;
+    await primeCoachMic();
     await ensureCoachConv();
     tab.value = 'coach'; // ★ 内嵌对话：留在学习模式，不跳聊天页（用户实报"又跳到办公模式"）
     if (!coachMsgs.value.length) {
@@ -591,16 +694,132 @@ const coachConvId = ref('');
 const coachInput = ref('');
 const coachSending = ref(false);
 const coachVoiceOn = ref(true);
+const practiceMicEnabled = ref(false);
+const coachMicState = ref<'idle' | 'requesting' | 'ready' | 'recording' | 'transcribing'>('idle');
 const coachMsgs = computed(() => (coachConvId.value ? chat.messagesByConv[coachConvId.value] || [] : []));
 const coachStreaming = computed(() => !!coachConvId.value && chat.isConvStreaming(coachConvId.value));
+let coachMicStream: MediaStream | null = null;
+let coachMicRecorder: MediaRecorder | null = null;
+let coachMicChunks: Blob[] = [];
+
+/** 打开麦克风但先不录音：用户点击场景时完成权限申请，等 AI 说完再自动录。 */
+async function primeCoachMic(): Promise<boolean> {
+  if (coachMicStream?.active) {
+    if (coachMicState.value !== 'recording') coachMicState.value = 'ready';
+    return true;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    coachMicState.value = 'idle';
+    ElMessage.warning('当前环境无法录音，可以直接打字继续练习');
+    return false;
+  }
+  coachMicState.value = 'requesting';
+  try {
+    coachMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    coachMicState.value = 'ready';
+    return true;
+  } catch {
+    coachMicState.value = 'idle';
+    ElMessage.warning('麦克风未打开，可以直接打字继续练习');
+    return false;
+  }
+}
+
+function startCoachRecording() {
+  if (!practiceMicEnabled.value || coachMicState.value !== 'ready' || !coachMicStream?.active) return;
+  if (coachSending.value || coachStreaming.value) return;
+  try {
+    coachMicChunks = [];
+    coachMicRecorder = new MediaRecorder(coachMicStream);
+    coachMicRecorder.ondataavailable = (e) => { if (e.data.size) coachMicChunks.push(e.data); };
+    coachMicRecorder.onstop = () => { void recognizeCoachRecording(); };
+    coachMicRecorder.start();
+    coachMicState.value = 'recording';
+  } catch {
+    coachMicState.value = 'ready';
+    ElMessage.warning('录音启动失败，可以直接打字继续');
+  }
+}
+
+function stopCoachRecording() {
+  if (coachMicState.value !== 'recording') return;
+  coachMicRecorder?.stop();
+}
+
+async function recognizeCoachRecording() {
+  if (!coachMicChunks.length) {
+    coachMicState.value = 'ready';
+    return;
+  }
+  const mime = coachMicRecorder?.mimeType || 'audio/webm';
+  const blob = new Blob(coachMicChunks, { type: mime });
+  coachMicChunks = [];
+  if (blob.size < 2000) {
+    coachMicState.value = 'ready';
+    ElMessage.warning('录音太短，再说一句试试');
+    return;
+  }
+  coachMicState.value = 'transcribing';
+  try {
+    const b64 = await new Promise<string>((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.readAsDataURL(blob);
+    });
+    const r = await api.post<{ data: { text: string } }>('/learning/voice', {
+      audioBase64: b64,
+      mime,
+      language: 'auto',
+    });
+    const text = unwrap<{ text: string }>(r)?.text?.trim() || '';
+    if (!text) throw new Error('没有识别到语音内容');
+    coachInput.value = text;
+    coachMicState.value = 'ready';
+    await sendCoach(text);
+  } catch (e) {
+    coachMicState.value = 'ready';
+    ElMessage.error(`语音识别失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function toggleCoachMic() {
+  if (coachMicState.value === 'recording') {
+    stopCoachRecording();
+    return;
+  }
+  if (coachMicState.value === 'transcribing' || coachMicState.value === 'requesting') return;
+  if (coachMicState.value === 'idle' && !(await primeCoachMic())) return;
+  practiceMicEnabled.value = true;
+  startCoachRecording();
+}
+
+function stopCoachMic() {
+  try {
+    if (coachMicRecorder?.state === 'recording') {
+      coachMicRecorder.onstop = null;
+      coachMicRecorder.stop();
+    }
+  } catch { /* ignore */ }
+  try { coachMicStream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+  coachMicStream = null;
+  coachMicRecorder = null;
+  coachMicChunks = [];
+  coachMicState.value = 'idle';
+}
 
 /** 复用最近的 learning 陪练会话（刷新不丢对话），没有才建新的 */
 async function ensureCoachConv(): Promise<string> {
   if (coachConvId.value) return coachConvId.value;
-  const r = await api.get<any[]>('/conversations?mode=learning&limit=1');
+  const r = await api.get<any[]>('/conversations?mode=learning&limit=20');
   const list = unwrap<any[]>(r) || [];
-  if (list.length) {
-    coachConvId.value = String(list[0].id);
+  const freeCoach = list.find((row) => {
+    const meta = row?.sourceMeta || (() => {
+      try { return row?.source_meta_json ? JSON.parse(String(row.source_meta_json)) : null; } catch { return null; }
+    })();
+    return !meta?.learningScene;
+  });
+  if (freeCoach) {
+    coachConvId.value = String(freeCoach.id);
   } else {
     coachConvId.value = await chat.createConversation('英语陪练', { agentId: LEARNING_AGENT_ID, source: 'learning' });
   }
@@ -636,7 +855,9 @@ async function sendCoach(preset?: string) {
     }
     if (!preset) coachInput.value = '';
     await chat.sendMessage(content, resolved.platform, resolved.model, undefined, {}, convId);
-    speakLastCoachReply(); // AI 说完 → 宠物读出来（浏览器本地 TTS，离线可用）
+    // AI 说完 → 宠物读出来；朗读结束后自动重新开麦，形成「用户一句、模型一句」的轮次。
+    if (coachVoiceOn.value) speakLastCoachReply();
+    else if (practiceMicEnabled.value) startCoachRecording();
   } catch (e) {
     console.error('[learning] 陪练发送失败', e);
     ElMessage.error(e instanceof Error ? `发送失败：${e.message}` : '发送失败，请稍后重试');
@@ -663,9 +884,13 @@ function speakCoachText(text: string) {
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(t);
-    u.lang = 'en-US';
+    u.lang = /[\u3400-\u9fff]/.test(t) ? 'zh-CN' : 'en-US';
     u.rate = 0.95;
-    u.onend = () => stageRef.value?.play('wave');
+    u.onend = () => {
+      stageRef.value?.play('wave');
+      const finished = coachMsgs.value.some((m) => sceneResultsOf(m).some((r) => r.ok));
+      if (practiceMicEnabled.value && !finished) startCoachRecording();
+    };
     speechSynthesis.speak(u);
     stageRef.value?.play('pet');
   } catch { /* 环境无 TTS（如旧 jsdom）→ 静默 */ }
@@ -673,7 +898,10 @@ function speakCoachText(text: string) {
 function stopCoachSpeak() { try { speechSynthesis.cancel(); } catch { /* 同上 */ } }
 function toggleCoachVoice() {
   coachVoiceOn.value = !coachVoiceOn.value;
-  if (!coachVoiceOn.value) stopCoachSpeak();
+  if (!coachVoiceOn.value) {
+    stopCoachSpeak();
+    if (practiceMicEnabled.value) startCoachRecording();
+  }
 }
 // 流式输出时消息区跟到底部
 watch(() => coachMsgs.value.map((m) => m.content?.length || 0).join(','), async () => {
@@ -729,6 +957,7 @@ onMounted(() => {
 });
 onMounted(loadAll);
 onMounted(loadTtsPack);
+onBeforeUnmount(stopCoachMic);
 </script>
 
 <template>
@@ -801,7 +1030,7 @@ onMounted(loadTtsPack);
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
             <button
               v-for="c in grp.courses" :key="c.id"
-              class="lp-course" :class="{ active: activeBook?.id === c.bookId, done: c.progressPct === 100 }"
+              class="lp-course" :class="{ active: activeBook?.id === c.bookId || sceneCourseId === c.id, done: c.progressPct === 100 }"
               @click="openCourse(c)"
             >
               <span class="lp-course-row">
@@ -829,29 +1058,124 @@ onMounted(loadTtsPack);
         <!-- 陪练对话：内嵌中栏（不跳路由），AI 输出英文 + 自动朗读 -->
         <template v-if="tab === 'coach'">
           <div class="lp-coach-chat">
+            <section v-if="activeScene" class="lp-live-scene">
+              <div class="lp-live-scene-head">
+                <div>
+                  <p class="lp-eyebrow">{{ activeScene.courseName }} · {{ activeScene.theme }}</p>
+                  <h3>{{ activeScene.title }}</h3>
+                </div>
+                <div class="lp-live-scene-badges">
+                  <span>{{ sceneLevelText(activeScene.level) }}</span>
+                  <span>{{ activeScene.cefr }}</span>
+                  <span>{{ activeScene.minutes }} 分钟</span>
+                </div>
+              </div>
+              <p class="lp-live-scene-desc">{{ activeScene.scene }}</p>
+              <div class="lp-live-roles">
+                <span><b>AI</b> {{ activeScene.roles[0] }}</span>
+                <span><b>你</b> {{ activeScene.roles[1] }}</span>
+                <span><Target :size="13" /> {{ activeScene.exitHint }}</span>
+              </div>
+
+              <div class="lp-scene-guide" :class="`mode-${sceneScriptMode}`">
+                <template v-if="sceneScriptMode === 'simple' || sceneScriptMode === 'medium'">
+                  <div class="lp-guide-line coach">
+                    <span class="lp-guide-who">AI 先说</span>
+                    <div>
+                      <p>{{ activeScene.guide.coachEn }}</p>
+                      <small v-if="sceneScriptMode === 'simple'">{{ activeScene.guide.coachZh }}</small>
+                    </div>
+                    <button class="lp-speak" title="朗读 AI 开场" @click="speakCoachText(activeScene.guide.coachEn)">
+                      <Volume2 :size="15" />
+                    </button>
+                  </div>
+                  <div class="lp-guide-line user">
+                    <span class="lp-guide-who">轮到你</span>
+                    <div>
+                      <p>{{ activeScene.guide.userEn }}</p>
+                      <small v-if="sceneScriptMode === 'simple'" class="lp-guide-phonetic">{{ activeScene.guide.userPhonetic }}</small>
+                      <small v-if="sceneScriptMode === 'simple'">{{ activeScene.guide.userZh }}</small>
+                    </div>
+                    <button class="lp-speak" title="朗读示范" @click="speakCoachText(activeScene.guide.userEn)">
+                      <Volume2 :size="15" />
+                    </button>
+                  </div>
+                </template>
+                <div v-else class="lp-guide-hidden">
+                  <Lightbulb :size="18" />
+                  <div>
+                    <p>高级模式：台本已隐藏</p>
+                    <small>直接开口或请 AI 给一句提示。中文、英文、中英混说都可以。</small>
+                  </div>
+                </div>
+              </div>
+
+              <div class="lp-live-scene-actions">
+                <span class="lp-mic-status" :class="coachMicState">
+                  <Mic v-if="coachMicState === 'recording'" :size="14" />
+                  <LoaderCircle v-else-if="coachMicState === 'transcribing' || coachMicState === 'requesting'" :size="14" class="lp-spin" />
+                  <MicOff v-else :size="14" />
+                  {{ coachMicState === 'recording' ? '正在听你说，说完点一下停止' : coachMicState === 'transcribing' ? '正在识别你的话…' : coachMicState === 'ready' ? '麦克风已就绪，AI 说完会自动开始' : '麦克风未开启，可直接打字' }}
+                </span>
+                <button v-if="sceneScriptMode !== 'advanced'" class="lp-mini" @click="toggleCoachMic">
+                  {{ coachMicState === 'recording' ? '结束并发送' : '照着台本说' }}
+                </button>
+                <button class="lp-mini" :disabled="coachSending" @click="askSceneHint">
+                  <Lightbulb :size="14" /> 不会说，给我提示
+                </button>
+                <button class="lp-mini" @click="tab = 'scenes'">换一个场景</button>
+              </div>
+            </section>
+
             <div class="lp-chat-msgs">
               <template v-for="(m, mi) in coachMsgs" :key="m.id || mi">
                 <div v-if="m.role === 'user' || (m.role === 'assistant' && coachTextOf(m).trim())" class="lp-chat-row" :class="m.role">
                   <div class="lp-chat-bubble">
                     <p class="lp-chat-text">{{ coachTextOf(m) }}</p>
-                    <button v-if="m.role === 'assistant' && coachTextOf(m).trim()" class="lp-speak" title="朗读这句" @click="speakCoachText(coachTextOf(m))">🔊</button>
+                    <button v-if="m.role === 'assistant' && coachTextOf(m).trim()" class="lp-speak" title="朗读这句" @click="speakCoachText(coachTextOf(m))">
+                      <Volume2 :size="14" />
+                    </button>
                   </div>
                 </div>
+                <template v-for="(sr, si) in sceneResultsOf(m)" :key="`${m.id || mi}-sr-${si}`">
+                  <SceneResultCard
+                    v-if="sr.ok"
+                    :result="sr.result"
+                    :can-retry="!!activeScene"
+                    :retrying="startingScene === activeScene?.id"
+                    @retry="activeScene && startScene(activeScene)"
+                  />
+                  <div v-else class="lp-scene-result-error">场景结算数据有误：{{ sr.error }}</div>
+                </template>
               </template>
               <div v-if="coachStreaming" class="lp-chat-typing">陪练正在输入…</div>
               <div v-if="!coachMsgs.length && !coachStreaming" class="lp-empty">
-                <p class="lp-empty-title">和英语陪练开聊吧</p>
-                <p class="lp-hint">AI 每句 ≤3 句英文，说错的地方用「你说 → 母语者会说 → 为什么」轻纠；回复会自动朗读（右上角 🔇 可关）。</p>
+                <p class="lp-empty-title">{{ activeScene ? '正在进入场景…' : '和英语陪练开聊吧' }}</p>
+                <p class="lp-hint">你可以说中文、英文或中英混说；AI 说完会自动开麦，轮到你回应。</p>
                 <button class="lp-mini" @click="sendCoach('Hi! I want to practice English. Please start with a few easy questions.')">
                   Hi, let's start! 👋
                 </button>
               </div>
             </div>
             <div class="lp-chat-input">
-              <button class="lp-mini" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">{{ coachVoiceOn ? '🔊' : '🔇' }}</button>
+              <button class="lp-mini lp-input-icon" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">
+                <Volume2 v-if="coachVoiceOn" :size="16" />
+                <Volume2 v-else :size="16" class="lp-muted-icon" />
+              </button>
+              <button
+                class="lp-mic-button"
+                :class="{ recording: coachMicState === 'recording', busy: coachMicState === 'transcribing' || coachMicState === 'requesting' }"
+                :disabled="coachMicState === 'transcribing' || coachMicState === 'requesting'"
+                :title="coachMicState === 'recording' ? '结束并发送' : '开始说英语或中文'"
+                @click="toggleCoachMic"
+              >
+                <LoaderCircle v-if="coachMicState === 'transcribing' || coachMicState === 'requesting'" :size="16" class="lp-spin" />
+                <MicOff v-else-if="coachMicState === 'recording'" :size="16" />
+                <Mic v-else :size="16" />
+              </button>
               <input
                 v-model="coachInput" class="lp-chat-entry"
-                placeholder="用英语说点什么…（回车发送）"
+                :placeholder="activeScene ? '说英语或中文都可以，也可以直接打字…' : '说英语或中文都可以…（回车发送）'"
                 @keyup.enter="sendCoach()"
               />
               <button v-if="coachStreaming" class="lp-primary lp-stop" @click="chat.stop(coachConvId)">⏹ 停止</button>
@@ -1062,14 +1386,64 @@ onMounted(loadTtsPack);
 
         <!-- 场景卡 -->
         <template v-else-if="tab === 'scenes'">
-          <div class="lp-scene-list">
-            <button v-for="s in scenes" :key="s.id" class="lp-scene" :disabled="!!startingScene" @click="startScene(s)">
-              <span class="lp-scene-title">{{ s.title }} <i class="lp-kind">{{ s.cefr }}</i></span>
-              <span class="lp-scene-desc">{{ s.scene }}</span>
-              <span class="lp-scene-meta">你演：{{ s.roles[1] }} · 完成：{{ s.exitHint }}</span>
-              <span class="lp-scene-go">{{ startingScene === s.id ? '创建会话中…' : '开始场景 →' }}</span>
-            </button>
-            <p v-if="!scenes.length" class="lp-hint">场景卡加载中…</p>
+          <div class="lp-scene-head">
+            <div>
+              <p class="lp-eyebrow">当前课程场景</p>
+              <h3>{{ sceneCourseName }}</h3>
+              <p class="lp-hint">每个场景都围绕本课词汇与表达设计，进入后直接在学习页内语音对练。</p>
+            </div>
+            <label class="lp-scene-filter">
+              <span>切换课程</span>
+              <select v-model="sceneCourseId" @change="loadScenes">
+                <option v-for="c in sceneCourseOptions" :key="c.id" :value="c.id">{{ c.stage }} · {{ c.name }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div v-if="sceneLoading" class="lp-scene-loading" role="status">
+            <LoaderCircle :size="18" class="lp-spin" /> 正在准备课程场景…
+          </div>
+          <div v-else-if="sceneError" class="lp-scene-empty">
+            <MapPin :size="22" />
+            <p>{{ sceneError }}</p>
+            <button class="lp-mini" @click="loadScenes">重新加载</button>
+          </div>
+          <div v-else class="lp-scene-grid">
+            <article v-for="s in scenes" :key="s.id" class="lp-scene">
+              <div class="lp-scene-top">
+                <span class="lp-scene-theme">{{ s.theme }}</span>
+                <span class="lp-scene-level" :class="`level-${s.level}`">{{ sceneLevelText(s.level) }}</span>
+              </div>
+              <h3 class="lp-scene-title">{{ s.title }}</h3>
+              <p class="lp-scene-desc">{{ s.scene }}</p>
+              <div class="lp-scene-facts">
+                <span><Clock3 :size="13" /> {{ s.minutes }} 分钟</span>
+                <span><Target :size="13" /> {{ s.cefr }}</span>
+                <span><MapPin :size="13" /> {{ s.setting }}</span>
+              </div>
+              <div class="lp-scene-missions">
+                <p>你的任务</p>
+                <ol>
+                  <li v-for="m in s.missions" :key="m">{{ m }}</li>
+                </ol>
+              </div>
+              <div class="lp-scene-phrases">
+                <span v-for="p in s.keyPhrases.slice(0, 3)" :key="p">{{ p }}</span>
+              </div>
+              <div class="lp-scene-role">
+                <span>AI 演 {{ s.roles[0] }}</span>
+                <span>你演 {{ s.roles[1] }}</span>
+              </div>
+              <div class="lp-scene-foot">
+                <span class="lp-scene-exit">{{ s.exitHint }}</span>
+                <button class="lp-scene-action" :disabled="!!startingScene" @click="startScene(s)">
+                  <LoaderCircle v-if="startingScene === s.id" :size="15" class="lp-spin" />
+                  <Mic v-else :size="15" />
+                  {{ startingScene === s.id ? '正在进入…' : '进入场景对练' }}
+                  <ChevronRight v-if="startingScene !== s.id" :size="15" />
+                </button>
+              </div>
+            </article>
           </div>
         </template>
 
@@ -1261,7 +1635,34 @@ onMounted(loadTtsPack);
 /* 中栏在陪练 Tab 下改为纵向 flex（tabs 固定 + 对话区吃满剩余），关闭外层滚动让气泡区独立滚 */
 .lp-col-mid:has(> .lp-coach-chat) { overflow: hidden; display: flex; flex-direction: column; }
 .lp-coach-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.lp-chat-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 2px 12px; }
+.lp-live-scene { flex-shrink: 0; border: 1px solid #dbe5f5; background: linear-gradient(180deg, #f8fbff 0%, var(--glass-bg) 100%); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.lp-live-scene-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.lp-live-scene-head h3 { margin: 1px 0 0; font-size: 16px; color: #1f2329; }
+.lp-live-scene-badges { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.lp-live-scene-badges span { border: 1px solid #d6e4ff; background: #f0f5ff; color: #245bdb; border-radius: 999px; padding: 2px 8px; font-size: 10px; white-space: nowrap; }
+.lp-live-scene-desc { margin: 7px 0 0; color: #4e5469; font-size: 12px; line-height: 1.55; }
+.lp-live-roles { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 11px; color: #646a73; }
+.lp-live-roles span { display: inline-flex; align-items: center; gap: 4px; }
+.lp-live-roles b { color: #1f2329; }
+.lp-scene-guide { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.lp-guide-line { display: grid; grid-template-columns: 58px minmax(0, 1fr) 28px; align-items: flex-start; gap: 8px; border: 1px solid #e5e6eb; border-radius: 8px; background: var(--glass-bg); padding: 8px 9px; }
+.lp-guide-line.coach { border-color: #d6e4ff; background: #f5f9ff; }
+.lp-guide-line.user { border-color: #b7ebc9; background: #f6fff8; }
+.lp-guide-who { color: #3370ff; font-size: 11px; font-weight: 700; padding-top: 2px; white-space: nowrap; }
+.lp-guide-line.user .lp-guide-who { color: #0f8a3d; }
+.lp-guide-line p { margin: 0; color: #1f2329; font-size: 13px; line-height: 1.55; }
+.lp-guide-line small { display: block; margin-top: 2px; color: #646a73; font-size: 11px; line-height: 1.5; }
+.lp-guide-line .lp-guide-phonetic { color: #3370ff; font-family: "Segoe UI", sans-serif; }
+.lp-guide-line .lp-speak { justify-self: end; }
+.lp-guide-hidden { display: flex; gap: 9px; align-items: flex-start; border: 1px dashed #d0d3d9; border-radius: 8px; padding: 10px; background: #fafbfc; color: #646a73; }
+.lp-guide-hidden p { margin: 0; font-size: 13px; font-weight: 600; color: #1f2329; }
+.lp-guide-hidden small { display: block; margin-top: 2px; font-size: 11px; line-height: 1.5; }
+.lp-live-scene-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
+.lp-live-scene-actions .lp-mini { display: inline-flex; align-items: center; gap: 4px; }
+.lp-mic-status { display: inline-flex; align-items: center; gap: 5px; flex: 1; min-width: 180px; color: #646a73; font-size: 11px; }
+.lp-mic-status.recording { color: #d4380d; font-weight: 600; }
+.lp-mic-status.transcribing, .lp-mic-status.requesting { color: #3370ff; }
+.lp-chat-msgs { flex: 1; min-height: 120px; overflow-y: auto; padding: 4px 2px 12px; }
 .lp-chat-row { display: flex; margin-bottom: 12px; }
 .lp-chat-row.user { justify-content: flex-end; }
 .lp-chat-row.assistant { justify-content: flex-start; }
@@ -1273,6 +1674,16 @@ onMounted(loadTtsPack);
 .lp-chat-typing { font-size: 12px; color: var(--color-text-tertiary); padding: 4px 8px; }
 .lp-chat-input { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 10px; }
 .lp-chat-entry { flex: 1; }
+.lp-input-icon { width: 34px; height: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.lp-muted-icon { opacity: .35; }
+.lp-mic-button { width: 38px; height: 38px; border: 1px solid #d6e4ff; border-radius: 50%; background: #f0f5ff; color: #3370ff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+.lp-mic-button:hover { border-color: #3370ff; background: #e8f1ff; }
+.lp-mic-button.recording { color: #fff; background: #d4380d; border-color: #d4380d; animation: lp-mic-pulse 1.3s ease-in-out infinite; }
+.lp-mic-button.busy { opacity: .7; cursor: default; }
+.lp-scene-result-error { border: 1px solid #fecaca; background: #fff7f7; color: #b91c1c; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-bottom: 10px; }
+.lp-spin { animation: lp-spin .85s linear infinite; }
+@keyframes lp-spin { to { transform: rotate(360deg); } }
+@keyframes lp-mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(212, 56, 13, .25); } 50% { box-shadow: 0 0 0 6px rgba(212, 56, 13, 0); } }
 .lp-stop { background: #d4380d; border-color: #d4380d; }
 
 .lp-drill-title { font-size: 13px; color: #4e5469; margin: 0 0 10px; }
@@ -1346,14 +1757,66 @@ onMounted(loadTtsPack);
 .lp-pron-w.wrong { background: #fff1f0; color: #d4380d; }
 .lp-pron-w.missing { background: #f2f3f5; color: #8f959e; text-decoration: line-through; }
 .lp-pron-heard { font-style: normal; font-size: 11px; opacity: .85; }
-.lp-scene-list { display: flex; flex-direction: column; gap: 10px; }
-.lp-scene { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 10px; padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; color: #1f2329; }
-.lp-scene:hover { border-color: #3370ff; }
-.lp-scene:disabled { opacity: .6; }
-.lp-scene-title { font-size: 14px; font-weight: 700; }
-.lp-scene-desc { font-size: 12px; color: #4e5469; }
-.lp-scene-meta { font-size: 11px; color: #8f959e; }
-.lp-scene-go { font-size: 12px; color: #3370ff; font-weight: 600; }
+.lp-eyebrow { margin: 0; color: #3370ff; font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; }
+.lp-scene-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 14px; margin-bottom: 12px; }
+.lp-scene-head h3 { margin: 2px 0 0; font-size: 17px; color: #1f2329; }
+.lp-scene-filter { display: flex; flex-direction: column; gap: 4px; color: #8f959e; font-size: 10px; flex-shrink: 0; }
+.lp-scene-filter select { min-width: 180px; border: 1px solid #d0d3d9; border-radius: 6px; background: var(--glass-bg); color: #1f2329; padding: 7px 9px; font-size: 12px; }
+.lp-scene-loading, .lp-scene-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 180px; border: 1px dashed #d0d3d9; border-radius: 8px; color: #8f959e; font-size: 12px; }
+.lp-scene-empty { flex-direction: column; }
+.lp-scene-empty p { margin: 0; }
+.lp-scene-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; align-items: stretch; }
+.lp-scene { text-align: left; border: 1px solid #e5e6eb; background: var(--glass-bg); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; color: #1f2329; min-width: 0; }
+.lp-scene:hover { border-color: #9dbcf7; }
+.lp-scene-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.lp-scene-theme { color: #646a73; font-size: 10px; font-weight: 600; }
+.lp-scene-level { border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.lp-scene-level.level-热身 { background: #eefaf2; color: #0f8a3d; border: 1px solid #b7ebc9; }
+.lp-scene-level.level-挑战 { background: #f0f5ff; color: #245bdb; border: 1px solid #d6e4ff; }
+.lp-scene-level.level-实战 { background: #fff7e8; color: #ad6800; border: 1px solid #ffe2a8; }
+.lp-scene-title { font-size: 15px; font-weight: 700; line-height: 1.35; margin: 0; }
+.lp-scene-desc { font-size: 12px; color: #4e5469; line-height: 1.55; margin: 0; min-height: 38px; }
+.lp-scene-facts { display: flex; flex-wrap: wrap; gap: 5px 10px; color: #8f959e; font-size: 10px; min-width: 0; }
+.lp-scene-facts span { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+.lp-scene-facts span:last-child { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-scene-missions { border-top: 1px dashed #e5e6eb; padding-top: 7px; }
+.lp-scene-missions > p { margin: 0 0 4px; color: #646a73; font-size: 10px; font-weight: 700; }
+.lp-scene-missions ol { margin: 0; padding-left: 17px; color: #4e5469; font-size: 11px; line-height: 1.55; }
+.lp-scene-missions li::marker { color: #3370ff; font-weight: 700; }
+.lp-scene-phrases { display: flex; flex-wrap: wrap; gap: 4px; }
+.lp-scene-phrases span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; background: #f3f6fb; color: #4e5469; padding: 2px 6px; font-size: 10px; }
+.lp-scene-role { display: flex; flex-wrap: wrap; gap: 4px 12px; color: #646a73; font-size: 10px; }
+.lp-scene-role span:first-child { color: #3370ff; }
+.lp-scene-role span:last-child { color: #0f8a3d; }
+.lp-scene-foot { margin-top: auto; padding-top: 7px; border-top: 1px solid #f0f1f3; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lp-scene-exit { color: #8f959e; font-size: 10px; line-height: 1.45; }
+.lp-scene-action { border: 1px solid #3370ff; border-radius: 6px; background: #3370ff; color: #fff; padding: 6px 9px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.lp-scene-action:hover { background: #2861d9; }
+.lp-scene-action:disabled { opacity: .65; cursor: default; }
+@media (max-width: 900px) {
+  :global(.main-content:has(.learning-page)) { overflow-y: auto; overscroll-behavior: contain; }
+  .learning-page { padding: 12px; min-height: 0; height: auto; flex: none; }
+  .lp-header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .lp-head-left { width: 100%; }
+  .lp-subjects { flex-wrap: wrap; }
+  .lp-stage { width: 110px; min-height: 82px; align-self: flex-start; }
+  .lp-coach { width: 100%; }
+  .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
+  .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
+  .lp-col-mid:has(> .lp-coach-chat) { overflow: visible; min-height: 70vh; }
+  .lp-coach-chat { min-height: 70vh; }
+  .lp-chat-msgs { min-height: 260px; max-height: 50vh; }
+  .lp-tabs { overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+  .lp-tab { flex-shrink: 0; }
+  .lp-scene-head { align-items: stretch; flex-direction: column; }
+  .lp-scene-filter select { width: 100%; }
+  .lp-scene-grid { grid-template-columns: 1fr; }
+  .lp-live-scene-head { flex-direction: column; }
+  .lp-live-scene-badges { justify-content: flex-start; }
+  .lp-guide-line { grid-template-columns: 52px minmax(0, 1fr) 24px; }
+  .lp-chat-input { flex-wrap: wrap; }
+  .lp-chat-entry { min-width: 180px; }
+}
 .lp-grammar-list { display: flex; flex-direction: column; gap: 6px; }
 .lp-grammar-item { border: 1px solid #eef0f3; border-radius: 8px; overflow: hidden; }
 .lp-grammar-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: #fafbfc; padding: 9px 10px; cursor: pointer; color: #1f2329; font-size: 13px; }

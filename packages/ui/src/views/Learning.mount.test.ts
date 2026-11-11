@@ -48,10 +48,43 @@ vi.mock('../stores/platform', () => ({
 const { defaultGet } = vi.hoisted(() => ({
   defaultGet: async (url: string) => {
     if (url.includes('/learning/profile')) return { data: { cefr: 'B1', goals: '日常口语', streakDays: 3 } }
+    if (url.includes('/learning/courses')) {
+      return {
+        data: [{ stage: '大学', courses: [
+          { id: 'course_cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample', bookName: '大学英语四级', wordCount: 2607, levelCount: 131, clearedLevels: 0, totalLevels: 131, dueCount: 0, progressPct: 0 },
+        ] }],
+      }
+    }
     if (url.includes('/learning/scenes')) {
       return { data: [
-        { id: 'sc_airport', title: '机场值机', scene: '值机柜台', roles: ['柜员', '旅客'], keyPhrases: ['a', 'b', 'c'], exitHint: '托运完成', cefr: 'A2' },
-        { id: 'sc_hotel', title: '酒店入住', scene: '前台', roles: ['前台', '客人'], keyPhrases: ['a', 'b', 'c'], exitHint: '拿到房卡', cefr: 'A2' },
+        {
+          id: 'sc_cet4_course', courseId: 'course_cet4', courseName: '大学英语四级', stage: '大学',
+          title: '选课咨询', theme: '校园事务', scene: '学生想换一门通识课', setting: '教务处窗口',
+          roles: ['教务老师', '大一学生'], missions: ['说明原因', '确认学分', '问清候补规则'],
+          keyPhrases: ['I would like to switch...', 'Are the credits transferable?', 'Could I join the waiting list?', 'What happens next?'],
+          exitHint: '确认换课条件', cefr: 'B1', level: '热身', minutes: 10, tags: ['选课', '校园'],
+          guide: {
+            coachEn: 'Good morning. Which course would you like to change?',
+            coachZh: '早上好。你想换哪门课？',
+            userEn: 'I would like to switch from Art History to Psychology.',
+            userPhonetic: '/aɪ wʊd laɪk tə swɪtʃ/',
+            userZh: '我想从艺术史换到心理学。',
+          },
+        },
+        {
+          id: 'sc_cet4_parttime', courseId: 'course_cet4', courseName: '大学英语四级', stage: '大学',
+          title: '兼职面试', theme: '求职入门', scene: '校园咖啡店招周末兼职', setting: '咖啡店角落',
+          roles: ['店长', '大学生'], missions: ['说明时间', '介绍能力', '回应高峰协作'],
+          keyPhrases: ['I am available on...', 'I have experience in...', 'When it gets busy...', 'I am willing to learn.'],
+          exitHint: '确认排班', cefr: 'B1', level: '挑战', minutes: 12, tags: ['面试', '兼职'],
+          guide: {
+            coachEn: 'When are you available to work?',
+            coachZh: '你什么时候可以工作？',
+            userEn: 'I am available on Saturday afternoons.',
+            userPhonetic: '/aɪ æm əˈveɪləbəl ɑːn ˈsætərdeɪ/',
+            userZh: '我周六下午有空。',
+          },
+        },
       ] }
     }
     if (url.includes('/learning/grammar')) return { data: [] }
@@ -300,14 +333,27 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-exam-result')?.textContent).toContain('annotation 能帮助精读')
   })
 
-  it('场景卡 Tab：点开真出卡，卡带标题与难度（中栏内渲染，不跳布局）', async () => {
+  it('★ 场景卡 Tab：按当前课程出卡，卡带任务/台本；进入对练留在学习模式并建学习会话', async () => {
     const el = await mountPage()
     ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('场景卡'))!.click()
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-scene').length).toBe(2))
-    expect(el.querySelector('.lp-scene-list')?.textContent).toContain('机场值机')
-    expect(el.querySelector('.lp-scene-list')?.textContent).toContain('A2')
+    expect(el.querySelector('.lp-scene-grid')?.textContent).toContain('选课咨询')
+    expect(el.querySelector('.lp-scene-grid')?.textContent).toContain('说明原因')
+    expect(el.querySelector('.lp-scene-grid')?.textContent).toContain('简单')
     // 三栏骨架仍在（布局不跳）
     expect(el.querySelector('.lp-grid')).toBeTruthy()
+    ;(el.querySelector('.lp-scene-action') as HTMLElement).click()
+    await vi.waitFor(() => expect(createConversation).toHaveBeenCalled())
+    const [title, opts] = createConversation.mock.calls[0] as unknown as [string, { agentId?: string; source?: string; sourceMeta?: { learningScene?: string } }]
+    expect(title).toContain('选课咨询')
+    expect(opts.agentId).toBe('a_builtin_learning_coach')
+    expect(opts.source).toBe('learning')
+    expect(opts.sourceMeta?.learningScene).toBe('sc_cet4_course')
+    await vi.waitFor(() => expect(el.querySelector('.lp-live-scene')).toBeTruthy())
+    expect(el.querySelector('.lp-live-scene')?.textContent).toContain('AI 先说')
+    expect(el.querySelector('.lp-live-scene')?.textContent).toContain('轮到你')
+    // ★ 用户实报「场景卡跳到办公模式」：场景任务绝不 push 聊天详情路由
+    expect(push).not.toHaveBeenCalled()
   })
 
   it('★ 开始陪练：内嵌中栏直接调 AI（不跳路由），带契约 id 建会话并发起英文对话', async () => {

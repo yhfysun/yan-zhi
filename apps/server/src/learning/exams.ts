@@ -23,11 +23,14 @@ export type ExamPaper = {
   durationMinutes: number;
   tags: string[];
   passage: string;
+  /** 听力专项的朗读稿：前端只用于播放，交卷前不在页面展示 */
+  listeningScript?: string;
   questions: ExamQuestion[];
 };
 
-export type ExamPaperSummary = Omit<ExamPaper, 'passage' | 'questions'> & {
+export type ExamPaperSummary = Omit<ExamPaper, 'passage' | 'questions' | 'listeningScript'> & {
   questionCount: number;
+  hasListening: boolean;
 };
 
 export type ExamPaperPublic = Omit<ExamPaper, 'questions'> & {
@@ -435,6 +438,178 @@ export const EXAM_PAPERS: ExamPaper[] = [
       },
     ],
   },
+  {
+    id: 'exam_kaoyan_2024_retest_listening',
+    title: '2024 考研复试英语 · 听力专项',
+    examType: '考研',
+    year: 2024,
+    region: '复试模拟',
+    section: '听力理解',
+    difficulty: '中等偏难',
+    durationMinutes: 18,
+    tags: ['复试听力', '学术讲座', '推理题'],
+    passage: '听力材料只播放音频，不在作答页展示原文。交卷后可查看完整听力稿与逐题解析。',
+    listeningScript:
+      'Good morning, everyone. Today I want to talk about repair cafes, a small but growing movement that began in the Netherlands. '
+      + 'The idea is simple. People bring broken household objects to a community space, and volunteers help them repair those objects instead of throwing them away. '
+      + 'The first repair cafe opened in Amsterdam in 2009. Today there are more than two thousand around the world. '
+      + 'The movement is often described as an environmental project, and that is certainly part of its purpose. Electronic waste is growing quickly, and many products are designed in ways that make repair difficult. '
+      + 'But the organizers say the social benefits are just as important. At a repair cafe, older residents often share practical skills with younger visitors. Someone who has never used a screwdriver may leave with a repaired lamp and a new confidence to try again. '
+      + 'Not every object can be saved. Volunteers sometimes have to explain that a device is unsafe or that a replacement part is no longer available. They also face criticism from those who argue that the real solution is to force companies to design longer-lasting products. '
+      + 'The organizers agree that individual repair cannot replace better regulation. Still, they believe local action changes how people think about ownership. Once you have opened a toaster and discovered how it works, you are less likely to treat every broken object as waste. '
+      + 'In the coming months, the group plans to collect data on how many items are repaired and how much waste is avoided. They hope the figures will help local governments decide whether to support similar projects in public libraries and community centers.',
+    questions: [
+      {
+        id: 'q1',
+        stem: 'What is the main purpose of a repair cafe?',
+        options: ['To sell second-hand household objects', 'To help people repair broken items', 'To train professional electricians', 'To collect electronic waste for companies'],
+        answer: 1,
+        explanation: '开场直接说明人们把损坏物品带到社区空间，由志愿者帮助维修。',
+      },
+      {
+        id: 'q2',
+        stem: 'Where did the first repair cafe open?',
+        options: ['In Amsterdam', 'In London', 'In New York', 'In Berlin'],
+        answer: 0,
+        explanation: '听力稿明确说第一家 repair cafe 于 2009 年在阿姆斯特丹开放。',
+      },
+      {
+        id: 'q3',
+        stem: 'Why is the movement connected with environmental protection?',
+        options: ['It plants trees around cities.', 'It reduces electronic waste.', 'It bans all new products.', 'It teaches people to use less water.'],
+        answer: 1,
+        explanation: '讲话提到电子废弃物快速增长，而维修能避免物品被直接丢弃。',
+      },
+      {
+        id: 'q4',
+        stem: 'What social benefit does the speaker emphasize?',
+        options: ['People can earn money from repairs.', 'Older residents share skills with younger visitors.', 'Companies can advertise their products.', 'Local governments can collect taxes.'],
+        answer: 1,
+        explanation: '讲话说年长居民经常与年轻访客分享实用技能。',
+      },
+      {
+        id: 'q5',
+        stem: 'What may happen when an object cannot be repaired?',
+        options: ['It is sold to a museum.', 'Volunteers explain why it is unsafe or lacks parts.', 'The cafe keeps it for one year.', 'The visitor must pay a fine.'],
+        answer: 1,
+        explanation: '志愿者会解释设备不安全或替换零件已经无法获得。',
+      },
+      {
+        id: 'q6',
+        stem: 'What criticism does the movement face?',
+        options: ['It charges too much for repairs.', 'It ignores the need for better product regulation.', 'It only accepts old clothes.', 'It refuses to work with local governments.'],
+        answer: 1,
+        explanation: '批评者认为真正的解决办法是迫使企业设计更耐用的产品，而不仅靠个人维修。',
+      },
+      {
+        id: 'q7',
+        stem: 'How does repairing an object change people’s thinking?',
+        options: ['They become less willing to buy anything.', 'They see broken objects differently.', 'They stop using community spaces.', 'They expect every repair to be free.'],
+        answer: 1,
+        explanation: '讲话说亲手打开电器后，人们不再把每件坏物品都视作垃圾。',
+      },
+      {
+        id: 'q8',
+        stem: 'Why will the group collect repair data?',
+        options: ['To increase the price of repairs', 'To help governments decide whether to support similar projects', 'To prove that all products can be repaired', 'To replace public libraries'],
+        answer: 1,
+        explanation: '结尾说数据可帮助地方政府决定是否支持类似项目。',
+      },
+    ],
+  },
+  {
+    id: 'exam_gaokao_2024_listening',
+    title: '2024 高考英语 · 听力专项',
+    examType: '高考',
+    year: 2024,
+    region: '全国卷',
+    section: '听力理解',
+    difficulty: '中等',
+    durationMinutes: 15,
+    tags: ['高考听力', '短对话', '独白'],
+    passage: '听力材料只播放音频，不在作答页展示原文。交卷后可查看完整听力稿与逐题解析。',
+    listeningScript:
+      'Text 1. Good morning. This is the city library. We are open from nine to six on weekdays, but on Saturday we close at four. '
+      + 'The reading room on the second floor will be closed this weekend because workers are painting the walls. Books can still be returned at the front desk. '
+      + 'Text 2. W: Hi, Mark. Are you still joining the volunteer clean-up on Sunday? M: I planned to, but my cousin is visiting. '
+      + 'W: The park clean-up starts at nine. Could you come for just the first hour? M: That works. I will bring some gloves and bags. '
+      + 'Text 3. M: Did you see the weather report for our hiking trip? W: Yes. It will be sunny in the morning, but rain may arrive after three. '
+      + 'We should start early and reach the top before noon. M: Good idea. I will pack a raincoat anyway. '
+      + 'Text 4. W: You look tired today. M: I stayed up late finishing a science report. W: How much sleep did you get? M: About four hours. '
+      + 'W: That is not enough. Remember, your memory works better when you have had enough rest. M: I know. I will finish earlier tonight.',
+    questions: [
+      {
+        id: 'q1',
+        stem: 'When does the library close on Saturday?',
+        options: ['At four', 'At five', 'At six', 'At nine'],
+        answer: 0,
+        explanation: 'Text 1 明确说周六四点关门。',
+      },
+      {
+        id: 'q2',
+        stem: 'Why will the reading room be closed?',
+        options: ['The books are being moved.', 'Workers are painting the walls.', 'There are too many visitors.', 'The library is holding a meeting.'],
+        answer: 1,
+        explanation: 'Text 1 说工人这个周末要给墙面刷漆。',
+      },
+      {
+        id: 'q3',
+        stem: 'What is Mark going to do on Sunday?',
+        options: ['Visit his cousin all day', 'Join the park clean-up for an hour', 'Work at the library', 'Go hiking with the woman'],
+        answer: 1,
+        explanation: 'Mark 的亲戚来访，但他仍答应参加第一个小时的公园清洁。',
+      },
+      {
+        id: 'q4',
+        stem: 'What will Mark bring?',
+        options: ['Water and food', 'Gloves and bags', 'A raincoat', 'A science report'],
+        answer: 1,
+        explanation: 'Text 2 结尾 Mark 说会带手套和袋子。',
+      },
+      {
+        id: 'q5',
+        stem: 'What is the weather expected to be like after three?',
+        options: ['Snowy', 'Sunny', 'Windy', 'Rainy'],
+        answer: 3,
+        explanation: 'Text 3 说下午三点后可能下雨。',
+      },
+      {
+        id: 'q6',
+        stem: 'Why do they plan to start early?',
+        options: ['The park opens early.', 'They want to avoid the rain.', 'The bus leaves at noon.', 'They need to buy raincoats.'],
+        answer: 1,
+        explanation: '两人决定早出发，在中午前到山顶，以避开下午可能到来的雨。',
+      },
+      {
+        id: 'q7',
+        stem: 'Why is the man tired?',
+        options: ['He hiked all day.', 'He stayed up late finishing a report.', 'He worked at the library.', 'He visited his cousin.'],
+        answer: 1,
+        explanation: 'Text 4 中男士说熬夜完成科学报告。',
+      },
+      {
+        id: 'q8',
+        stem: 'How much sleep did the man get?',
+        options: ['About three hours', 'About four hours', 'About six hours', 'About eight hours'],
+        answer: 1,
+        explanation: '男士回答约四个小时。',
+      },
+      {
+        id: 'q9',
+        stem: 'What does the woman remind the man about?',
+        options: ['The importance of rest for memory', 'The date of the science exam', 'The cost of the hiking trip', 'The closing time of the library'],
+        answer: 0,
+        explanation: '女士提醒他充足休息有助于记忆。',
+      },
+      {
+        id: 'q10',
+        stem: 'What will the man do tonight?',
+        options: ['Go hiking', 'Visit his cousin', 'Finish earlier', 'Work at the library'],
+        answer: 2,
+        explanation: '男士说今晚会早点完成。',
+      },
+    ],
+  },
 ];
 
 function publicPaper(paper: ExamPaper): ExamPaperPublic {
@@ -447,7 +622,11 @@ function publicPaper(paper: ExamPaper): ExamPaperPublic {
 export function listExamPapers(type?: ExamType): ExamPaperSummary[] {
   return EXAM_PAPERS
     .filter((p) => !type || p.examType === type)
-    .map(({ passage: _passage, questions, ...meta }) => ({ ...meta, questionCount: questions.length }));
+    .map(({ passage: _passage, listeningScript: _listeningScript, questions, ...meta }) => ({
+      ...meta,
+      questionCount: questions.length,
+      hasListening: !!_listeningScript,
+    }));
 }
 
 export function getExamPaper(id: string): ExamPaperPublic | null {

@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES,
   COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS,
-  getSceneCard, renderScenePrompt,
+  getSceneCard, listSceneCards, renderScenePrompt,
 } from '../src/learning/curriculum';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import { LEARNING_AGENT_ID } from '../src/builtin-learning-agents';
@@ -74,33 +74,55 @@ describe('课程学段目录', () => {
 });
 
 describe('场景卡', () => {
-  it('12 张且 id 唯一（id 是 source_meta 注入的锚点，重复会串场景）', () => {
-    expect(SCENE_CARDS.length).toBe(12);
+  it('每门课都有 3 个专属场景，且 id 唯一（重复会串 source_meta 注入）', () => {
+    expect(SCENE_CARDS.length).toBe(COURSE_CATALOG.length * 3);
     expect(new Set(SCENE_CARDS.map((s) => s.id)).size).toBe(SCENE_CARDS.length);
+    for (const course of COURSE_CATALOG) {
+      expect(listSceneCards(course.id), course.id).toHaveLength(3);
+    }
   });
 
-  it('每张卡字段齐全：场景/双角色/≥3 句型/完成条件/CEFR', () => {
+  it('每张卡字段齐全：课程/场景/双角色/三步任务/≥3 句型/完成条件/CEFR', () => {
     for (const s of SCENE_CARDS) {
+      expect(COURSE_CATALOG.some((c) => c.id === s.courseId), s.id).toBe(true);
+      expect(s.courseName.length, s.id).toBeGreaterThan(0);
       expect(s.scene.length, s.id).toBeGreaterThan(5);
       expect(s.roles.length, s.id).toBe(2);
       expect(s.roles[0].length, s.id).toBeGreaterThan(0);
+      expect(s.missions.length, s.id).toBe(3);
       expect(s.keyPhrases.length, s.id).toBeGreaterThanOrEqual(3);
       expect(s.exitHint.length, s.id).toBeGreaterThan(2);
-      expect(s.cefr, s.id).toMatch(/^A[12]|^B1$/);
+      expect(s.cefr, s.id).toMatch(/^(A[12]|B[12])$/);
+      expect(s.minutes, s.id).toBeGreaterThanOrEqual(8);
+      expect(s.tags.length, s.id).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('★ 每个场景都有首轮台本：简单模式可显示英文/音标/中文，中级/高级由前端按级别隐藏', () => {
+    for (const s of SCENE_CARDS) {
+      const view = getSceneCard(s.id)!;
+      expect(view.guide.coachEn.length, s.id).toBeGreaterThan(5);
+      expect(view.guide.coachZh.length, s.id).toBeGreaterThan(2);
+      expect(view.guide.userEn.length, s.id).toBeGreaterThan(3);
+      expect(view.guide.userPhonetic.length, s.id).toBeGreaterThan(3);
+      expect(view.guide.userZh.length, s.id).toBeGreaterThan(2);
     }
   });
 
   it('getSceneCard 按 id 命中；未知 id 返回 null（注入分支按无场景降级）', () => {
-    expect(getSceneCard('sc_airport')?.title).toBe('机场值机');
+    expect(getSceneCard('sc_cet4_course')?.title).toBe('选课咨询');
     expect(getSceneCard('sc_not_exist')).toBeNull();
   });
 
   it('★ renderScenePrompt：含场景段标记 + 角色 + 句型 + [SCENE_END] 收尾指引', () => {
-    const s = getSceneCard('sc_interview')!;
+    const s = getSceneCard('sc_cet6_interview')!;
     const text = renderScenePrompt(s);
     expect(text).toContain('## 当前场景');
     expect(text).toContain(s.roles[0]);
     expect(text).toContain(s.roles[1]);
+    expect(text).toContain(s.missions[0]);
+    expect(text).toContain('一次只输出一轮');
+    expect(text).toContain('中英混说');
     for (const k of s.keyPhrases) expect(text).toContain(k);
     expect(text).toContain('[SCENE_END]');
     expect(text).toContain(s.cefr);
