@@ -73,7 +73,7 @@ function speak(text: string) {
 .sr-gp { margin-left: 6px; background: #eef7f0; border-radius: 4px; padding: 1px 5px; }
 .sr-speak { border: none; background: transparent; cursor: pointer; font-size: 12px; }
 .sr-hint { color: #8f959e; font-size: 11px; margin: 8px 0 0; }
-.sr-retry { margin-top: 8px; width: 100%; border: 1px solid #b7ebc9; background: #fff; border-radius: 6px; padding: 6px 0; font-size: 13px; color: #0f8a3d; cursor: pointer; }
+.sr-retry { margin-top: 8px; width: 100%; border: 1px solid #b7ebc9; background: var(--el-fill-color-blank); border-radius: 6px; padding: 6px 0; font-size: 13px; color: #0f8a3d; cursor: pointer; }
 .sr-retry:hover { background: #f6fff8; }
 .sr-retry:disabled { opacity: .6; cursor: default; }
 </style>
