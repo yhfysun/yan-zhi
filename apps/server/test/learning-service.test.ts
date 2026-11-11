@@ -7,6 +7,7 @@ import {
   createCustomBook, listWordBooks, getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   addError, listErrors, getLearningContext, getCourses, listBookWords, deleteCustomBook,
+  checkDrillAnswer,
 } from '../src/learning/service';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import type { DrillQuestion } from '../src/learning/srs';
@@ -153,6 +154,30 @@ describe('词汇表全量浏览（listBookWords）', () => {
 });
 
 describe('闯关闭环（内置词书）', () => {
+  it('★ 逐题判题：答错立即返回正确答案与解释，且不提前改动 SRS', () => {
+    const { questions } = getDrill(uid, BUILTIN_BOOK.id, 1);
+    const spelling = questions.find((q) => q.kind !== 'choice')!;
+    const word = BUILTIN_BOOK.words.find((w) => w.word === spelling.wordId)!;
+    const before = db.prepare(
+      'SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ? AND word = ?',
+    ).get(uid, BUILTIN_BOOK.id, spelling.wordId) as { c: number };
+
+    const feedback = checkDrillAnswer(uid, BUILTIN_BOOK.id, spelling, {
+      qid: spelling.qid,
+      kind: spelling.kind,
+      typed: 'definitely-wrong',
+    });
+
+    expect(feedback.correct).toBe(false);
+    expect(feedback.word).toBe(word.word);
+    expect(feedback.expected).toBe(word.word);
+    expect(feedback.explanation).toContain(word.gloss);
+    const after = db.prepare(
+      'SELECT COUNT(*) AS c FROM learning_word WHERE user_id = ? AND book_id = ? AND word = ?',
+    ).get(uid, BUILTIN_BOOK.id, spelling.wordId) as { c: number };
+    expect(after.c).toBe(before.c);
+  });
+
   it('★ 全对交卷：三星过关 → 解锁第 2 关 → SRS 升盒（库里有真行）', async () => {
     const { questions } = getDrill(uid, BUILTIN_BOOK.id, 1);
     expect(questions.length).toBe(10);

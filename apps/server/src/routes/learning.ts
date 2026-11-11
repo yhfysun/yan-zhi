@@ -11,9 +11,11 @@ import {
   listErrors, addError,
   listBookWords, deleteCustomBook,
   getLearningContext, getCourses, getSubjects,
+  checkDrillAnswer, checkReviewAnswer,
 } from '../learning/service.js';
 import { SCENE_CARDS, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
+import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { scorePronunciation } from '../learning/pronunciation.js';
 import type { DrillAnswer } from '../learning/srs.js';
@@ -153,6 +155,61 @@ router.post('/review/submit', (req, res) => {
       return;
     }
     res.json({ data: submitReviewDrill(userIdOf(req), body.answers as DrillAnswer[], body.questions as Parameters<typeof submitReviewDrill>[2]) });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// POST /api/learning/answer/check —— 单词/复习逐题判题（只给反馈，不改 SRS）
+router.post('/answer/check', (req, res) => {
+  try {
+    const body = req.body as { question?: unknown; answer?: unknown; bookId?: unknown; review?: unknown };
+    const question = body.question as Parameters<typeof checkDrillAnswer>[2] | undefined;
+    const answer = body.answer as DrillAnswer | undefined;
+    if (!question || !answer || !['choice', 'spelling', 'dictation', 'cloze'].includes(String(question.kind))
+      || typeof question.qid !== 'string' || typeof question.wordId !== 'string') {
+      res.status(400).json({ error: 'question 与 answer 必填，且题型有效' });
+      return;
+    }
+    const feedback = body.review === true
+      ? checkReviewAnswer(userIdOf(req), question, answer)
+      : checkDrillAnswer(userIdOf(req), String(body.bookId || ''), question, answer);
+    res.json({ data: feedback });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// GET /api/learning/exams —— 历年真题目录（可选 ?type=考研|高考）
+router.get('/exams', (req, res) => {
+  try {
+    const type = String(req.query.type || '');
+    if (type && type !== '考研' && type !== '高考') {
+      res.status(400).json({ error: 'type 只能是考研或高考' });
+      return;
+    }
+    res.json({ data: listExamPapers((type || undefined) as ExamType | undefined) });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// GET /api/learning/exams/:id —— 取卷（答案与解析不下发）
+router.get('/exams/:id', (req, res) => {
+  try {
+    const paper = getExamPaper(String(req.params.id));
+    if (!paper) { res.status(404).json({ error: '真题不存在' }); return; }
+    res.json({ data: paper });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// POST /api/learning/exams/:id/submit —— 交卷判分（客观题），返回逐题解析
+router.post('/exams/:id/submit', (req, res) => {
+  try {
+    const answers = req.body?.answers;
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
+      res.status(400).json({ error: 'answers 必须是 { questionId: optionIndex } 对象' });
+      return;
+    }
+    const normalized: Record<string, number> = {};
+    for (const [key, value] of Object.entries(answers as Record<string, unknown>)) {
+      if (Number.isInteger(value)) normalized[key] = Number(value);
+    }
+    res.json({ data: submitExamPaper(userIdOf(req), String(req.params.id), normalized) });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 

@@ -12,6 +12,7 @@ import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
 import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
+import ExamTrainer from '../components/learning/ExamTrainer.vue';
 import { stripSceneResultBlocks } from '../utils/scene-result';
 
 /** ★ 与 apps/server/src/builtin-learning-agents.ts 的 LEARNING_AGENT_ID 成对维护（服务端有契约单测） */
@@ -31,7 +32,8 @@ type Profile = { cefr: string | null; goals: string | null; streakDays?: number 
 type Book = { id: string; name: string; kind: string; course: string; subject?: string; wordCount: number; levelCount: number; maxLevelCleared: number; dueCount?: number };
 type Level = { levelNo: number; wordCount: number; stars: number; passed: boolean; unlocked: boolean; dueCount: number };
 type Question = { kind: 'choice' | 'spelling' | 'dictation' | 'cloze'; qid: string; wordId: string; prompt: string; phonetic?: string | null; options?: string[]; hint?: string; gloss?: string; audio?: string };
-type DrillResult = { stars: number; passed: boolean; pct: number; results: Array<{ qid: string; word: string; correct: boolean; expected: string }> };
+type AnswerFeedback = { correct: boolean; word: string; expected: string; gloss: string; explanation: string };
+type DrillResult = { correct: number; total: number; stars: number; passed: boolean; pct: number; results: Array<{ qid: string; word: string; correct: boolean; expected: string; given?: string | null }> };
 type ErrorRow = { id: string; wrong: string; right: string; reason: string | null };
 
 const profile = ref<Profile>({ cefr: null, goals: null, streakDays: 0 });
@@ -59,7 +61,7 @@ async function switchSubject(key: string) {
 }
 
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading'>('drill');
+const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam'>('drill');
 const tabDefs = [
   { key: 'drill', label: '单词闯关' },
   { key: 'coach', label: '陪练对话' },
@@ -67,6 +69,7 @@ const tabDefs = [
   { key: 'scenes', label: '场景卡' },
   { key: 'grammar', label: '语法微课' },
   { key: 'reading', label: '范文阅读' },
+  { key: 'exam', label: '历年真题' },
 ] as const;
 function switchTab(k: typeof tab.value) {
   tab.value = k;
@@ -121,23 +124,54 @@ const activeQuestions = computed(() => (ttsPackId.value ? questions.value : ques
 const answers = ref<Record<string, string>>({}); // qid → 选项/输入
 const submitting = ref(false);
 const result = ref<DrillResult | null>(null);
+const feedback = ref<Record<string, AnswerFeedback>>({});
+const revealedAnswer = ref<Record<string, boolean>>({});
+const checking = ref(false);
 
 // ── 单题聚焦模式（对标 Duolingo：一次只答一题 + 进度条，替代 10 题平铺长列表）──
 const qIndex = ref(0);
 const currentQ = computed(() => activeQuestions.value[qIndex.value] ?? null);
 const answeredCount = computed(() => activeQuestions.value.filter((q) => String(answers.value[q.qid] ?? '').trim() !== '').length);
+const completedCount = computed(() => activeQuestions.value.filter((q) => !!feedback.value[q.qid]).length);
+const correctCount = computed(() => activeQuestions.value.filter((q) => feedback.value[q.qid]?.correct).length);
+const liveScore = computed(() => Math.round((correctCount.value / Math.max(1, activeQuestions.value.length)) * 100));
+const currentFeedback = computed(() => currentQ.value ? feedback.value[currentQ.value.qid] ?? null : null);
+const isAnswerRevealed = computed(() => currentQ.value ? !!revealedAnswer.value[currentQ.value.qid] : false);
 function isAnswered(q: Question): boolean {
   return String(answers.value[q.qid] ?? '').trim() !== '';
+}
+function isChecked(q: Question): boolean {
+  return !!feedback.value[q.qid];
 }
 const KIND_LABELS: Record<Question['kind'], string> = { choice: '选释义', spelling: '拼写', dictation: '听写', cloze: '例句填空' };
 function goQ(delta: number) {
   qIndex.value = Math.max(0, Math.min(activeQuestions.value.length - 1, qIndex.value + delta));
 }
-/** 输入框回车：非末题 → 跳下一题；末题且答满 → 交卷 */
+function selectOption(opt: string) {
+  if (!currentQ.value || isChecked(currentQ.value)) return;
+  answers.value[currentQ.value.qid] = opt;
+}
+function goNextIncomplete() {
+  const i = activeQuestions.value.findIndex((q) => !feedback.value[q.qid]);
+  if (i >= 0) qIndex.value = i;
+}
+function toggleAnswerReveal() {
+  if (!currentQ.value) return;
+  revealedAnswer.value = {
+    ...revealedAnswer.value,
+    [currentQ.value.qid]: !revealedAnswer.value[currentQ.value.qid],
+  };
+}
+/** 回车先确认当前题；已确认后按顺序推进，全部完成才交卷。 */
 function nextOrSubmit() {
+  const q = currentQ.value;
+  if (!q) return;
+  if (!isChecked(q)) { void checkCurrentAnswer(); return; }
   if (qIndex.value < activeQuestions.value.length - 1) { goQ(1); return; }
-  if (answeredCount.value >= activeQuestions.value.length) {
+  if (completedCount.value >= activeQuestions.value.length) {
     if (reviewMode.value) void submitReview(); else void submitDrill();
+  } else {
+    goNextIncomplete();
   }
 }
 // 听写题自动念一遍（进入题目即播，不用手点）；输入框每题自动聚焦
@@ -153,11 +187,16 @@ async function openBook(book: Book) {
   activeBook.value = book;
   drillLevel.value = null;
   result.value = null;
+  feedback.value = {};
+  revealedAnswer.value = {};
   reviewMode.value = false;
   levelPage.value = 0;
+  await loadLevelsForBook(book);
+  if (tab.value === 'words') void loadBookWords(true); // 换书后词汇表跟着换（修"词汇表还是上一本的"）
+}
+async function loadLevelsForBook(book: Book) {
   const r = await api.get<{ data: Level[] }>(`/learning/books/${book.id}/levels`);
   levels.value = unwrap<Level[]>(r) || [];
-  if (tab.value === 'words') void loadBookWords(true); // 换书后词汇表跟着换（修"词汇表还是上一本的"）
 }
 
 // ── 词汇表（全量浏览：分页 + 中英搜索，修"看不全/不完整"）──
@@ -221,6 +260,8 @@ async function startDrill(levelNo: number) {
   const r = await api.get<{ data: { questions: Question[] } }>(`/learning/books/${activeBook.value.id}/levels/${levelNo}/drill`);
   questions.value = unwrap<{ questions: Question[] }>(r)?.questions || [];
   answers.value = {};
+  feedback.value = {};
+  revealedAnswer.value = {};
   result.value = null;
   drillLevel.value = levelNo;
   qIndex.value = 0;
@@ -244,13 +285,46 @@ async function submitDrill() {
       `/learning/books/${activeBook.value.id}/levels/${drillLevel.value}/drill/submit`,
       { questions: activeQuestions.value, answers: payloadAnswers },
     );
-    result.value = unwrap<DrillResult>(r) ?? null;
-    if (result.value) react(result.value); // 形象反应：过关跳一跳 / 没过歪头看
-    await openBook(activeBook.value); // 刷新星级/解锁态
+    const graded = unwrap<DrillResult>(r);
+    if (!graded) return;
+    result.value = graded;
+    react(graded); // 形象反应：过关跳一跳 / 没过歪头看
+    const book = activeBook.value;
+    await loadLevelsForBook(book); // 只刷新关卡数据，不能把刚拿到的成绩卡清掉
     drillLevel.value = null;
     questions.value = [];
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '交卷失败');
   } finally {
     submitting.value = false;
+  }
+}
+
+/** 逐题确认：服务端握答案，返回对错、正确答案与解析；确认后才计入实时分数。 */
+async function checkCurrentAnswer() {
+  const q = currentQ.value;
+  if (!q || checking.value || isChecked(q) || !isAnswered(q)) return;
+  checking.value = true;
+  try {
+    const answer = {
+      qid: q.qid,
+      kind: q.kind,
+      picked: q.kind === 'choice' ? answers.value[q.qid] : undefined,
+      typed: q.kind === 'choice' ? undefined : answers.value[q.qid],
+    };
+    const r = await api.post<{ data: AnswerFeedback }>('/learning/answer/check', {
+      question: q,
+      answer,
+      bookId: activeBook.value?.id,
+      review: reviewMode.value,
+    });
+    const checked = unwrap<AnswerFeedback>(r);
+    if (!checked) throw new Error('判题结果为空');
+    feedback.value = { ...feedback.value, [q.qid]: checked };
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '判题失败，请重试');
+  } finally {
+    checking.value = false;
   }
 }
 
@@ -333,6 +407,8 @@ async function startReview() {
   if (!d?.questions?.length) { dueCount.value = 0; return; }
   questions.value = d.questions;
   answers.value = {};
+  feedback.value = {};
+  revealedAnswer.value = {};
   result.value = null;
   drillLevel.value = null;
   qIndex.value = 0;
@@ -794,8 +870,9 @@ onMounted(loadTtsPack);
               {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
             </p>
             <div class="lp-drill-meter">
-              <div class="lp-drill-bar"><span :style="{ width: (answeredCount / activeQuestions.length) * 100 + '%' }"></span></div>
-              <span class="lp-drill-count">已答 {{ answeredCount }}/{{ activeQuestions.length }}</span>
+              <div class="lp-drill-bar"><span :style="{ width: (completedCount / Math.max(1, activeQuestions.length)) * 100 + '%' }"></span></div>
+              <span class="lp-drill-count">已完成 {{ completedCount }}/{{ activeQuestions.length }}</span>
+              <span class="lp-score-live">得分 {{ liveScore }} / 100</span>
             </div>
             <div class="lp-focus">
               <p class="lp-focus-kind"><b>第 {{ qIndex + 1 }} 题</b><span class="lp-kind">{{ KIND_LABELS[currentQ.kind] }}</span></p>
@@ -822,17 +899,57 @@ onMounted(loadTtsPack);
               <div v-if="currentQ.kind === 'choice'" class="lp-opts">
                 <button
                   v-for="opt in currentQ.options" :key="opt"
-                  class="lp-opt" :class="{ picked: answers[currentQ.qid] === opt }"
-                  @click="answers[currentQ.qid] = opt"
+                  class="lp-opt"
+                  :class="{
+                    picked: answers[currentQ.qid] === opt,
+                    correct: isChecked(currentQ) && (
+                      (currentFeedback?.correct && answers[currentQ.qid] === opt)
+                      || (isAnswerRevealed && currentFeedback?.expected === opt)
+                    ),
+                    wrong: isChecked(currentQ) && answers[currentQ.qid] === opt && currentFeedback && !currentFeedback.correct,
+                  }"
+                  :disabled="isChecked(currentQ)"
+                  @click="selectOption(opt)"
                 >{{ opt }}</button>
               </div>
               <input
                 v-else
                 ref="focusInput"
                 v-model="answers[currentQ.qid]"
-                class="lp-input lp-focus-input" :placeholder="currentQ.kind === 'dictation' ? `听音拼写（${currentQ.hint}）` : currentQ.kind === 'cloze' ? `填入目标词（${currentQ.hint}）` : `拼写单词（提示：${currentQ.hint}）`"
+                class="lp-input lp-focus-input"
+                :class="{
+                  correct: isChecked(currentQ) && currentFeedback?.correct,
+                  wrong: isChecked(currentQ) && currentFeedback && !currentFeedback.correct,
+                }"
+                :disabled="isChecked(currentQ)"
+                :placeholder="currentQ.kind === 'dictation' ? `听音拼写（${currentQ.hint}）` : currentQ.kind === 'cloze' ? `填入目标词（${currentQ.hint}）` : `拼写单词（提示：${currentQ.hint}）`"
                 @keyup.enter="nextOrSubmit"
               />
+              <div
+                v-if="currentFeedback"
+                class="lp-answer-feedback"
+                :class="{ correct: currentFeedback.correct, wrong: !currentFeedback.correct }"
+                role="status"
+                aria-live="polite"
+              >
+                <p class="lp-answer-feedback-title">
+                  <b>{{ currentFeedback.correct ? '答对了' : '还不对' }}</b>
+                  <span>{{ currentFeedback.word }}</span>
+                </p>
+                <template v-if="currentFeedback.correct">
+                  <p>{{ currentFeedback.explanation }}</p>
+                </template>
+                <template v-else>
+                  <p v-if="!isAnswerRevealed">先想一想，需要时再查看正确答案和解析。</p>
+                  <template v-else>
+                    <p>{{ currentFeedback.explanation }}</p>
+                    <p class="lp-answer-expected">正确答案：<b>{{ currentFeedback.expected }}</b></p>
+                  </template>
+                  <button class="lp-answer-reveal" @click="toggleAnswerReveal">
+                    {{ isAnswerRevealed ? '收起答案' : '查看正确答案' }}
+                  </button>
+                </template>
+              </div>
             </div>
             <!-- 导航：上一题 / 题号圆点 / 下一题或交卷 -->
             <div class="lp-focus-nav">
@@ -840,25 +957,42 @@ onMounted(loadTtsPack);
               <div class="lp-dots">
                 <button
                   v-for="(q, i) in activeQuestions" :key="q.qid"
-                  class="lp-dot" :class="{ done: isAnswered(q), cur: i === qIndex }"
-                  :title="`第 ${i + 1} 题${isAnswered(q) ? '（已答）' : ''}`"
+                  class="lp-dot"
+                  :class="{
+                    done: isChecked(q),
+                    draft: isAnswered(q) && !isChecked(q),
+                    cur: i === qIndex,
+                    wrong: isChecked(q) && !feedback[q.qid]?.correct,
+                  }"
+                  :title="`第 ${i + 1} 题${isChecked(q) ? (feedback[q.qid]?.correct ? '（正确）' : '（错误）') : isAnswered(q) ? '（待确认）' : ''}`"
                   @click="qIndex = i"
                 >{{ i + 1 }}</button>
               </div>
-              <button v-if="qIndex < activeQuestions.length - 1" class="lp-primary" @click="goQ(1)">下一题 ›</button>
-              <button v-else class="lp-primary" :disabled="submitting || answeredCount < activeQuestions.length" @click="reviewMode ? submitReview() : submitDrill()">
+              <button
+                v-if="!isChecked(currentQ)"
+                class="lp-primary"
+                :disabled="checking || !isAnswered(currentQ)"
+                @click="checkCurrentAnswer"
+              >
+                {{ checking ? '判定中…' : '确认答案' }}
+              </button>
+              <button v-else-if="qIndex < activeQuestions.length - 1" class="lp-primary" @click="goQ(1)">下一题 ›</button>
+              <button v-else-if="completedCount < activeQuestions.length" class="lp-primary" @click="goNextIncomplete">
+                继续未完成
+              </button>
+              <button v-else class="lp-primary" :disabled="submitting" @click="reviewMode ? submitReview() : submitDrill()">
                 {{ submitting ? '判分中…' : '交卷' }}
               </button>
             </div>
           </template>
           <template v-else-if="result">
             <div class="lp-result" :class="{ pass: result.passed }">
-              <p class="lp-result-stars">{{ starText(result.stars) }}（{{ result.pct }}%）</p>
-              <p>{{ result.passed ? '过关！✅' : '没过，再练一轮 —— 错的词已回复习盒' }}</p>
+              <p class="lp-result-stars">{{ starText(result.stars) }} <b>{{ result.pct }} 分</b></p>
+              <p>答对 {{ result.correct }} / {{ result.total }} · {{ result.passed ? '过关！✅' : '没过，再练一轮 —— 错的词已回复习盒' }}</p>
               <ul>
                 <li v-for="r in result.results" :key="r.qid" :class="{ wrong: !r.correct }">
                   <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(r.word)">🔊</button>
-                  <b>{{ r.word }}</b> · {{ r.correct ? '✔' : `应为「${r.expected}」` }}
+                  <b>{{ r.word }}</b> · {{ r.correct ? '✔ 正确' : `你的答案「${r.given || '未作答'}」 · 正确答案「${r.expected}」` }}
                 </li>
               </ul>
               <button class="lp-mini" style="margin-top:10px;" @click="result = null">← 返回关卡</button>
@@ -971,7 +1105,7 @@ onMounted(loadTtsPack);
         </template>
 
         <!-- 范文阅读：列表 chips + 阅读器 -->
-        <template v-else>
+        <template v-else-if="tab === 'reading'">
           <div class="lp-reading-chips">
             <button
               v-for="r in readings" :key="r.id"
@@ -991,6 +1125,11 @@ onMounted(loadTtsPack);
             </button>
           </div>
           <p v-else class="lp-hint">上方选一篇范文开始阅读。</p>
+        </template>
+
+        <!-- 历年真题：考研 / 高考客观题训练 -->
+        <template v-else-if="tab === 'exam'">
+          <ExamTrainer />
         </template>
       </section>
 
@@ -1142,6 +1281,7 @@ onMounted(loadTtsPack);
 .lp-drill-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--color-border, #e5e6eb); overflow: hidden; }
 .lp-drill-bar span { display: block; height: 100%; background: var(--color-primary, #3370ff); border-radius: 3px; transition: width 0.2s; }
 .lp-drill-count { font-size: 12px; color: #8f959e; white-space: nowrap; }
+.lp-score-live { font-size: 12px; font-weight: 700; color: #3370ff; background: #f0f5ff; border: 1px solid #d6e4ff; border-radius: 6px; padding: 3px 7px; white-space: nowrap; }
 .lp-focus { border: 1px solid var(--color-border, #e5e6eb); border-radius: 12px; padding: 22px 24px; text-align: center; background: var(--glass-bg); }
 .lp-focus-kind { margin: 0 0 12px; font-size: 12px; color: #8f959e; }
 .lp-focus-kind b { color: #4e5469; margin-right: 8px; }
@@ -1153,19 +1293,36 @@ onMounted(loadTtsPack);
 .lp-bigplay { border: 1px solid var(--color-border, #e5e6eb); background: var(--glass-bg-hover, #f0f2f7); border-radius: 999px; padding: 10px 22px; font-size: 15px; cursor: pointer; color: var(--color-text, #1f2329); }
 .lp-bigplay:hover { border-color: #3370ff; color: #3370ff; }
 .lp-focus-input { max-width: 340px; margin: 16px auto 0; display: block; text-align: center; font-size: 16px; padding: 9px 12px; }
+.lp-focus-input.correct { border-color: #22c55e; background: #f0fdf4; }
+.lp-focus-input.wrong { border-color: #ef4444; background: #fff7f7; }
 .lp-focus-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
 .lp-dots { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; }
 .lp-dot { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--color-border, #e5e6eb); background: var(--glass-bg); font-size: 11px; cursor: pointer; color: #8f959e; padding: 0; }
 .lp-dot.done { background: #3370ff; border-color: #3370ff; color: #fff; }
+.lp-dot.done.wrong { background: #fff1f0; border-color: #ef4444; color: #b91c1c; }
+.lp-dot.draft { border-color: #f7b500; color: #b45309; background: #fffbeb; }
 .lp-dot.cur { border-color: #3370ff; color: #3370ff; font-weight: 600; box-shadow: 0 0 0 2px #3370ff22; }
 .lp-kind { margin-left: 6px; font-size: 10px; color: #3370ff; background: #f0f5ff; border-radius: 4px; padding: 1px 6px; }
 .lp-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
 .lp-opt { text-align: left; border: 1px solid var(--color-border, #e5e6eb); border-radius: 8px; padding: 10px 12px; font-size: 13px; cursor: pointer; background: var(--glass-bg); color: var(--color-text, #1f2329); transition: border-color 0.15s; }
 .lp-opt:hover { border-color: #3370ff; }
 .lp-opt.picked { border-color: #3370ff; background: #f0f5ff; }
+.lp-opt.correct { border-color: #22c55e; background: #f0fdf4; color: #166534; }
+.lp-opt.wrong { border-color: #ef4444; background: #fff7f7; color: #b91c1c; }
+.lp-opt:disabled { cursor: default; }
+.lp-answer-feedback { margin: 14px auto 0; max-width: 520px; text-align: left; border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #166534; line-height: 1.55; }
+.lp-answer-feedback.wrong { border-color: #fecaca; background: #fff7f7; color: #991b1b; }
+.lp-answer-feedback p { margin: 0; }
+.lp-answer-feedback p + p { margin-top: 4px; }
+.lp-answer-feedback-title { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.lp-answer-feedback-title span { color: #4e5469; font-weight: 600; }
+.lp-answer-expected { padding-top: 5px; border-top: 1px dashed currentColor; }
+.lp-answer-reveal { margin-top: 8px; border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer; }
+.lp-answer-reveal:hover { background: var(--glass-bg-hover, #f5f6f7); }
 .lp-result { font-size: 13px; }
 .lp-result.pass { color: #0f8a3d; }
 .lp-result-stars { font-size: 20px; color: #f7b500; letter-spacing: 2px; margin: 4px 0; }
+.lp-result-stars b { color: #3370ff; font-size: 16px; margin-left: 6px; }
 .lp-result ul { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; }
 .lp-result li { padding: 3px 0; border-bottom: 1px dashed #eee; }
 .lp-result li.wrong { color: #d4380d; }

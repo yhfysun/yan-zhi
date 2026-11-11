@@ -270,8 +270,47 @@ export function getDrill(userId: string, bookId: string, levelNo: number): { que
 
 export type DrillSubmitResult = {
   correct: number; total: number; stars: number; passed: boolean; pct: number;
-  results: Array<{ qid: string; word: string; correct: boolean; expected: string }>;
+  results: Array<{ qid: string; word: string; correct: boolean; expected: string; given: string | null }>;
 };
+
+export type AnswerCheckResult = {
+  correct: boolean;
+  word: string;
+  expected: string;
+  gloss: string;
+  explanation: string;
+};
+
+function answerCheck(q: DrillQuestion, a: DrillAnswer, w: SrsWordRow): AnswerCheckResult {
+  const correct = judgeAnswer(q, a, new Map([[w.id, w]]));
+  const expected = q.kind === 'choice' ? w.gloss : w.word;
+  const explanation = correct
+    ? `答对了。${w.word}：${w.gloss}`
+    : q.kind === 'choice'
+      ? `正确释义是「${expected}」。${w.word} 的意思是「${w.gloss}」。`
+      : `正确拼写是「${expected}」，意思是「${w.gloss}」。`;
+  return { correct, word: w.word, expected, gloss: w.gloss, explanation };
+}
+
+/** 逐题判题：只返回反馈，不更新 SRS，用户确认后再整卷交卷落库。 */
+export function checkDrillAnswer(
+  userId: string, bookId: string, question: DrillQuestion, answer: DrillAnswer,
+): AnswerCheckResult {
+  const word = wordsOfBook(userId, bookId).find((w) => w.id === question.wordId);
+  if (!word) throw new Error('题目单词不存在或无权访问');
+  return answerCheck(question, answer, word);
+}
+
+/** 到期复习逐题判题：按当前用户自己的词库取答案，不更新 SRS。 */
+export function checkReviewAnswer(
+  userId: string, question: DrillQuestion, answer: DrillAnswer,
+): AnswerCheckResult {
+  const word = db.prepare(
+    'SELECT id, word, phonetic, gloss, example, box, due_at FROM learning_word WHERE id = ? AND user_id = ?',
+  ).get(question.wordId, userId) as SrsWordRow | undefined;
+  if (!word) throw new Error('复习单词不存在或无权访问');
+  return answerCheck(question, answer, word);
+}
 
 export function submitDrill(
   userId: string, bookId: string, levelNo: number, answers: DrillAnswer[], questions: DrillQuestion[],
@@ -288,7 +327,10 @@ export function submitDrill(
     if (ok) correct += 1;
     const w = wordById.get(q.wordId);
     if (w) {
-      results.push({ qid: q.qid, word: w.word, correct: ok, expected: q.kind === 'choice' ? w.gloss : w.word });
+      results.push({
+        qid: q.qid, word: w.word, correct: ok, expected: q.kind === 'choice' ? w.gloss : w.word,
+        given: a ? String(q.kind === 'choice' ? (a.picked ?? '') : (a.typed ?? '')) || null : null,
+      });
       touched.set(w.id, ok);
     }
   }
@@ -374,7 +416,10 @@ export function submitReviewDrill(userId: string, answers: DrillAnswer[], questi
     const ok = a ? judgeAnswer(q, a, wordById) : false;
     if (ok) correct += 1;
     const w = wordById.get(q.wordId)!;
-    results.push({ qid: q.qid, word: w.word, correct: ok, expected: q.kind === 'choice' ? w.gloss : w.word });
+    results.push({
+      qid: q.qid, word: w.word, correct: ok, expected: q.kind === 'choice' ? w.gloss : w.word,
+      given: a ? String(q.kind === 'choice' ? (a.picked ?? '') : (a.typed ?? '')) || null : null,
+    });
   }
   const { stars, passed, pct } = starsFor(correct, questions.length);
   const tx = db.transaction(() => {

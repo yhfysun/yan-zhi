@@ -95,15 +95,17 @@ beforeEach(async () => {
   // 恢复默认分发：前一用例的 mockImplementation 不泄漏（jsdom 用例间共享同一个 vi.fn 实例）
   const { api } = await import('../api/client')
   vi.mocked(api.get).mockImplementation(defaultGet)
+  vi.mocked(api.post).mockReset()
+  vi.mocked(api.post).mockImplementation(async () => ({ data: null }))
 })
 
 describe('Learning 工作区 · 挂载契约', () => {
-  it('渲染标题、streak 火焰与六个 Tab（含陪练对话）', async () => {
+  it('渲染标题、streak 火焰与七个 Tab（含陪练对话与历年真题）', async () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-sub')?.textContent).toContain('🔥 连续 3 天'))
     expect(el.querySelector('h1')?.textContent).toContain('学习模式')
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
-    expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读'])
+    expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
   })
 
@@ -176,15 +178,126 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-focus')?.textContent).toContain('cancel')
     expect(el.querySelector('.lp-focus')?.textContent).toContain('第 1 题')
     expect(el.querySelector('.lp-drill-count')?.textContent).toContain('0/2')
-    // 圆点导航 2 个；点下一题 → 第 2 题
+    // 圆点导航 2 个；点击第 2 个圆点 → 第 2 题（确认答案前不允许直接跳过）
     expect(el.querySelectorAll('.lp-dot').length).toBe(2)
-    ;([...el.querySelectorAll('.lp-focus-nav .lp-primary')] as HTMLElement[]).find((b) => b.textContent?.includes('下一题'))!.click()
+    expect(el.querySelector('.lp-focus-nav')?.textContent).toContain('确认答案')
+    ;(el.querySelectorAll('.lp-dot')[1] as HTMLElement).click()
     await nextTick()
     expect(el.querySelector('.lp-focus')?.textContent).toContain('第 2 题')
     // ★ 拼写题必须给中文释义（没有释义用户不知道要拼哪个词）
     expect(el.querySelector('.lp-focus-word')?.textContent).toContain('薪金，薪水')
     // 三栏骨架仍在
     expect(el.querySelector('.lp-grid')).toBeTruthy()
+  })
+
+  it('★ 单词逐题反馈：确认后显示对错、正确答案、解析与实时分数', async () => {
+    const { api } = await import('../api/client')
+    const getMock = vi.mocked(api.get)
+    const postMock = vi.mocked(api.post)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/courses')) return {
+        data: [{ stage: '大学', courses: [
+          { id: 'cet4', name: '大学英语四级', stage: '大学', bookId: 'wb_cet4_sample', bookName: '大学英语四级', wordCount: 2607, levelCount: 131, clearedLevels: 0, totalLevels: 131, dueCount: 0, progressPct: 0 },
+        ] }],
+      }
+      if (url.includes('/drill')) return {
+        data: { questions: [
+          { qid: 'q1', kind: 'choice', wordId: 'cancel', prompt: 'cancel', phonetic: "/'kænsl/", options: ['取消，撤销', '众多的'] },
+          { qid: 'q2', kind: 'choice', wordId: 'numerous', prompt: 'numerous', options: ['众多的', '取消，撤销'] },
+        ] },
+      }
+      if (url.includes('/levels')) return {
+        data: [{ levelNo: 1, wordCount: 20, stars: 0, passed: false, unlocked: true, dueCount: 0 }],
+      }
+      return { data: null }
+    })
+    postMock.mockImplementation(async (url: string) => {
+      if (url.includes('/answer/check')) return {
+        data: { correct: false, word: 'cancel', expected: '取消，撤销', gloss: '取消，撤销', explanation: 'cancel 的意思是「取消，撤销」。' },
+      }
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-course')).toBeTruthy())
+    ;(el.querySelector('.lp-course') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-level')).toBeTruthy())
+    ;(el.querySelector('.lp-level') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-opt')).toBeTruthy())
+    ;([...el.querySelectorAll('.lp-opt')] as HTMLElement[]).find((b) => b.textContent?.includes('众多的'))!.click()
+    await nextTick()
+    const checkBtn = ([...el.querySelectorAll('button')] as HTMLElement[]).find((b) => b.textContent?.includes('确认答案'))
+    expect(checkBtn).toBeTruthy()
+    checkBtn!.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-answer-feedback')).toBeTruthy())
+    const feedback = el.querySelector('.lp-answer-feedback')!
+    expect(feedback.textContent).toContain('还不对')
+    expect(el.querySelector('.lp-score-live')?.textContent).toContain('0 / 100')
+    expect(el.querySelector('.lp-opt.picked.wrong')).toBeTruthy()
+    // ★ 用户要求：答错不能直接喂答案；先给查看按钮，点击后才展开正确释义和解析
+    expect(feedback.textContent).not.toContain('取消，撤销')
+    expect(feedback.textContent).not.toContain('cancel 的意思')
+    expect(el.querySelector('.lp-opt.correct')).toBeFalsy()
+    const reveal = ([...feedback.querySelectorAll('button')] as HTMLElement[]).find((b) => b.textContent?.includes('查看正确答案'))!
+    expect(reveal).toBeTruthy()
+    reveal.click()
+    await nextTick()
+    expect(feedback.textContent).toContain('取消，撤销')
+    expect(feedback.textContent).toContain('cancel 的意思')
+    expect(el.querySelector('.lp-opt.correct')).toBeTruthy()
+  })
+
+  it('★ 历年真题：筛选考研/高考，进入试卷并显示交卷得分与逐题解析', async () => {
+    const { api } = await import('../api/client')
+    const getMock = vi.mocked(api.get)
+    const postMock = vi.mocked(api.post)
+    const papers = [
+      { id: 'exam_kaoyan_2024', title: '2024 考研英语（一）· 阅读精练', examType: '考研', year: 2024, region: '全国统考', section: '阅读理解', difficulty: '中等偏难', durationMinutes: 18, tags: ['慢阅读'], questionCount: 5 },
+      { id: 'exam_gaokao_2024', title: '2024 高考英语 · 阅读精练', examType: '高考', year: 2024, region: '全国卷', section: '阅读理解', difficulty: '中等', durationMinutes: 12, tags: ['校园生活'], questionCount: 5 },
+    ]
+    getMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/learning/exams')) return { data: papers }
+      if (url.includes('/learning/exams/exam_kaoyan_2024')) return {
+        data: {
+          ...papers[0],
+          passage: 'For years, speed has been treated as a virtue in online reading.',
+          questions: [
+            { id: 'q1', stem: 'What is the main idea?', options: ['Slow down.', 'Read less.', 'Avoid screens.', 'Share more.'] },
+            { id: 'q2', stem: 'What helps careful reading?', options: ['Annotation.', 'Speed.', 'Noise.', 'Skimming only.'] },
+          ],
+        },
+      }
+      return defaultGet(url)
+    })
+    postMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/exams/exam_kaoyan_2024/submit')) return {
+        data: {
+          paperId: 'exam_kaoyan_2024', title: papers[0].title, correct: 1, total: 2, score: 50,
+          details: [
+            { questionId: 'q1', stem: 'What is the main idea?', picked: 0, answer: 0, correct: true, explanation: '首段强调慢读。' },
+            { questionId: 'q2', stem: 'What helps careful reading?', picked: 1, answer: 0, correct: false, explanation: 'annotation 能帮助精读。' },
+          ],
+        },
+      }
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    const examTab = ([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('历年真题'))!
+    examTab.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-exam-card').length).toBe(2))
+    expect(el.querySelector('.lp-exam-card')?.textContent).toContain('考研')
+    expect(el.textContent).toContain('高考')
+
+    ;([...el.querySelectorAll('.lp-exam-card button')] as HTMLElement[])[0].click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-exam-runner')).toBeTruthy())
+    expect(el.querySelector('.lp-exam-passage')?.textContent).toContain('speed has been treated')
+    ;([...el.querySelectorAll('.lp-exam-question .lp-opt')] as HTMLElement[])[0].click()
+    const submit = ([...el.querySelectorAll('button')] as HTMLElement[]).find((b) => b.textContent?.trim() === '交卷判分')!
+    submit.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-exam-result')).toBeTruthy())
+    expect(el.querySelector('.lp-exam-result')?.textContent).toContain('50')
+    expect(el.querySelector('.lp-exam-result')?.textContent).toContain('annotation 能帮助精读')
   })
 
   it('场景卡 Tab：点开真出卡，卡带标题与难度（中栏内渲染，不跳布局）', async () => {
