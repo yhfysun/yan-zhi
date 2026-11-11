@@ -1,7 +1,15 @@
+import { SECURITY_MODULE_EXTRA_LABS, SECURITY_MODULE_LESSONS } from './security-lessons.js';
+
 export type SecurityCodeExample = {
   language: string;
   /** 明确这份代码/配置属于哪个工具或教学模型 */
   context?: string;
+  /** 这段示例对应的业务应用、运行环境或靶场 */
+  application?: string;
+  /** 示例产物类型，例如 Nginx 配置、Docker Compose 配置或应用代码 */
+  exampleKind?: string;
+  badLabel?: string;
+  goodLabel?: string;
   bad: string;
   good: string;
   note: string;
@@ -15,21 +23,32 @@ export type SecurityCodeVariant = {
   note: string;
 };
 
+export type SecurityLesson = {
+  objectives: string[];
+  keyTerms: Array<{ term: string; explanation: string }>;
+  walkthrough: Array<{ title: string; detail: string }>;
+  knowledgeChecks: Array<{ question: string; answer: string }>;
+};
+
+export type SecurityLab = {
+  target: string;
+  tools: string[];
+  steps: string[];
+  expected: string;
+  commands?: string[];
+};
+
 export type SecurityModule = {
   id: string;
   title: string;
   summary: string;
   useCase?: string;
   explanation?: string;
+  lesson?: SecurityLesson;
   topics: string[];
   risk: string;
   control: string;
-  lab?: {
-    target: string;
-    tools: string[];
-    steps: string[];
-    expected: string;
-  };
+  lab?: SecurityLab;
   code?: SecurityCodeExample;
 };
 
@@ -685,15 +704,119 @@ export const SECURITY_PATHS: SecurityPath[] = [
   },
 ];
 
-const SECURITY_MODULE_ENRICHMENTS: Record<string, Pick<SecurityModule, 'useCase' | 'explanation' | 'code'>> = {
+const SECURITY_MODULE_ENRICHMENTS: Record<string, Pick<SecurityModule, 'useCase' | 'explanation' | 'lesson' | 'code' | 'lab'>> = {
   sec_fund_threat_model: {
     useCase: '上线一个文件上传接口前，团队需要判断谁会访问、文件会进入哪里、失败后影响哪些用户和系统。',
     explanation: '威胁建模不是列漏洞清单，而是持续回答四个问题：我们在保护什么、谁可能滥用、攻击路径是什么、哪些控制能降低风险。STRIDE 用来把模糊担心拆成可评审的威胁类别。',
+    lesson: {
+      objectives: [
+        '说清楚威胁建模解决什么问题，以及它和漏洞扫描的区别。',
+        '为“文件上传服务”画出数据流，标出资产和信任边界。',
+        '按 STRIDE 推导威胁，并写出“原因 → 影响 → 控制 → 验收”的完整链条。',
+        '在本地靶场复现越权下载、公开对象和危险文件上传，再验证修复。',
+      ],
+      keyTerms: [
+        { term: '资产', explanation: '需要保护的东西，例如文件、元数据、登录会话和对象存储桶。' },
+        { term: '信任边界', explanation: '身份、权限或数据格式发生变化的连接点，例如浏览器到 Nginx、API 到对象存储。' },
+        { term: '数据流', explanation: '一次正常业务请求经过的组件和方向，用来发现“谁还能访问这条路径”。' },
+        { term: '威胁', explanation: '可能发生的坏事和触发条件，不等于已经扫描到的漏洞。' },
+        { term: '控制', explanation: '阻止威胁发生、降低影响或帮助发现问题的具体机制。' },
+        { term: '验收用例', explanation: '能够重复执行并观察结果的测试，例如用户 B 读取用户 A 的文件必须返回 404。' },
+      ],
+      walkthrough: [
+        {
+          title: '先写正常流程',
+          detail: '用户登录后上传文件：浏览器 → Nginx → API。API 校验身份，把文件写入对象存储，把文件名、所有者、大小和摘要写入元数据表；下载时 API 生成短时签名地址。',
+        },
+        {
+          title: '列出要保护的资产',
+          detail: '文件内容、文件元数据、用户会话、对象存储桶和签名地址都属于资产。先列出资产，才能判断哪一步泄露会造成什么影响。',
+        },
+        {
+          title: '标出信任边界',
+          detail: '浏览器到 Nginx、Nginx 到 API、API 到对象存储、API 到数据库都是边界。每跨过一次边界，都要重新确认身份、权限、数据格式和大小。',
+        },
+        {
+          title: '对每个边界套 STRIDE',
+          detail: '欺骗看身份是否可冒用；篡改看内容和摘要是否可改；抵赖看审计是否缺失；信息泄露看对象是否公开；拒绝服务看上传是否有限额；权限提升看前端判断是否被服务端重复执行。',
+        },
+        {
+          title: '判断风险优先级',
+          detail: '公开存储桶和跨租户下载会直接泄露数据，应优先处理；无限上传会耗尽容量和带宽；缺少审计会降低发现与追责能力。优先级由影响范围和触发难度共同决定。',
+        },
+        {
+          title: '把威胁变成控制',
+          detail: '越权下载用 tenantId + fileId 联合查询；公开桶改成私有桶并只发短时签名地址；危险文件用 MIME、扩展名、内容检查并强制附件下载；上传量按用户和 IP 限额。',
+        },
+        {
+          title: '写成可复测的验收用例',
+          detail: '用户 B 请求用户 A 的文件应返回 404；无签名对象地址应返回 403；上传 HTML 文件应返回 415；超过大小限制应返回 413；修复后本人仍能正常下载。',
+        },
+      ],
+      knowledgeChecks: [
+        {
+          question: '为什么“security: please secure it”不能当作威胁模型？',
+          answer: '它没有说明保护什么、谁会攻击、从哪个边界进入、会造成什么影响，也没有控制措施和验收条件，因此无法评审，也无法验证是否有效。',
+        },
+        {
+          question: '对象存储桶公开为什么是信息泄露，而不是“只有知道 URL 才危险”？',
+          answer: '公开桶意味着访问控制已经不经过应用服务器和登录会话。URL 可能进入浏览器历史、日志、聊天记录或被枚举，任何拿到地址的人都能直接读取文件。',
+        },
+        {
+          question: '为什么只在前端检查文件扩展名没有安全作用？',
+          answer: '前端代码和请求都由用户控制。攻击者可以绕过页面直接调用 API，所以文件类型、大小、权限和存储位置必须在服务端重新校验。',
+        },
+        {
+          question: '已经有漏洞扫描器，为什么还需要威胁建模？',
+          answer: '扫描器擅长发现已知模式和实现错误，但不了解业务权限、数据流和设计目标。威胁建模能在开发前发现“缺少对象级授权”“公开桶”“无上传限额”这类设计缺口，再决定用什么测试验证。',
+        },
+      ],
+    },
     code: {
-      language: 'yaml',
-      bad: "feature: upload\nsecurity: 'please secure it'",
-      good: "feature: upload\nassets: [user-file, storage-bucket]\nboundaries: [browser -> api, api -> object-storage]\nthreats:\n  - spoofing: verify session and tenant\n  - tampering: checksum + content-type validation\n  - information-disclosure: private bucket + short signed URL",
-      note: '威胁模型应与数据流图、接口和权限一起评审，而不是上线前补一张表。',
+      language: 'markdown',
+      badLabel: '不安全的上传设计',
+      goodLabel: '威胁模型与控制',
+      bad: `# 文件上传服务
+
+架构：浏览器 → Nginx → API → 对象存储
+文件位置：public/uploads
+下载：GET /files/:id 直接返回文件
+校验：仅前端检查扩展名和大小
+存储桶：公开读
+权限：未记录文件归属和租户`,
+      good: `# 文件上传服务威胁模型
+
+资产：用户文件、私有桶、文件元数据
+边界：浏览器 → Nginx → API → 对象存储
+威胁与控制：
+- 越权下载：查询绑定 fileId + tenantId，失败返回 404
+- 存储型 XSS：校验 MIME/扩展名，下载加 attachment
+- 公开桶泄露：私有桶 + 5 分钟签名 URL
+- 上传耗尽：大小、数量、速率限制
+- 文件篡改：checksum，图片重新编码
+验收：用户 B 访问用户 A 的文件返回 404`,
+      note: '这里展示的是文件上传服务的威胁模型记录，不是 Nginx 配置；每项威胁都应有可复测的验收条件。',
+    },
+    lab: {
+      target: '127.0.0.1 文件上传教学靶场',
+      tools: ['Node.js 20+', 'curl.exe', '浏览器 DevTools'],
+      steps: [
+        '在项目根目录启动不安全模式，只绑定本机回环地址，不接触外部网络。',
+        '分别以 alice 和 bob 登录，保存两个不同的会话令牌。',
+        '用 alice 上传 note.txt，记录返回的 FILE_ID；用 bob 令牌请求该文件，观察不安全的 200 响应。',
+        '访问不带身份校验的对象地址，确认公开桶会让文件绕过应用授权。',
+        '上传 attack.html 并声明为 text/html，确认不安全模式接受危险文件。',
+        '停止靶场，改用安全模式重启；重复上述请求，应分别得到 404、403 和 415。',
+        '把每个请求、响应状态和对应 STRIDE 类别写进威胁模型，形成可复测证据。',
+      ],
+      commands: [
+        'node apps/server/scripts/security-upload-lab.cjs --insecure',
+        'curl.exe -s -X POST http://127.0.0.1:4317/login -H "Content-Type: application/json" -d "{\\"user\\":\\"alice\\"}"',
+        'curl.exe -s -X POST http://127.0.0.1:4317/upload -H "Authorization: Bearer ALICE_TOKEN" -H "Content-Type: application/json" -d "{\\"filename\\":\\"note.txt\\",\\"contentType\\":\\"text/plain\\",\\"content\\":\\"hello\\"}"',
+        'curl.exe -i http://127.0.0.1:4317/files/FILE_ID -H "Authorization: Bearer BOB_TOKEN"',
+        'curl.exe -i http://127.0.0.1:4317/files/FILE_ID -H "Authorization: Bearer ALICE_TOKEN"',
+      ],
+      expected: '不安全模式能复现越权读取、公开对象和危险文件上传；安全模式分别以 404、403、415 阻断，同时 alice 仍能正常下载自己的文件。',
     },
   },
   sec_fund_auth: {
@@ -834,6 +957,8 @@ for (const path of SECURITY_PATHS) {
   for (const mod of path.modules) {
     const enrichment = SECURITY_MODULE_ENRICHMENTS[mod.id];
     if (enrichment) Object.assign(mod, enrichment);
+    if (!mod.lesson && SECURITY_MODULE_LESSONS[mod.id]) mod.lesson = SECURITY_MODULE_LESSONS[mod.id];
+    if (!mod.lab && SECURITY_MODULE_EXTRA_LABS[mod.id]) mod.lab = SECURITY_MODULE_EXTRA_LABS[mod.id];
   }
 }
 
@@ -909,7 +1034,7 @@ for (const path of SECURITY_PATHS) {
 }
 
 const SECURITY_CODE_CONTEXT: Record<string, string> = {
-  sec_fund_threat_model: '言智 STRIDE 威胁模型教学示例（不是任何工具的真实配置文件）',
+  sec_fund_threat_model: '言智网络安全课程 · 安全基础与威胁建模 / STRIDE 模块',
   sec_fund_auth: '应用会话安全代码（语言示例）',
   sec_fund_network: '云安全组/防火墙策略示意（抽象 YAML，不绑定厂商）',
   sec_fund_logging: '应用审计日志代码',
@@ -941,9 +1066,79 @@ const SECURITY_CODE_CONTEXT: Record<string, string> = {
   sec_lang_rust: 'Rust 安全编码示例',
 };
 
+const SECURITY_CODE_APPLICATIONS: Record<string, string> = {
+  sec_fund_threat_model: '文件上传服务（浏览器 → API → 对象存储）',
+  sec_fund_auth: '带登录会话的 Web 应用',
+  sec_fund_network: '云上 Web 应用（应用层 / 数据层 / 管理面）',
+  sec_fund_logging: '应用服务端审计日志',
+  sec_web_sqli: '使用关系型数据库的 Web 应用',
+  sec_web_xss: '渲染用户内容的 Web 前端',
+  sec_web_access: '多租户文档服务 API',
+  sec_web_ssrf: '服务端 URL 抓取 / Webhook 代理服务',
+  sec_pentest_scope: '自有或已授权的渗透测试项目',
+  sec_pentest_discover: '127.0.0.1 本地授权靶场',
+  sec_pentest_validate: '本地 OWASP Juice Shop / WebGoat 靶场',
+  sec_pentest_report: '渗透测试报告（目标系统实际情况）',
+  sec_auto_lab: '本地 OWASP Juice Shop / WebGoat 容器靶场',
+  sec_auto_scan: '本地 Web 靶场',
+  sec_auto_authz: '本地 Web 靶场登录与越权流程',
+  sec_auto_pipeline: '应用代码仓库的 CI/CD 流水线',
+  sec_def_layer: 'Nginx 反向代理的 Web 应用',
+  sec_def_detect: '集中日志 / SIEM 检测平台',
+  sec_def_ir: 'Linux 主机安全事件响应',
+  sec_dev_ci: '应用代码仓库与 CI 流水线',
+  sec_dev_secrets: '服务端应用密钥管理',
+  sec_dev_sbom: '应用构建与发布流水线',
+  sec_lang_c: 'C 语言应用或系统组件',
+  sec_lang_cpp: 'C++ 应用或系统组件',
+  sec_lang_java: 'Java 后端应用',
+  sec_lang_python: 'Python 脚本或后端服务',
+  sec_lang_javascript: '浏览器或 Node.js 应用',
+  sec_lang_php: 'PHP Web 应用',
+  sec_lang_go: 'Go 后端服务',
+  sec_lang_rust: 'Rust 系统服务',
+};
+
+const SECURITY_CODE_KINDS: Record<string, string> = {
+  sec_fund_threat_model: '威胁模型记录（Markdown 文档，不绑定 Nginx / Docker / Kubernetes）',
+  sec_fund_auth: '应用代码示例',
+  sec_fund_network: '策略模型（抽象 YAML）',
+  sec_fund_logging: '应用代码示例',
+  sec_web_sqli: '应用代码示例',
+  sec_web_xss: '应用代码示例',
+  sec_web_access: '应用代码示例',
+  sec_web_ssrf: '应用代码示例',
+  sec_pentest_scope: '授权文档模板（YAML）',
+  sec_pentest_discover: 'Shell 命令',
+  sec_pentest_validate: 'HTTP 请求',
+  sec_pentest_report: 'Markdown 报告模板',
+  sec_auto_lab: 'Docker Compose 配置',
+  sec_auto_scan: 'Nuclei 命令',
+  sec_auto_authz: 'Playwright 测试代码',
+  sec_auto_pipeline: 'GitHub Actions 工作流',
+  sec_def_layer: 'Nginx 配置',
+  sec_def_detect: 'SIEM 检测规则（YAML 风格）',
+  sec_def_ir: 'Linux Shell 命令',
+  sec_dev_ci: 'CI 命令',
+  sec_dev_secrets: '应用代码示例',
+  sec_dev_sbom: 'Shell 命令',
+  sec_lang_c: 'C 代码示例',
+  sec_lang_cpp: 'C++ 代码示例',
+  sec_lang_java: 'Java 代码示例',
+  sec_lang_python: 'Python 代码示例',
+  sec_lang_javascript: 'JavaScript 代码示例',
+  sec_lang_php: 'PHP 代码示例',
+  sec_lang_go: 'Go 代码示例',
+  sec_lang_rust: 'Rust 代码示例',
+};
+
 for (const path of SECURITY_PATHS) {
   for (const mod of path.modules) {
-    if (mod.code) mod.code.context = SECURITY_CODE_CONTEXT[mod.id] || '安全教学代码示例';
+    if (mod.code) {
+      mod.code.context = SECURITY_CODE_CONTEXT[mod.id] || '安全教学代码示例';
+      mod.code.application = SECURITY_CODE_APPLICATIONS[mod.id] || '通用应用安全场景';
+      mod.code.exampleKind = SECURITY_CODE_KINDS[mod.id] || '教学示例';
+    }
   }
 }
 

@@ -2,6 +2,7 @@ import type { ExamPaper, ExamQuestion } from './exams.js';
 import {
   getSoftKnowledgeProfile,
   SOFT_OFFICIAL_BOOKS_URL,
+  type SoftFreeResource,
   type SoftKnowledgeDomain,
   type SoftOfficialBook,
 } from './soft-exam-knowledge.js';
@@ -555,6 +556,7 @@ export type SoftMaterialSummary = {
   chapterCount: number;
   knowledgeDomains: SoftKnowledgeDomain[];
   books: SoftOfficialBook[];
+  freeResources: SoftFreeResource[];
   officialBooksUrl: string;
   coverageNote: string;
 };
@@ -576,6 +578,7 @@ export const SOFT_MATERIALS: SoftMaterialSummary[] = SOFT_SPECIALTIES.map((spec)
     chapterCount: knowledge.chapterCount,
     knowledgeDomains: knowledge.domains,
     books: knowledge.books,
+    freeResources: knowledge.freeResources,
     officialBooksUrl: SOFT_OFFICIAL_BOOKS_URL,
     coverageNote: knowledge.coverageNote,
   };
@@ -605,6 +608,24 @@ export function getSoftMaterial(id: string): (SoftMaterialSummary & { content: s
     ]),
     '## 官方考试用书',
     ...knowledge.books.map((book) => `- ${book.kind}：${book.title}；ISBN ${book.isbn}；${book.publisher}。${book.note}`),
+    '',
+    '## 免费自学资料',
+    '> 正式教材受版权保护，本清单不提供盗版下载。以下是可以合法免费使用的官方入口、开源仓库和公开视频检索。',
+    ...knowledge.freeResources.flatMap((resource) => [
+      `### ${resource.kind}：${resource.title}`,
+      `- 来源：${resource.provider}`,
+      `- 地址：${resource.url}`,
+      `- 许可/免费说明：${resource.license}`,
+      `- 适合：${resource.description}`,
+      `- 怎么用：${resource.howToUse}`,
+      '',
+    ]),
+    '## 免费自学顺序',
+    '1. 先打开官方入口，核对当前专业、级别、考试时间和最新大纲。',
+    '2. 用开源笔记按本清单的知识域学习，每个知识域至少写出一条“原因 → 影响 → 控制/结论”。',
+    '3. 用开源题库做章节练习，错题回到笔记和清单定位原因。',
+    '4. 卡住某个概念时再检索公开视频，优先选择近两年且与当前大纲匹配的内容。',
+    '5. 最后完成本清单中的自编综合知识和上机案例，用自己的话复述解题依据。',
     '',
     '## 高频知识点索引',
     ...spec.knowledgePoints.map((point) => `- ${point}`),

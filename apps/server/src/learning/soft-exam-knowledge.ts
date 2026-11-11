@@ -12,6 +12,17 @@ export type SoftOfficialBook = {
   note: string;
 };
 
+export type SoftFreeResource = {
+  id: string;
+  title: string;
+  kind: '官方入口' | '开源题库' | '开源笔记' | '视频检索';
+  provider: string;
+  url: string;
+  license: string;
+  description: string;
+  howToUse: string;
+};
+
 export type SoftKnowledgeProfile = {
   source: string;
   sourceUrl: string;
@@ -19,6 +30,7 @@ export type SoftKnowledgeProfile = {
   chapterCount: number;
   domains: SoftKnowledgeDomain[];
   books: SoftOfficialBook[];
+  freeResources: SoftFreeResource[];
 };
 
 export const SOFT_OFFICIAL_BOOKS_URL = 'https://www.ruankao.org.cn/book/main.html';
@@ -65,6 +77,84 @@ function officialBooks(specialty: string): SoftOfficialBook[] {
   ];
 }
 
+const FREE_RESOURCE_DETAILS: Record<string, SoftFreeResource> = {
+  软件设计师: {
+    id: 'github-software-designer',
+    title: 'Software-Designer · 开源教程与备考笔记',
+    kind: '开源笔记',
+    provider: 'GitHub · luckyzhz',
+    url: 'https://github.com/luckyzhz/Software-Designer',
+    license: 'GPL-3.0',
+    description: '社区维护的软件设计师教程与备考材料，适合按章节补齐概念；不是官方教材。',
+    howToUse: '先按官方大纲定位章节，再打开仓库对应章节阅读；遇到版本差异以官方大纲为准。',
+  },
+  网络工程师: {
+    id: 'github-network-engineer',
+    title: 'network_engineer · 免费备考资源库',
+    kind: '开源笔记',
+    provider: 'GitHub · xiaomabenten',
+    url: 'https://github.com/xiaomabenten/network_engineer',
+    license: 'Apache-2.0',
+    description: '网络工程师知识点、真题和备考资源，仓库还提供免费刷题软件入口。',
+    howToUse: '按“基础 → IP/路由 → 设备配置 → 安全 → 规划”顺序阅读，再用题库做章节练习。',
+  },
+  系统架构设计师: {
+    id: 'github-system-architect',
+    title: 'system_architect · 免费备考资源库',
+    kind: '开源笔记',
+    provider: 'GitHub · xiaomabenten',
+    url: 'https://github.com/xiaomabenten/system_architect',
+    license: 'MIT',
+    description: '系统架构设计师知识点、案例、论文和题库资源，适合配合官方大纲自学。',
+    howToUse: '先读质量属性与架构风格，再做案例题，最后用论文题训练架构决策表达。',
+  },
+  系统分析师: {
+    id: 'github-system-analysts',
+    title: 'system-analysts · 免费备考资源库',
+    kind: '开源笔记',
+    provider: 'GitHub · xiaomabenten',
+    url: 'https://github.com/xiaomabenten/system-analysts',
+    license: 'Apache-2.0',
+    description: '系统分析师知识点、真题和案例分析资源，覆盖需求、建模、系统设计与管理。',
+    howToUse: '先学需求工程和系统分析，再用案例题练习“问题识别 → 方案 → 依据”的答题结构。',
+  },
+};
+
+function freeResources(specialty: string): SoftFreeResource[] {
+  const official: SoftFreeResource = {
+    id: 'official-ruankao',
+    title: '中国计算机技术职业资格网',
+    kind: '官方入口',
+    provider: '工业和信息化部教育与考试中心',
+    url: 'https://www.ruankao.org.cn/',
+    license: '官方公开页面',
+    description: '查看考试政策、考试大纲、报名通知和官方教材版本信息。',
+    howToUse: '第一步先打开官网，确认当前专业、级别、考试时间和最新大纲，再安排学习范围。',
+  };
+  const questionBank: SoftFreeResource = {
+    id: 'open-question-bank',
+    title: '软考达人 · 免费开源题库',
+    kind: '开源题库',
+    provider: 'GitHub · ruankaodaren',
+    url: 'https://github.com/ruankaodaren/ruankao',
+    license: 'MIT',
+    description: '覆盖初、中、高级多个专业的免费题库，可按章节和题型练习。',
+    howToUse: '每学完一章，先做对应选择题；错题回到本页知识体系和开源笔记定位原因。',
+  };
+  const videos: SoftFreeResource = {
+    id: 'bilibili-search',
+    title: `${specialty} · 公开视频课程检索`,
+    kind: '视频检索',
+    provider: '哔哩哔哩搜索',
+    url: `https://search.bilibili.com/all?keyword=${encodeURIComponent(`软考 ${specialty}`)}`,
+    license: '公开视频（以发布者授权和页面说明为准）',
+    description: '用于寻找公开课程和专题讲解；不同视频版本可能与当前大纲不一致。',
+    howToUse: '只在卡住某个概念时检索对应主题，优先选择近期发布、与当前大纲匹配的视频。',
+  };
+  const selected = FREE_RESOURCE_DETAILS[specialty];
+  return selected ? [official, selected, questionBank, videos] : [official, questionBank, videos];
+}
+
 function knowledgeProfile(domains: SoftKnowledgeDomain[]): SoftKnowledgeProfile {
   return {
     source: '官方考试用书目录与最新版教程公开目录',
@@ -73,6 +163,7 @@ function knowledgeProfile(domains: SoftKnowledgeDomain[]): SoftKnowledgeProfile 
     chapterCount: domains.reduce((total, domain) => total + domain.chapters.length, 0),
     domains,
     books: [],
+    freeResources: [],
   };
 }
 
@@ -290,5 +381,6 @@ export function getSoftKnowledgeProfile(specialty: string): SoftKnowledgeProfile
     ...profile,
     domains: profile.domains.map((domain) => ({ ...domain, chapters: [...domain.chapters] })),
     books: officialBooks(specialty),
+    freeResources: freeResources(specialty),
   };
 }

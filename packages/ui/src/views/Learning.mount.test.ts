@@ -273,7 +273,13 @@ describe('Learning 工作区 · 挂载契约', () => {
       }
       if (url.endsWith('/learning/soft-exam/materials')) {
         return { data: [
-          { id: 'm1', title: '系统架构设计师 · 近三年知识点与题库', level: '高级', specialty: '系统架构设计师', yearRange: '2023–2025', description: '高可用、缓存与消息队列', fileName: 'architect.md' },
+          {
+            id: 'm1', title: '系统架构设计师 · 近三年知识点与题库', level: '高级', specialty: '系统架构设计师', yearRange: '2023–2025', description: '高可用、缓存与消息队列', fileName: 'architect.md',
+            freeResources: [
+              { id: 'r1', title: '官方考试入口', kind: '官方入口', provider: '中国计算机技术职业资格网', url: 'https://www.ruankao.org.cn/', license: '官方公开页面', description: '查看大纲', howToUse: '先确认考试范围' },
+              { id: 'r2', title: '免费开源题库', kind: '开源题库', provider: 'GitHub', url: 'https://github.com/ruankaodaren/ruankao', license: 'MIT', description: '章节练习', howToUse: '学完一章做题' },
+            ],
+          },
           { id: 'm2', title: '软件设计师 · 近三年知识点与题库', level: '中级', specialty: '软件设计师', yearRange: '2023–2025', description: '数据结构、UML 与数据库', fileName: 'designer.md' },
         ] }
       }
@@ -315,6 +321,9 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelectorAll('.lp-soft-material').length).toBe(1)
     expect(el.querySelector('.lp-soft-material')?.textContent).toContain('系统架构设计师')
     expect(el.querySelector('.lp-soft-material')?.textContent).toContain('下载学习清单')
+    expect(el.querySelector('.lp-soft-free-resources')?.textContent).toContain('免费自学资料')
+    expect(el.querySelector('.lp-soft-free-resources')?.textContent).toContain('开源题库')
+    expect(el.querySelector('.lp-soft-free-resources')?.textContent).toContain('怎么用')
     expect(el.querySelector('.lp-exam-soft-filters')).toBeTruthy()
   })
 
@@ -328,14 +337,44 @@ describe('Learning 工作区 · 挂载契约', () => {
           id: 'm_fund', title: '威胁建模', summary: '识别资产、边界和威胁',
           topics: ['资产', '边界', '威胁'], risk: '不做威胁建模容易遗漏业务逻辑风险。',
           control: '把滥用场景和正常用例一起评审。',
+          lesson: {
+            objectives: ['理解资产', '识别边界', '验证控制'],
+            keyTerms: [
+              { term: '资产', explanation: '需要保护的对象。' },
+              { term: '边界', explanation: '身份或权限发生变化的位置。' },
+              { term: '威胁', explanation: '可能发生的坏事。' },
+            ],
+            walkthrough: [
+              { title: '画流程', detail: '先写出正常业务链路。' },
+              { title: '标资产', detail: '找出文件、会话和存储桶。' },
+              { title: '套 STRIDE', detail: '逐类提出威胁。' },
+              { title: '写验收', detail: '把威胁变成可复测断言。' },
+            ],
+            knowledgeChecks: [
+              { question: '为什么要先画数据流？', answer: '因为威胁发生在组件和信任边界上。' },
+              { question: '什么才算验收？', answer: '同一请求在修复前后有可重复观察的差异。' },
+            ],
+          },
           code: {
-            language: 'typescript', context: '威胁模型代码', bad: 'allowAll();', good: 'denyByDefault();', note: '默认拒绝更容易审计。',
+            language: 'typescript',
+            context: '言智网络安全课程 · STRIDE 模块',
+            application: '文件上传服务（浏览器 → API → 对象存储）',
+            exampleKind: '威胁模型记录（教学用 YAML 结构）',
+            badLabel: '不安全的上传设计',
+            goodLabel: '威胁模型与控制',
+            bad: 'allowAll();', good: 'denyByDefault();', note: '默认拒绝更容易审计。',
             variants: [
               { language: 'java', bad: 'allowAll();', good: 'PreparedStatement check();', note: 'Java 示例' },
               { language: 'python', bad: 'allow_all()', good: 'deny_by_default()', note: 'Python 示例' },
             ],
           },
-          lab: { target: '本地授权靶场', tools: ['DevTools', 'curl'], steps: ['列资产', '画边界', '验证控制'], expected: '形成可复核的威胁清单。' },
+          lab: {
+            target: '本地授权靶场',
+            tools: ['DevTools', 'curl'],
+            steps: ['列资产', '画边界', '验证控制', '记录证据'],
+            commands: ['curl.exe -i http://127.0.0.1:4317/health'],
+            expected: '形成可复核的威胁清单，并记录修复前后响应差异。',
+          },
         }],
       },
       {
@@ -376,13 +415,27 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-security-boundary')?.textContent).toContain('只测试自己的系统')
     expect(el.querySelectorAll('.sec-branch-map button').length).toBe(2)
     expect(el.querySelector('.sec-code')).toBeTruthy()
-    expect(el.querySelector('.sec-code > header')?.textContent).toContain('威胁模型代码')
+    expect(el.querySelector('.sec-lesson')?.textContent).toContain('本节目标')
+    expect(el.querySelector('.sec-lesson')?.textContent).toContain('资产')
+    expect(el.querySelector('.sec-walkthrough')?.textContent).toContain('跟着推导一遍')
+    expect(el.querySelector('.sec-walkthrough')?.textContent).toContain('套 STRIDE')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('对应应用')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('文件上传服务')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('示例来源')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('言智网络安全课程')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('示例类型')
+    expect(el.querySelector('.sec-code-origin')?.textContent).toContain('威胁模型记录')
+    expect(el.querySelector('.sec-code .bad .sec-code-head')?.textContent).toContain('不安全的上传设计')
+    expect(el.querySelector('.sec-code .good .sec-code-head')?.textContent).toContain('威胁模型与控制')
     expect(el.querySelectorAll('.sec-code-languages button').length).toBe(3)
     ;([...el.querySelectorAll('.sec-code-languages button')] as HTMLElement[]).find((b) => b.textContent === 'java')!.click()
     await nextTick()
     expect(el.querySelector('.sec-code')?.textContent).toContain('PreparedStatement')
     expect(el.querySelector('.sec-lab')?.textContent).toContain('本地授权靶场')
     expect(el.querySelector('.sec-lab')?.textContent).toContain('curl')
+    expect(el.querySelector('.sec-lab-commands')?.textContent).toContain('/health')
+    expect(el.querySelector('.sec-self-check')?.textContent).toContain('学完自测')
+    expect(el.querySelector('.sec-self-check')?.textContent).toContain('为什么要先画数据流')
     ;(el.querySelectorAll('.sec-branch-map button')[1] as HTMLElement).click()
     await vi.waitFor(() => expect(el.querySelector('.lp-course-security.active')?.textContent).toContain('Web 漏洞'))
   })

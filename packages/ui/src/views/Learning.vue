@@ -58,11 +58,22 @@ type SoftOfficialBook = {
   officialUrl: string;
   note: string;
 };
+type SoftFreeResource = {
+  id: string;
+  title: string;
+  kind: '官方入口' | '开源题库' | '开源笔记' | '视频检索';
+  provider: string;
+  url: string;
+  license: string;
+  description: string;
+  howToUse: string;
+};
 type SoftMaterial = {
   id: string; title: string; level: '中级' | '高级'; specialty: string;
   yearRange: string; description: string; fileName: string;
   format: 'markdown'; chapterCount: number; knowledgeDomains: SoftKnowledgeDomain[];
-  books: SoftOfficialBook[]; officialBooksUrl: string; coverageNote: string;
+  books: SoftOfficialBook[]; freeResources: SoftFreeResource[];
+  officialBooksUrl: string; coverageNote: string;
 };
 const softMaterials = ref<SoftMaterial[]>([]);
 const securityPathId = ref('');
@@ -2209,6 +2220,28 @@ watch(softExamDate, (value) => {
             </article>
           </div>
           <p v-else class="lp-hint">资料加载中…</p>
+          <div v-if="focusedSoftMaterial?.freeResources?.length" class="lp-soft-free-resources">
+            <div class="lp-soft-section-head">
+              <h3>免费自学资料</h3>
+              <span>{{ focusedSoftMaterial.freeResources.length }} 个入口</span>
+            </div>
+            <p>正式教材受版权保护，这里提供可合法免费使用的官方入口、开源仓库和公开视频检索。</p>
+            <ol class="lp-soft-free-steps">
+              <li>先看官方大纲，确认当前专业和级别要考什么。</li>
+              <li>再用开源笔记按知识域学习，每章写下“原因 → 影响 → 结论”。</li>
+              <li>最后用开源题库刷章节题，错题回到笔记和本页知识体系定位原因。</li>
+            </ol>
+            <article v-for="resource in focusedSoftMaterial.freeResources" :key="resource.id" class="lp-soft-free-card">
+              <div class="lp-soft-free-card-head">
+                <span>{{ resource.kind }}</span>
+                <b>{{ resource.title }}</b>
+              </div>
+              <p>{{ resource.description }}</p>
+              <small>{{ resource.provider }} · {{ resource.license }}</small>
+              <p class="lp-soft-free-usage"><b>怎么用：</b>{{ resource.howToUse }}</p>
+              <button class="lp-mini" @click="openOfficialUrl(resource.url)">打开资料</button>
+            </article>
+          </div>
           <div class="lp-soft-official-books">
             <div class="lp-soft-section-head">
               <h3>官方考试用书</h3>
@@ -2560,30 +2593,42 @@ watch(softExamDate, (value) => {
 .lp-soft-study-plan b { color: var(--color-text); font-size: 11px; }
 .lp-soft-study-plan p { margin: 2px 0 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.45; }
 .lp-soft-material-panel, .lp-soft-knowledge-panel, .lp-soft-knowledge { display: flex; flex-direction: column; gap: 5px; }
-.lp-soft-material-range { color: #7e22ce; background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 999px; padding: 2px 7px; font-size: 10px; }
+.lp-soft-material-range { color: var(--lp-primary); background: var(--lp-primary-soft); border: 1px solid color-mix(in srgb, var(--lp-primary) 30%, var(--lp-border)); border-radius: 999px; padding: 2px 7px; font-size: 10px; }
 .lp-soft-material-list { display: flex; flex-direction: column; gap: 9px; margin-top: 9px; }
-.lp-soft-material { border: 1px solid #e9d5ff; border-radius: 8px; background: #fdfbff; padding: 9px; }
+.lp-soft-material { border: 1px solid color-mix(in srgb, var(--lp-primary) 24%, var(--lp-border)); border-radius: 8px; background: color-mix(in srgb, var(--lp-primary) 7%, var(--lp-surface)); padding: 9px; }
 .lp-soft-material-badges { display: flex; gap: 4px; flex-wrap: wrap; }
-.lp-soft-material-badges span { border: 1px solid #e9d5ff; border-radius: 4px; background: #faf5ff; color: #7e22ce; padding: 1px 5px; font-size: 9px; }
+.lp-soft-material-badges span { border: 1px solid color-mix(in srgb, var(--lp-primary) 30%, var(--lp-border)); border-radius: 4px; background: var(--lp-primary-soft); color: var(--lp-primary); padding: 1px 5px; font-size: 9px; }
 .lp-soft-material h3 { margin: 5px 0 3px; color: var(--color-text); font-size: 12px; line-height: 1.45; }
 .lp-soft-material p { margin: 0 0 7px; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.5; }
 .lp-soft-material .lp-mini { width: 100%; }
-.lp-soft-official-books { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding: 10px; border: 1px solid #dbe5f5; border-radius: 8px; background: #f8fbff; }
+.lp-soft-free-resources { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding: 10px; border: 1px solid color-mix(in srgb, var(--lp-primary) 28%, var(--lp-border)); border-radius: 8px; background: color-mix(in srgb, var(--lp-primary) 6%, var(--lp-surface)); }
+.lp-soft-free-resources > p { margin: 0; color: var(--lp-text-tertiary); font-size: 10px; line-height: 1.55; }
+.lp-soft-free-steps { margin: 0; padding-left: 17px; color: var(--lp-text-secondary); font-size: 10px; line-height: 1.65; }
+.lp-soft-free-card { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--lp-border); border-radius: 7px; background: var(--lp-surface); }
+.lp-soft-free-card-head { display: flex; align-items: flex-start; gap: 5px; color: var(--lp-text); }
+.lp-soft-free-card-head > span { flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--lp-primary) 32%, var(--lp-border)); border-radius: 4px; background: var(--lp-primary-soft); color: var(--lp-primary); padding: 1px 5px; font-size: 8px; font-weight: 700; }
+.lp-soft-free-card-head b { font-size: 10px; line-height: 1.45; }
+.lp-soft-free-card p { margin: 0; color: var(--lp-text-tertiary); font-size: 9px; line-height: 1.55; }
+.lp-soft-free-card small { color: var(--lp-text-tertiary); font-size: 8px; line-height: 1.45; }
+.lp-soft-free-card .lp-soft-free-usage { color: var(--lp-text-secondary); }
+.lp-soft-free-usage b { color: var(--lp-primary); }
+.lp-soft-free-card .lp-mini { width: 100%; margin-top: 2px; }
+.lp-soft-official-books { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding: 10px; border: 1px solid var(--lp-border); border-radius: 8px; background: var(--lp-surface-hover); }
 .lp-soft-official-books .lp-soft-section-head { margin: 0; padding: 0; border: 0; }
 .lp-soft-official-books p { margin: 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.55; }
 .lp-soft-official-books .lp-primary { width: 100%; box-sizing: border-box; }
 .lp-soft-knowledge-domain { padding: 8px 0; border-bottom: 1px dashed var(--color-border); }
 .lp-soft-knowledge-domain h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--color-text); font-size: 12px; }
-.lp-soft-knowledge-domain h3 span { color: #7e22ce; font-size: 9px; font-weight: 700; }
+.lp-soft-knowledge-domain h3 span { color: var(--lp-primary); font-size: 9px; font-weight: 700; }
 .lp-soft-knowledge-chapters { display: flex; flex-wrap: wrap; gap: 4px; }
 .lp-soft-knowledge-chapters span { border: 1px solid var(--color-border); border-radius: 5px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 2px 5px; font-size: 9px; line-height: 1.4; }
-.lp-soft-book { width: 100%; border: 1px solid #dbe5f5; border-radius: 7px; background: var(--glass-bg); color: var(--color-text); padding: 7px 8px; display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer; }
-.lp-soft-book:hover { border-color: #9dbcf7; background: #f0f5ff; }
-.lp-soft-book > span { color: #245bdb; font-size: 9px; font-weight: 700; }
+.lp-soft-book { width: 100%; border: 1px solid var(--lp-border); border-radius: 7px; background: var(--lp-surface); color: var(--lp-text); padding: 7px 8px; display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer; }
+.lp-soft-book:hover { border-color: var(--lp-primary); background: var(--lp-surface-hover); }
+.lp-soft-book > span { color: var(--lp-primary); font-size: 9px; font-weight: 700; }
 .lp-soft-book b { font-size: 11px; line-height: 1.45; }
 .lp-soft-book small { color: var(--color-text-tertiary); font-size: 9px; line-height: 1.45; }
 .lp-security-boundary { overflow-y: auto; }
-.lp-security-warning { display: flex; align-items: flex-start; gap: 8px; border-left: 3px solid #d97706; border-radius: 0 8px 8px 0; background: #fffbeb; padding: 9px 10px; color: #92400e; }
+.lp-security-warning { display: flex; align-items: flex-start; gap: 8px; border-left: 3px solid var(--color-warning); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--color-warning) 10%, var(--lp-surface)); padding: 9px 10px; color: var(--color-warning); }
 .lp-security-warning svg { flex-shrink: 0; }
 .lp-security-warning p { margin: 0; font-size: 10px; line-height: 1.55; }
 .lp-security-rule { border-top: 1px solid var(--color-border); margin-top: 10px; padding-top: 9px; }

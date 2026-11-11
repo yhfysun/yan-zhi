@@ -124,11 +124,18 @@ describe('历年真题题库', () => {
       expect(detail.chapterCount).toBeGreaterThanOrEqual(50);
       expect(detail.books).toHaveLength(3);
       expect(detail.books.every((book) => /^\d{13}$/.test(book.isbn))).toBe(true);
+      expect(detail.freeResources.length).toBeGreaterThanOrEqual(4);
+      expect(detail.freeResources.every((resource) => resource.url.startsWith('https://'))).toBe(true);
+      expect(detail.freeResources.every((resource) => resource.license.length > 2)).toBe(true);
       expect(detail.officialBooksUrl).toContain('ruankao.org.cn/book/main.html');
       expect(detail.content.length).toBeGreaterThan(1500);
+      expect(detail.content).toContain('免费自学资料');
+      expect(detail.content).toContain('免费自学顺序');
+      expect(detail.content).toContain('怎么用');
     }
     const software = getSoftMaterial('soft_material_software_designer')!;
     expect(software.content).toContain('自编上机与案例练习');
+    expect(software.freeResources.map((resource) => resource.provider).join('\n')).toContain('GitHub');
   });
 
   it('★ 软考官方动态：地区白名单、HTML 通知提取与缓存兜底', async () => {

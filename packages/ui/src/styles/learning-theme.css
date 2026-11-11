@@ -447,6 +447,56 @@ html body .app-shell .learning-page :is(
   border-color: var(--lp-border);
 }
 
+/* Word list / grammar / pager: these shipped with light-only text colors and
+   sat directly on the image wallpaper, so dark skins showed near-black text. */
+.app-shell .learning-page .lp-wt-row {
+  border-bottom-color: var(--lp-border);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page .lp-wt-row:hover {
+  background-color: var(--lp-surface-hover);
+}
+
+.app-shell .learning-page .lp-wt-word,
+.app-shell .learning-page .lp-levels-title {
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page .lp-wt-pho,
+.app-shell .learning-page .lp-pager,
+.app-shell .learning-page .lp-book-meta,
+.app-shell .learning-page .lp-words {
+  color: var(--lp-text-tertiary);
+}
+
+.app-shell .learning-page .lp-wt-gloss {
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page .lp-grammar-item {
+  border-color: var(--lp-border);
+}
+
+.app-shell .learning-page .lp-grammar-row {
+  background-color: var(--lp-surface);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page .lp-grammar-row:hover {
+  background-color: var(--lp-surface-hover);
+}
+
+.app-shell .learning-page .lp-grammar-detail {
+  border-top-color: var(--lp-border);
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page .lp-grammar-rule,
+.app-shell .learning-page .lp-grammar-detail h3 {
+  color: var(--lp-text-secondary);
+}
+
 /* Learning-specific panels that used white or blue-tinted backgrounds */
 .app-shell .learning-page :is(
   .lp-scene-compact,
@@ -651,4 +701,78 @@ html body .app-shell .learning-page :is(
 .app-shell .learning-page .sec-next button {
   border-color: color-mix(in srgb, var(--lp-primary) 35%, var(--lp-border));
   background-color: var(--lp-primary-soft);
+}
+
+/* Security tutorial content: derive every surface from the active palette and
+   skin glass. No tutorial section may fall back to a hard-coded white card. */
+.app-shell .learning-page .sec-lesson {
+  border-color: color-mix(in srgb, var(--lp-primary) 38%, var(--lp-border));
+  background-color: color-mix(in srgb, var(--lp-primary) 8%, var(--lp-surface));
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page .sec-lesson > header,
+.app-shell .learning-page .sec-walkthrough > header,
+.app-shell .learning-page .sec-self-check > header > div,
+.app-shell .learning-page .sec-terms b {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-terms {
+  border-top-color: color-mix(in srgb, var(--lp-primary) 24%, var(--lp-border));
+}
+
+.app-shell .learning-page .sec-terms > div {
+  border-left-color: color-mix(in srgb, var(--lp-primary) 58%, var(--lp-border));
+}
+
+.app-shell .learning-page .sec-risk-grid .attack {
+  border-color: var(--color-warning);
+  background-color: color-mix(in srgb, var(--color-warning) 10%, var(--lp-surface));
+}
+
+.app-shell .learning-page .sec-risk-grid .defense {
+  border-color: var(--lp-primary);
+  background-color: color-mix(in srgb, var(--lp-primary) 8%, var(--lp-surface));
+}
+
+.app-shell .learning-page .sec-walkthrough {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface-hover);
+}
+
+.app-shell .learning-page .sec-walkthrough li {
+  border-top-color: var(--lp-border);
+}
+
+.app-shell .learning-page .sec-walkthrough li > span {
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-self-check {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page .sec-self-check details {
+  border-top-color: var(--lp-border);
+}
+
+.app-shell .learning-page .sec-code {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page .sec-code-origin {
+  border-bottom-color: color-mix(in srgb, var(--lp-primary) 32%, var(--lp-border));
+  background-color: color-mix(in srgb, var(--lp-primary) 8%, var(--lp-surface));
+}
+
+.app-shell .learning-page .sec-code article {
+  background-color: color-mix(in srgb, var(--color-bg) 90%, var(--lp-primary));
+}
+
+.app-shell .learning-page .sec-code-head {
+  background-color: color-mix(in srgb, var(--color-bg) 82%, var(--lp-primary));
 }
