@@ -111,6 +111,7 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 5. 两点及以上字段优先一次 browser_fill_form；提交用 browser_submit_form 或点击明确的提交按钮。
 6. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
 7. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
+   若点击后 pageChanged=false 或回执没有 downloaded，不要重复点同一入口；先查询最近下载，文件可能仍在生成。
 8. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
 9. 每个浏览器子任务完成立即 task_step 并写 URL、成功提示、文件路径或更新条数；到达单次委派步数边界时返回阶段回执，由外层决定下一次续跑。
 10. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。

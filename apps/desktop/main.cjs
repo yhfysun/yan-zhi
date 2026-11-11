@@ -6260,8 +6260,8 @@ function panelReallyHidden(wc) {
 //   两条执行面行为不一致。
 // ★ 口径：**智能体动作活动窗口内**触发的下载一律自动落盘、不弹「另存为」：
 //     用户设置过浏览器下载目录 → 直接使用该目录
-//     未设置 → 首次下载弹系统目录选择器；选定后持久化，取消则本次回退默认目录
-//     默认目录：工具带了 `__workspaceDir` → <工作目录>/downloads/，否则系统下载目录/言知下载/
+//     未设置 → 首次下载弹应用内目录提示；确认后持久化，取消则本次回退默认目录
+//     默认目录：工具带了 `__workspaceDir` → <工作目录>/downloads/，否则系统下载目录/言智下载/
 //   用户自己点工具栏（没有 agent 动作）触发的下载保持 Electron 默认（弹另存为），
 //   不改变手动浏览体验。
 // ★ 为什么按"活动窗口"而不是"谁点的"：blob 下载在 JS 点击返回后**才**开始，
@@ -6271,7 +6271,7 @@ const DOWNLOAD_ACTIVITY_GRACE_MS = 60000;
 const DOWNLOAD_CLICK_WAIT_MS = 10000;
 const DOWNLOAD_SILENT_PROBE_MS = 150;
 const DOWNLOAD_RECORDS_MAX = 50;
-const DOWNLOAD_FALLBACK_SUBDIR = '言知下载';
+const DOWNLOAD_FALLBACK_SUBDIR = '言智下载';
 const downloadRecords = [];      // 最近下载（新→旧），供 downloads action 查询
 const downloadWaiters = new Set(); // download action 的等待者（收到落盘完成即 resolve）
 let downloadSeq = 0;
@@ -6281,6 +6281,9 @@ let configuredBrowserDownloadDir = '';
 let browserDownloadDirLoaded = false;
 let browserDownloadDirPrompt = null;
 let downloadDirPromptDismissed = false;
+let browserDownloadUiReady = false;
+let browserDownloadUiPromptSeq = 0;
+const browserDownloadUiPrompts = new Map();
 /** download action 显式 savePath 的临时覆盖（执行期间有效，见 case 'download'） */
 let pendingDownloadSavePath = '';
 
@@ -6295,6 +6298,11 @@ function loadConfiguredBrowserDownloadDir() {
   try {
     const saved = readHostConfig().browserDownloadDir;
     configuredBrowserDownloadDir = typeof saved === 'string' ? saved.trim() : '';
+    // 品牌错字迁移：只修正旧默认目录名，不移动其中已有文件。
+    if (configuredBrowserDownloadDir && path.basename(configuredBrowserDownloadDir) === '言知下载') {
+      configuredBrowserDownloadDir = path.join(path.dirname(configuredBrowserDownloadDir), '言智下载');
+      try { writeHostConfig({ browserDownloadDir: configuredBrowserDownloadDir }); } catch { /* 旧配置可读即可继续 */ }
+    }
   } catch {
     configuredBrowserDownloadDir = '';
   }
@@ -6322,25 +6330,81 @@ function setConfiguredBrowserDownloadDir(dir, notify = true) {
   return configuredBrowserDownloadDir;
 }
 
-/** 首次下载未配置目录时，暂停下载并让用户选择；同一时间只允许一个选择框。 */
-function promptForBrowserDownloadDir() {
+/**
+ * 首次下载由**应用内弹窗**确认目录，不直接弹系统目录框。
+ * 下载保持 paused；用户确认/取消或 UI 超时后再 setSavePath + resume。
+ */
+function requestBrowserDownloadDirFromRenderer(suggestedDir, filename = '') {
+  try {
+    if (!browserDownloadUiReady || !mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+      return Promise.resolve('');
+    }
+    const requestId = `dl_${Date.now().toString(36)}_${++browserDownloadUiPromptSeq}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        browserDownloadUiPrompts.delete(requestId);
+        resolve('');
+      }, 60000);
+      browserDownloadUiPrompts.set(requestId, { resolve, timer });
+      mainWindow.webContents.send('browser-download:dir-prompt', {
+        requestId,
+        suggestedDir: String(suggestedDir || ''),
+        filename: String(filename || ''),
+      });
+    });
+  } catch (err) {
+    console.warn('[browser-download] 应用内下载目录提示发送失败:', err && err.message);
+    return Promise.resolve('');
+  }
+}
+
+function markBrowserDownloadUiReady() {
+  browserDownloadUiReady = true;
+  return { ok: true };
+}
+
+/** 渲染层确认下载目录；空目录表示本次先用默认目录。 */
+function resolveBrowserDownloadDirPrompt(requestId, dir) {
+  const id = String(requestId || '');
+  const pending = browserDownloadUiPrompts.get(id);
+  if (!pending) return { ok: false, error: '下载目录确认已失效' };
+  browserDownloadUiPrompts.delete(id);
+  clearTimeout(pending.timer);
+  const picked = String(dir || '').trim();
+  if (picked) setConfiguredBrowserDownloadDir(picked);
+  pending.resolve(picked);
+  return { ok: true, dir: picked };
+}
+
+/** 用户从设置页/应用弹窗里显式点「选择其他目录」时才打开系统目录选择器。 */
+async function pickBrowserDownloadDirFromSystem() {
+  try {
+    const picked = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, {
+        title: '选择浏览器下载目录',
+        buttonLabel: '使用此目录',
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      : await dialog.showOpenDialog({
+        title: '选择浏览器下载目录',
+        buttonLabel: '使用此目录',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+    return picked.canceled || !picked.filePaths || !picked.filePaths[0]
+      ? ''
+      : setConfiguredBrowserDownloadDir(picked.filePaths[0]);
+  } catch (err) {
+    console.warn('[browser-download] 选择下载目录失败:', err && err.message);
+    return '';
+  }
+}
+
+/** 首次下载未配置目录时，暂停下载并等待应用内弹窗；同一时间只允许一个提示。 */
+function promptForBrowserDownloadDir(suggestedDir, filename) {
   if (browserDownloadDirPrompt) return browserDownloadDirPrompt;
-  const title = '选择浏览器下载目录';
-  const opts = {
-    title,
-    buttonLabel: '使用此目录',
-    properties: ['openDirectory', 'createDirectory'],
-  };
   browserDownloadDirPrompt = (async () => {
     try {
-      const picked = mainWindow && !mainWindow.isDestroyed()
-        ? await dialog.showOpenDialog(mainWindow, opts)
-        : await dialog.showOpenDialog(opts);
-      if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return '';
-      return setConfiguredBrowserDownloadDir(picked.filePaths[0]);
-    } catch (err) {
-      console.warn('[browser-download] 选择下载目录失败:', err && err.message);
-      return '';
+      return await requestBrowserDownloadDirFromRenderer(suggestedDir, filename);
     } finally {
       browserDownloadDirPrompt = null;
     }
@@ -6420,12 +6484,12 @@ function installBrowserDownloadHandler(sess) {
     // 非智能体活动窗口：用户手动下载 —— 保持 Electron 默认（弹另存为）
     if (Date.now() > agentBrowserActivityUntil) return;
     let pausedForPrompt = false;
+    const filename = item.getFilename();
     if (!pendingDownloadSavePath && !loadConfiguredBrowserDownloadDir() && !downloadDirPromptDismissed) {
       try { item.pause(); pausedForPrompt = true; } catch { /* 某些 Electron 版本不允许暂停时忽略 */ }
-      const picked = await promptForBrowserDownloadDir();
+      const picked = await promptForBrowserDownloadDir(resolveDownloadDir(lastAgentWorkspaceDir), filename);
       if (!picked) downloadDirPromptDismissed = true;
     }
-    const filename = item.getFilename();
     const target = pendingDownloadSavePath || uniqueDownloadPath(resolveDownloadDir(lastAgentWorkspaceDir), filename);
     try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch { /* 目录建不出来时交给 Electron 报错 */ }
     item.setSavePath(target);
@@ -6497,10 +6561,19 @@ async function attachDownloadToClickResult(clickResult, beforeSeq, waitMs = DOWN
         note: `${clickResult.note ? clickResult.note + ' ' : ''}该控件像上传入口，元素标签不影响工具选择。不要继续 browser_click 打开原生文件框；请改用 browser_upload，并传 clickSelector/clickIndex 指向这个 div/元素。`,
       };
     }
-    if (looksDownload) {
+    if (looksDownload || clickResult.pageChanged === false) {
+      const reason = looksDownload
+        ? '控件像导出/下载入口，可能触发下载'
+        : '点击后页面没有变化';
+      const waited = waitMs > 0 ? `${Math.max(1, Math.round(waitMs / 1000))} 秒` : '当前探测窗口';
       return {
         ...clickResult,
-        note: `${clickResult.note ? clickResult.note + ' ' : ''}该按钮可能触发下载，但 ${Math.round(waitMs / 1000)} 秒内未开始。若文件仍在生成，稍后用 browser_download 不传参数查询最近下载记录。`,
+        downloadWatch: {
+          queryTool: 'browser_download',
+          beforeSeq,
+          reason,
+        },
+        note: `${clickResult.note ? clickResult.note + ' ' : ''}${reason}，但${waited}内下载尚未开始。若这是导出/下载按钮，文件可能仍在生成：稍后调用 browser_download（不传 url/selector/index）查询最近下载记录；查到 completed 且 exists=true 就继续后续文件处理，不要重复点击。`,
       };
     }
     return clickResult;
@@ -6540,10 +6613,16 @@ ipcMain.handle('browser-download:get-dir', () => ({
 }));
 
 ipcMain.handle('browser-download:pick-dir', async () => {
-  const dir = await promptForBrowserDownloadDir();
+  const dir = await pickBrowserDownloadDirFromSystem();
   return dir
     ? { ok: true, dir }
     : { ok: false, canceled: true };
+});
+
+ipcMain.handle('browser-download:ui-ready', () => markBrowserDownloadUiReady());
+
+ipcMain.handle('browser-download:resolve-dir-prompt', (_event, payload) => {
+  return resolveBrowserDownloadDirPrompt(payload && payload.requestId, payload && payload.dir);
 });
 
 ipcMain.handle('browser-download:clear-dir', () => {
@@ -9870,6 +9949,21 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       case 'download': {
         // 显式 savePath 优先（相对路径基于工作目录）；不传则走分区级自动落盘
         // （installBrowserDownloadHandler → <工作目录>/downloads/）。
+        // 兼容旧工具映射：历史版本把 browser_download 的无参查询映射成 action=download。
+        if (!args.url && !args.selector && args.index == null) {
+          const n = Math.min(Math.max(Number(args.limit) || 10, 1), DOWNLOAD_RECORDS_MAX);
+          return {
+            dir: resolveDownloadDir(lastAgentWorkspaceDir),
+            records: downloadRecords.slice(0, n).map((r) => ({
+              filename: r.filename,
+              savedPath: r.savedPath,
+              state: r.state,
+              exists: r.exists === true,
+              bytes: r.bytes,
+              time: r.time,
+            })),
+          };
+        }
         const explicitSave = args.savePath ? String(args.savePath).trim() : '';
         if (explicitSave) {
           pendingDownloadSavePath = path.isAbsolute(explicitSave)

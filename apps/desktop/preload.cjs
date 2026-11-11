@@ -537,10 +537,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
-    // 浏览器下载目录：未设置时首次下载由主进程弹目录选择器
+    // 浏览器下载目录：未设置时首次下载由应用内弹窗确认，确认后后续直接落盘
     getDownloadDir: () => ipcRenderer.invoke('browser-download:get-dir'),
     pickDownloadDir: () => ipcRenderer.invoke('browser-download:pick-dir'),
     clearDownloadDir: () => ipcRenderer.invoke('browser-download:clear-dir'),
+    markDownloadDirUiReady: () => ipcRenderer.invoke('browser-download:ui-ready'),
+    resolveDownloadDirPrompt: (requestId, dir) =>
+      ipcRenderer.invoke('browser-download:resolve-dir-prompt', { requestId, dir }),
+    onDownloadDirPrompt: (callback) => {
+      const h = (_e, payload) => callback(payload);
+      ipcRenderer.on('browser-download:dir-prompt', h);
+      return () => ipcRenderer.removeListener('browser-download:dir-prompt', h);
+    },
     onDownloadDirChanged: (callback) => {
       const h = (_e, dir) => callback(dir);
       ipcRenderer.on('browser-download:dir-changed', h);

@@ -218,7 +218,7 @@
   真实 HTTP 覆盖管理端、用户端和节点 Agent 全链路；企业测试 9 文件 106/106，临时 PG 16 实例
   12/12，server tsc 与 build 通过。运行时域不再存在生产路由直连 SQLite。
 - 2026-11-10 现场日志回归（下载 / 白屏）：
-  - 下载实报：18:56:06 点击导出，18:56:46 文件已保存到「言知下载」，但 pageAgent 在
+  - 下载实报：18:56:06 点击导出，18:56:46 文件已保存到「言智下载」，但 pageAgent 在
     18:56:15/21 用无参数或仅 limit 的 `browser_download` 查询时仍被当成 `download`，无法读取记录。
     现改为无 url/selector/index 一律走 `downloads`；下载开始即登记路径，点击回执最多等 10 秒，
     以 `state=completed` 且 `exists=true` 为成功，`progressing` 明确提示仍在写入。

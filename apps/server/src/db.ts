@@ -1465,6 +1465,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_run_page_operation: 已登记站点优先走页面资产。先看可用页面资产引用，再用 assetId + operationId + params 执行；禁止用自由选择器或脚本替代已声明 operation。
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - browser_download: 点导出/下载按钮后先看 browser_click 回执的 downloaded 字段。若页面异步生成文件或回执仍为 progressing，调用 browser_download 不传参数查询最近下载；只有 state=completed 且 exists=true 才能判定成功，progressing 是在下载，cancelled/interrupted 是失败。禁止因为看不到系统下载弹窗或不知道路径就重复点击导出。
+- 下载入口点击后 pageChanged=false 或回执没有 downloaded，不等于失败：不要再次点击同一入口；先 browser_download 不传参数查询最近下载。文件可能仍在生成，查到 completed 且 exists=true 后直接进入校验、上传或后续业务步骤。
 - 文件入口不要求是 button/a：div、span、role=button、图标按钮只要绑定了 click 事件都可能是下载或上传。元素标签不影响 will-download/filechooser 的捕获。下载入口直接用 browser_click，再读 downloaded 或查询 browser_download；上传入口不要先 browser_click 打开原生文件框，直接 browser_upload 并传 clickSelector/clickIndex。
 - 文件跨系统流转（高频办公流程）：源系统下载文件后，先用 file_read / office_read / python_exec 验证内容和条数，再 browser_upload 上传到目标系统，提交后回读目标页面的成功提示或更新条数；交付时同时报告源文件 savedPath、目标系统、上传结果和更新数量。
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置

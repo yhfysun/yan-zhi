@@ -143,6 +143,33 @@
     <!-- 远控外壳随 remote-control 插件进包（选择集驱动）；未选该插件时这个节点根本不存在 -->
     <component :is="RcShellHost" v-if="!isBareRoute && RcShellHost" />
 
+    <!-- 智能体首次下载：必须先由应用内弹窗确认目录，不能直接弹系统目录框。 -->
+    <el-dialog
+      v-model="browserDownloadPromptOpen"
+      title="设置浏览器下载目录"
+      width="460px"
+      append-to-body
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="false"
+    >
+      <div class="browser-download-prompt">
+        <p>
+          智能体正在下载
+          <strong v-if="browserDownloadPrompt?.filename">{{ browserDownloadPrompt.filename }}</strong>
+          <span v-else>文件</span>
+          。确认目录后，后续浏览器下载会直接保存到该目录，不再打开系统目录窗口。
+        </p>
+        <div class="browser-download-path">{{ browserDownloadPrompt?.suggestedDir || '正在准备默认目录…' }}</div>
+        <p class="browser-download-hint">选择“暂不设置”时，本次先保存到默认目录，且本会话不再重复询问。</p>
+      </div>
+      <template #footer>
+        <el-button :disabled="browserDownloadPromptBusy" @click="cancelBrowserDownloadPrompt">暂不设置</el-button>
+        <el-button :disabled="browserDownloadPromptBusy" @click="chooseOtherBrowserDownloadDir">选择其他目录</el-button>
+        <el-button type="primary" :loading="browserDownloadPromptBusy" @click="acceptBrowserDownloadDir">使用此目录</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 移动端冷启动等待层（2026-10-25）：内嵌 Node 后端就绪前路由守卫挂起（license.init
          里的 waitForBackend 最多 30s），首屏此前是**纯白**——用户会以为应用坏了
          （真机实测反馈「要等后端启动还是干嘛？」）。用可读的等待提示替代白屏：
@@ -439,6 +466,70 @@ function scheduleModeViewWarmup() {
 const chat = useChat();
 const chatStore = useChatStore();
 
+interface BrowserDownloadDirPrompt {
+  requestId: string;
+  suggestedDir: string;
+  filename: string;
+}
+
+const browserViewBridge = (window as unknown as {
+  electronAPI?: {
+    browserView?: {
+      onDownloadDirPrompt?: (callback: (payload: BrowserDownloadDirPrompt) => void) => () => void;
+      resolveDownloadDirPrompt?: (requestId: string, dir: string) => Promise<{ ok?: boolean; error?: string }>;
+      pickDownloadDir?: () => Promise<{ ok?: boolean; dir?: string; canceled?: boolean }>;
+      markDownloadDirUiReady?: () => Promise<{ ok?: boolean }>;
+    };
+  };
+}).electronAPI?.browserView;
+const browserDownloadPrompt = ref<BrowserDownloadDirPrompt | null>(null);
+const browserDownloadPromptOpen = ref(false);
+const browserDownloadPromptBusy = ref(false);
+let offBrowserDownloadPrompt: (() => void) | undefined;
+
+async function resolveBrowserDownloadPrompt(dir: string) {
+  const pending = browserDownloadPrompt.value;
+  if (!pending || browserDownloadPromptBusy.value) return;
+  browserDownloadPromptBusy.value = true;
+  try {
+    const result = await browserViewBridge?.resolveDownloadDirPrompt?.(pending.requestId, dir);
+    if (result?.ok === false) ElMessage.warning(result.error || '下载目录确认已失效，本次使用默认目录');
+    browserDownloadPromptOpen.value = false;
+    browserDownloadPrompt.value = null;
+  } catch (err) {
+    ElMessage.error(`下载目录确认失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    browserDownloadPromptBusy.value = false;
+  }
+}
+
+function acceptBrowserDownloadDir() {
+  void resolveBrowserDownloadPrompt(browserDownloadPrompt.value?.suggestedDir || '');
+}
+
+function cancelBrowserDownloadPrompt() {
+  void resolveBrowserDownloadPrompt('');
+}
+
+async function chooseOtherBrowserDownloadDir() {
+  if (browserDownloadPromptBusy.value) return;
+  browserDownloadPromptBusy.value = true;
+  try {
+    const result = await browserViewBridge?.pickDownloadDir?.();
+    if (result?.ok && result.dir) {
+      browserDownloadPrompt.value = browserDownloadPrompt.value
+        ? { ...browserDownloadPrompt.value, suggestedDir: result.dir }
+        : null;
+      browserDownloadPromptBusy.value = false;
+      await resolveBrowserDownloadPrompt(result.dir);
+    }
+  } catch (err) {
+    ElMessage.error(`选择下载目录失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    browserDownloadPromptBusy.value = false;
+  }
+}
+
 let desktopRelayTimer: number | null = null;
 let desktopRelayKey = '';
 
@@ -469,6 +560,17 @@ async function syncDesktopCapabilityRelay(): Promise<void> {
 }
 
 onMounted(async () => {
+  offBrowserDownloadPrompt = browserViewBridge?.onDownloadDirPrompt?.((payload) => {
+    if (!payload?.requestId) return;
+    browserDownloadPrompt.value = {
+      requestId: payload.requestId,
+      suggestedDir: String(payload.suggestedDir || ''),
+      filename: String(payload.filename || ''),
+    };
+    browserDownloadPromptOpen.value = true;
+  });
+  void browserViewBridge?.markDownloadDirUiReady?.();
+
   // 登录/授权初始化可能晚于首屏；定时对指纹，凭据变化时重连能力桥。
   void syncDesktopCapabilityRelay();
   if ((window as unknown as { electronAPI?: { desktopCapabilityBridge?: unknown } }).electronAPI?.desktopCapabilityBridge) {
@@ -648,6 +750,8 @@ const offWindowFailed = pluginWindowEvents?.on?.('failed', (p) => {
   ElMessage.error(`打开失败：${String(p?.error || '未知原因')}`);
 });
 onUnmounted(() => {
+  offBrowserDownloadPrompt?.();
+  offBrowserDownloadPrompt = undefined;
   offWindowOpened?.();
   offWindowFailed?.();
   if (desktopRelayTimer) {
@@ -1294,6 +1398,19 @@ body {
 .local-model-download-title { font-size: var(--font-size-lg); font-weight: 600; color: var(--color-text); }
 .local-model-download-desc { font-size: var(--font-size-base); line-height: 1.55; color: var(--color-text-secondary); }
 .local-model-download-message { min-height: 20px; font-size: var(--font-size-sm); color: var(--color-text-secondary); word-break: break-all; }
+.browser-download-prompt { display: flex; flex-direction: column; gap: 10px; line-height: 1.55; }
+.browser-download-prompt p { margin: 0; color: var(--color-text-secondary); }
+.browser-download-prompt strong { color: var(--color-text); }
+.browser-download-path {
+  padding: 9px 11px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--color-text);
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  word-break: break-all;
+}
+.browser-download-hint { font-size: var(--font-size-sm); }
 
 /* ===== 移动端冷启动等待层（yz-boot-splash）：内嵌后端就绪前替代白屏 ===== */
 .yz-boot-splash {
