@@ -20,6 +20,8 @@ import {
   type PetState,
 } from '../../stores/pet'
 
+const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+
 const store = usePetStore()
 store.init()
 const settings = ref<PetSettings>({ ...PET_DEFAULTS, ...store.settings })
@@ -31,6 +33,7 @@ const renderVisible = ref(true)
 const walking = ref(false)
 const facingLeft = ref(false)
 const effectiveScale = computed(() => settings.value.scale || 1)
+const displayScale = computed(() => (props.compact ? 0.5 : 1))
 
 /* ===== 3D/VRM（照 PetWindow 收窄：web/dev 走 /vrm/ 静态，桌面走主进程 IPC） ===== */
 const vrmBuffer = ref<ArrayBuffer | null>(null)
@@ -45,7 +48,7 @@ const show2d = computed(
 )
 const bodyStyle = computed(() => {
   if (settings.value.renderer !== '3d') return {}
-  const s = effectiveScale.value || 1
+  const s = (effectiveScale.value || 1) * displayScale.value
   return { width: Math.round(190 * s) + 'px', height: Math.round(280 * s) + 'px' }
 })
 
@@ -113,7 +116,7 @@ defineExpose({ play })
 </script>
 
 <template>
-  <div class="learn-stage">
+  <div class="learn-stage" :class="{ compact: props.compact }">
     <div class="stage-body" :style="bodyStyle">
       <Pet2D
         v-if="show2d"
@@ -152,6 +155,14 @@ defineExpose({ play })
   background: linear-gradient(180deg, #f6f8fc 0%, #eef2f9 100%);
   border: 1px solid #e5e6eb;
   overflow: hidden;
+}
+.learn-stage.compact {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
 }
 .stage-body { position: relative; }
 </style>

@@ -979,10 +979,18 @@ onBeforeUnmount(stopCoachMic);
           >{{ s.label }}<i v-if="!s.ready" class="lp-soon">筹备中</i></button>
         </div>
       </div>
-      <LearnStage ref="stageRef" class="lp-stage" />
-      <button class="lp-coach" :disabled="startingChat" @click="startCoaching">
-        {{ startingChat ? '正在创建会话…' : '开始陪练 · 和 AI 用英语聊' }}
-      </button>
+      <div class="lp-header-actions">
+        <LearnStage ref="stageRef" class="lp-avatar-stage" compact />
+        <button
+          class="lp-coach"
+          :disabled="startingChat"
+          :title="startingChat ? '正在创建陪练会话' : '开始陪练，和 AI 用英语聊'"
+          @click="startCoaching"
+        >
+          <Mic :size="16" />
+          {{ startingChat ? '创建中…' : '开始陪练' }}
+        </button>
+      </div>
     </header>
 
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
@@ -1552,7 +1560,7 @@ onBeforeUnmount(stopCoachMic);
 /* ★ 高度用 flex 撑满 main-content（视口 − 顶栏 − 底部状态栏），绝不能写 100vh ——
    100vh 是视口全高，会把学习页底部压到状态栏底下（用户实报：左栏最后一项永远被裁一半）。 */
 .learning-page { padding: 20px 24px; max-width: 1400px; width: 100%; margin: 0 auto; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
-.lp-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; flex-shrink: 0; }
+.lp-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; flex-shrink: 0; }
 .lp-head-left { flex: 1; min-width: 0; }
 .lp-header h1 { font-size: 22px; margin: 0 0 4px; }
 .lp-sub { margin: 0; color: #646a73; font-size: 13px; }
@@ -1562,9 +1570,11 @@ onBeforeUnmount(stopCoachMic);
 .lp-subject.active { background: #1f2329; border-color: #1f2329; color: #fff; }
 .lp-subject:disabled { opacity: .5; cursor: not-allowed; }
 .lp-soon { font-style: normal; font-size: 10px; margin-left: 3px; opacity: .8; }
-.lp-coach { border: none; background: #3370ff; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+.lp-header-actions { display: grid; grid-template-columns: 104px 128px; align-items: end; gap: 8px; width: 240px; flex: 0 0 240px; padding-top: 2px; }
+.lp-coach { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 128px; height: 36px; border: none; background: #3370ff; color: #fff; padding: 0 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.lp-coach:hover { background: #2861d9; }
 .lp-coach:disabled { opacity: .6; cursor: default; }
-.lp-stage { width: 150px; min-height: 110px; flex-shrink: 0; }
+.lp-avatar-stage { width: 104px; height: 140px; min-height: 0; flex-shrink: 0; }
 /* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」「最后一个显示不完整」）：
    此前用 max-height: calc(100vh - 180px) 魔法数估头部高度，估不准 ⇒ 最后一项被视口裁半。
    改为 flex 精确贴合：页面占满视口，grid 弹性吃掉 header 之外的剩余高度，三栏 stretch 等高，
@@ -1799,8 +1809,9 @@ onBeforeUnmount(stopCoachMic);
   .lp-header { flex-direction: column; align-items: stretch; gap: 10px; }
   .lp-head-left { width: 100%; }
   .lp-subjects { flex-wrap: wrap; }
-  .lp-stage { width: 110px; min-height: 82px; align-self: flex-start; }
-  .lp-coach { width: 100%; }
+  .lp-header-actions { width: 100%; grid-template-columns: 96px minmax(128px, 180px); justify-content: space-between; }
+  .lp-avatar-stage { width: 96px; height: 124px; min-height: 0; align-self: flex-end; }
+  .lp-coach { width: 100%; min-width: 128px; max-width: 180px; }
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
   .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
   .lp-col-mid:has(> .lp-coach-chat) { overflow: visible; min-height: 70vh; }

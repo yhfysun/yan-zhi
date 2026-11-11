@@ -140,6 +140,11 @@ describe('Learning 工作区 · 挂载契约', () => {
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
     expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
+    // 头部动作收成固定工具栏：虚拟人不再撑高整行，陪练按钮也不再被长文案拉宽。
+    expect(el.querySelector('.lp-header-actions')).toBeTruthy()
+    const coachButton = el.querySelector('.lp-coach') as HTMLElement
+    expect(coachButton.textContent).toContain('开始陪练')
+    expect(coachButton.querySelector('svg')).toBeTruthy()
   })
 
   it('词汇表 Tab：未选课程时空态引导；mock 一本词书后点开真出词行（分页+搜索栏）', async () => {
