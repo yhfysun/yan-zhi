@@ -42,6 +42,42 @@
 - [ ] Task 7 后续非运行时域：团队资源 / 配额 / 审计 / MCP 管理 / 设计资源等管理端 SQL 仍为 SQLite，需独立迁移
 - [x] 2026-11-10 用临时 `postgres:16-alpine` 实例跑通 `enterprise-repository-pg.test.ts`，12/12 通过
 
+## 当前任务：学习课程主题统一与软考免费自学资料
+
+- [x] 2026-11-11 Task 1：安全课程主题基线（讲义/风险/控制/实验/自测/代码区全部走语义 token）
+- [x] 2026-11-11 Task 1b：英语学习全页面主题统一（单词闯关/陪练/词汇表/场景/语法/阅读/真题）
+- [x] 2026-11-11 Task 2：设置页主题审计（弹窗/抽屉/表单/导航/下载目录/危险操作）
+- [x] 2026-11-11 Task 3：软考免费资源数据层（官方/开源题库/开源笔记/视频，含许可证与版权边界）
+- [x] 2026-11-11 Task 4：软考免费资源界面（免费入口 + 三步使用法 + 类型/许可证标签）
+- [x] 2026-11-11 Task 5：全模式验收（暗/亮图片皮肤 + 无皮肤浅/深色）、测试和类型检查
+- [x] 2026-11-11 Task 6：更新任务记录与交付说明
+- [ ] 2026-11-11 Task 7（最后处理）：更多菜单全局页面皮肤（智能体商店、模型平台等 PageFrame 根底色）
+- [ ] 2026-11-11 Task 8：皮肤语义按钮体系（统一普通/主操作/警告/危险/成功/信息按钮材质与明暗适配）
+  - [x] Task 8.1：`core` 契约、`settings` 变量下发、Element Plus 与主要业务按钮统一表面层
+  - [ ] Task 8.2：每套皮肤生成 primary / warning / danger / success / info 独立按钮贴图及暗色变体
+  - [ ] Task 8.3：逐页迁移业务按钮并区分动作按钮、分段控件、标签页和图标按钮
+  - [ ] Task 8.4：至少五类皮肤 × 六类按钮 × 明暗模式截图与对比度验收
+
+## 2026-11-11 运行态修复记录
+
+- 现场日志确认两个独立问题：
+  - `dev-mode / wf-mode / clip-mode / ops-shell / sec-lab / shop-ops` 前端动态 import 先被
+    主窗口 CSP 拦截；放行 `yz:` 后又暴露 Chromium 的 `http -> yz` CORS 限制。
+  - 远程后端 `192.168.10.222:3001` 缺 `/api/plugin/cicd-pipeline/pipelines`，返回 404；
+    属于当前远程服务端版本落后，不是前端模块装载失败。
+- 修复：
+  - 主窗口 CSP 仅放行 `yz:` 与本机 API 脚本源，不开放远端任意脚本或 `unsafe-eval`。
+  - Electron `file://` 页面继续走 `yz://`；开发态 `http://localhost:1420` 改走本机 API
+    `/plugin-assets/...`，并统一补 `license/token/viewAs` query 鉴权。
+  - 新增 `plugin-runtime.test.ts` 与插件协议 CSP 守门测试。
+- 验证：
+  - 六个插件路由逐个打开，CSP/CORS 错误清零，插件页面内容正常渲染。
+  - UI 相关 15/15、桌面插件协议 9/9、UI/core typecheck、`git diff --check` 通过。
+  - 桌面全量 640/641；唯一失败是既有 `mode-prune.test.cjs` 对 `WebTopBar.vue`
+    学习入口过滤的断言，与本次 CSP/按钮改动无 import 关系。
+- Task 8.1 视觉基线：`.tmp/skin-buttons-preview.png`（cyber-neon 暗色 + cat-cafe 浅色，
+  六类按钮），控制台与资源请求均为 0 错误。
+
 ## 已推送提交（Task 1-4）
 
 - `c65d9882`：feat(enterprise) — OAuth 闭环 / 容器工作区 / 端口预览 / 团队来源（Task 1-4 功能与测试）
