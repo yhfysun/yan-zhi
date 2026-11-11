@@ -197,6 +197,20 @@ html[data-skin="on"] .home-page {
   --btn-bg: var(--skin-btn-bg-color, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 88%, transparent));
   --btn-bg-hover: var(--skin-btn-bg-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 95%, transparent));
   --btn-border: color-mix(in srgb, var(--color-primary) 12%, var(--el-border-color));
+  /* 语义按钮皮肤：普通 / 主操作 / 警告 / 危险 / 成功 / 信息。
+     veil 是铺在皮肤按钮贴图上的半透明色层，既保留每套皮肤的画面细节，
+     又让按钮类别有稳定的功能色。深浅模式分别控制透明度，避免浅色发糊、暗色发灰。 */
+  --skin-btn-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.20), rgba(255, 255, 255, 0.06) 42%, rgba(0, 0, 0, 0.10));
+  --skin-btn-normal-veil: color-mix(in srgb, var(--skin-surface, #f5f1ea) 78%, transparent);
+  --skin-btn-primary-veil: color-mix(in srgb, var(--color-primary) 76%, transparent);
+  --skin-btn-warning-veil: color-mix(in srgb, var(--el-color-warning, #e6a23c) 76%, transparent);
+  --skin-btn-danger-veil: color-mix(in srgb, var(--el-color-danger-dark-2, #c45656) 76%, transparent);
+  --skin-btn-success-veil: color-mix(in srgb, var(--el-color-success-dark-2, #529b2e) 76%, transparent);
+  --skin-btn-info-veil: color-mix(in srgb, var(--el-color-info-dark-2, #73767a) 76%, transparent);
+  --skin-btn-warning-text: #261700;
+  --skin-btn-danger-text: #fff7f7;
+  --skin-btn-success-text: #f7fff2;
+  --skin-btn-info-text: #f7f9ff;
 
   /* 滚动条随皮肤主色变化 */
   --scrollbar-thumb: color-mix(in srgb, var(--color-primary) 20%, transparent);
@@ -256,6 +270,17 @@ html[data-skin="on"] .home-page {
   --btn-bg: var(--skin-btn-bg-color, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 82%, transparent));
   --btn-bg-hover: var(--skin-btn-bg-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 92%, transparent));
   --btn-border: color-mix(in srgb, var(--color-primary) 15%, var(--el-border-color));
+  --skin-btn-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.035) 42%, rgba(0, 0, 0, 0.20));
+  --skin-btn-normal-veil: color-mix(in srgb, var(--skin-surface, #1d1d1c) 84%, transparent);
+  --skin-btn-primary-veil: color-mix(in srgb, var(--color-primary) 80%, transparent);
+  --skin-btn-warning-veil: color-mix(in srgb, var(--el-color-warning, #e6a23c) 68%, transparent);
+  --skin-btn-danger-veil: color-mix(in srgb, var(--el-color-danger, #f56c6c) 68%, transparent);
+  --skin-btn-success-veil: color-mix(in srgb, var(--el-color-success, #67c23a) 68%, transparent);
+  --skin-btn-info-veil: color-mix(in srgb, var(--el-color-info, #909399) 70%, transparent);
+  --skin-btn-warning-text: #fff4dc;
+  --skin-btn-danger-text: #fff7f7;
+  --skin-btn-success-text: #f7fff2;
+  --skin-btn-info-text: #f7f9ff;
 
   /* 滚动条随皮肤主色变化（深色模式下主色已提亮，对比度足够） */
   --scrollbar-thumb: color-mix(in srgb, var(--color-primary) 25%, transparent);
@@ -969,6 +994,184 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
   --el-button-text-color: var(--skin-btn-text, #ffffff);
 }
+
+/* ===== 语义按钮皮肤层：所有主要按钮共用同一套皮肤贴图与明暗规则 =====
+   Element Plus 只覆盖了部分按钮品类，业务里还有 .lp-* / .cp-* / .wf-* / .sec-* /
+   .ops-* / 原生 button 等大量自定义按钮。这里先统一「表面材质」，再由下面的
+   分类规则设置普通 / 主操作 / 警告 / 危险 / 成功 / 信息的色层与文字。
+
+   贴图层顺序（从顶到底）：
+     ① 高光斜面：让按钮不再是一块纯色矩形
+     ② 语义色纱：按分类染色，同时保留约 20~32% 的皮肤图细节
+     ③ 皮肤按钮图：插件皮肤 button-bg.webp / 内置系列按钮图
+   通过 !important 压住组件 scoped 的 background 简写；不碰尺寸、布局与图标。 */
+[data-skin="on"] :is(
+  .el-button:not(.is-text):not(.is-link):not(.is-plain),
+  .lp-mini,
+  .lp-primary,
+  .lp-tool-button,
+  .lp-bigplay,
+  .lp-answer-reveal,
+  .lp-talk-button,
+  .lp-scene-action,
+  .lp-collapse-btn,
+  .cp-btn:not(.ghost),
+  .cp-mini,
+  .wf-btn,
+  .btn,
+  .action-btn,
+  .sec-fullbtn,
+  .sec-cta,
+  .sec-cta-ghost,
+  .sec-cmdhint,
+  .ops-tool-btn,
+  .ops-dir-btn,
+  button.nav-btn,
+  button.fs-act-btn,
+  .tab-new
+):not(:disabled):not(.is-disabled) {
+  background-image:
+    var(--skin-btn-sheen),
+    linear-gradient(var(--skin-btn-local-veil, var(--skin-btn-normal-veil)), var(--skin-btn-local-veil, var(--skin-btn-normal-veil))),
+    var(--skin-btn-local-pattern, var(--skin-btn-pattern, none)) !important;
+  background-size: 100% 100%, 100% 100%, var(--skin-pattern-size, cover) !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-blend-mode: normal !important;
+}
+
+/* 主操作：皮肤主色 + 主按钮贴图；文字色仍由对比度算法下发 */
+[data-skin="on"] :is(
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link),
+  .lp-primary,
+  .cp-btn.primary,
+  .wf-btn.primary,
+  .btn-primary,
+  .ops-tool-btn-active
+):not(:disabled):not(.is-disabled) {
+  --skin-btn-local-veil: var(--skin-btn-primary-veil);
+  --skin-btn-local-pattern: var(--skin-btn-primary-pattern, var(--skin-btn-pattern, none));
+  --el-button-text-color: var(--skin-btn-text, #ffffff);
+  --el-button-hover-text-color: var(--skin-btn-text, #ffffff);
+  --el-button-active-text-color: var(--skin-btn-text, #ffffff);
+  background-color: color-mix(in srgb, var(--color-primary) 74%, var(--skin-surface, #f5f1ea)) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 72%, var(--skin-glass-border, transparent)) !important;
+  color: var(--skin-btn-text, #ffffff) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 24%, transparent),
+    0 2px 8px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+/* 警告：暖色底配深色字（浅色）/ 暖白字（深色），靠色相和对比度双重区分 */
+[data-skin="on"] :is(
+  .el-button--warning:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.warning,
+  .wf-btn.warning,
+  .btn-warning,
+  .sec-cta-warn
+):not(:disabled):not(.is-disabled) {
+  --skin-btn-local-veil: var(--skin-btn-warning-veil);
+  --skin-btn-local-pattern: var(--skin-btn-warning-pattern, var(--skin-btn-pattern, none));
+  --el-button-text-color: var(--skin-btn-warning-text);
+  --el-button-hover-text-color: var(--skin-btn-warning-text);
+  --el-button-active-text-color: var(--skin-btn-warning-text);
+  background-color: color-mix(in srgb, var(--el-color-warning, #e6a23c) 72%, var(--skin-surface, #f5f1ea)) !important;
+  border-color: color-mix(in srgb, var(--el-color-warning-dark-2, #b88230) 68%, var(--skin-glass-border, transparent)) !important;
+  color: var(--skin-btn-warning-text) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 8px color-mix(in srgb, var(--el-color-warning, #e6a23c) 18%, transparent);
+}
+
+/* 危险：必须保留强功能色，不用皮肤主色替代 */
+[data-skin="on"] :is(
+  .el-button--danger:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.danger,
+  .wf-btn.danger,
+  .btn-danger,
+  .lp-tool-button.danger,
+  button.danger
+):not(:disabled):not(.is-disabled) {
+  --skin-btn-local-veil: var(--skin-btn-danger-veil);
+  --skin-btn-local-pattern: var(--skin-btn-danger-pattern, var(--skin-btn-pattern, none));
+  --el-button-text-color: var(--skin-btn-danger-text);
+  --el-button-hover-text-color: var(--skin-btn-danger-text);
+  --el-button-active-text-color: var(--skin-btn-danger-text);
+  background-color: var(--el-color-danger-dark-2, #c45656) !important;
+  border-color: color-mix(in srgb, var(--el-color-danger-dark-2, #c45656) 72%, var(--skin-glass-border, transparent)) !important;
+  color: var(--skin-btn-danger-text) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px color-mix(in srgb, var(--el-color-danger, #f56c6c) 18%, transparent);
+}
+
+/* 成功 / 信息：同样走分类贴图，避免所有语义按钮只剩 Element Plus 默认纯色 */
+[data-skin="on"] :is(
+  .el-button--success:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.success,
+  .wf-btn.success,
+  .btn-success
+):not(:disabled):not(.is-disabled) {
+  --skin-btn-local-veil: var(--skin-btn-success-veil);
+  --skin-btn-local-pattern: var(--skin-btn-success-pattern, var(--skin-btn-pattern, none));
+  --el-button-text-color: var(--skin-btn-success-text);
+  --el-button-hover-text-color: var(--skin-btn-success-text);
+  --el-button-active-text-color: var(--skin-btn-success-text);
+  background-color: color-mix(in srgb, var(--el-color-success-dark-2, #529b2e) 76%, var(--skin-surface, #f5f1ea)) !important;
+  border-color: color-mix(in srgb, var(--el-color-success-dark-2, #529b2e) 72%, var(--skin-glass-border, transparent)) !important;
+  color: var(--skin-btn-success-text) !important;
+}
+
+[data-skin="on"] :is(
+  .el-button--info:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.info,
+  .wf-btn.info,
+  .btn-info
+):not(:disabled):not(.is-disabled) {
+  --skin-btn-local-veil: var(--skin-btn-info-veil);
+  --skin-btn-local-pattern: var(--skin-btn-info-pattern, var(--skin-btn-pattern, none));
+  --el-button-text-color: var(--skin-btn-info-text);
+  --el-button-hover-text-color: var(--skin-btn-info-text);
+  --el-button-active-text-color: var(--skin-btn-info-text);
+  background-color: color-mix(in srgb, var(--el-color-info-dark-2, #73767a) 76%, var(--skin-surface, #f5f1ea)) !important;
+  border-color: color-mix(in srgb, var(--el-color-info-dark-2, #73767a) 72%, var(--skin-glass-border, transparent)) !important;
+  color: var(--skin-btn-info-text) !important;
+}
+
+/* 深色模式必须另给危险 / 成功 / 信息的底色基准：
+   dark-2 是给浅色主题压深用的，直接叠在深色皮肤上会接近黑块。 */
+[data-theme="dark"][data-skin="on"] :is(
+  .el-button--danger:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.danger,
+  .wf-btn.danger,
+  .btn-danger,
+  .lp-tool-button.danger,
+  button.danger
+):not(:disabled):not(.is-disabled) {
+  background-color: color-mix(in srgb, var(--el-color-danger, #f56c6c) 62%, var(--skin-surface, #1d1d1c)) !important;
+  border-color: color-mix(in srgb, var(--el-color-danger, #f56c6c) 66%, var(--skin-glass-border, transparent)) !important;
+}
+
+[data-theme="dark"][data-skin="on"] :is(
+  .el-button--success:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.success,
+  .wf-btn.success,
+  .btn-success
+):not(:disabled):not(.is-disabled) {
+  background-color: color-mix(in srgb, var(--el-color-success, #67c23a) 56%, var(--skin-surface, #1d1d1c)) !important;
+  border-color: color-mix(in srgb, var(--el-color-success, #67c23a) 62%, var(--skin-glass-border, transparent)) !important;
+}
+
+[data-theme="dark"][data-skin="on"] :is(
+  .el-button--info:not(.is-plain):not(.is-text):not(.is-link),
+  .cp-btn.info,
+  .wf-btn.info,
+  .btn-info
+):not(:disabled):not(.is-disabled) {
+  background-color: color-mix(in srgb, var(--el-color-info, #909399) 56%, var(--skin-surface, #1d1d1c)) !important;
+  border-color: color-mix(in srgb, var(--el-color-info, #909399) 62%, var(--skin-glass-border, transparent)) !important;
+}
+
 /* 应用边缘描边：窗口最外圈 1px 随皮肤边框色（modal 遮罩打开时自然被盖住） */
 [data-skin="on"] body::after {
   content: '';
@@ -1523,7 +1726,7 @@ html[data-skin="on"] .browser-shell .analysis-card {
 }
 /* 网页内容区（BrowserView 之上/之外的占位层）：用最实的凹陷色，避开灰蒙蒙一片 */
 html[data-skin="on"] .browser-viewport,
-html[data-skin="on"] .page-frame,
+html[data-skin="on"] .browser-shell .page-frame,
 html[data-skin="on"] .page-webview,
 html[data-skin="on"] .native-browser-placeholder {
   background: var(--skin-surface-sunken, var(--el-bg-color-page, #fafafa));
@@ -1919,4 +2122,42 @@ html[data-skin="on"] .loading-overlay {
 [data-lite="on"] *::after {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+
+/* ============================================================
+   设置页可读性：图片皮肤按亮/暗色系分层
+   ------------------------------------------------------------
+   设置页本身承载表单和长文本，不能沿用三栏面板的高透明度。
+   浅色图片皮肤用更实的纸色玻璃，暗色图片皮肤用更实的深色玻璃；
+   主色只参与边框和轻量染色，正文仍由 skin-text 决定。
+   ============================================================ */
+html[data-theme="light"][data-skin="on"] .mps-body.page > .glass-tabs {
+  background-color: color-mix(in srgb, var(--skin-surface, #f5f1ea) 96%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--glass-border));
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--color-bg) 18%, transparent);
+}
+
+html[data-theme="dark"][data-skin="on"] .mps-body.page > .glass-tabs {
+  background-color: color-mix(in srgb, var(--skin-surface, #1d1d1c) 88%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 20%, var(--glass-border));
+}
+
+html[data-theme="light"][data-skin="on"] .settings-dialog,
+html[data-theme="light"][data-skin="on"] .settings-drawer {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--skin-surface, #f5f1ea) 84%, transparent),
+      color-mix(in srgb, var(--skin-surface, #f5f1ea) 84%, transparent)
+    ),
+    var(--skin-dialog-pattern, none) !important;
+}
+
+html[data-theme="dark"][data-skin="on"] .settings-dialog,
+html[data-theme="dark"][data-skin="on"] .settings-drawer {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--skin-surface, #1d1d1c) 70%, transparent),
+      color-mix(in srgb, var(--skin-surface, #1d1d1c) 70%, transparent)
+    ),
+    var(--skin-dialog-pattern, none) !important;
 }

@@ -150,6 +150,23 @@ export interface ThemePalette {
     inputPattern?: string;
     /** 按钮背景图（URL，叠加在 buttonGradient 之上），缺省=无 */
     buttonPattern?: string;
+    /** 主操作按钮背景图暗色变体，缺省按 <name>-dark.webp 约定推导 */
+    buttonPrimaryPatternDark?: string;
+    /**
+     * 语义按钮背景图。普通按钮统一回落到 buttonPattern；
+     * 四个语义分类可分别提供贴图，缺省回落到普通按钮底图。
+     * 约定文件：button-primary-bg.webp / button-warning-bg.webp /
+     * button-danger-bg.webp / button-success-bg.webp / button-info-bg.webp。
+     */
+    buttonPrimaryPattern?: string;
+    buttonWarningPattern?: string;
+    buttonWarningPatternDark?: string;
+    buttonDangerPattern?: string;
+    buttonDangerPatternDark?: string;
+    buttonSuccessPattern?: string;
+    buttonSuccessPatternDark?: string;
+    buttonInfoPattern?: string;
+    buttonInfoPatternDark?: string;
     /** 弹窗背景图（URL），缺省=无 */
     dialogPattern?: string;
     /**

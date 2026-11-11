@@ -64,6 +64,17 @@ type SkinSurface = {
   buttonPattern?: string;
   /** 按钮底图暗色变体（暗色主题优先于 buttonPattern） */
   buttonPatternDark?: string;
+  /** 语义按钮底图；未配置时统一回落到 buttonPattern */
+  buttonPrimaryPattern?: string;
+  buttonPrimaryPatternDark?: string;
+  buttonWarningPattern?: string;
+  buttonWarningPatternDark?: string;
+  buttonDangerPattern?: string;
+  buttonDangerPatternDark?: string;
+  buttonSuccessPattern?: string;
+  buttonSuccessPatternDark?: string;
+  buttonInfoPattern?: string;
+  buttonInfoPatternDark?: string;
   dialogPattern?: string;
   /** 弹窗底图暗色变体（暗色主题优先于 dialogPattern） */
   dialogPatternDark?: string;
@@ -204,6 +215,9 @@ const SKIN_ELEMENT_VARS = [
   '--skin-shadow', '--skin-btn-gradient',
   '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
   '--skin-btn-pattern', '--skin-dialog-pattern',
+  '--skin-btn-primary-pattern', '--skin-btn-warning-pattern',
+  '--skin-btn-danger-pattern', '--skin-btn-success-pattern',
+  '--skin-btn-info-pattern',
   '--skin-card-1-pattern', '--skin-card-2-pattern', '--skin-card-3-pattern',
   '--skin-card-4-pattern', '--skin-card-5-pattern', '--skin-card-6-pattern',
   '--skin-card-count',
@@ -1406,6 +1420,11 @@ export const useSettingsStore = defineStore('settings', () => {
     setPattern('--skin-task-list-pattern', themedPattern(sf.taskListPattern));
     setPattern('--skin-input-pattern', themedPattern(sf.inputPattern));
     setPattern('--skin-btn-pattern', themedPattern(sf.buttonPattern, sf.buttonPatternDark));
+    setPattern('--skin-btn-primary-pattern', themedPattern(sf.buttonPrimaryPattern, sf.buttonPrimaryPatternDark));
+    setPattern('--skin-btn-warning-pattern', themedPattern(sf.buttonWarningPattern, sf.buttonWarningPatternDark));
+    setPattern('--skin-btn-danger-pattern', themedPattern(sf.buttonDangerPattern, sf.buttonDangerPatternDark));
+    setPattern('--skin-btn-success-pattern', themedPattern(sf.buttonSuccessPattern, sf.buttonSuccessPatternDark));
+    setPattern('--skin-btn-info-pattern', themedPattern(sf.buttonInfoPattern, sf.buttonInfoPatternDark));
     setPattern('--skin-dialog-pattern', themedPattern(sf.dialogPattern, sf.dialogPatternDark));
     // ===== 卡片变体底图（多套样式 + 随机分配）=====
     // 【2026-09-13 用户反馈："卡片样式可以设置多点啊，然后随机多好。。。"】
