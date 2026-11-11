@@ -15,6 +15,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 
 
@@ -94,29 +95,64 @@ def read_doc(path: str) -> dict:
     return {"kind": "doc", "blocks": blocks}
 
 
-def read_sheet(path: str) -> dict:
+def read_sheet(path: str, sheet_name: str | None = None, max_rows: int = 40, max_cols: int = 40) -> dict:
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
 
     wb = load_workbook(path, data_only=True, read_only=True)
     sheets = []
-    max_rows, max_cols = 400, 40
-    for ws in wb.worksheets:
+    metadata_max_cols = 2048
+    max_rows = max(1, min(int(max_rows), 400))
+    max_cols = max(1, min(int(max_cols), 200))
+    if sheet_name:
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"工作表不存在: {sheet_name}；可用: {', '.join(wb.sheetnames)}")
+        worksheets = [wb[sheet_name]]
+    else:
+        worksheets = wb.worksheets
+    for ws in worksheets:
         rows = []
-        truncated = False
-        for r, row in enumerate(ws.iter_rows(values_only=True)):
-            if r >= max_rows:
-                truncated = True
-                break
-            cells = list(row[:max_cols])
-            if len(row) > max_cols:
-                truncated = True
+        used_max_row = max(1, int(ws.max_row or 1))
+        used_max_col = max(1, int(ws.max_column or 1))
+        preview_max_col = min(used_max_col, max_cols)
+        for row in ws.iter_rows(
+            min_row=1,
+            max_row=min(used_max_row, max_rows),
+            max_col=preview_max_col,
+            values_only=True,
+        ):
             # 去掉整行空值（尾部空单元格也去掉，减少载荷）
+            cells = [_cell_text(v) for v in row]
             while cells and (cells[-1] is None or str(cells[-1]) == ""):
                 cells.pop()
-            rows.append([_cell_text(v) for v in cells])
+            rows.append(cells)
         while rows and not any(c != "" for c in rows[-1]):
             rows.pop()
-        sheets.append({"name": ws.title, "rows": rows, "truncated": truncated})
+        header_row = next(
+            ws.iter_rows(
+                min_row=1,
+                max_row=1,
+                max_col=min(used_max_col, metadata_max_cols),
+                values_only=True,
+            ),
+            (),
+        )
+        columns = [
+            {"letter": get_column_letter(index), "header": _cell_text(value)}
+            for index, value in enumerate(header_row, start=1)
+        ]
+        sheets.append({
+            "name": ws.title,
+            "range": f"A1:{get_column_letter(used_max_col)}{used_max_row}",
+            "maxRow": used_max_row,
+            "maxColumn": used_max_col,
+            "columns": columns,
+            "columnsTruncated": used_max_col > metadata_max_cols,
+            "previewRows": len(rows),
+            "previewColumns": preview_max_col,
+            "truncated": used_max_row > max_rows or used_max_col > max_cols,
+            "rows": rows,
+        })
     wb.close()
     return {"kind": "sheet", "sheets": sheets}
 
@@ -263,7 +299,7 @@ def write_sheet(path: str, payload: dict, mode: str) -> None:
     """向已有 xlsx 追加行（mode=append）或清空后重写（mode=replace）。"""
     from openpyxl import load_workbook
 
-    wb = load_workbook(path)
+    wb = load_workbook(path, keep_vba=path.lower().endswith(".xlsm"))
     name = payload.get("sheet")
     ws = wb[name] if (isinstance(name, str) and name in wb.sheetnames) else wb.active
     rows = payload.get("rows") or []
@@ -280,6 +316,81 @@ def write_sheet(path: str, payload: dict, mode: str) -> None:
         for j, val in enumerate(row):
             ws.cell(row=start + i, column=j + 1, value=val)
     wb.save(path)
+
+
+def _column_range_bounds(spec: object) -> tuple[int, int]:
+    from openpyxl.utils import column_index_from_string
+
+    raw = str(spec or "").strip().upper().replace("$", "")
+    match = re.fullmatch(r"([A-Z]{1,3})(?::([A-Z]{1,3}))?", raw)
+    if not match:
+        raise ValueError(f"列范围格式无效: {spec}；请用如 EV:FV 的格式")
+    start = column_index_from_string(match.group(1))
+    end = column_index_from_string(match.group(2) or match.group(1))
+    if start > end:
+        raise ValueError(f"列范围起点不能大于终点: {spec}")
+    if end > 16384:
+        raise ValueError(f"列范围超出 Excel 上限: {spec}")
+    return start, end
+
+
+def _sheet_range(ws) -> str:
+    from openpyxl.utils import get_column_letter
+
+    max_row = max(1, int(ws.max_row or 1))
+    max_col = max(1, int(ws.max_column or 1))
+    return f"A1:{get_column_letter(max_col)}{max_row}"
+
+
+def delete_sheet_columns(path: str, payload: dict) -> dict:
+    """删除工作表整列，并在保存后重新打开文件核验使用范围。"""
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    wb = load_workbook(path, keep_vba=path.lower().endswith(".xlsm"))
+    sheet_name = payload.get("sheet")
+    if isinstance(sheet_name, str) and sheet_name.strip():
+        sheet_name = sheet_name.strip()
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"工作表不存在: {sheet_name}；可用: {', '.join(wb.sheetnames)}")
+        ws = wb[sheet_name]
+    else:
+        ws = wb.active
+        sheet_name = ws.title
+
+    start, end = _column_range_bounds(payload.get("deleteColumns"))
+    column_count = end - start + 1
+    before_range = _sheet_range(ws)
+    before_max_col = max(1, int(ws.max_column or 1))
+    ws.delete_cols(start, column_count)
+    wb.save(path)
+
+    verify_wb = load_workbook(path, data_only=True, read_only=True)
+    try:
+        if sheet_name not in verify_wb.sheetnames:
+            raise ValueError(f"删除后回读不到工作表: {sheet_name}")
+        verify_ws = verify_wb[sheet_name]
+        after_max_col = max(1, int(verify_ws.max_column or 1))
+        after_range = _sheet_range(verify_ws)
+    finally:
+        verify_wb.close()
+
+    expected_max_col = before_max_col
+    if before_max_col >= start:
+        if before_max_col <= end:
+            expected_max_col = max(1, start - 1)
+        else:
+            expected_max_col = before_max_col - column_count
+    removed_used_columns = max(0, min(end, before_max_col) - start + 1)
+    return {
+        "sheet": sheet_name,
+        "deletedRange": f"{get_column_letter(start)}:{get_column_letter(end)}",
+        "deletedColumns": column_count,
+        "removedUsedColumns": removed_used_columns,
+        "beforeRange": before_range,
+        "afterRange": after_range,
+        "verified": after_max_col == expected_max_col,
+    }
 
 
 def write_slides(path: str, payload: dict, mode: str) -> None:
@@ -421,6 +532,13 @@ def main() -> None:
 
     pr = sub.add_parser("read")
     pr.add_argument("--path", required=True)
+    pr.add_argument("--sheet", default="")
+    pr.add_argument("--max-rows", type=int, default=40)
+    pr.add_argument("--max-cols", type=int, default=40)
+
+    pdc = sub.add_parser("delete-columns")
+    pdc.add_argument("--path", required=True)
+    pdc.add_argument("--json-file", required=True)
 
     ps = sub.add_parser("save")
     ps.add_argument("--path", required=True)
@@ -471,12 +589,31 @@ def main() -> None:
             print(json.dumps({"ok": True, "path": path}, ensure_ascii=False))
             return
 
+        if args.cmd == "delete-columns":
+            path = os.path.abspath(args.path)
+            if not os.path.isfile(path):
+                _fail(f"文件不存在: {path}")
+                return
+            if os.path.splitext(path)[1].lower() not in (".xlsx", ".xlsm"):
+                _fail("delete-columns 仅支持 .xlsx / .xlsm")
+                return
+            with open(args.json_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            result = delete_sheet_columns(path, payload)
+            print(json.dumps({"ok": True, "path": path, "result": result}, ensure_ascii=False))
+            return
+
         path = os.path.abspath(args.path)
         ext = os.path.splitext(path)[1].lower()
         if ext == ".docx":
             data = read_doc(path)
         elif ext in (".xlsx", ".xlsm"):
-            data = read_sheet(path)
+            data = read_sheet(
+                path,
+                sheet_name=args.sheet or None,
+                max_rows=args.max_rows,
+                max_cols=args.max_cols,
+            )
         elif ext == ".pptx":
             data = read_slides(path)
         else:

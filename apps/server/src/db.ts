@@ -1400,6 +1400,11 @@ const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
 - dataAgent 会先检索本体语义层拿到本体 code，再按查询意图只读取数，结果以 markdown 表格返回；行数不够它会自行翻页。
 - 需要深度统计分析或交付表格/图表文件时，在委派 input 里说明，dataAgent 会用 python_exec / file_write 完成。
 - 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
+const DIRECT_OPERATION_PROMPT_BLOCK = `【明确操作直接执行】
+- Excel：office_read 会返回完整列字母和第 1 行（表头/首行数据）；单元格预览截断不代表后面的列不存在。用户已明确列范围（如 EV:FV）时，直接调用 office_write { path, sheet?, deleteColumns: "EV:FV" } 执行，不要先找经验/技能，也不要反复读预览。
+- Excel 删除成功后必须明确回答“已删除哪个工作表、哪个范围、共多少列、删除后范围”，不能只复述用户要求，也不能在成功后继续反复验证。
+- 登录：用户已提供用户名和密码时，一次 browser_fill_form 传完全部字段并带 submit:true（或 submit 指向明确的登录按钮），填写与点击登录在同一次调用完成；禁止填完就停。
+- 只有文件、工作表、列范围、登录按钮确实无法确定时才 ask_user，一次问清；能执行就直接执行，不确定就反问。`;
 // 网页登录/页面操作指引块：所有智能体共用 shared 中的单一定义。
 // 旧库按标记增量追加，避免普通种子的 COALESCE 让老用户永远拿不到新说明。
 const WEB_PAGE_OPERATION_PROMPT_BLOCK = BROWSER_DELEGATION_PROMPT;
@@ -1434,7 +1439,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - list_models 返回里带 ★ 的是**当前智能体/平台/全局候选池内**的模型（按顺序即优先级）：**优先从带 ★ 的模型里挑**；要某类能力优先用池内模型时，传 slot 参数（llm/vision/image/video）可只列该候选池的模型。
 - 长任务不必自己预防限流：主任务在遇到 429/5xx/超时等**可重试**错误时会自动沿候选池切换到下一个模型续跑；业务性报错（参数错误/模型不存在）不会切换，需自行修正参数。
 
-` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK;
+` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK + '\n\n' + DIRECT_OPERATION_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（以下为**你实际已挂载**的全部工具，其他浏览器工具不可用。★ 与挂载清单
@@ -1459,7 +1464,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位
 - browser_upload: 上传本地文件——优先传 clickSelector/clickIndex 走 filechooser 拦截；页面有裸露或隐藏 input[type=file] 时用 index/selector；如果是不标准的拖放组件，用 dropSelector/dropIndex 指定 drop zone。工具会扫描普通 DOM、Shadow DOM 与嵌套文档里的隐藏 input，并在既没 filechooser 也没 input 时尝试把真实文件拖到点击区域。返回 uploaded 只表示投递，verified 才表示页面已接管。
-- browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
+- browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；**登录表单必须同时传 submit:true（或 submit:{selector/index:登录按钮}），填写和点击登录一次完成**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）；返回里带页面判定（成功提示 / 校验提示 / 是否还有表单），据此判断，不要立刻再读一遍页面
 - browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 优先用 get_page_content 回显的高质量选择器（id/testid/aria/name/placeholder）；元素行没带 <selector> 段的用 index——hash class 下一次读取就漂移，不要凭印象猜），selectors 可给备用选择器，下拉优先 label。可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
 - browser_run_page_operation: 已登记站点优先走页面资产。先看可用页面资产引用，再用 assetId + operationId + params 执行；禁止用自由选择器或脚本替代已声明 operation。
@@ -1476,8 +1481,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - file_write: 写文件到工作目录——抓到正文/结果后直接落盘（长内容别只贴在回复里，有截断风险）。
   ★ 只读权限会话会在运行时被拒绝（这是预期行为，不是故障）
 - office_create: 新建 Word / Excel / PPT 空文档（doc/sheet/slides），返回绝对路径；交付办公文档时先建再填内容，与办公工作台格式一致。
-- office_read: 读 Word / Excel / PPT 的结构化内容（标题层级/表格/工作表/幻灯片文字）；修改已有办公文档前先看清结构。
-- office_write: 向已有 Word/Excel/PPT 追加或替换内容（docx: blocks；xlsx: rows；pptx: slides），不需要写 Python 脚本；改已有文档优先用它。
+- office_read: 读 Word / Excel / PPT 的结构化内容（标题层级/表格/工作表/幻灯片文字）；Excel 会返回完整列字母和第 1 行（表头/首行数据），单元格预览截断不代表列不存在。
+- office_write: 向已有 Word/Excel/PPT 追加或替换内容（docx: blocks；xlsx: rows；pptx: slides）；Excel 删除整列传 deleteColumns（如 "EV:FV"），明确列范围时直接执行，不需要写 Python 脚本。
 - office_search: 在工作区按文件名或内容搜索（与办公工作台同一口径），交付/修改前先定位相关文件。
 - python_exec: 在本机执行 Python——统计/切分/合并/生成 CSV 等；适合一切"算一下/批处理"的活。
 - js_exec: 在本机执行 JavaScript(Node)——JSON 处理/字符串批处理/小脚本。
@@ -1549,8 +1554,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 
 【登录与人工干预】
 - 只读权限不是浏览器不可用：browser_navigate / browser_get_page_content / browser_get_page_info / browser_get_visible_text / browser_wait_for / browser_screenshot 都可直接执行；browser_click / browser_type / browser_fill_form / browser_submit_form 首次调用会弹授权卡。需要操作时正常发起一次，不要提前判定“登录页进不去”，也不要把截图说成被禁止。
-- 先识别登录类型：原生账号密码、二维码、短信验证码、OAuth/SSO、iframe/Shadow DOM 登录。二维码、短信、滑块、二次验证和账号密码由用户在浏览器面板接管，pageAgent 只负责打开页面、等待和复核。
-- 原生登录表单：两个及以上字段用一次 browser_fill_form，提交用 browser_submit_form 或点击明确的登录按钮；受控输入失败时改为 click + type，并回读值。
+- 先识别登录类型：原生账号密码、二维码、短信验证码、OAuth/SSO、iframe/Shadow DOM 登录。用户已明确提供账号密码时，可以填入并提交；二维码、短信、滑块和二次验证仍由用户在浏览器面板完成。
+- 原生登录表单必须一气呵成：两个及以上字段用一次 browser_fill_form 并同时传 submit:true（或 submit 指向登录按钮），不要填完就停；受控输入失败时改为 click + type，并回读值。
 - 非标准控件：自定义下拉/combobox 先 click 展开，再 browser_get_page_content 找选项 index 后 click；不要对伪 select 调原生下拉工具。弹窗/抽屉字段先滚动到可见再操作。
 - 登录成功必须有证据：URL 离开登录页、出现用户头像/工作台入口，或出现明确的成功提示。只点到按钮不算成功。
 - “需要登录”不是最终结论。先完成可执行的导航/填写/点击；遇到必须人工完成时才 ask_user，用户确认后 browser_get_page_content 复核再继续。
@@ -2746,6 +2751,19 @@ try {
   }
 } catch {}
 
+// 旧库增量迁移：Excel 明确列操作直接执行 + 登录填写/提交一次完成。
+// 按标记追加，已升级过的库不重复插入；force_sync 不覆盖用户自定义提示词。
+try {
+  const MARKER = '【明确操作直接执行】';
+  const row = db.prepare("SELECT system_prompt FROM agent WHERE id = 'a_default_assistant'").get() as
+    | { system_prompt?: string | null }
+    | undefined;
+  if (row && !(row.system_prompt || '').includes(MARKER)) {
+    const next = (row.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + DIRECT_OPERATION_PROMPT_BLOCK;
+    db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
+  }
+} catch {}
+
 // 预置示例自定义工具（JS + node:vm 沙箱）——开箱即用的演示/实用工具
 // 幂等：按 name 查重，已存在不覆盖（用户可能已编辑）
 const seedCustomTools: Array<{
@@ -3649,7 +3667,7 @@ export const builtinSkillDefaults: Array<{ id: string; name: string; category: s
       id: 'skill_xlsx_data_processing', name: 'Excel/数据处理', category: '文档处理',
       description: '处理 Excel/CSV 电子表格数据。通过 pandas + openpyxl 读写数据、计算公式、格式化、图表，支持数据清洗、聚合、透视、多表合并。',
       triggers: ['处理Excel', '分析表格数据', '清洗数据', '生成报表', '合并CSV', '数据处理'],
-      body: `# Excel/数据处理\n\n用 pandas + openpyxl 处理 Excel/CSV 数据，通过 shell 执行 Python 脚本。\n\n## 依赖\n\`\`\`bash\npip install pandas openpyxl xlsxwriter\n\`\`\`\n\n## 流程\n0. 新建空表格用 office_create { kind: "sheet", name }；看已有 Excel 的 sheet/单元格用 office_read（不必先转 CSV）；向已有表格追加行或覆写用 office_write { path, mode, rows, sheet? }\n1. 读取数据（read_excel/read_csv）\n2. 数据清洗（去重/填充空值/类型转换）\n3. 聚合分析（groupby/pivot_table/筛选/排序）\n4. 写入输出（to_excel + openpyxl 格式化）\n5. 回报行数列数 + 输出路径\n\n## 要点\n- CSV 中文用 encoding="utf-8-sig"\n- 公式以 = 开头写入单元格\n\n详见 .claude/skills/xlsx-data-processing/SKILL.md`,
+      body: `# Excel/数据处理\n\n用 pandas + openpyxl 处理 Excel/CSV 数据，通过 shell 执行 Python 脚本。\n\n## 依赖\n\`\`\`bash\npip install pandas openpyxl xlsxwriter\n\`\`\`\n\n## 流程\n0. 新建空表格用 office_create { kind: "sheet", name }；看已有 Excel 的完整列字母、表头和首行用 office_read（不必先转 CSV）；向已有表格追加行或覆写用 office_write { path, mode, rows, sheet? }；删除整列直接传 deleteColumns，如 { path, sheet?, deleteColumns: "EV:FV" }\n1. 读取数据（read_excel/read_csv）\n2. 数据清洗（去重/填充空值/类型转换）\n3. 聚合分析（groupby/pivot_table/筛选/排序）\n4. 写入输出（to_excel + openpyxl 格式化）\n5. 回报行数列数 + 输出路径\n\n## 要点\n- 用户已给出明确列范围时直接执行删除，不要用单元格预览判断列不存在；删除后回报工作表、范围、列数与删除后范围\n- CSV 中文用 encoding="utf-8-sig"\n- 公式以 = 开头写入单元格\n\n详见 .claude/skills/xlsx-data-processing/SKILL.md`,
     },
     {
       id: 'skill_pdf_processing', name: 'PDF 处理', category: '文档处理',

@@ -99,12 +99,16 @@ export class OfficeReadTool implements BuiltInTool {
   name = 'office_read';
   description =
     '读取 Word / Excel / PPT 的结构化内容（标题、段落、表格、工作表、幻灯片文字），' +
-    '返回可直接阅读的文本摘要。适合先看清结构再决定怎么改；纯文本文件请用 file_read。';
+    'Excel 会返回真实使用范围、列字母、首行值和单元格预览。预览截断不代表后面的列不存在；' +
+    '需要确认远列时看列字母和首行值，或指定 sheet。纯文本文件请用 file_read。';
 
   inputSchema = {
     type: 'object',
     properties: {
       path: { type: 'string', description: '文件路径（绝对路径，或相对工作目录），支持 .docx/.xlsx/.pptx' },
+      sheet: { type: 'string', description: 'Excel 工作表名（省略=读取全部工作表）' },
+      maxRows: { type: 'number', description: 'Excel 每个工作表最多预览多少行（默认 40，上限 400）' },
+      maxCols: { type: 'number', description: 'Excel 单元格预览最多显示多少列（默认 40，上限 200；完整列字母和表头另返回到 2048 列）' },
     },
     required: ['path'],
   };
@@ -119,7 +123,11 @@ export class OfficeReadTool implements BuiltInTool {
     const script = scriptPath();
     if (!script) return toolError('办公文档脚本缺失（office/office_docs.py）');
     try {
-      const r = await runPythonScript(script, ['read', '--path', p], { timeout: 60000 });
+      const cliArgs = ['read', '--path', p];
+      if (typeof args.sheet === 'string' && args.sheet.trim()) cliArgs.push('--sheet', args.sheet.trim());
+      if (args.maxRows != null) cliArgs.push('--max-rows', String(args.maxRows));
+      if (args.maxCols != null) cliArgs.push('--max-cols', String(args.maxCols));
+      const r = await runPythonScript(script, cliArgs, { timeout: 60000 });
       if (r.exitCode !== 0) return toolError(`解析失败：${(r.stderr || r.stdout || '').slice(0, 400)}`);
       const parsed = lastJsonLine(r.stdout);
       if (parsed?.ok === false) return toolError(String(parsed.error || '解析失败'));
@@ -130,7 +138,28 @@ export class OfficeReadTool implements BuiltInTool {
   }
 }
 
-/** 把 Python 的解析结果整理成模型易读的文本（控制行/列数量，避免超长） */function formatContent(filePath: string, data: any): string {
+function excelColumnName(index: number): string {
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+function compactCell(value: unknown, max = 60): string {
+  const text = String(value ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function fullHeaderCell(value: unknown): string {
+  return String(value ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim();
+}
+
+/** 把 Python 的解析结果整理成模型易读的文本（控制行/列数量，避免超长） */
+function formatContent(filePath: string, data: any): string {
   const kind = data?.kind;
   const lines: string[] = [`文件：${filePath}`];
 
@@ -153,12 +182,45 @@ export class OfficeReadTool implements BuiltInTool {
   if (kind === 'sheet') {
     for (const s of data.sheets || []) {
       lines.push('', `## 工作表：${s.name}`);
+      const columns = Array.isArray(s.columns) ? s.columns : [];
+      const maxColumn = Math.max(1, Number(s.maxColumn) || columns.length || 1);
+      const maxRow = Math.max(1, Number(s.maxRow) || 1);
+      const range = s.range || `A1:${excelColumnName(maxColumn - 1)}${maxRow}`;
+      lines.push(`范围：${range}（${maxRow} 行 × ${maxColumn} 列）`);
+      if (columns.length > 0) {
+        const letters = columns.map((c: any) => String(c.letter || '')).filter(Boolean).join(' ');
+        const headers = columns
+          .map((c: any) => `${c.letter}=${fullHeaderCell(c.header) || '（空）'}`)
+          .join(' | ');
+        lines.push(`完整列字母：${letters}`);
+        lines.push(`第 1 行（表头/首行数据，完整）：${headers}`);
+        if (s.columnsTruncated) {
+          lines.push('（列元数据只展开到前 2048 列；更靠后的列仍存在，请指定工作表处理。）');
+        }
+      }
       const rows = (s.rows || []).slice(0, 30);
+      const previewCols = Math.max(
+        0,
+        Number(s.previewColumns) || 0,
+        ...rows.map((row: unknown[]) => Array.isArray(row) ? row.length : 0),
+      );
+      if (previewCols > 0) {
+        const previewLetters = Array.from({ length: previewCols }, (_, i) =>
+          String(columns[i]?.letter || excelColumnName(i)));
+        lines.push('', `| 行 | ${previewLetters.join(' | ')} |`);
+        lines.push(`| --- | ${previewLetters.map(() => '---').join(' | ')} |`);
+      }
       rows.forEach((row: Array<string | number>, i: number) => {
-        lines.push('| ' + row.slice(0, 12).map((c) => String(c).replace(/\|/g, '\\|')).join(' | ') + ' |');
-        if (i === 0) lines.push('| ' + row.slice(0, 12).map(() => '---').join(' | ') + ' |');
+        const cells = Array.from({ length: previewCols }, (_, c) => compactCell(row[c]));
+        lines.push(`| ${i + 1} | ${cells.join(' | ')} |`);
       });
-      if ((s.rows || []).length > rows.length) lines.push(`（共 ${s.rows.length} 行，已截断）`);
+      if ((s.rows || []).length > rows.length) lines.push(`（预览 ${rows.length} 行，工作表共 ${maxRow} 行）`);
+      if (maxColumn > previewCols) {
+        lines.push(
+          `（单元格预览只显示 ${excelColumnName(0)}:${excelColumnName(previewCols - 1)}；` +
+          `工作表实际到 ${excelColumnName(maxColumn - 1)}，后面的列并未缺失。）`,
+        );
+      }
     }
     return lines.join('\n');
   }
@@ -185,7 +247,8 @@ export class OfficeWriteTool implements BuiltInTool {
     '向已存在的 Word/Excel/PPT 追加或替换内容：docx 用 blocks（标题/段落/表格），' +
     'xlsx 用 rows（行数组，可指定 sheet），pptx 用 slides（append: [{title,texts}]；replace: [{index,title?,texts}]）。' +
     'mode=append 追加；mode=replace 按序号替换已有内容（docx 块序号 / xlsx 清空重写 / pptx 页序号）。' +
-    '写前建议先用 office_read 看清结构；纯文本文件请用 file_write / file_edit。';
+    'Excel 删除整列用 deleteColumns（如 "EV:FV"），用户已给出明确列范围时直接执行；' +
+    '成功回执会返回工作表、删除范围、列数和删除后范围。纯文本文件请用 file_write / file_edit。';
 
   inputSchema = {
     type: 'object',
@@ -201,6 +264,10 @@ export class OfficeWriteTool implements BuiltInTool {
         type: 'array',
         description: 'xlsx 行数据：[[单元格,...],...]',
         items: { type: 'array' },
+      },
+      deleteColumns: {
+        type: 'string',
+        description: 'xlsx 删除整列，支持字母范围或单列，如 "EV:FV" / "EV"。与 rows 互斥；省略 sheet 时删除活动工作表。',
       },
       sheet: { type: 'string', description: 'xlsx 工作表名（省略=活动工作表）' },
       slides: {
@@ -225,14 +292,23 @@ export class OfficeWriteTool implements BuiltInTool {
       return toolError('文件不存在：' + p);
     }
 
+    const deleteColumns = typeof args.deleteColumns === 'string' ? args.deleteColumns.trim() : '';
     const mode = args.mode === 'replace' ? 'replace' : 'append';
     const payload: Record<string, unknown> = {};
-    if (Array.isArray(args.blocks)) payload.blocks = args.blocks;
-    if (Array.isArray(args.rows)) payload.rows = args.rows;
-    if (Array.isArray(args.slides)) payload.slides = args.slides;
     if (typeof args.sheet === 'string' && args.sheet.trim()) payload.sheet = args.sheet.trim();
-    if (Object.keys(payload).length === 0) {
-      return toolError('需要提供 blocks（docx）/ rows（xlsx）/ slides（pptx）之一');
+    if (deleteColumns) {
+      if (!['.xlsx', '.xlsm'].includes(ext)) return toolError('deleteColumns 仅支持 .xlsx / .xlsm');
+      if (Array.isArray(args.blocks) || Array.isArray(args.rows) || Array.isArray(args.slides)) {
+        return toolError('deleteColumns 不能与 blocks / rows / slides 同时使用');
+      }
+      payload.deleteColumns = deleteColumns;
+    } else {
+      if (Array.isArray(args.blocks)) payload.blocks = args.blocks;
+      if (Array.isArray(args.rows)) payload.rows = args.rows;
+      if (Array.isArray(args.slides)) payload.slides = args.slides;
+      if (!payload.blocks && !payload.rows && !payload.slides) {
+        return toolError('需要提供 blocks（docx）/ rows（xlsx）/ slides（pptx）之一，Excel 删除整列请传 deleteColumns');
+      }
     }
 
     const script = scriptPath();
@@ -240,6 +316,26 @@ export class OfficeWriteTool implements BuiltInTool {
     const tmpJson = path.join(os.tmpdir(), `yz_office_write_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
     try {
       fs.writeFileSync(tmpJson, JSON.stringify(payload), 'utf8');
+      if (deleteColumns) {
+        const r = await runPythonScript(
+          script,
+          ['delete-columns', '--path', p, '--json-file', tmpJson],
+          { timeout: 60000 },
+        );
+        if (r.exitCode !== 0) return toolError(`删除列失败：${(r.stderr || r.stdout || '').slice(0, 400)}`);
+        const parsed = lastJsonLine(r.stdout);
+        if (parsed?.ok === false) return toolError(String(parsed.error || '删除列失败'));
+        const result = parsed?.result || {};
+        const verified = result.verified === true ? '已回读确认' : '已保存，但回读范围与预期不一致，请打开文件核对';
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `已删除工作表「${result.sheet}」的 ${result.deletedRange} 列，共 ${result.deletedColumns} 列；` +
+              `删除前范围 ${result.beforeRange}，删除后 ${result.afterRange}（${verified}）。`,
+          }],
+        };
+      }
       const r = await runPythonScript(script, ['write', '--path', p, '--json-file', tmpJson, '--mode', mode], { timeout: 60000 });
       if (r.exitCode !== 0) return toolError(`写入失败：${(r.stderr || r.stdout || '').slice(0, 400)}`);
       const parsed = lastJsonLine(r.stdout);

@@ -1814,9 +1814,72 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
           return st.strikes;
         }, failed.length > 0).catch(() => 0);
         const degraded = strikes >= 2;
+        let submitResult: Record<string, unknown> | undefined;
+        if (args.submit) {
+          if (failed.length > 0) {
+            submitResult = {
+              submitted: false,
+              error: '存在未填写成功的字段，已阻止提交',
+            };
+          } else {
+            try {
+              const submitSpec = args.submit;
+              const explicitSelector = typeof submitSpec === 'object' && submitSpec
+                ? String((submitSpec as any).selector || '').trim()
+                : '';
+              let via = '';
+              if (explicitSelector) {
+                const submitLocator = page.locator(toPw(explicitSelector)).first();
+                await submitLocator.scrollIntoViewIfNeeded().catch(() => {});
+                await submitLocator.click();
+                via = 'click';
+              } else {
+                const submitButton = page.locator(
+                  'button[type="submit"], input[type="submit"], button:has-text("登录"), button:has-text("登 录"), button:has-text("立即登录"), button:has-text("Sign in"), button:has-text("Log in")',
+                ).first();
+                if (await submitButton.count().catch(() => 0) > 0) {
+                  await submitButton.scrollIntoViewIfNeeded().catch(() => {});
+                  await submitButton.click();
+                  via = 'click';
+                } else {
+                  const lastField = fields.length > 0 ? String(fields[fields.length - 1]?.selector || '') : '';
+                  const submittedByForm = lastField
+                    ? await page.locator(toPw(lastField)).first().evaluate((el: any) => {
+                      const form = el?.form || el?.closest?.('form');
+                      if (!form) return false;
+                      if (typeof form.requestSubmit === 'function') {
+                        form.requestSubmit();
+                        return true;
+                      }
+                      if (typeof form.submit === 'function') {
+                        form.submit();
+                        return true;
+                      }
+                      return false;
+                    }).catch(() => false)
+                    : false;
+                  if (submittedByForm) {
+                    via = 'requestSubmit';
+                  } else {
+                    await page.keyboard.press('Enter');
+                    via = 'enter';
+                  }
+                }
+              }
+              await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+              await page.waitForTimeout(600).catch(() => {});
+              submitResult = { submitted: true, via, url: page.url() };
+            } catch (e: any) {
+              submitResult = {
+                submitted: false,
+                error: String(e?.message || e || '提交失败').slice(0, 200),
+              };
+            }
+          }
+        }
         result = {
           filled: filled.length, fields: filled, failed, deferred, skipped, state,
-          degraded,
+          degraded, submit: submitResult,
           degradeNote: degraded
             ? '批量填表在本页已连续 2 次出现字段失败，已降级：改用 click / type 单步操作，或先 get_page_content 重新获取元素编号后再试一次；不要用同一批参数重复调用 fill_form。'
             : undefined,
@@ -3657,7 +3720,7 @@ router.post('/passwords/:id/reveal', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/browser/passwords/:id/fill —— 用已存凭证自动填充当前页登录表单（不提交）
+// POST /api/browser/passwords/:id/fill —— 用已存凭证填充当前页登录表单；submit=true 时同一次请求完成提交
 router.post('/passwords/:id/fill', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const row = db.prepare('SELECT username, password_enc, form_meta_json FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
@@ -3671,8 +3734,29 @@ router.post('/passwords/:id/fill', withBrowserLock(async (req: Request, res: Res
       await page.locator(fields.userSelector).first().fill(row.username).catch(() => {});
     }
     await page.locator(fields.passwordSelector).first().fill(password);
+    const submit = req.body?.submit === true;
+    if (submit) {
+      if (fields.submitSelector) {
+        await page.locator(fields.submitSelector).first().click().catch(() => {});
+      } else {
+        await page.keyboard.press('Enter');
+      }
+      await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1200).catch(() => {});
+    }
     lastActivityAt = Date.now();
-    res.json({ data: { filled: true, submitted: false } });
+    const stillHasPwd = submit
+      ? await page.locator('input[type="password"]').count().catch(() => 0)
+      : undefined;
+    res.json({
+      data: {
+        filled: true,
+        submitted: submit,
+        loggedIn: submit ? stillHasPwd === 0 : undefined,
+        url: page.url(),
+        title: await page.title().catch(() => ''),
+      },
+    });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '填充失败' });
   }

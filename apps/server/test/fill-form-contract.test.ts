@@ -28,6 +28,7 @@ const read = (p: string) => readFileSync(resolve(REPO, p), 'utf8');
 const MAIN = read('apps/desktop/main.cjs');
 const BROWSER = read('apps/server/src/routes/browser.ts');
 const TOOL = read('packages/core/src/tool/builtin/browser/index.ts');
+const SHARED_PROMPT = read('packages/shared/src/page-agent.ts');
 
 /** 取 `case 'fill_form': {` 到下一个 `case '` 的片段 */
 function fillFormBody(src: string, indent = "      case '"): string {
@@ -215,5 +216,26 @@ describe('⑥ 熔断（2026-10-24）：同页连续 2 次真失败 → 回执降
     const okIdx = TOOL.indexOf('return ok(', from);
     expect(okIdx, '★ 锚点缺失：fill_form 的成功回执').toBeGreaterThan(from);
     expect(TOOL.slice(okIdx, okIdx + 400), '★ 成功回执里没有降级提示').toMatch(/degradeNote/);
+  });
+});
+
+describe('⑦ 登录一次完成：fill_form 必须真正处理 submit', () => {
+  it('★★★ 服务端 fill_form 不能再丢弃 submit 参数', () => {
+    const body = code(fillFormBody(BROWSER));
+    expect(body, '★ 服务端未处理 args.submit → 只填账号密码、不点登录').toMatch(/if\s*\(\s*args\.submit\s*\)/);
+    expect(body, '★ 服务端提交结果未回传给工具层').toMatch(/submit\s*:\s*submitResult/);
+    expect(body, '★ 服务端缺少登录按钮定位').toMatch(/button:has-text\("登录"\)/);
+  });
+
+  it('★★★ pageAgent 提示词不得再要求“只填不提交”', () => {
+    expect(SHARED_PROMPT, '★ pageAgent 未要求登录表单 submit:true').toContain('submit:true');
+    expect(SHARED_PROMPT, '★ pageAgent 仍写死账号密码必须用户接管').not.toContain('用户账号密码必须由用户在浏览器面板接管');
+  });
+
+  it('★★★ 密码管理“登录”按钮走一条完成填写+提交的链路', () => {
+    const panel = read('packages/ui/src/components/BrowserPanel.vue');
+    expect(panel, '★ 密码管理未显式请求提交').toMatch(/callPwdApi\(`\/passwords\/\$\{p\.id\}\/fill`,\s*'POST',\s*\{\s*submit:\s*true\s*\}/);
+    expect(panel, '★ 按钮文案仍是“填充”').not.toMatch(/>填充<\/el-button>/);
+    expect(BROWSER, '★ /passwords/:id/fill 未处理 submit').toMatch(/req\.body\?\.submit\s*===\s*true/);
   });
 });

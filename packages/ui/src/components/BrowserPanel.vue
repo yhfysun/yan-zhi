@@ -557,7 +557,7 @@
         </div>
         <div class="pwd-actions">
           <el-button size="small" text @click="revealPassword(p)">查看</el-button>
-          <el-button size="small" text @click="fillPassword(p)">填充</el-button>
+          <el-button size="small" text @click="loginWithPassword(p)">登录</el-button>
           <el-button size="small" text @click="openPasswordEditor(p)">编辑</el-button>
           <el-button size="small" text type="danger" @click="deletePassword(p)">删除</el-button>
         </div>
@@ -3049,13 +3049,14 @@ async function revealPassword(p: SavedPassword) {
   }
 }
 
-async function fillPassword(p: SavedPassword) {
+async function loginWithPassword(p: SavedPassword) {
   if (!currentUrl.value) { ElMessage.warning('请先在浏览器打开目标登录页'); return; }
   try {
-    await callPwdApi(`/passwords/${p.id}/fill`, 'POST');
-    ElMessage.success('已填充，请确认后提交');
+    const data = await callPwdApi(`/passwords/${p.id}/fill`, 'POST', { submit: true }) as any;
+    if (data?.loggedIn) ElMessage.success('已登录');
+    else ElMessage.warning('已提交登录，但页面仍检测到登录表单，请检查账号或验证码');
   } catch (e: any) {
-    ElMessage.error(e?.message || '填充失败');
+    ElMessage.error(e?.message || '登录失败');
   }
 }
 

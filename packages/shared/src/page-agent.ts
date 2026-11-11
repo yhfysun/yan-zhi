@@ -93,7 +93,7 @@ export const BROWSER_DELEGATION_PROMPT = `【网页登录与页面操作 · 委�
 - 委派输入必须自包含：写清目标 URL、账号/登录态、要填的字段或要点的按钮、成功判据，以及遇到扫码/验证码/滑块时先 ask_user。
 - 只读权限不等于浏览器不可用：pageAgent 可直接导航、读页、截图、等待；点击/输入/填表/提交首次会弹授权卡。正常发起一次，不要提前判定“登录页进不去”。
 - 首次打开预览面板可能较慢：同一 URL 只导航一次；返回“页面未就绪”时让 pageAgent 用 browser_get_tabs / browser_wait_for / browser_get_page_content 等待，不要反复重开标签页。
-- 二维码、滑块、短信验证码、二次验证和用户账号密码必须由用户在浏览器面板接管；pageAgent 不代填验证码。
+- 用户已明确提供账号密码时，pageAgent 可以填入并提交；二维码、滑块、短信验证码和二次验证仍由用户在浏览器面板接管。
 - 页面任务结束后验收 pageAgent 的证据：URL 变化、成功提示、页面状态或返回数据；不要仅凭“已点击”宣称完成。
 - 不要告诉用户 pageAgent 只有六件套；它持有完整浏览器工具面。也不要自己拼旧工具名或另写浏览器流程。`;
 
@@ -108,7 +108,7 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 2. pageAgent 在本次委派内单独 task_plan，把浏览器工作拆成下载、校验、上传、回读等可验收子任务；该计划只属于本次 call_agent，不覆盖外层计划。
 3. browser_navigate 打开目标站点。首次打开预览面板可能较慢；同一 URL 只导航一次。
 4. browser_wait_for 或 browser_get_page_content 等待并读取页面，拿正文、表单状态、可交互元素编号与稳定 selector。
-5. 两点及以上字段优先一次 browser_fill_form；提交用 browser_submit_form 或点击明确的提交按钮。
+5. 两点及以上字段优先一次 browser_fill_form；登录表单必须带 submit:true（或 submit 指向登录按钮），填写与点击登录一次完成。
 6. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
 7. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
    若点击后 pageChanged=false 或回执没有 downloaded，不要重复点同一入口；先查询最近下载，文件可能仍在生成。
@@ -137,7 +137,7 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 
 ## 登录与权限
 - 只读权限可直接导航、读页、截图、等待；点击/输入/填表/提交首次会请求用户授权，这是正常流程，不是浏览器不可用。
-- 扫码、短信验证码、滑块、二次验证和用户账号密码由用户在浏览器面板接管；pageAgent 负责打开页面、等待并复核登录结果。
+- 用户已提供账号密码时由 pageAgent 填入并提交；扫码、短信验证码、滑块和二次验证由用户在浏览器面板接管。
 - 同一工具加相同参数连续两次无变化就停止重试，重新读取页面或换定位方式。
 
 ## 示例
@@ -159,11 +159,11 @@ export const WEB_PAGE_OPERATION_BODY = `# 网页登录与页面操作
 ## 非标准登录页流程
 1. browser_navigate 打开登录页，browser_wait_for 或 browser_get_page_content 等待表单出现。
 2. 识别登录方式：账号密码、二维码、短信、第三方 OAuth、企业 SSO、iframe/Shadow DOM。
-3. 原生输入框：两点及以上字段用一次 browser_fill_form；受控输入失败时改为 click + type，并回读字段值。
+3. 原生输入框：两点及以上字段用一次 browser_fill_form，并传 submit:true（或 submit 指向登录按钮），填写与提交一次完成；受控输入失败时改为 click + type，并回读字段值。
 4. 自定义下拉/组件库控件：先 click 展开，再 browser_get_page_content 找选项 index，click 选中；不要对 role=combobox 的伪控件调用原生 select 工具。
 5. 勾选、单选、协议确认并进同一批 fill_form；折叠在抽屉或弹窗里的字段先滚动到可见区域。
 6. 点击登录后等待 URL 变化、用户头像、工作台入口或成功提示；只出现“已点击”不算登录成功。
-7. 二维码、短信验证码、滑块、二次验证、支付和密码输入由用户完成；pageAgent 只打开页面、等待、复核，不代填验证码。
+7. 用户已提供密码时可代填并点击登录；二维码、短信验证码、滑块、二次验证和支付由用户完成，pageAgent 不代填验证码。
 
 ## 非标准表单流程
 - 普通控件优先一次 browser_fill_form，之后按返回的 state 回读核验。
