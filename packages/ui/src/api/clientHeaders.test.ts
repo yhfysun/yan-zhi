@@ -9,7 +9,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { buildRequestHeaders, getLicenseCode } from '../api/client';
+import { buildRequestHeaders, getLicenseCode, withMediaAuthQuery } from '../api/client';
 
 const AUTH_KEY = 'auth_token';
 const LICENSE_KEY = 'license_code';
@@ -85,5 +85,27 @@ describe('getLicenseCode · 读取授权码', () => {
 
   it('未设置时返回 null', () => {
     expect(getLicenseCode()).toBeNull();
+  });
+});
+
+describe('withMediaAuthQuery · 媒体直连鉴权', () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it('无鉴权信息时保持 URL 不变', () => {
+    expect(withMediaAuthQuery('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp'))
+      .toBe('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp');
+  });
+
+  it('有 token 时用 ? 追加查询参数', () => {
+    localStorage.setItem(AUTH_KEY, 'jwt-abc');
+    expect(withMediaAuthQuery('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp'))
+      .toBe('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp?token=jwt-abc');
+  });
+
+  it('URL 已有查询参数时用 & 续接', () => {
+    localStorage.setItem(AUTH_KEY, 'jwt-abc');
+    expect(withMediaAuthQuery('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp?v=2'))
+      .toBe('http://127.0.0.1:3001/api/plugin-assets/skin-a/wallpaper.webp?v=2&token=jwt-abc');
   });
 });

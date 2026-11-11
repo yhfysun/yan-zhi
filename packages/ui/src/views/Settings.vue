@@ -1006,7 +1006,7 @@ function toggleThemeQuick() {
   settingsStore.update({ darkMode: next });
 }
 import type { ThemeName } from '../stores/settings';
-import { api, API_BASE, buildRequestHeaders, isCapacitor, isElectron, getMobileApiBase, setMobileApiBase } from '../api/client';
+import { api, API_BASE, buildRequestHeaders, isCapacitor, isElectron, getMobileApiBase, setMobileApiBase, withMediaAuthQuery } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
@@ -1200,7 +1200,7 @@ function skinsByCategory(cat: string): SkinTheme[] {
 }
 function skinPreviewUrl(s: SkinTheme): string {
   const file = s.preview || 'preview.webp';
-  return `${API_BASE}/plugin-assets/${s.pluginId}/${file.replace(/^\.?\//, '')}`;
+  return withMediaAuthQuery(`${API_BASE}/plugin-assets/${s.pluginId}/${file.replace(/^\.?\//, '')}`);
 }
 async function downloadSkinSource(s: SkinTheme) {
   try {

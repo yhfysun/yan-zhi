@@ -151,6 +151,18 @@ export function mediaAuthQuery(): string {
   return parts.length ? '&' + parts.join('&') : '';
 }
 
+/**
+ * 给浏览器直连的媒体 URL 补上鉴权 query。
+ *
+ * `<img>` / CSS background-image / `<video>` 等请求无法带 Authorization 头，
+ * multi 模式下必须走 query 令牌；否则接口数据正常，但图片会全部变成破图。
+ */
+export function withMediaAuthQuery(url: string): string {
+  const query = mediaAuthQuery();
+  if (!query) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}${query.slice(1)}`;
+}
+
 const MOBILE_API_BASE_KEY = 'mobile_api_base';
 
 /** 当前配置的移动端远程后端地址；未配置返回 ''（走 APK 内嵌本地后端） */

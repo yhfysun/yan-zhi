@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import { getPlatformAdapter } from '@yan-zhi/core';
-import { API_BASE } from '../api/client';
+import { API_BASE, withMediaAuthQuery } from '../api/client';
 import { usePluginStore } from './plugin';
 import { BUILTIN_SKIN_SERIES, isBuiltinSkinId, builtinSeriesFor, builtinSeriesPalette } from '../styles/skinSeries';
 
@@ -690,7 +690,7 @@ interface ThemePalette {
 /** 插件包内资源 → /api/plugin-assets/:pluginId/<path> 静态地址（API_BASE 已含 /api 前缀） */
 function pluginAssetUrl(pluginId: string, rel: string): string {
   const clean = rel.replace(/^\.?\//, '');
-  return `${API_BASE}/plugin-assets/${pluginId}/${clean}`;
+  return withMediaAuthQuery(`${API_BASE}/plugin-assets/${pluginId}/${clean}`);
 }
 
 const THEMES: Record<ThemeName, ThemePalette> = {

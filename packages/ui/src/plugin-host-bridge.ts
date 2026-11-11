@@ -16,7 +16,7 @@ import * as pinia from 'pinia';
 import * as elementPlus from 'element-plus';
 import * as elementPlusIcons from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
-import { API_BASE } from './api/client';
+import { API_BASE, withMediaAuthQuery } from './api/client';
 import { HOST_MODULES } from './host-modules';
 
 export const HOST_API_VERSION = 1;
@@ -24,7 +24,7 @@ export const HOST_API_VERSION = 1;
 /** 插件包内资源 → /api/plugin-assets/:pluginId/<path>（web 端装载回退用；与 settings.ts 同口径） */
 export function pluginAssetUrl(pluginId: string, rel: string): string {
   const clean = rel.replace(/^\.?\//, '');
-  return `${API_BASE}/plugin-assets/${pluginId}/${clean}`;
+  return withMediaAuthQuery(`${API_BASE}/plugin-assets/${pluginId}/${clean}`);
 }
 
 export interface YzHostBridge {
