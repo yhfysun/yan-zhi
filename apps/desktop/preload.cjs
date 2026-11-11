@@ -406,6 +406,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listDetailed: (p) => ipcRenderer.invoke('fs:listDetailed', p),
   },
 
+  // 软考学习清单：直接保存到系统下载目录，不弹“另存为”
+  softExam: {
+    saveMaterial: (filename, content) =>
+      ipcRenderer.invoke('learning:save-soft-material', { filename, content }),
+  },
+
   // Keyring
   keyring: {
     set: (key, value) => ipcRenderer.invoke('keyring:set', key, value),

@@ -1,14 +1,20 @@
 // 学习模式 · 历年真题训练题库。
 // 题目和解析只留在服务端，取卷接口不下发 answer/explanation。
 import { db } from '../db.js';
+import { EXTRA_EXAM_PAPERS } from './exam-papers-extra.js';
 
-export type ExamType = '考研' | '高考';
+export type ExamType = '考研' | '高考' | '软考';
 
 export type ExamQuestion = {
   id: string;
   stem: string;
-  options: string[];
-  answer: number;
+  /** 缺省为 choice，兼容已有客观题数据 */
+  kind?: 'choice' | 'practice';
+  options?: string[];
+  answer?: number;
+  language?: string;
+  starterCode?: string;
+  reference?: string;
   explanation: string;
 };
 
@@ -22,19 +28,29 @@ export type ExamPaper = {
   difficulty: string;
   durationMinutes: number;
   tags: string[];
+  /** 软考专用：中级 / 高级；其它考试留空 */
+  examLevel?: '中级' | '高级';
+  /** 软考专用：综合知识 / 上机实操 */
+  examFormat?: '综合知识' | '上机实操';
+  knowledgePoints?: string[];
+  /** 软考专用：具体专业资格 */
+  softSpecialty?: string;
+  /** 拆分后的旧卷保留数据但不再出现在目录中 */
+  hidden?: boolean;
   passage: string;
   /** 听力专项的朗读稿：前端只用于播放，交卷前不在页面展示 */
   listeningScript?: string;
   questions: ExamQuestion[];
 };
 
-export type ExamPaperSummary = Omit<ExamPaper, 'passage' | 'questions' | 'listeningScript'> & {
+export type ExamPaperSummary = Omit<ExamPaper, 'passage' | 'questions' | 'listeningScript' | 'hidden'> & {
   questionCount: number;
   hasListening: boolean;
+  hasPractice: boolean;
 };
 
-export type ExamPaperPublic = Omit<ExamPaper, 'questions'> & {
-  questions: Array<Pick<ExamQuestion, 'id' | 'stem' | 'options'>>;
+export type ExamPaperPublic = Omit<ExamPaper, 'questions' | 'hidden'> & {
+  questions: Array<Pick<ExamQuestion, 'id' | 'stem' | 'kind' | 'options' | 'language' | 'starterCode'>>;
 };
 
 export type ExamSubmitResult = {
@@ -46,9 +62,12 @@ export type ExamSubmitResult = {
   details: Array<{
     questionId: string;
     stem: string;
+    kind: 'choice' | 'practice';
     picked: number | null;
-    answer: number;
-    correct: boolean;
+    pickedText?: string | null;
+    answer: number | null;
+    reference?: string;
+    correct: boolean | null;
     explanation: string;
   }>;
 };
@@ -287,7 +306,7 @@ export const EXAM_PAPERS: ExamPaper[] = [
     title: '2023 高考英语 · 阅读精练',
     examType: '高考',
     year: 2023,
-    region: '新课标 I 卷',
+    region: '全国卷',
     section: '阅读理解',
     difficulty: '中等',
     durationMinutes: 12,
@@ -612,20 +631,70 @@ export const EXAM_PAPERS: ExamPaper[] = [
   },
 ];
 
+EXAM_PAPERS.push(...EXTRA_EXAM_PAPERS);
+
+function mergeListeningPaper(
+  readingId: string,
+  listeningId: string,
+  combinedId: string,
+  title: string,
+) {
+  const reading = EXAM_PAPERS.find((p) => p.id === readingId);
+  const listening = EXAM_PAPERS.find((p) => p.id === listeningId);
+  if (!reading || !listening) return;
+  reading.hidden = true;
+  listening.hidden = true;
+  EXAM_PAPERS.push({
+    ...reading,
+    hidden: false,
+    id: combinedId,
+    title,
+    section: '听力与阅读综合',
+    tags: [...new Set([...reading.tags, '听力', '整套卷'])],
+    listeningScript: listening.listeningScript,
+    questions: [
+      ...listening.questions.map((q, i) => ({ ...q, id: `listen_${i + 1}` })),
+      ...reading.questions.map((q, i) => ({ ...q, id: `read_${i + 1}` })),
+    ],
+  });
+}
+
+mergeListeningPaper(
+  'exam_kaoyan_2024_r1',
+  'exam_kaoyan_2024_retest_listening',
+  'exam_kaoyan_2024_complete',
+  '2024 考研英语（一）· 听力与阅读综合卷',
+);
+mergeListeningPaper(
+  'exam_gaokao_2024_r1',
+  'exam_gaokao_2024_listening',
+  'exam_gaokao_2024_complete',
+  '2024 高考英语 · 全国卷听力与阅读综合卷',
+);
+
 function publicPaper(paper: ExamPaper): ExamPaperPublic {
+  const { hidden: _hidden, ...visible } = paper;
   return {
-    ...paper,
-    questions: paper.questions.map(({ id, stem, options }) => ({ id, stem, options: [...options] })),
+    ...visible,
+    questions: paper.questions.map(({ id, stem, kind, options, language, starterCode }) => ({
+      id,
+      stem,
+      ...(kind ? { kind } : {}),
+      ...(options ? { options: [...options] } : {}),
+      ...(language ? { language } : {}),
+      ...(starterCode ? { starterCode } : {}),
+    })),
   };
 }
 
 export function listExamPapers(type?: ExamType): ExamPaperSummary[] {
   return EXAM_PAPERS
-    .filter((p) => !type || p.examType === type)
-    .map(({ passage: _passage, listeningScript: _listeningScript, questions, ...meta }) => ({
+    .filter((p) => !p.hidden && (!type || p.examType === type))
+    .map(({ passage: _passage, listeningScript: _listeningScript, hidden: _hidden, questions, ...meta }) => ({
       ...meta,
       questionCount: questions.length,
       hasListening: !!_listeningScript,
+      hasPractice: questions.some((q) => q.kind === 'practice'),
     }));
 }
 
@@ -634,22 +703,35 @@ export function getExamPaper(id: string): ExamPaperPublic | null {
   return paper ? publicPaper(paper) : null;
 }
 
-export function submitExamPaper(userId: string, id: string, answers: Record<string, number>): ExamSubmitResult {
+export function submitExamPaper(
+  userId: string,
+  id: string,
+  answers: Record<string, number>,
+  texts: Record<string, string> = {},
+): ExamSubmitResult {
   const paper = EXAM_PAPERS.find((p) => p.id === id);
   if (!paper) throw new Error('真题不存在');
-  const details = paper.questions.map((q) => {
-    const picked = Number.isInteger(answers[q.id]) ? answers[q.id] : null;
+  const details: ExamSubmitResult['details'] = paper.questions.map((q) => {
+    const kind = q.kind === 'practice' ? 'practice' : 'choice';
+    const picked = kind === 'choice' && Number.isInteger(answers[q.id]) ? answers[q.id] : null;
+    const pickedText = kind === 'practice' ? String(texts[q.id] || '') : null;
+    const correct = kind === 'practice'
+      ? (pickedText && pickedText.trim() ? null : false)
+      : picked === q.answer;
     return {
       questionId: q.id,
       stem: q.stem,
+      kind,
       picked,
-      answer: q.answer,
-      correct: picked === q.answer,
+      ...(kind === 'practice' ? { pickedText, reference: q.reference || '' } : {}),
+      answer: kind === 'choice' ? q.answer ?? null : null,
+      correct,
       explanation: q.explanation,
     };
   });
-  const correct = details.filter((d) => d.correct).length;
-  const score = Math.round((correct / paper.questions.length) * 100);
+  const objective = details.filter((d) => d.kind === 'choice');
+  const correct = objective.filter((d) => d.correct).length;
+  const score = objective.length ? Math.round((correct / objective.length) * 100) : 0;
   const now = Date.now();
   db.prepare(
     'INSERT INTO learning_session (id, user_id, mode, scene_id, score, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)',

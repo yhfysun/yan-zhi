@@ -1,0 +1,654 @@
+/* Learning-mode theme bridge.
+ *
+ * The learning feature ships its own light-first styles. Keep that feature
+ * surface untouched and remap its colors to the shared theme/skin tokens here.
+ * The extra .app-shell scope wins over Vue scoped component selectors.
+ */
+
+.app-shell .learning-page {
+  --lp-primary: var(--color-primary);
+  --lp-on-primary: var(--skin-btn-text, #fff);
+  --lp-action: color-mix(in srgb, var(--color-primary) 65%, #000);
+  --lp-action-hover: color-mix(in srgb, var(--color-primary) 55%, #000);
+  --lp-surface: var(--glass-bg);
+  --lp-surface-hover: var(--glass-bg-hover);
+  --lp-input-bg: var(--skin-input-bg, var(--color-bg-elevated));
+  --lp-border: var(--glass-border, var(--color-border));
+  --lp-border-strong: var(--color-border-strong);
+  --lp-text: var(--color-text);
+  --lp-text-secondary: var(--color-text-secondary);
+  --lp-text-tertiary: var(--color-text-tertiary);
+  --lp-primary-soft: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg));
+  --lp-primary-soft-hover: color-mix(in srgb, var(--color-primary) 20%, var(--glass-bg));
+  --lp-success-soft: color-mix(in srgb, var(--color-success) 13%, var(--glass-bg));
+  --lp-warning-soft: color-mix(in srgb, var(--color-warning) 14%, var(--glass-bg));
+  --lp-danger-soft: color-mix(in srgb, var(--color-danger) 13%, var(--glass-bg));
+  color: var(--lp-text);
+  color-scheme: light;
+}
+
+[data-theme="dark"] .app-shell .learning-page {
+  color-scheme: dark;
+}
+
+html body .app-shell .main-content .learning-page,
+html body .app-shell .learning-page :is(
+  .lp-card,
+  .lp-exam,
+  .sec-workbench,
+  .learn-stage
+) {
+  color: var(--lp-text);
+}
+
+/* Form controls and native selectors */
+.app-shell .learning-page :is(
+  .lp-input,
+  .lp-chat-entry,
+  .lp-subject-select select,
+  .lp-create input,
+  .lp-create textarea,
+  .lp-soft-plan-form input,
+  .lp-soft-plan-form select,
+  .lp-scene-filter select,
+  .lp-reading-topic select,
+  .lp-exam-soft-row select,
+  .lp-exam-rate select
+) {
+  border-color: var(--lp-border-strong);
+  background-color: var(--lp-input-bg);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page :is(input, textarea)::placeholder {
+  color: var(--lp-text-tertiary);
+  opacity: 1;
+}
+
+.app-shell .learning-page .lp-subject-select select:focus,
+.app-shell .learning-page .lp-input:focus,
+.app-shell .learning-page .lp-chat-entry:focus {
+  outline-color: color-mix(in srgb, var(--lp-primary) 45%, transparent);
+}
+
+/* Page surfaces */
+.app-shell .learning-page :is(
+  .lp-card,
+  .lp-scene,
+  .lp-grammar-row,
+  .lp-reading-card,
+  .lp-reading-levels button,
+  .lp-reader-collect,
+  .lp-soft-notices button,
+  .lp-reader-badges span,
+  .lp-soft-knowledge-chapters span,
+  .lp-exam-card,
+  .lp-exam-passage,
+  .lp-exam-question,
+  .lp-exam-listening-panel,
+  .lp-opt,
+  .sec-hero,
+  .sec-topics span,
+  .sec-risk-grid section
+) {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page :is(
+  .lp-course,
+  .lp-book,
+  .lp-level,
+  .lp-mini,
+  .lp-tool-button,
+  .lp-collapse-btn,
+  .lp-expand-rail,
+  .lp-side-toggle,
+  .lp-soft-book,
+  .lp-chip,
+  .lp-exam-soft-row button
+) {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page :is(
+  .lp-course:hover,
+  .lp-book:hover,
+  .lp-level:hover,
+  .lp-scene:hover,
+  .lp-reading-card:hover,
+  .lp-tool-button:hover,
+  .lp-collapse-btn:hover,
+  .lp-expand-rail:hover,
+  .lp-side-toggle:hover,
+  .lp-soft-book:hover,
+  .lp-reader-collect:hover,
+  .lp-soft-notices button:hover,
+  .lp-reading-levels button:hover
+) {
+  border-color: var(--lp-primary);
+  background-color: var(--lp-surface-hover);
+}
+
+.app-shell .learning-page :is(
+  .lp-tool-button:hover,
+  .lp-collapse-btn:hover,
+  .lp-expand-rail:hover,
+  .lp-side-toggle:hover,
+  .lp-soft-book:hover,
+  .lp-reader-collect:hover
+) {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .lp-mini {
+  background-color: var(--btn-bg);
+  border-color: var(--btn-border);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page .lp-mini:hover {
+  background-color: var(--btn-bg-hover);
+  border-color: var(--lp-primary);
+  color: var(--lp-primary);
+}
+
+/* Accent controls */
+.app-shell .learning-page :is(
+  .lp-primary,
+  .lp-coach-start,
+  .lp-talk-button,
+  .lp-scene-action,
+  .lp-exam-play
+) {
+  border-color: var(--lp-action);
+  background-color: var(--lp-action);
+  color: var(--lp-on-primary);
+}
+
+.app-shell .learning-page :is(
+  .lp-primary:hover,
+  .lp-coach-start:hover,
+  .lp-talk-button:hover,
+  .lp-scene-action:hover,
+  .lp-exam-play:hover
+) {
+  border-color: var(--lp-action-hover);
+  background-color: var(--lp-action-hover);
+}
+
+.app-shell .learning-page .lp-talk-button {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--lp-action) 28%, transparent);
+}
+
+.app-shell .learning-page .lp-mic-button {
+  border-color: color-mix(in srgb, var(--lp-primary) 38%, var(--lp-border));
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page :is(.lp-primary.rec, .lp-talk-button.recording, .lp-mic-button.recording, .lp-stop) {
+  border-color: var(--color-danger);
+  background-color: var(--color-danger);
+  color: #fff;
+}
+
+/* Tabs, chips and selected rows */
+.app-shell .learning-page .lp-tab {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page .lp-tab.active,
+.app-shell .learning-page .lp-reading-levels button.active,
+.app-shell .learning-page .lp-dot.done,
+.app-shell .learning-page .lp-exam-soft-row button.active {
+  border-color: var(--lp-action);
+  background-color: var(--lp-action);
+  color: var(--lp-on-primary);
+}
+
+.app-shell .learning-page :is(
+  .lp-course.active,
+  .lp-book.active,
+  .lp-course-exam.active,
+  .lp-course-security.active,
+  .lp-reading-card.active
+) {
+  border-color: var(--lp-primary);
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page :is(
+  .lp-chip.active,
+  .lp-opt.picked,
+  .lp-soft-side-tabs button.active
+) {
+  border-color: var(--lp-primary);
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page :is(.lp-course-exam.active, .lp-course-security.active) {
+  box-shadow: inset 3px 0 0 var(--lp-primary);
+}
+
+.app-shell .learning-page .lp-soft-side-tabs {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface-hover);
+}
+
+.app-shell .learning-page .lp-soft-side-tabs button {
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page .lp-soft-side-tabs button.active {
+  background-color: var(--lp-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Status and semantic surfaces */
+.app-shell .learning-page :is(.lp-course.done, .lp-level.cleared) {
+  border-color: color-mix(in srgb, var(--color-success) 48%, var(--lp-border));
+  background-color: var(--lp-success-soft);
+  color: var(--lp-text);
+}
+
+.app-shell .learning-page :is(.lp-level.due, .lp-dot.draft) {
+  border-color: color-mix(in srgb, var(--color-warning) 60%, var(--lp-border));
+  background-color: var(--lp-warning-soft);
+  color: var(--color-warning);
+}
+
+.app-shell .learning-page :is(
+  .lp-focus-input.correct,
+  .lp-opt.correct,
+  .lp-answer-feedback,
+  .lp-exam-review,
+  .lp-pron-w
+) {
+  border-color: color-mix(in srgb, var(--color-success) 52%, var(--lp-border));
+  background-color: var(--lp-success-soft);
+  color: var(--color-success);
+}
+
+.app-shell .learning-page :is(
+  .lp-focus-input.wrong,
+  .lp-opt.wrong,
+  .lp-answer-feedback.wrong,
+  .lp-exam-review.wrong,
+  .lp-scene-result-error,
+  .lp-pron-w.wrong,
+  .lp-tool-button.danger
+) {
+  border-color: color-mix(in srgb, var(--color-danger) 52%, var(--lp-border));
+  background-color: var(--lp-danger-soft);
+  color: var(--color-danger);
+}
+
+.app-shell .learning-page :is(
+  .lp-exam-question.practice,
+  .lp-exam-review.practice,
+  .lp-exam-starter
+) {
+  border-color: color-mix(in srgb, var(--color-warning) 48%, var(--lp-border));
+  background-color: var(--lp-warning-soft);
+}
+
+/* Learning accents */
+.app-shell .learning-page :is(
+  .lp-course-pct,
+  .lp-eyebrow,
+  .lp-kind,
+  .lp-score-live,
+  .lp-guide-who,
+  .lp-scene-lines span,
+  .lp-pet-speech-head,
+  .lp-soft-course-state,
+  .lp-soft-course-level,
+  .lp-soft-material-range,
+  .lp-soft-notices span,
+  .lp-soft-study-plan article > span,
+  .lp-soft-knowledge-domain h3 span,
+  .lp-soft-book > span,
+  .lp-security-course-state,
+  .lp-security-course-level,
+  .lp-reader-head > svg,
+  .lp-exam-timer,
+  .lp-exam-score,
+  .lp-exam-points,
+  .lp-exam-listening-review summary,
+  .lp-exam-type,
+  .lp-exam-soft-level,
+  .lp-exam-listening-badge
+) {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page :is(
+  .lp-kind,
+  .lp-score-live,
+  .lp-soft-material-range,
+  .lp-soft-course-level,
+  .lp-soft-material-badges span,
+  .lp-security-course-level,
+  .lp-exam-listening-badge,
+  .lp-exam-soft-level,
+  .sec-tag
+) {
+  border-color: color-mix(in srgb, var(--lp-primary) 35%, var(--lp-border));
+  background-color: var(--lp-primary-soft);
+}
+
+.app-shell .learning-page .lp-course-fill {
+  background: linear-gradient(
+    90deg,
+    var(--lp-primary),
+    color-mix(in srgb, var(--lp-primary) 58%, #fff)
+  );
+}
+
+.app-shell .learning-page .lp-column-resizer:hover::after,
+.app-shell .learning-page .lp-column-resizer:active::after {
+  background-color: var(--lp-primary);
+}
+
+/* Text hierarchy */
+.app-shell .learning-page :is(
+  .lp-hint,
+  .lp-course-meta,
+  .lp-book-meta,
+  .lp-words,
+  .lp-wt-pho,
+  .lp-pager,
+  .lp-drill-count,
+  .lp-focus-kind,
+  .lp-focus-hint,
+  .lp-focus-pho,
+  .lp-scene-theme,
+  .lp-scene-facts,
+  .lp-scene-exit,
+  .lp-side-meta,
+  .lp-soft-live-time,
+  .lp-exam-sub,
+  .lp-exam-meta,
+  .lp-exam-tags,
+  .lp-exam-soft-specialty,
+  .lp-exam-year,
+  .lp-exam-card-foot,
+  .lp-exam-explanation,
+  .lp-exam-practice-meta i,
+  .lp-exam-score span
+) {
+  color: var(--lp-text-tertiary);
+}
+
+.app-shell .learning-page .lp-stage-name {
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page :is(
+  .lp-scene-desc,
+  .lp-scene-role,
+  .lp-scene-missions,
+  .lp-drill-title,
+  .lp-focus-kind b,
+  .lp-mic-status,
+  .lp-scene-compact-roles,
+  .lp-guide-line small,
+  .lp-exam-soft-row,
+  .lp-exam-listening-panel p,
+  .lp-exam-passage p,
+  .lp-exam-answer-line
+) {
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page :is(
+  .lp-book,
+  .lp-level,
+  .lp-course,
+  .lp-levels-title,
+  .lp-scene-head h3,
+  .lp-scene-title,
+  .lp-scene-lines p,
+  .lp-scene-compact-roles b,
+  .lp-user-echo p,
+  .lp-grammar-row,
+  .lp-grammar-detail h3,
+  .lp-exam,
+  .lp-exam-card h4,
+  .lp-exam-passage h4,
+  .lp-exam-question h4
+) {
+  color: var(--lp-text);
+}
+
+/* Dividers */
+.app-shell .learning-page :is(
+  .lp-create,
+  .lp-custom-books,
+  .lp-wt-row,
+  .lp-result li,
+  .lp-errors li,
+  .lp-g-ex li,
+  .lp-g-pairs li,
+  .lp-scene-missions,
+  .lp-scene-foot,
+  .lp-grammar-item,
+  .lp-grammar-detail,
+  .lp-exam-runner-head,
+  .lp-exam-result-head
+) {
+  border-color: var(--lp-border);
+}
+
+/* Learning-specific panels that used white or blue-tinted backgrounds */
+.app-shell .learning-page :is(
+  .lp-scene-compact,
+  .lp-live-scene,
+  .lp-pet-stage,
+  .lp-pet-speech,
+  .lp-guide-line,
+  .lp-guide-line.coach,
+  .lp-guide-hidden,
+  .lp-transcript,
+  .lp-soft-countdown,
+  .lp-soft-material,
+  .lp-soft-official-books,
+  .lp-exam-soft-filters,
+  .lp-exam-listening-panel,
+  .lp-exam-listening-review,
+  .sec-lab
+) {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+  background-image: none;
+}
+
+.app-shell .learning-page .lp-scene-compact {
+  border-left-color: var(--lp-primary);
+  background-color: var(--lp-primary-soft);
+}
+
+.app-shell .learning-page .lp-pet-speech::after {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page .lp-user-echo {
+  border-color: color-mix(in srgb, var(--color-success) 45%, var(--lp-border));
+  background-color: var(--lp-success-soft);
+}
+
+.app-shell .learning-page .lp-user-echo span,
+.app-shell .learning-page .lp-g-pairs .right,
+.app-shell .learning-page .lp-pron-score b.good,
+.app-shell .learning-page .lp-result.pass {
+  color: var(--color-success);
+}
+
+.app-shell .learning-page :is(.lp-g-pairs .wrong, .lp-result li.wrong, .lp-pron-score b.mid) {
+  color: var(--color-danger);
+}
+
+.app-shell .learning-page .lp-mic-status.recording {
+  color: var(--color-danger);
+}
+
+.app-shell .learning-page :is(.lp-mic-status.transcribing, .lp-mic-status.requesting) {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .lp-mic-radar i {
+  background-color: var(--color-danger);
+}
+
+/* Reading */
+.app-shell .learning-page .lp-reading-library {
+  border-color: var(--lp-border);
+}
+
+.app-shell .learning-page .lp-reading-difficulty.level-简单 {
+  color: var(--color-success);
+  background-color: var(--lp-success-soft);
+}
+
+.app-shell .learning-page .lp-reading-difficulty.level-中级 {
+  color: var(--lp-primary);
+  background-color: var(--lp-primary-soft);
+}
+
+.app-shell .learning-page .lp-reading-difficulty.level-困难 {
+  color: var(--color-warning);
+  background-color: var(--lp-warning-soft);
+}
+
+.app-shell .learning-page .lp-para-actions .lp-speak:hover {
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+/* Avatar stage */
+.app-shell .learning-page .learn-stage:not(.compact) {
+  border-color: var(--lp-border);
+  background: color-mix(in srgb, var(--lp-surface) 86%, var(--color-bg));
+}
+
+/* Exam card type labels share the selected palette instead of three fixed hues */
+.app-shell .learning-page :is(
+  .lp-exam-type.postgrad,
+  .lp-exam-type.gaokao,
+  .lp-exam-type.ruankao
+) {
+  border-color: color-mix(in srgb, var(--lp-primary) 35%, var(--lp-border));
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page :is(.lp-exam-practice-badge, .lp-exam-practice-meta) {
+  color: var(--color-warning);
+}
+
+.app-shell .learning-page .lp-exam-practice-badge {
+  border-color: color-mix(in srgb, var(--color-warning) 40%, var(--lp-border));
+  background-color: var(--lp-warning-soft);
+}
+
+.app-shell .learning-page .lp-exam-submit {
+  border-color: var(--lp-border);
+  background-color: var(--lp-surface);
+  color: var(--lp-text-secondary);
+  box-shadow: 0 -8px 16px color-mix(in srgb, var(--color-bg) 35%, transparent);
+}
+
+.app-shell .learning-page .lp-exam-code,
+.app-shell .learning-page :is(.lp-exam-starter pre, .lp-exam-practice-review pre) {
+  border-color: var(--lp-border-strong);
+  background-color: color-mix(in srgb, var(--color-bg) 88%, #000);
+  color: var(--color-text);
+}
+
+/* Security learning workbench */
+.app-shell .learning-page .sec-eyebrow,
+.app-shell .learning-page .sec-progress-ring b,
+.app-shell .learning-page .sec-next button {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-progress-ring {
+  background: conic-gradient(
+    var(--lp-primary) var(--pct),
+    color-mix(in srgb, var(--lp-primary) 16%, var(--lp-surface)) 0
+  );
+}
+
+.app-shell .learning-page .sec-progress-ring::before {
+  background-color: var(--lp-surface);
+}
+
+.app-shell .learning-page .sec-branch-map button.active,
+.app-shell .learning-page .sec-module.expanded {
+  border-color: var(--lp-primary);
+  background-color: var(--lp-primary-soft);
+}
+
+.app-shell .learning-page .sec-branch-map button.active {
+  box-shadow: inset 3px 0 0 var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-branch-map button.active > span,
+.app-shell .learning-page .sec-branch-map button.active b,
+.app-shell .learning-page .sec-module-check:has(input:checked) {
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-module-check:has(input:checked) {
+  background-color: var(--lp-primary-soft);
+}
+
+.app-shell .learning-page .sec-tag {
+  border-color: color-mix(in srgb, var(--lp-primary) 35%, var(--lp-border));
+  background-color: var(--lp-primary-soft);
+  color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-risk-grid .defense {
+  border-color: var(--lp-primary);
+}
+
+.app-shell .learning-page .sec-risk-grid .attack,
+.app-shell .learning-page .sec-lab {
+  border-color: color-mix(in srgb, var(--color-warning) 58%, var(--lp-border));
+}
+
+.app-shell .learning-page .sec-lab {
+  background-color: var(--lp-warning-soft);
+  color: var(--color-warning);
+}
+
+.app-shell .learning-page .sec-lab > header,
+.app-shell .learning-page .sec-lab > header span,
+.app-shell .learning-page .sec-lab-tools,
+.app-shell .learning-page .sec-lab > p {
+  color: var(--color-warning);
+}
+
+.app-shell .learning-page .sec-lab ol {
+  color: var(--lp-text-secondary);
+}
+
+.app-shell .learning-page .sec-lab-tools span {
+  border-color: color-mix(in srgb, var(--color-warning) 44%, var(--lp-border));
+  background-color: var(--lp-surface);
+  color: var(--color-warning);
+}
+
+.app-shell .learning-page .sec-next button {
+  border-color: color-mix(in srgb, var(--lp-primary) 35%, var(--lp-border));
+  background-color: var(--lp-primary-soft);
+}

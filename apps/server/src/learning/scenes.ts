@@ -11,7 +11,7 @@ export type SceneCard = {
   id: string;
   courseId: string;
   courseName: string;
-  stage: '启蒙' | '初中' | '高中' | '大学' | '出国';
+  stage: '启蒙' | '必背专题' | '初中' | '高中' | '大学' | '出国';
   title: string;
   theme: string;
   scene: string;
@@ -411,7 +411,252 @@ export const SCENE_CARDS: SceneCard[] = [
     exitHint: '找到更精确的检索方式并完成保存',
     tags: ['托福校园场景', '图书馆', '检索'],
   },
+
+  // ── 必背专题 · 动词全本 ────────────────────────────────────────────────
+  {
+    id: 'sc_verbs_routine', courseId: 'course_verbs', courseName: '动词全本', stage: '必背专题',
+    title: '一天动作接力', theme: '高频动作动词', level: '热身', minutes: 9, cefr: 'A1',
+    scene: '陪练用时间线带你复述一天，每一步都要换一个准确的动词，不能只说 do 或 go。',
+    setting: '清晨到夜晚的一日时间线贴在墙上，每个时间点旁边都有一个动作图标。',
+    roles: ['口语教练', '正在复述一天安排的学习者'],
+    missions: ['用 5 个动作动词说清早晨流程', '区分 make 与 do 的搭配', '复述今晚要做的一件事'],
+    keyPhrases: ['I wake up at...', 'I get dressed and have breakfast.', 'I make... / I do...', 'After dinner, I usually...'],
+    exitHint: '连续说出至少六个准确的动作搭配',
+    tags: ['动词搭配', '日常流程', '高频词'],
+  },
+  {
+    id: 'sc_verbs_weekend', courseId: 'course_verbs', courseName: '动词全本', stage: '必背专题',
+    title: '周末复盘', theme: '过去式动词', level: '挑战', minutes: 12, cefr: 'A2',
+    scene: '朋友问你这个周末做了什么，你需要用过去式讲三件事，并说明其中一件为什么没做成。',
+    setting: '周日晚上的咖啡桌旁，手机里还留着周末拍的照片。',
+    roles: ['好奇的朋友', '刚过完周末的你'],
+    missions: ['用过去式讲三件事', '解释一个没完成的计划', '追问朋友的一个周末活动'],
+    keyPhrases: ['I went...', 'I tried to..., but...', 'I did not manage to...', 'What did you do at the weekend?'],
+    exitHint: '完成一次过去式叙事和一次相互追问',
+    tags: ['一般过去时', '不规则动词', '叙事'],
+  },
+  {
+    id: 'sc_verbs_project', courseId: 'course_verbs', courseName: '动词全本', stage: '必背专题',
+    title: '项目分工', theme: '协作动作动词', level: '实战', minutes: 12, cefr: 'B1',
+    scene: '三个人要在一小时内完成展示准备，你必须用清楚的动词分配任务并确认谁负责什么。',
+    setting: '项目室的倒计时已经开始，白板上写着设计、资料、排练三个待办。',
+    roles: ['项目负责人', '负责协调任务的组员'],
+    missions: ['分配三项行动任务', '确认负责人和截止时间', '提出一个替代动作方案'],
+    keyPhrases: ['Could you prepare...?', 'I will handle...', 'Who is going to check...?', 'Let us switch to...'],
+    exitHint: '三项任务都落到明确负责人并复述截止时间',
+    tags: ['动作动词', '项目协作', '指令表达'],
+  },
+
+  // ── 必背专题 · 名词分类 ────────────────────────────────────────────────
+  {
+    id: 'sc_nouns_supermarket', courseId: 'course_nouns', courseName: '名词分类', stage: '必背专题',
+    title: '超市分类采购', theme: '可数与不可数名词', level: '热身', minutes: 9, cefr: 'A1',
+    scene: '你拿着采购清单在超市找东西，需要分清可数名词和不可数名词，并用正确数量表达。',
+    setting: '超市货架分成饮料、蔬果、日用三个区域，购物篮里已经有几样东西。',
+    roles: ['超市导购', '拿着采购清单的顾客'],
+    missions: ['说出三类商品名称', '区分 a bottle of 与 some', '确认清单上的最后一项'],
+    keyPhrases: ['I am looking for...', 'Could I have a bottle of...?', 'We need some...', 'Is this in the right section?'],
+    exitHint: '完成清单并正确使用至少三组数量表达',
+    tags: ['可数名词', '不可数名词', '购物'],
+  },
+  {
+    id: 'sc_nouns_airport', courseId: 'course_nouns', courseName: '名词分类', stage: '必背专题',
+    title: '机场行李清单', theme: '旅行名词', level: '挑战', minutes: 11, cefr: 'A2',
+    scene: '值机前你发现行李超重，需要向工作人员说明物品类别并决定哪些随身携带。',
+    setting: '机场值机柜台，传送带旁放着行李秤和一张禁止托运物品清单。',
+    roles: ['值机工作人员', '行李超重的旅客'],
+    missions: ['说明行李中的三类物品', '询问哪些物品必须随身带', '确认一件物品的正确名称'],
+    keyPhrases: ['There are some... in my bag.', 'Is this allowed in carry-on luggage?', 'I need to keep... with me.', 'What is this item called in English?'],
+    exitHint: '完成物品分类并处理好超重行李',
+    tags: ['旅行名词', '分类表达', '机场'],
+  },
+  {
+    id: 'sc_nouns_academic', courseId: 'course_nouns', courseName: '名词分类', stage: '必背专题',
+    title: '学术名词归类', theme: '学习与研究名词', level: '实战', minutes: 13, cefr: 'B1',
+    scene: '你要把一组学习名词放进“资料、方法、结果”三栏，并向同伴解释分类理由。',
+    setting: '小组讨论桌上摊着论文、问卷和方法卡片，白板分成三列。',
+    roles: ['研究小组成员', '负责整理术语的你'],
+    missions: ['把六个名词分入三栏', '解释两个分类理由', '用准确名词总结研究过程'],
+    keyPhrases: ['This belongs to...', 'The reason is that...', 'It refers to...', 'Our method and result are...'],
+    exitHint: '完成六项分类并清楚说明两类名词差异',
+    tags: ['学术名词', '分类', '解释'],
+  },
+
+  // ── 必背专题 · 动植物分类 ──────────────────────────────────────────────
+  {
+    id: 'sc_nature_zoo', courseId: 'course_nature', courseName: '动植物分类', stage: '必背专题',
+    title: '动物园导览', theme: '动物名称与习性', level: '热身', minutes: 9, cefr: 'A1',
+    scene: '你是动物园小导览员，要带游客认识三种动物，并说出它们生活在哪里、吃什么。',
+    setting: '动物园导览图前，游客拿着贴有动物图片的任务卡。',
+    roles: ['动物园导览员', '第一次来动物园的游客'],
+    missions: ['介绍三种动物名称', '说明一种动物的栖息地', '回答游客的一个追问'],
+    keyPhrases: ['This is a...', 'It lives in...', 'It mainly eats...', 'Do you have any questions?'],
+    exitHint: '完成三种动物介绍并回答一个追问',
+    tags: ['动物词汇', '栖息地', '导览'],
+  },
+  {
+    id: 'sc_nature_garden', courseId: 'course_nature', courseName: '动植物分类', stage: '必背专题',
+    title: '植物园观察', theme: '植物部位与生长', level: '挑战', minutes: 11, cefr: 'A2',
+    scene: '你在植物园做观察记录，需要描述叶、根、种子和花，并比较两种植物的差异。',
+    setting: '温室里有标牌、放大镜和观察记录本，光线从玻璃屋顶落下来。',
+    roles: ['植物园讲解员', '做观察记录的学生'],
+    missions: ['说出四个植物部位', '描述一种植物的生长条件', '比较两种植物的一个差异'],
+    keyPhrases: ['The leaves are...', 'Roots take in...', 'It grows well in...', 'Compared with..., this plant...'],
+    exitHint: '完成四个部位描述和一个植物比较',
+    tags: ['植物词汇', '生长条件', '比较'],
+  },
+  {
+    id: 'sc_nature_documentary', courseId: 'course_nature', courseName: '动植物分类', stage: '必背专题',
+    title: '自然纪录片旁白', theme: '生态与分类', level: '实战', minutes: 13, cefr: 'B1',
+    scene: '你要为一段无声自然影像配英文旁白，既要说出物种名称，也要解释它们与环境的关系。',
+    setting: '剪辑室里播放森林与湿地的无声画面，脚本只写了关键词和分类标签。',
+    roles: ['纪录片导演', '撰写并试读旁白的你'],
+    missions: ['描述画面中的两个物种', '解释一个生态关系', '使用分类词概括场景'],
+    keyPhrases: ['In this scene, we can see...', 'This species depends on...', 'It belongs to the group of...', 'Together they form...'],
+    exitHint: '完成一段连贯旁白并覆盖物种、关系和分类',
+    tags: ['生态词汇', '物种分类', '旁白'],
+  },
+
+  // ── 必背专题 · 时态必背 ────────────────────────────────────────────────
+  {
+    id: 'sc_tenses_routine', courseId: 'course_tenses', courseName: '时态必背', stage: '必背专题',
+    title: '现在习惯 vs 今天动作', theme: '一般现在时 / 现在进行时', level: '热身', minutes: 9, cefr: 'A1',
+    scene: '你需要先说自己平时的习惯，再说今天此刻正在做什么，让两种时态自然对照。',
+    setting: '上午的学习桌前，日历上标着每天安排，旁边是一杯正在冒热气的茶。',
+    roles: ['学习教练', '正在整理日程的学习者'],
+    missions: ['说两个日常习惯', '说两个此刻正在做的动作', '纠正一个第三人称单数错误'],
+    keyPhrases: ['I usually...', 'She often...', 'Right now I am...', 'He is not... at the moment.'],
+    exitHint: '完成习惯与当下动作的对照表达',
+    tags: ['一般现在时', '现在进行时', '第三人称单数'],
+  },
+  {
+    id: 'sc_tenses_trip', courseId: 'course_tenses', courseName: '时态必背', stage: '必背专题',
+    title: '旅行经历复盘', theme: '一般过去时 / 现在完成时', level: '挑战', minutes: 12, cefr: 'A2',
+    scene: '朋友问你旅行经历，你要区分具体某次发生了什么和到目前为止已经去过哪些地方。',
+    setting: '旅行分享会上，桌上有车票、照片和一本盖满印章的护照。',
+    roles: ['旅行分享会主持人', '分享经历的旅行者'],
+    missions: ['用过去式讲一次具体经历', '用现在完成时说总体经历', '回答 have been 与 went 的差别'],
+    keyPhrases: ['Last year I went...', 'I have been to...', 'I have never tried...', 'I went there in..., so I used...'],
+    exitHint: '正确区分一次过去经历和至今累计经历',
+    tags: ['一般过去时', '现在完成时', '旅行'],
+  },
+  {
+    id: 'sc_tenses_plan', courseId: 'course_tenses', courseName: '时态必背', stage: '必背专题',
+    title: '明日计划与已经完成', theme: '将来时 / 现在完成时', level: '实战', minutes: 13, cefr: 'B1',
+    scene: '项目例会要求你说明哪些任务已经完成、哪些明天会做，并解释一个计划变化。',
+    setting: '会议屏幕上是任务看板，已完成、进行中、明天三列颜色不同。',
+    roles: ['项目经理', '汇报进度的组员'],
+    missions: ['说明两项已完成任务', '说明两项明天将做的任务', '解释一次计划变化'],
+    keyPhrases: ['I have already finished...', 'I have not completed... yet.', 'I am going to...', 'The plan changed because...'],
+    exitHint: '清楚区分已完成、未完成和将来计划',
+    tags: ['将来时', '现在完成时', '项目汇报'],
+  },
 ];
+
+type TopicSceneMeta = {
+  courseId: string;
+  courseName: string;
+  theme: string;
+  roles: [string, string];
+  phrases: [string, string, string];
+  coachEn: string;
+  coachZh: string;
+  userEn: string;
+  userPhonetic: string;
+  userZh: string;
+};
+
+const TOPIC_SCENE_META: TopicSceneMeta[] = [
+  {
+    courseId: 'course_objects', courseName: '生活物品', theme: '居家收纳',
+    roles: ['室友', '正在整理房间的你'],
+    phrases: ['Where can I find...?', 'Could you pass me...?', 'It is next to...'],
+    coachEn: 'Where do you usually keep the towels?',
+    coachZh: '你通常把毛巾放在哪里？',
+    userEn: 'I keep the towels in the drawer next to the sink.',
+    userPhonetic: '/aɪ kiːp ðə ˈtaʊəlz ɪn ðə drɔːr nɛkst tə ðə sɪŋk/',
+    userZh: '我把毛巾放在水槽旁边的抽屉里。',
+  },
+  {
+    courseId: 'course_food', courseName: '食物与饮品', theme: '点餐与饮食',
+    roles: ['餐厅服务员', '正在点餐的顾客'],
+    phrases: ['I would like...', 'Does it contain...?', 'Could I have...?'],
+    coachEn: 'What would you like to order?',
+    coachZh: '你想点些什么？',
+    userEn: 'I would like a chicken sandwich and a cup of tea.',
+    userPhonetic: '/aɪ wʊd laɪk ə ˈtʃɪkɪn ˈsænwɪtʃ ænd ə kʌp əv tiː/',
+    userZh: '我想要一个鸡肉三明治和一杯茶。',
+  },
+  {
+    courseId: 'course_body', courseName: '身体与健康', theme: '看诊与健康',
+    roles: ['全科医生', '描述身体不适的病人'],
+    phrases: ['I have a pain in...', 'How long have you felt...?', 'Should I...?'],
+    coachEn: 'What seems to be the problem today?',
+    coachZh: '今天哪里不舒服？',
+    userEn: 'I have a sore throat and a headache.',
+    userPhonetic: '/aɪ hæv ə sɔːr θroʊt ænd ə ˈhɛdeɪk/',
+    userZh: '我喉咙痛，还有点头疼。',
+  },
+  {
+    courseId: 'course_spoken', courseName: '口语高频句', theme: '自然口语回应',
+    roles: ['新同事', '参加午休聊天的你'],
+    phrases: ['What’s up?', 'Sounds good.', 'I’m running late.'],
+    coachEn: 'How is your morning going so far?',
+    coachZh: '你今天上午过得怎么样？',
+    userEn: 'Pretty good, but I’m running late for the next meeting.',
+    userPhonetic: '/ˈprɪti ɡʊd bʌt aɪm ˈrʌnɪŋ leɪt fər ðə nɛkst ˈmiːtɪŋ/',
+    userZh: '挺好的，不过我下一个会议要迟到了。',
+  },
+  {
+    courseId: 'course_idioms', courseName: '英语习语', theme: '地道习语',
+    roles: ['英语口语教练', '练习地道表达的学习者'],
+    phrases: ['It’s a piece of cake.', 'I’m under the weather.', 'Let’s call it a day.'],
+    coachEn: 'How would you describe a task that is very easy?',
+    coachZh: '你会怎样形容一项非常容易的任务？',
+    userEn: 'It’s a piece of cake—I can finish it in ten minutes.',
+    userPhonetic: '/ɪts ə piːs əv keɪk aɪ kæn ˈfɪnɪʃ ɪt ɪn tɛn ˈmɪnɪts/',
+    userZh: '这很容易，我十分钟就能完成。',
+  },
+];
+
+for (const meta of TOPIC_SCENE_META) {
+  const key = meta.courseId.replace(/^course_/, '');
+  SCENE_CARDS.push(
+    {
+      id: `sc_${key}_warm`, courseId: meta.courseId, courseName: meta.courseName, stage: '必背专题',
+      title: `${meta.courseName} · 分类热身`, theme: meta.theme, level: '热身', minutes: 9, cefr: 'A2',
+      scene: `用一组${meta.courseName}常用词完成分类和辨认，先把最容易混淆的词说清楚。`,
+      setting: `一张写着不同${meta.courseName}词汇的任务卡，旁边放着分类框和提示卡。`,
+      roles: meta.roles,
+      missions: ['辨认四组常用词', '说出一个分类理由', '向陪练确认一个容易混淆的词'],
+      keyPhrases: meta.phrases,
+      exitHint: '完成四组辨认并准确解释一组分类',
+      tags: [meta.courseName, '分类', '热身'],
+    },
+    {
+      id: `sc_${key}_scene`, courseId: meta.courseId, courseName: meta.courseName, stage: '必背专题',
+      title: `${meta.courseName} · 情景应用`, theme: meta.theme, level: '挑战', minutes: 12, cefr: 'B1',
+      scene: `把${meta.courseName}词汇放进真实情景，用完整句子完成一次双向往返交流。`,
+      setting: `日常场景中，陪练拿出任务卡，要求你不要只说单词，而要用完整句完成沟通。`,
+      roles: meta.roles,
+      missions: ['用三个目标词说清需求', '追问一个细节', '根据回复调整自己的表达'],
+      keyPhrases: meta.phrases,
+      exitHint: '连续完成三轮完整句交流并正确使用三个目标词',
+      tags: [meta.courseName, '情景对话', '完整句'],
+    },
+    {
+      id: `sc_${key}_native`, courseId: meta.courseId, courseName: meta.courseName, stage: '必背专题',
+      title: `${meta.courseName} · 自然表达`, theme: meta.theme, level: '实战', minutes: 13, cefr: 'B2',
+      scene: `不只把词说对，还要说得自然：练习搭配、语气和地道的收尾方式。`,
+      setting: `陪练模拟母语者语速和追问，要求你解释一个词、替换一个更自然的说法。`,
+      roles: meta.roles,
+      missions: ['解释一个目标表达的语境', '替换一个不自然的说法', '用自然语气完成总结'],
+      keyPhrases: meta.phrases,
+      exitHint: '完成解释、替换和总结，输出能直接用于口语的表达',
+      tags: [meta.courseName, '地道表达', '输出'],
+    },
+  );
+}
 
 export type SceneGuide = {
   /** 模型开场句：用户可以先听，再照着回答 */
@@ -661,7 +906,104 @@ const SCENE_GUIDES: Record<string, SceneGuide> = {
     userPhonetic: '/aɪ æm ˈlʊkɪŋ fər ən ˈɑːrtɪkəl əˈbaʊt səˈsteɪnəbəl ˈsɪti dɪˈzaɪn/',
     userZh: '我在找一篇关于可持续城市设计的文章。',
   },
+  sc_verbs_routine: {
+    coachEn: 'Tell me what you usually do before breakfast.',
+    coachZh: '告诉我你早餐前通常会做什么。',
+    userEn: 'I usually wake up at seven and get dressed before breakfast.',
+    userPhonetic: '/aɪ ˈjuːʒuəli weɪk ʌp æt ˈsevən ænd ɡet drest bɪˈfɔːr ˈbrekfəst/',
+    userZh: '我通常七点起床，早餐前穿好衣服。',
+  },
+  sc_verbs_weekend: {
+    coachEn: 'What did you do last weekend?',
+    coachZh: '你上周末做了什么？',
+    userEn: 'I went hiking with a friend and tried to finish a book.',
+    userPhonetic: '/aɪ went ˈhaɪkɪŋ wɪð ə frend ænd traɪd tə ˈfɪnɪʃ ə bʊk/',
+    userZh: '我和朋友去徒步了，还试着读完一本书。',
+  },
+  sc_verbs_project: {
+    coachEn: 'Could you prepare the slides and check the data?',
+    coachZh: '你能准备幻灯片并核对数据吗？',
+    userEn: 'Sure, I will handle the slides and ask Mia to check the data.',
+    userPhonetic: '/ʃʊr aɪ wɪl ˈhændəl ðə slaɪdz ænd æsk ˈmiːə tə tʃek ðə ˈdeɪtə/',
+    userZh: '可以，我负责幻灯片，并请米娅核对数据。',
+  },
+  sc_nouns_supermarket: {
+    coachEn: 'What are you looking for in this section?',
+    coachZh: '你在这个区域找什么？',
+    userEn: 'I need a bottle of milk and some fresh fruit.',
+    userPhonetic: '/aɪ niːd ə ˈbɑːtəl əv mɪlk ænd sʌm freʃ fruːt/',
+    userZh: '我需要一瓶牛奶和一些新鲜水果。',
+  },
+  sc_nouns_airport: {
+    coachEn: 'What is inside your checked bag?',
+    coachZh: '你的托运行李里有什么？',
+    userEn: 'There are some clothes and a pair of shoes in my bag.',
+    userPhonetic: '/ðer ɑːr sʌm kloʊðz ænd ə per əv ʃuːz ɪn maɪ bæɡ/',
+    userZh: '我的包里有几件衣服和一双鞋。',
+  },
+  sc_nouns_academic: {
+    coachEn: 'Which column does this term belong to?',
+    coachZh: '这个术语应该归到哪一栏？',
+    userEn: 'This term belongs to the method column because it describes how we collect data.',
+    userPhonetic: '/ðɪs tɜːrm bɪˈlɔːŋz tə ðə ˈmeθəd ˈkɑːləm bɪˈkɔːz ɪt dɪˈskraɪbz haʊ wi kəˈlekt ˈdeɪtə/',
+    userZh: '这个术语归在方法栏，因为它描述我们如何收集数据。',
+  },
+  sc_nature_zoo: {
+    coachEn: 'Which animal would you like to introduce first?',
+    coachZh: '你想先介绍哪种动物？',
+    userEn: 'This is a deer. It lives in the forest and mainly eats plants.',
+    userPhonetic: '/ðɪs ɪz ə dɪr ɪt lɪvz ɪn ðə ˈfɔːrɪst ænd ˈmeɪnli iːts plænts/',
+    userZh: '这是一只鹿。它生活在森林里，主要吃植物。',
+  },
+  sc_nature_garden: {
+    coachEn: 'What can you see on this plant?',
+    coachZh: '你在这株植物上能看到什么？',
+    userEn: 'The leaves are green, and the roots take in water from the soil.',
+    userPhonetic: '/ðə liːvz ɑːr ɡriːn ænd ðə ruːts teɪk ɪn ˈwɔːtər frəm ðə sɔɪl/',
+    userZh: '叶子是绿色的，根从土壤里吸收水分。',
+  },
+  sc_nature_documentary: {
+    coachEn: 'What can we see in this scene?',
+    coachZh: '我们在这个画面里能看到什么？',
+    userEn: 'In this scene, we can see a river and several birds near the forest.',
+    userPhonetic: '/ɪn ðɪs siːn wi kæn siː ə ˈrɪvər ænd ˈsevərəl bɜːrdz nɪr ðə ˈfɔːrɪst/',
+    userZh: '在这个画面里，我们可以看到一条河和森林附近的几只鸟。',
+  },
+  sc_tenses_routine: {
+    coachEn: 'What do you usually do in the morning, and what are you doing now?',
+    coachZh: '你早上通常做什么？现在又在做什么？',
+    userEn: 'I usually study English, but right now I am making a cup of tea.',
+    userPhonetic: '/aɪ ˈjuːʒuəli ˈstʌdi ˈɪŋɡlɪʃ bʌt raɪt naʊ aɪ æm ˈmeɪkɪŋ ə kʌp əv tiː/',
+    userZh: '我通常学英语，但现在正在泡一杯茶。',
+  },
+  sc_tenses_trip: {
+    coachEn: 'Where did you go on your last trip?',
+    coachZh: '你上次旅行去了哪里？',
+    userEn: 'I went to Hangzhou last year, and I have visited it twice.',
+    userPhonetic: '/aɪ went tə ˈhæŋdʒoʊ læst jɪr ænd aɪ hæv ˈvɪzɪtɪd ɪt twaɪs/',
+    userZh: '我去年去了杭州，到现在已经去过两次。',
+  },
+  sc_tenses_plan: {
+    coachEn: 'What have you finished, and what are you going to do tomorrow?',
+    coachZh: '你已经完成了什么？明天打算做什么？',
+    userEn: 'I have already finished the report, and I am going to present it tomorrow.',
+    userPhonetic: '/aɪ hæv ɔːlˈredi ˈfɪnɪʃt ðə rɪˈpɔːrt ænd aɪ æm ˈɡoʊɪŋ tə prɪˈzent ɪt təˈmɑːroʊ/',
+    userZh: '我已经写完报告，明天准备展示。',
+  },
 };
+
+for (const meta of TOPIC_SCENE_META) {
+  const key = meta.courseId.replace(/^course_/, '');
+  for (const suffix of ['warm', 'scene', 'native']) {
+    SCENE_GUIDES[`sc_${key}_${suffix}`] = {
+      coachEn: meta.coachEn,
+      coachZh: meta.coachZh,
+      userEn: meta.userEn,
+      userPhonetic: meta.userPhonetic,
+      userZh: meta.userZh,
+    };
+  }
+}
 
 function withGuide(s: SceneCard): SceneCardView {
   return {

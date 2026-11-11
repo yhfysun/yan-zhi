@@ -895,6 +895,7 @@ authStore.loadUser();
 @import './styles/surface.css';
 @import './styles/element-unify.css';
 @import './styles/task-row.css';
+@import './styles/learning-theme.css';
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }

@@ -133,18 +133,44 @@ beforeEach(async () => {
 })
 
 describe('Learning 工作区 · 挂载契约', () => {
-  it('渲染标题、streak 火焰与七个 Tab（含陪练对话与历年真题）', async () => {
+  it('页头收成科目下拉与状态行，不再渲染标题、宠物或开始陪练按钮', async () => {
     const el = await mountPage()
-    await vi.waitFor(() => expect(el.querySelector('.lp-sub')?.textContent).toContain('🔥 连续 3 天'))
-    expect(el.querySelector('h1')?.textContent).toContain('学习模式')
+    await vi.waitFor(() => expect(el.querySelector('.lp-top-status')?.textContent).toContain('🔥 连续 3 天'))
+    expect(el.querySelector('h1')).toBeFalsy()
+    expect(el.querySelector('.lp-topbar')).toBeTruthy()
+    expect((el.querySelector('.lp-subject-select select') as HTMLSelectElement).value).toBe('英语')
+    expect(el.querySelector('.lp-coach')).toBeFalsy()
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
     expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
     expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
-    // 头部动作收成固定工具栏：虚拟人不再撑高整行，陪练按钮也不再被长文案拉宽。
-    expect(el.querySelector('.lp-header-actions')).toBeTruthy()
-    const coachButton = el.querySelector('.lp-coach') as HTMLElement
-    expect(coachButton.textContent).toContain('开始陪练')
-    expect(coachButton.querySelector('svg')).toBeTruthy()
+    expect(el.querySelector('.lp-header')).toBeFalsy()
+    expect(el.querySelector('.lp-avatar-stage')).toBeFalsy()
+  })
+
+  it('左右栏支持拖拽宽度，并可分别收起和展开', async () => {
+    const el = await mountPage()
+    const grid = el.querySelector('.lp-grid') as HTMLElement
+    const resizers = el.querySelectorAll('.lp-column-resizer')
+    expect(resizers.length).toBe(2)
+    resizers[0].dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 300, button: 0 }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 350 }))
+    window.dispatchEvent(new MouseEvent('pointerup'))
+    await nextTick()
+    expect(grid.getAttribute('style') || '').toContain('--lp-left-w: 350px')
+
+    ;(el.querySelector('[aria-label="收起左侧栏"]') as HTMLElement).click()
+    await nextTick()
+    expect((el.querySelector('.lp-col-left') as HTMLElement).style.display).toBe('none')
+    ;(el.querySelector('[aria-label="展开左侧栏"]') as HTMLElement).click()
+    await nextTick()
+    expect((el.querySelector('.lp-col-left') as HTMLElement).style.display).not.toBe('none')
+
+    ;(el.querySelector('[aria-label="收起右侧栏"]') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('[aria-label="展开右侧栏"]')).toBeTruthy()
+    ;(el.querySelector('[aria-label="展开右侧栏"]') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('[aria-label="收起右侧栏"]')).toBeTruthy()
   })
 
   it('词汇表 Tab：未选课程时空态引导；mock 一本词书后点开真出词行（分页+搜索栏）', async () => {
@@ -181,6 +207,184 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-wt-search')).toBeTruthy()
     // 三栏骨架仍在（布局不跳）
     expect(el.querySelector('.lp-grid')).toBeTruthy()
+  })
+
+  it('范文阅读：按简单/中级/困难与主题筛选，右侧阅读器独立展开', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    const readingRows = [
+      { id: 'r1', title: 'A Bowl of Noodles', cefr: 'A1', topic: '日常生活', paraCount: 3 },
+      { id: 'r2', title: 'The Lost Umbrella', cefr: 'A2', topic: '故事', paraCount: 3 },
+      { id: 'r3', title: 'Working With People', cefr: 'B1', topic: '职场', paraCount: 3 },
+      { id: 'r4', title: 'Technology and Patience', cefr: 'B2', topic: '观点', paraCount: 3 },
+    ]
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/readings/')) {
+        const id = url.split('/').pop()
+        const row = readingRows.find((r) => r.id === id)!
+        return {
+          data: {
+            ...row,
+            paras: [
+              { en: 'This is a short English paragraph for the reading test.', zh: '这是一段用于阅读测试的英文。' },
+              { en: 'The second paragraph gives one more useful detail.', zh: '第二段提供了另一个有用的细节。' },
+              { en: 'The final paragraph closes the idea clearly.', zh: '最后一段清楚地收束了这个观点。' },
+            ],
+          },
+        }
+      }
+      if (url.includes('/learning/readings')) return { data: readingRows }
+      return { data: null }
+    })
+    const el = await mountPage()
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('范文阅读'))!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-reading-card').length).toBe(4))
+    expect(el.querySelector('.lp-reader')?.textContent).toContain('A Bowl of Noodles')
+    ;([...el.querySelectorAll('.lp-reading-levels button')] as HTMLElement[]).find((b) => b.textContent === '简单')!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-reading-card').length).toBe(2))
+    const topic = el.querySelector('.lp-reading-topic select') as HTMLSelectElement
+    topic.value = '故事'
+    topic.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-reading-card').length).toBe(1))
+    expect(el.querySelector('.lp-reading-card')?.textContent).toContain('The Lost Umbrella')
+    expect(el.querySelector('.lp-reader-head')?.textContent).toContain('简单')
+  })
+
+  it('软考作为独立科目：左侧显示专业目录，右侧提供可下载资料', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [
+          { key: '英语', label: '英语', ready: true },
+          { key: '软考', label: '软考', ready: true },
+        ] }
+      }
+      if (url.includes('/learning/courses')) {
+        let decoded = url
+        try { decoded = decodeURIComponent(url) } catch { /* ignore */ }
+        if (decoded.includes('subject=软考')) {
+          return {
+            data: [{ stage: '软考', courses: [
+              { id: 'soft_arch', name: '系统架构设计师', stage: '软考', bookId: '', bookName: '系统架构设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '高级', examSpecialty: '系统架构设计师' },
+              { id: 'soft_designer', name: '软件设计师', stage: '软考', bookId: '', bookName: '软件设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '中级', examSpecialty: '软件设计师' },
+            ] }],
+          }
+        }
+        return defaultGet(url)
+      }
+      if (url.endsWith('/learning/soft-exam/materials')) {
+        return { data: [
+          { id: 'm1', title: '系统架构设计师 · 近三年知识点与题库', level: '高级', specialty: '系统架构设计师', yearRange: '2023–2025', description: '高可用、缓存与消息队列', fileName: 'architect.md' },
+          { id: 'm2', title: '软件设计师 · 近三年知识点与题库', level: '中级', specialty: '软件设计师', yearRange: '2023–2025', description: '数据结构、UML 与数据库', fileName: 'designer.md' },
+        ] }
+      }
+      if (url.endsWith('/learning/soft-exam/regions')) {
+        return { data: [
+          { name: '北京', officialUrl: 'https://rsj.beijing.gov.cn/', registrationUrl: 'https://bm.ruankao.org.cn/sign/welcome' },
+          { name: '上海', officialUrl: 'https://rsj.sh.gov.cn/', registrationUrl: 'https://bm.ruankao.org.cn/sign/welcome' },
+        ] }
+      }
+      if (url.includes('/learning/soft-exam/live')) {
+        return { data: { region: '北京', registrationUrl: 'https://bm.ruankao.org.cn/sign/welcome', officialUrl: 'https://rsj.beijing.gov.cn/', nationalUrl: 'https://www.ruankao.org.cn/', fetchedAt: Date.now(), status: 'live', notices: [{ title: '2027 年软考报名通知', url: 'https://example.com/notice', source: '地区' }] } }
+      }
+      if (url.endsWith('/learning/exams')) {
+        return { data: [
+          { id: 'soft_exam', title: '2025 软考高级 · 系统架构设计师 · 综合知识', examType: '软考', year: 2025, region: '全国软考', section: '综合知识', difficulty: '中高难度', durationMinutes: 25, tags: ['高级'], examLevel: '高级', examFormat: '综合知识', softSpecialty: '系统架构设计师', knowledgePoints: ['高可用'], questionCount: 4, hasListening: false, hasPractice: false },
+        ] }
+      }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    const select = el.querySelector('.lp-subject-select select') as HTMLSelectElement
+    await vi.waitFor(() => expect([...select.options].some((o) => o.value === '软考')).toBe(true))
+    select.value = '软考'
+    select.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-course-exam').length).toBe(2))
+    expect(el.querySelector('.lp-tabs')).toBeFalsy()
+    expect(el.querySelectorAll('.lp-tab').length).toBe(0)
+    expect(el.querySelector('.lp-soft-materials')).toBeTruthy()
+    expect(el.querySelector('.lp-soft-plan-form')).toBeTruthy()
+    expect(el.querySelector('.lp-soft-notices')?.textContent).toContain('2027 年软考报名通知')
+    const examDate = el.querySelector('.lp-soft-plan-form input[type="date"]') as HTMLInputElement
+    examDate.value = '2099-05-23'
+    examDate.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(el.querySelector('.lp-soft-countdown')?.textContent).toContain('距考试')
+    expect(el.querySelectorAll('.lp-soft-study-plan article').length).toBeGreaterThan(0)
+    ;([...el.querySelectorAll('.lp-soft-side-tabs button')] as HTMLElement[]).find((b) => b.textContent?.includes('学习清单'))!.click()
+    await nextTick()
+    expect(el.querySelectorAll('.lp-soft-material').length).toBe(1)
+    expect(el.querySelector('.lp-soft-material')?.textContent).toContain('系统架构设计师')
+    expect(el.querySelector('.lp-soft-material')?.textContent).toContain('下载学习清单')
+    expect(el.querySelector('.lp-exam-soft-filters')).toBeTruthy()
+  })
+
+  it('网络安全作为独立科目：展示分支路线、代码对照和授权靶场步骤', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    const paths = [
+      {
+        id: 'sec_fundamentals', name: '安全基础与威胁建模', level: '入门', description: '从资产和信任边界开始',
+        audience: '开发与运维', prerequisites: [], nextPathIds: ['sec_web'], tags: ['STRIDE', 'TLS'],
+        modules: [{
+          id: 'm_fund', title: '威胁建模', summary: '识别资产、边界和威胁',
+          topics: ['资产', '边界', '威胁'], risk: '不做威胁建模容易遗漏业务逻辑风险。',
+          control: '把滥用场景和正常用例一起评审。',
+          code: {
+            language: 'typescript', context: '威胁模型代码', bad: 'allowAll();', good: 'denyByDefault();', note: '默认拒绝更容易审计。',
+            variants: [
+              { language: 'java', bad: 'allowAll();', good: 'PreparedStatement check();', note: 'Java 示例' },
+              { language: 'python', bad: 'allow_all()', good: 'deny_by_default()', note: 'Python 示例' },
+            ],
+          },
+          lab: { target: '本地授权靶场', tools: ['DevTools', 'curl'], steps: ['列资产', '画边界', '验证控制'], expected: '形成可复核的威胁清单。' },
+        }],
+      },
+      {
+        id: 'sec_web', name: 'Web 漏洞与攻击防御', level: '进阶', description: '学习 OWASP 高频风险',
+        audience: '前后端开发', prerequisites: ['sec_fundamentals'], nextPathIds: [], tags: ['XSS', 'SQL 注入'],
+        modules: [{
+          id: 'm_web', title: 'SQL 注入', summary: '参数化查询与最小权限', topics: ['参数化', '权限', '日志'],
+          risk: '拼接 SQL 会改变查询语义。', control: '使用参数化查询。',
+        }],
+      },
+    ]
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [{ key: '英语', label: '英语', ready: true }, { key: '网络安全', label: '网络安全', ready: true }] }
+      }
+      if (url.includes('/learning/courses')) {
+        let decoded = url
+        try { decoded = decodeURIComponent(url) } catch { /* ignore */ }
+        if (decoded.includes('subject=网络安全')) {
+          return { data: [{ stage: '网络安全', courses: [
+            { id: 'sec_fund', name: '安全基础与威胁建模', stage: '网络安全', bookId: '', bookName: '安全基础', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'security', securityPathId: 'sec_fundamentals' },
+            { id: 'sec_web', name: 'Web 漏洞与攻击防御', stage: '网络安全', bookId: '', bookName: 'Web 攻防', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'security', securityPathId: 'sec_web' },
+          ] }] }
+        }
+      }
+      if (url.endsWith('/learning/security/paths')) return { data: paths }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    const select = el.querySelector('.lp-subject-select select') as HTMLSelectElement
+    await vi.waitFor(() => expect([...select.options].some((option) => option.value === '网络安全')).toBe(true))
+    select.value = '网络安全'
+    select.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(el.querySelector('.sec-workbench')).toBeTruthy())
+    expect(el.querySelector('.lp-tabs')).toBeFalsy()
+    expect(el.querySelectorAll('.lp-course-security').length).toBe(2)
+    expect(el.querySelector('.lp-course-security.active')?.textContent).toContain('安全基础')
+    expect(el.querySelector('.lp-security-boundary')?.textContent).toContain('只测试自己的系统')
+    expect(el.querySelectorAll('.sec-branch-map button').length).toBe(2)
+    expect(el.querySelector('.sec-code')).toBeTruthy()
+    expect(el.querySelector('.sec-code > header')?.textContent).toContain('威胁模型代码')
+    expect(el.querySelectorAll('.sec-code-languages button').length).toBe(3)
+    ;([...el.querySelectorAll('.sec-code-languages button')] as HTMLElement[]).find((b) => b.textContent === 'java')!.click()
+    await nextTick()
+    expect(el.querySelector('.sec-code')?.textContent).toContain('PreparedStatement')
+    expect(el.querySelector('.sec-lab')?.textContent).toContain('本地授权靶场')
+    expect(el.querySelector('.sec-lab')?.textContent).toContain('curl')
+    ;(el.querySelectorAll('.sec-branch-map button')[1] as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-course-security.active')?.textContent).toContain('Web 漏洞'))
   })
 
   it('闯关单题聚焦：点关卡后一次只渲染一题，进度条与圆点导航工作', async () => {
@@ -294,6 +498,20 @@ describe('Learning 工作区 · 挂载契约', () => {
       { id: 'exam_gaokao_2024', title: '2024 高考英语 · 阅读精练', examType: '高考', year: 2024, region: '全国卷', section: '阅读理解', difficulty: '中等', durationMinutes: 12, tags: ['校园生活'], questionCount: 5 },
     ]
     getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [{ key: '英语', label: '英语', ready: true }, { key: '软考', label: '软考', ready: true }] }
+      }
+      if (url.includes('/learning/courses')) {
+        let decoded = url
+        try { decoded = decodeURIComponent(url) } catch { /* ignore */ }
+        if (decoded.includes('subject=软考')) {
+          return { data: [{ stage: '软考', courses: [
+            { id: 'soft_designer', name: '软件设计师', stage: '软考', bookId: '', bookName: '软件设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '中级', examSpecialty: '软件设计师' },
+            { id: 'soft_arch', name: '系统架构设计师', stage: '软考', bookId: '', bookName: '系统架构设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '高级', examSpecialty: '系统架构设计师' },
+          ] }] }
+        }
+      }
+      if (url.endsWith('/learning/soft-exam/materials')) return { data: [] }
       if (url.endsWith('/learning/exams')) return { data: papers }
       if (url.includes('/learning/exams/exam_kaoyan_2024')) return {
         data: {
@@ -326,6 +544,7 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-exam-card').length).toBe(2))
     expect(el.querySelector('.lp-exam-card')?.textContent).toContain('考研')
     expect(el.textContent).toContain('高考')
+    expect([...el.querySelectorAll('.lp-exam-filters button')].map((b) => b.textContent?.trim())).not.toContain('软考')
 
     ;([...el.querySelectorAll('.lp-exam-card button')] as HTMLElement[])[0].click()
     await vi.waitFor(() => expect(el.querySelector('.lp-exam-runner')).toBeTruthy())
@@ -336,6 +555,87 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(el.querySelector('.lp-exam-result')).toBeTruthy())
     expect(el.querySelector('.lp-exam-result')?.textContent).toContain('50')
     expect(el.querySelector('.lp-exam-result')?.textContent).toContain('annotation 能帮助精读')
+  })
+
+  it('★ 软考：按中高级、专业和综合知识/上机题筛选，上机题使用代码作答区', async () => {
+    const { api } = await import('../api/client')
+    const getMock = vi.mocked(api.get)
+    const postMock = vi.mocked(api.post)
+    const papers = [
+      { id: 'soft_mid_theory', title: '2025 软考中级 · 软件设计师 · 综合知识', examType: '软考', year: 2025, region: '全国软考', section: '综合知识', difficulty: '中等', durationMinutes: 20, tags: ['中级'], examLevel: '中级', examFormat: '综合知识', softSpecialty: '软件设计师', knowledgePoints: ['UML', '数据库'], questionCount: 4, hasListening: false, hasPractice: false },
+      { id: 'soft_senior_theory', title: '2025 软考高级 · 系统架构设计师 · 综合知识', examType: '软考', year: 2025, region: '全国软考', section: '综合知识', difficulty: '中高难度', durationMinutes: 25, tags: ['高级'], examLevel: '高级', examFormat: '综合知识', softSpecialty: '系统架构设计师', knowledgePoints: ['高可用'], questionCount: 4, hasListening: false, hasPractice: false },
+      { id: 'soft_mid_practice', title: '2025 软考中级 · 软件设计师 · 上机精选', examType: '软考', year: 2025, region: '全国软考', section: '上机实操', difficulty: '中等', durationMinutes: 45, tags: ['上机'], examLevel: '中级', examFormat: '上机实操', softSpecialty: '软件设计师', knowledgePoints: ['SQL'], questionCount: 1, hasListening: false, hasPractice: true },
+      { id: 'soft_senior_practice', title: '2025 软考高级 · 系统架构设计师 · 案例精选', examType: '软考', year: 2025, region: '全国软考', section: '上机实操', difficulty: '中高难度', durationMinutes: 50, tags: ['架构'], examLevel: '高级', examFormat: '上机实操', softSpecialty: '系统架构设计师', knowledgePoints: ['容量估算'], questionCount: 1, hasListening: false, hasPractice: true },
+    ]
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [{ key: '英语', label: '英语', ready: true }, { key: '软考', label: '软考', ready: true }] }
+      }
+      if (url.includes('/learning/courses')) {
+        let decoded = url
+        try { decoded = decodeURIComponent(url) } catch { /* ignore */ }
+        if (decoded.includes('subject=软考')) {
+          return { data: [{ stage: '软考', courses: [
+            { id: 'soft_designer', name: '软件设计师', stage: '软考', bookId: '', bookName: '软件设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '中级', examSpecialty: '软件设计师' },
+            { id: 'soft_arch', name: '系统架构设计师', stage: '软考', bookId: '', bookName: '系统架构设计师', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'exam', examLevel: '高级', examSpecialty: '系统架构设计师' },
+          ] }] }
+        }
+      }
+      if (url.endsWith('/learning/soft-exam/materials')) return { data: [] }
+      if (url.endsWith('/learning/exams')) return { data: papers }
+      if (url.includes('/learning/exams/soft_mid_practice')) {
+        return {
+          data: {
+            ...papers[2],
+            passage: '请完成 SQL 上机题。',
+            questions: [{
+              id: 'p1', kind: 'practice', stem: '查询 2025 年订单数。', language: 'sql',
+              starterCode: 'SELECT\n  -- TODO\nFROM orders;',
+            }],
+          },
+        }
+      }
+      return defaultGet(url)
+    })
+    postMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/exams/soft_mid_practice/submit')) {
+        return {
+          data: {
+            paperId: 'soft_mid_practice', title: papers[2].title, correct: 0, total: 1, score: 0,
+            details: [{
+              questionId: 'p1', kind: 'practice', stem: '查询 2025 年订单数。',
+              picked: null, pickedText: 'SELECT COUNT(*) FROM orders;', answer: null,
+              reference: 'SELECT COUNT(*) FROM orders WHERE created_at >= ...', correct: null,
+              explanation: '检查时间范围和聚合函数。',
+            }],
+          },
+        }
+      }
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    const subjectSelect = el.querySelector('.lp-subject-select select') as HTMLSelectElement
+    await vi.waitFor(() => expect([...subjectSelect.options].some((o) => o.value === '软考')).toBe(true))
+    subjectSelect.value = '软考'
+    subjectSelect.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-course-exam').length).toBe(2))
+    ;([...el.querySelectorAll('.lp-course-exam')] as HTMLElement[]).find((b) => b.textContent?.includes('软件设计师'))!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-exam-card').length).toBe(2))
+    await vi.waitFor(() => expect(el.querySelector('.lp-exam-soft-filters')).toBeTruthy())
+    ;([...el.querySelectorAll('.lp-exam-soft-row button')] as HTMLElement[]).find((b) => b.textContent?.trim() === '上机实操')!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-exam-card').length).toBe(1))
+    expect(el.querySelector('.lp-exam-card')?.textContent).toContain('上机')
+    ;(el.querySelector('.lp-exam-card button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-exam-code')).toBeTruthy())
+    const code = el.querySelector('.lp-exam-code') as HTMLTextAreaElement
+    code.value = 'SELECT COUNT(*) FROM orders;'
+    code.dispatchEvent(new Event('input'))
+    const submit = ([...el.querySelectorAll('button')] as HTMLElement[]).find((b) => b.textContent?.trim() === '交卷判分')!
+    submit.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-exam-practice-review')).toBeTruthy())
+    expect(el.querySelector('.lp-exam-practice-review')?.textContent).toContain('参考要点')
+    expect(el.querySelector('.lp-exam-practice-review')?.textContent).toContain('SELECT COUNT(*)')
   })
 
   it('★ 场景卡 Tab：按当前课程出卡，卡带任务/台本；进入对练留在学习模式并建学习会话', async () => {
@@ -354,17 +654,18 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(opts.agentId).toBe('a_builtin_learning_coach')
     expect(opts.source).toBe('learning')
     expect(opts.sourceMeta?.learningScene).toBe('sc_cet4_course')
-    await vi.waitFor(() => expect(el.querySelector('.lp-live-scene')).toBeTruthy())
-    expect(el.querySelector('.lp-live-scene')?.textContent).toContain('AI 先说')
-    expect(el.querySelector('.lp-live-scene')?.textContent).toContain('轮到你')
+    await vi.waitFor(() => expect(el.querySelector('.lp-pet-stage')).toBeTruthy())
+    expect(el.querySelector('.lp-practice-title')?.textContent).toContain('选课咨询')
+    expect(el.querySelector('.lp-pet-speech')?.textContent).toContain('言言')
     // ★ 用户实报「场景卡跳到办公模式」：场景任务绝不 push 聊天详情路由
     expect(push).not.toHaveBeenCalled()
   })
 
   it('★ 开始陪练：内嵌中栏直接调 AI（不跳路由），带契约 id 建会话并发起英文对话', async () => {
     const el = await mountPage()
-    const btn = [...el.querySelectorAll('.lp-coach')].find((b) => b.textContent?.includes('开始陪练')) as HTMLElement
-    expect(btn).toBeTruthy()
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('陪练对话'))!.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-coach-start')).toBeTruthy())
+    const btn = el.querySelector('.lp-coach-start') as HTMLElement
     btn.click()
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled())
     expect(createConversation).toHaveBeenCalledTimes(1)
@@ -374,6 +675,10 @@ describe('Learning 工作区 · 挂载契约', () => {
     // ★ 用户实报「怎么又跳到办公模式」：陪练必须留在学习模式内嵌对话，绝不 push 聊天路由
     expect(push).not.toHaveBeenCalled()
     await vi.waitFor(() => expect(el.querySelector('.lp-coach-chat')).toBeTruthy())
+    expect(el.querySelector('.lp-pet-stage')).toBeTruthy()
+    expect(el.querySelector('.lp-talk-button')).toBeTruthy()
+    expect(el.querySelector('.lp-coach-side.collapsed')).toBeTruthy()
+    expect(el.querySelector('.lp-col-right')?.getAttribute('style')).toContain('display: none')
     // ★ 独立学习页必须自己幂等预热平台/模型，否则首次发送必然落到「没有可用模型」提示
     expect(ensurePlatforms).toHaveBeenCalled()
     expect(ensureModels).toHaveBeenCalled()
@@ -384,7 +689,7 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(loadMessages).toHaveBeenCalledWith('c_test_1')
   })
 
-  it('陪练对话 Tab：AI 英文回复渲染成气泡并带朗读按钮（不跳布局）', async () => {
+  it('陪练对话 Tab：宠物说当前一句，完整记录默认收起且可展开', async () => {
     // 消息仓是普通对象：必须在 ensureCoachConv 写入 coachConvId（触发 computed 重算）之前注入
     messagesByConv['c_test_1'] = [
       { id: 'u1', role: 'user', content: 'Hi!' },
@@ -394,6 +699,10 @@ describe('Learning 工作区 · 挂载契约', () => {
     ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('陪练对话'))!.click()
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2))
     expect(el.querySelector('.lp-coach-chat')).toBeTruthy()
+    expect(el.querySelector('.lp-pet-speech')?.textContent).toContain('How are you today?')
+    expect(el.querySelector('.lp-side-body')?.getAttribute('style')).toContain('display: none')
+    ;(el.querySelector('.lp-side-toggle') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-side-body')?.getAttribute('style') || '').not.toContain('display: none'))
     expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2)
     expect(el.querySelector('.lp-chat-text')?.textContent).toContain('Hi!')
     expect(el.textContent).toContain('How are you today?')

@@ -20,7 +20,10 @@ import {
   type PetState,
 } from '../../stores/pet'
 
-const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+const props = withDefaults(defineProps<{ compact?: boolean; viewScale?: number }>(), {
+  compact: false,
+  viewScale: 0,
+})
 
 const store = usePetStore()
 store.init()
@@ -33,7 +36,8 @@ const renderVisible = ref(true)
 const walking = ref(false)
 const facingLeft = ref(false)
 const effectiveScale = computed(() => settings.value.scale || 1)
-const displayScale = computed(() => (props.compact ? 0.5 : 1))
+const displayScale = computed(() => props.viewScale || (props.compact ? 0.5 : 1))
+const spriteScale = computed(() => effectiveScale.value * (props.viewScale || 1))
 
 /* ===== 3D/VRM（照 PetWindow 收窄：web/dev 走 /vrm/ 静态，桌面走主进程 IPC） ===== */
 const vrmBuffer = ref<ArrayBuffer | null>(null)
@@ -123,7 +127,7 @@ defineExpose({ play })
         :state="state"
         :action="action"
         :pack="settings.pack"
-        :scale="effectiveScale"
+        :scale="spriteScale"
         :walking="walking"
         :flip="facingLeft"
         :active="renderActive"

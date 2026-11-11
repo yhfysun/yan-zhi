@@ -123,6 +123,54 @@ export const READING_PASSAGES: ReadingPassage[] = [
       { en: 'Maybe both are true. The city doesn’t choose for you. You decide whether it is noise or energy.', zh: '也许都对。城市不替你选择。它到底是噪音还是能量，由你决定。' },
     ],
   },
+  {
+    id: 'rp_noodles_a1', title: 'A Bowl of Noodles', cefr: 'A1', topic: '日常生活',
+    paras: [
+      { en: 'Anna comes home late on Friday. She is tired and does not want to cook.', zh: '安娜周五很晚回家。她很累，不想做饭。' },
+      { en: 'She walks to a small noodle shop near her home. The owner smiles and asks, “The usual?” Anna nods.', zh: '她走到家附近的一家小面馆。老板笑着问：“还是老样子？”安娜点点头。' },
+      { en: 'Ten minutes later, she eats hot noodles and feels much better. Sometimes a simple meal is all you need.', zh: '十分钟后，她吃着热腾腾的面，感觉好多了。有时候，一顿简单的饭就足够了。' },
+    ],
+  },
+  {
+    id: 'rp_umbrella_a2', title: 'The Lost Umbrella', cefr: 'A2', topic: '故事',
+    paras: [
+      { en: 'It was raining hard when Mei left the library. She reached for her umbrella, but it was not there.', zh: '梅离开图书馆时雨下得很大。她伸手去拿伞，却发现伞不见了。' },
+      { en: 'A library worker found a blue umbrella behind a chair. “Is this yours?” she asked. Mei shook her head, but she took it with her.', zh: '一位图书馆工作人员在椅子后面找到一把蓝伞。“这是你的吗？”她问。梅摇摇头，但还是把伞带上了。' },
+      { en: 'The next day, Mei returned the umbrella and left a note: “Thank you to whoever left this here.” A small act can help a stranger more than we expect.', zh: '第二天，梅把伞还了回去，并留了一张纸条：“谢谢把伞留在这里的人。”一个小小的举动，可能比我们想象中更能帮助陌生人。' },
+    ],
+  },
+  {
+    id: 'rp_work_people_b1', title: 'Working With People You Do Not Like', cefr: 'B1', topic: '职场',
+    paras: [
+      { en: 'You do not have to like every colleague to work well with them. In fact, expecting every relationship to feel friendly can make office problems harder to solve.', zh: '你不需要喜欢每一位同事才能合作。事实上，期待每段关系都像朋友一样，反而会让办公室问题更难解决。' },
+      { en: 'Focus on the task, not the personality. Clarify what each person will deliver, when it is due, and how decisions will be made.', zh: '把重点放在任务而不是性格上。明确每个人交付什么、什么时候完成，以及决定如何做出。' },
+      { en: 'Politeness is not fake. It is a professional tool that keeps communication open when personal chemistry is missing.', zh: '礼貌不是虚伪。它是一种职业工具，在彼此没有默契时仍能让沟通继续。' },
+    ],
+  },
+  {
+    id: 'rp_reading_list_b1', title: 'Why I Keep a Reading List', cefr: 'B1', topic: '学习方法',
+    paras: [
+      { en: 'I used to finish one book and then spend two weeks deciding what to read next. My reading slowed down, not because I lacked interest, but because I kept making the same small decision again.', zh: '我以前读完一本书，会花两周想下一本读什么。阅读变慢，不是因为没兴趣，而是因为总在重复做同一个小的决定。' },
+      { en: 'Now I keep a short list of three books: one easy, one challenging, and one that has nothing to do with work. The list gives me direction without turning reading into another task.', zh: '现在我会保留一个三本书的小清单：一本轻松，一本有挑战，一本与工作完全无关。清单给我方向，却没把阅读变成又一项任务。' },
+      { en: 'The goal is not to read more than everyone else. It is to make the next good choice easier.', zh: '目标不是读得比所有人都多，而是让下一个好选择更容易做出来。' },
+    ],
+  },
+  {
+    id: 'rp_morning_city_b2', title: 'The City at Six in the Morning', cefr: 'B2', topic: '城市',
+    paras: [
+      { en: 'At six in the morning, a city shows a version of itself that office workers rarely notice. Delivery vans occupy the empty roads, cleaners wash the pavement, and bakery lights come on one window at a time.', zh: '清晨六点，城市会显露一个上班族很少注意到的版本。货车占据空旷的道路，清洁工冲洗人行道，面包店的灯一扇窗一扇窗地亮起来。' },
+      { en: 'This early hour feels less like a pause and more like preparation. The city is not resting; it is quietly arranging itself for the people who will soon arrive.', zh: '这个清晨时刻与其说是暂停，不如说是准备。城市没有休息，它只是在安静地为即将到来的人们整理自己。' },
+      { en: 'Walking through it can change how you see the same streets later in the day. A crowded place becomes easier to understand once you have seen it empty.', zh: '在这样的清晨走过城市，会改变你白天看同一条街的方式。一旦见过它空下来的样子，拥挤的地方也更容易理解。' },
+    ],
+  },
+  {
+    id: 'rp_technology_patience_b2', title: 'Can Technology Make Us More Patient?', cefr: 'B2', topic: '观点',
+    paras: [
+      { en: 'Technology is often blamed for making us impatient. We expect instant replies, same-day delivery, and answers within seconds. Yet the same tools can also teach patience when they are designed well.', zh: '科技常被指责让人更没耐心。我们期待即时回复、当日送达和几秒内得到答案。但设计得当的话，同样的工具也能教会我们耐心。' },
+      { en: 'A language app that shows steady progress can make daily practice feel worthwhile. A recipe app that explains why dough needs time can turn waiting into understanding rather than wasted time.', zh: '一个展示稳定进步的语言应用，会让每日练习显得值得。一个解释面团为何需要时间的食谱应用，也能把等待变成理解，而不是浪费时间。' },
+      { en: 'The question is not whether technology makes us patient or impatient. It is whether we use it to hide from effort or to understand why effort takes time.', zh: '问题不在于科技让我们更有耐心还是更没耐心，而在于我们是用它逃避投入，还是理解为什么投入需要时间。' },
+    ],
+  },
 ];
 
 // ── 语法点第二批（P1 扩充至 40：覆盖中文母语者中高频痛点） ─────────────────────
@@ -143,17 +191,22 @@ GRAMMAR_POINTS.push(
   { id: 'g_passive_modals', title: '情态动词被动式', cefr: 'B1', group: '句型', rule: 'must/can/should + be + 过去分词。', examples: [{ en: 'The form must be signed today.', zh: '表格今天必须签好。' }], pairs: [{ wrong: 'The form must signed today.', right: 'The form must be signed today.', why: '被动不能漏掉 be 动词。' }] },
   { id: 'g_there_will', title: 'there be 的将来与情态', cefr: 'A2', group: '句型', rule: 'there will be / there must be——there 后接 be 原形，不接 have。', examples: [{ en: 'There will be a storm tonight.', zh: '今晚会有暴风雨。' }], pairs: [{ wrong: 'There will have a meeting.', right: 'There will be a meeting.', why: '“将有”是 there will be，不是 there will have。' }] },
   { id: 'g_adv_adj', title: '形容词 vs 副词', cefr: 'A2', group: '句型', rule: '修饰名词用形容词，修饰动词用副词（-ly）；感官动词（look/sound/feel）后用形容词。', examples: [{ en: 'She sings beautifully. / The soup tastes good.', zh: '她唱得美（副词）；汤尝起来好（形容词）。' }], pairs: [{ wrong: 'The music sounds sweetly.', right: 'The music sounds sweet.', why: 'sound 是感官动词，后接形容词。' }] },
+  { id: 'g_irregular_verbs', title: '不规则动词三态', cefr: 'A2', group: '时态', rule: '按「原形 — 过去式 — 过去分词」整组记：go-went-gone、see-saw-seen；完成时和被动语态用第三列。', examples: [{ en: 'I went home early, but I had already finished my work.', zh: '我很早回家，但当时已经完成工作了。' }], pairs: [{ wrong: 'I have went there before.', right: 'I have gone there before.', why: 'have 后接过去分词 gone，不能用过去式 went。' }] },
+  { id: 'g_plural_nouns', title: '名词复数与分类记法', cefr: 'A1', group: '词法', rule: '一般加 -s；以 s/x/ch/sh 结尾加 -es；辅音字母+y 变 ies；不规则复数单独背。', examples: [{ en: 'The child has two mice and three sheep.', zh: '这个孩子有两只老鼠和三只羊。' }], pairs: [{ wrong: 'There are three sheeps.', right: 'There are three sheep.', why: 'sheep 单复数同形，不加 -s。' }] },
 );
 
 // ── 课程学段目录（用户拍板：字母音标 → 初中 → 高中 → 四六级 → 雅思托福） ──────────
 // 每门课一本内置示例词书（本课 40 词起步）；完整词书走「词书库 URL 导入」补充。
 // 排序即建议学程；跨课程不做硬锁（硬锁留在书内关卡），进度条引导按序进阶。
 
-export type CourseStage = '启蒙' | '初中' | '高中' | '大学' | '出国';
+export type CourseStage = '启蒙' | '必背专题' | '初中' | '高中' | '大学' | '出国';
+export type LearningCourseStage = CourseStage | '软考' | '网络安全';
 
 /** 科目清单（扩展点）：以后加日语/数学/物理 = 往这里加一项 + 往 COURSE_CATALOG 加对应 subject 的课程 */
 export const LEARNING_SUBJECTS = [
   { key: '英语', label: '英语', ready: true },
+  { key: '软考', label: '软考', ready: true },
+  { key: '网络安全', label: '网络安全', ready: true },
   { key: '日语', label: '日语', ready: false },
   { key: '数学', label: '数学', ready: false },
   { key: '物理', label: '物理', ready: false },
@@ -162,14 +215,27 @@ export const LEARNING_SUBJECTS = [
 export type CourseDef = {
   id: string;
   name: string;
-  stage: CourseStage;
+  stage: LearningCourseStage;
   /** 科目归属（按科目过滤课程地图；当前全部英语） */
   subject: string;
-  bookId: string;
+  kind?: 'vocab' | 'exam' | 'security';
+  bookId?: string;
+  examLevel?: '中级' | '高级';
+  examSpecialty?: string;
+  securityPathId?: string;
 };
 
 export const COURSE_CATALOG: CourseDef[] = [
   { id: 'course_letters', name: '字母与音标', subject: '英语', stage: '启蒙', bookId: 'wb_letters_sample' },
+  { id: 'course_verbs', name: '动词全本', subject: '英语', stage: '必背专题', bookId: 'wb_verbs_all' },
+  { id: 'course_nouns', name: '名词分类', subject: '英语', stage: '必背专题', bookId: 'wb_nouns_all' },
+  { id: 'course_nature', name: '动植物分类', subject: '英语', stage: '必背专题', bookId: 'wb_nature_all' },
+  { id: 'course_objects', name: '生活物品', subject: '英语', stage: '必背专题', bookId: 'wb_daily_objects' },
+  { id: 'course_food', name: '食物与饮品', subject: '英语', stage: '必背专题', bookId: 'wb_food_drink' },
+  { id: 'course_body', name: '身体与健康', subject: '英语', stage: '必背专题', bookId: 'wb_body_health' },
+  { id: 'course_spoken', name: '口语高频句', subject: '英语', stage: '必背专题', bookId: 'wb_spoken_phrases' },
+  { id: 'course_idioms', name: '英语习语', subject: '英语', stage: '必背专题', bookId: 'wb_english_idioms' },
+  { id: 'course_tenses', name: '时态必背', subject: '英语', stage: '必背专题', bookId: 'wb_tense_essentials' },
   { id: 'course_junior1', name: '初一', subject: '英语', stage: '初中', bookId: 'wb_junior1_sample' },
   { id: 'course_junior2', name: '初二', subject: '英语', stage: '初中', bookId: 'wb_junior2_sample' },
   { id: 'course_junior3', name: '初三', subject: '英语', stage: '初中', bookId: 'wb_junior3_sample' },
@@ -180,6 +246,17 @@ export const COURSE_CATALOG: CourseDef[] = [
   { id: 'course_cet6', name: '大学英语六级', subject: '英语', stage: '大学', bookId: 'wb_cet6_sample' },
   { id: 'course_ielts', name: '雅思', subject: '英语', stage: '出国', bookId: 'wb_ielts_sample' },
   { id: 'course_toefl', name: '托福', subject: '英语', stage: '出国', bookId: 'wb_toefl_sample' },
+  { id: 'course_soft_software_designer', name: '软件设计师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '中级', examSpecialty: '软件设计师' },
+  { id: 'course_soft_network_engineer', name: '网络工程师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '中级', examSpecialty: '网络工程师' },
+  { id: 'course_soft_system_architect', name: '系统架构设计师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '高级', examSpecialty: '系统架构设计师' },
+  { id: 'course_soft_system_analyst', name: '系统分析师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '高级', examSpecialty: '系统分析师' },
+  { id: 'course_sec_fundamentals', name: '安全基础与威胁建模', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_fundamentals' },
+  { id: 'course_sec_web', name: 'Web 漏洞与攻击防御', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_web' },
+  { id: 'course_sec_languages', name: '多语言安全编码', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_languages' },
+  { id: 'course_sec_pentest', name: '授权渗透测试', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_pentest' },
+  { id: 'course_sec_automation', name: '自动化攻防靶场', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_automation' },
+  { id: 'course_sec_defense', name: '攻击防御与蓝队运营', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_defense' },
+  { id: 'course_sec_devsecops', name: '安全开发与 DevSecOps', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_devsecops' },
 ];
 
-export const COURSE_STAGES: CourseStage[] = ['启蒙', '初中', '高中', '大学', '出国'];
+export const COURSE_STAGES: LearningCourseStage[] = ['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全'];

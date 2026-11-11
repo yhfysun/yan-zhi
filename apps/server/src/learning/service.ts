@@ -8,7 +8,7 @@ import {
 } from './srs.js';
 import { BUILTIN_WORDBOOKS } from './data/wordbooks.js';
 import { buildLearningContextSummary } from './context.js';
-import { COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS, type CourseStage } from './curriculum.js';
+import { COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS, type LearningCourseStage } from './curriculum.js';
 
 export type LearningProfile = { cefr: string | null; goals: string | null; updated_at: number };
 
@@ -442,17 +442,33 @@ export function submitReviewDrill(userId: string, answers: DrillAnswer[], questi
 // ── 课程学段总览（§2.2 课程地图：11 门课按学段排列，各课进度/到期一目了然） ───────
 
 export type CourseView = {
-  id: string; name: string; stage: CourseStage; bookId: string; bookName: string;
+  id: string; name: string; stage: LearningCourseStage; bookId: string; bookName: string;
   wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number;
   dueCount: number; progressPct: number;
+  kind: 'vocab' | 'exam' | 'security';
+  examLevel?: '中级' | '高级';
+  examSpecialty?: string;
+  securityPathId?: string;
 };
 
-export function getCourses(userId: string, subject = '英语'): Array<{ stage: CourseStage; courses: CourseView[] }> {
+export function getCourses(userId: string, subject = '英语'): Array<{ stage: LearningCourseStage; courses: CourseView[] }> {
   ensureBuiltinBookRows();
-  const byStage = new Map<CourseStage, CourseView[]>();
+  const byStage = new Map<LearningCourseStage, CourseView[]>();
   for (const c of COURSE_CATALOG) {
     // ★ 按科目过滤（此前路由声称支持但没接 —— 已收口到此唯一实现）
     if (c.subject !== subject) continue;
+    if (c.kind === 'exam' || c.kind === 'security') {
+      const view: CourseView = {
+        id: c.id, name: c.name, stage: c.stage, bookId: '', bookName: c.name,
+        wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0,
+        kind: c.kind, examLevel: c.examLevel, examSpecialty: c.examSpecialty, securityPathId: c.securityPathId,
+      };
+      const list = byStage.get(c.stage) || [];
+      list.push(view);
+      byStage.set(c.stage, list);
+      continue;
+    }
+    if (!c.bookId) continue;
     const pack = BUILTIN_WORDBOOKS.find((b) => b.id === c.bookId);
     if (!pack) continue;
     const wc = pack.words.length;
@@ -466,6 +482,7 @@ export function getCourses(userId: string, subject = '英语'): Array<{ stage: C
       wordCount: wc, levelCount: totalLevels, clearedLevels: cleared, totalLevels,
       dueCount: due.c,
       progressPct: totalLevels ? Math.round((cleared / totalLevels) * 100) : 0,
+      kind: 'vocab',
     };
     const list = byStage.get(c.stage) || [];
     list.push(view);

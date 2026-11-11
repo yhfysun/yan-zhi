@@ -12,23 +12,42 @@ import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import { LEARNING_AGENT_ID } from '../src/builtin-learning-agents';
 
 describe('课程学段目录', () => {
-  it('11 门课且 id/bookId 唯一（bookId 是词书内容包锚点，指错 = 该课拿错词）', () => {
-    expect(COURSE_CATALOG.length).toBe(11);
+  it('31 门课且 id 唯一；词书、软考和安全路线边界清晰', () => {
+    expect(COURSE_CATALOG.length).toBe(31);
     expect(new Set(COURSE_CATALOG.map((c) => c.id)).size).toBe(COURSE_CATALOG.length);
-    expect(new Set(COURSE_CATALOG.map((c) => c.bookId)).size).toBe(COURSE_CATALOG.length);
+    const vocab = COURSE_CATALOG.filter((c) => !c.kind || c.kind === 'vocab');
+    expect(new Set(vocab.map((c) => c.bookId)).size).toBe(vocab.length);
+    expect(COURSE_CATALOG.filter((c) => c.kind === 'exam')).toHaveLength(4);
+    expect(COURSE_CATALOG.filter((c) => c.kind === 'security')).toHaveLength(7);
   });
 
   it('★ 每门课的 bookId 都有真实内容包（指空 = 选课拿不到词）', () => {
     const bookIds = new Set(BUILTIN_WORDBOOKS.map((b) => b.id));
     for (const c of COURSE_CATALOG) {
+      if (c.kind === 'exam' || c.kind === 'security') continue;
       expect(bookIds.has(c.bookId), `${c.id} 的 ${c.bookId} 不存在`).toBe(true);
     }
   });
 
   it('学段覆盖用户拍板的全部学段，目录顺序 = 建议学程', () => {
-    expect(COURSE_STAGES).toEqual(['启蒙', '初中', '高中', '大学', '出国']);
+    expect(COURSE_STAGES).toEqual(['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全']);
     const names = COURSE_CATALOG.map((c) => c.name);
     expect(names[0]).toBe('字母与音标');
+    expect(names).toContain('动词全本');
+    expect(names).toContain('名词分类');
+    expect(names).toContain('动植物分类');
+    expect(names).toContain('生活物品');
+    expect(names).toContain('食物与饮品');
+    expect(names).toContain('身体与健康');
+    expect(names).toContain('口语高频句');
+    expect(names).toContain('英语习语');
+    expect(names).toContain('时态必背');
+    expect(names).toContain('软件设计师');
+    expect(names).toContain('系统架构设计师');
+    expect(names).toContain('授权渗透测试');
+    expect(names).toContain('多语言安全编码');
+    expect(names).toContain('自动化攻防靶场');
+    expect(names).toContain('安全开发与 DevSecOps');
     expect(names).toContain('初一');
     expect(names).toContain('初三');
     expect(names).toContain('高三 · 高考冲刺');
@@ -44,16 +63,22 @@ describe('课程学段目录', () => {
 
   it('★ 科目架构：清单含英语（ready）+ 预留日语/数学/物理（未就绪）；课程都有 subject', () => {
     expect(LEARNING_SUBJECTS.find((s) => s.key === '英语')?.ready).toBe(true);
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '软考')?.ready).toBe(true);
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '网络安全')?.ready).toBe(true);
     for (const k of ['日语', '数学', '物理']) {
       expect(LEARNING_SUBJECTS.find((s) => s.key === k)?.ready).toBe(false);
     }
-    for (const c of COURSE_CATALOG) expect(c.subject, c.id).toBe('英语');
+    expect(COURSE_CATALOG.filter((c) => c.subject === '英语').length).toBe(20);
+    expect(COURSE_CATALOG.filter((c) => c.subject === '软考').length).toBe(4);
+    expect(COURSE_CATALOG.filter((c) => c.subject === '网络安全').length).toBe(7);
   });
 
-  it('★ 全量词书：每门课 >= 200 词（不再只是 40 词示例），词条无空值、无重复', () => {
+  it('★ 全量词书：常规课程 >= 200 词，必背专题 >= 80 词，词条无空值、无重复', () => {
     for (const c of COURSE_CATALOG) {
+      if (c.kind === 'exam' || c.kind === 'security') continue;
       const b = BUILTIN_WORDBOOKS.find((x) => x.id === c.bookId)!;
-      expect(b.words.length, c.id).toBeGreaterThanOrEqual(200);
+      const minWords = c.stage === '必背专题' ? 80 : 200;
+      expect(b.words.length, c.id).toBeGreaterThanOrEqual(minWords);
       const seen = new Set<string>();
       for (const w of b.words) {
         expect(w.word.length, `${c.bookId}:${w.word}`).toBeGreaterThan(0);
@@ -75,9 +100,10 @@ describe('课程学段目录', () => {
 
 describe('场景卡', () => {
   it('每门课都有 3 个专属场景，且 id 唯一（重复会串 source_meta 注入）', () => {
-    expect(SCENE_CARDS.length).toBe(COURSE_CATALOG.length * 3);
+    const sceneCourses = COURSE_CATALOG.filter((c) => !c.kind || c.kind === 'vocab');
+    expect(SCENE_CARDS.length).toBe(sceneCourses.length * 3);
     expect(new Set(SCENE_CARDS.map((s) => s.id)).size).toBe(SCENE_CARDS.length);
-    for (const course of COURSE_CATALOG) {
+    for (const course of sceneCourses) {
       expect(listSceneCards(course.id), course.id).toHaveLength(3);
     }
   });
@@ -164,11 +190,13 @@ describe('语法点目录', () => {
 });
 
 describe('分级范文', () => {
-  it('≥8 篇且 id 唯一，A2/B1 两级都有', () => {
-    expect(READING_PASSAGES.length).toBeGreaterThanOrEqual(8);
+  it('≥14 篇且 id 唯一，简单/中级/困难与日常主题都有', () => {
+    expect(READING_PASSAGES.length).toBeGreaterThanOrEqual(14);
     expect(new Set(READING_PASSAGES.map((r) => r.id)).size).toBe(READING_PASSAGES.length);
-    expect(READING_PASSAGES.some((r) => r.cefr === 'A2')).toBe(true);
+    expect(READING_PASSAGES.some((r) => /^A[12]$/.test(r.cefr))).toBe(true);
     expect(READING_PASSAGES.some((r) => r.cefr === 'B1')).toBe(true);
+    expect(READING_PASSAGES.some((r) => /^B2$/.test(r.cefr))).toBe(true);
+    expect(READING_PASSAGES.some((r) => r.topic === '日常生活')).toBe(true);
   });
 
   it('★ 中英逐段对齐：每段 en/zh 都非空（错位 = 阅读页静默串段）', () => {

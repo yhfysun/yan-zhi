@@ -6,13 +6,14 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ChevronRight, Clock3, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2 } from 'lucide-vue-next';
+import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, ShieldCheck, Target, Volume2 } from 'lucide-vue-next';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
 import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
+import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
@@ -47,6 +48,242 @@ const loading = ref(true);
 type SubjectDef = { key: string; label: string; ready: boolean };
 const SUBJECTS = ref<SubjectDef[]>([{ key: '英语', label: '英语', ready: true }]);
 const subject = ref<string>('英语');
+const softExamSpecialty = ref('');
+type SoftKnowledgeDomain = { title: string; chapters: string[] };
+type SoftOfficialBook = {
+  kind: '考试大纲' | '教程' | '试题解析';
+  title: string;
+  publisher: string;
+  isbn: string;
+  officialUrl: string;
+  note: string;
+};
+type SoftMaterial = {
+  id: string; title: string; level: '中级' | '高级'; specialty: string;
+  yearRange: string; description: string; fileName: string;
+  format: 'markdown'; chapterCount: number; knowledgeDomains: SoftKnowledgeDomain[];
+  books: SoftOfficialBook[]; officialBooksUrl: string; coverageNote: string;
+};
+const softMaterials = ref<SoftMaterial[]>([]);
+const securityPathId = ref('');
+type SoftRegion = { name: string; officialUrl: string; registrationUrl: string };
+type SoftLiveNotice = { title: string; url: string; source: '全国' | '地区' };
+type SoftLiveInfo = {
+  region: string; registrationUrl: string; officialUrl: string; nationalUrl: string;
+  fetchedAt: number; status: 'live' | 'partial' | 'fallback'; notices: SoftLiveNotice[];
+};
+const softRegions = ref<SoftRegion[]>([]);
+const softExamRegion = ref('北京');
+const softExamSession = ref('');
+const softExamDate = ref('');
+const softRegistrationDeadline = ref('');
+const softSideTab = ref<'exam' | 'materials' | 'knowledge'>('exam');
+const softLiveInfo = ref<SoftLiveInfo | null>(null);
+const softLiveLoading = ref(false);
+const softLiveError = ref('');
+const SOFT_PLAN_KEY = 'yz_soft_exam_plan_v1';
+const visibleSoftMaterials = computed(() => {
+  if (!softExamSpecialty.value || softExamSpecialty.value === '全部') return softMaterials.value;
+  return softMaterials.value.filter((m) => m.specialty === softExamSpecialty.value);
+});
+const focusedSoftMaterial = computed(() => visibleSoftMaterials.value[0] || null);
+const softSessionOptions = computed(() => {
+  const now = new Date();
+  const year = now.getMonth() < 6 ? now.getFullYear() : now.getFullYear() + 1;
+  return [`${year}年上半年`, `${year}年下半年`, `${year + 1}年上半年`, `${year + 1}年下半年`];
+});
+const softDaysToExam = computed(() => {
+  if (!softExamDate.value) return null;
+  const target = new Date(`${softExamDate.value}T00:00:00`).getTime();
+  if (!Number.isFinite(target)) return null;
+  return Math.ceil((target - Date.now()) / 86_400_000);
+});
+const softCountdownText = computed(() => {
+  if (softDaysToExam.value == null) return '选择考试日期后生成倒计时';
+  if (softDaysToExam.value < 0) return '考试日期已过，请更新';
+  if (softDaysToExam.value === 0) return '今天考试';
+  return `距考试 ${softDaysToExam.value} 天`;
+});
+const softKnowledgePoints = computed(() => {
+  const description = visibleSoftMaterials.value[0]?.description || '';
+  return description.split(/[；;]/)[0].split('、').map((item) => item.trim()).filter(Boolean);
+});
+const softStudyPlan = computed(() => {
+  if (!softExamDate.value) return [];
+  const days = Math.max(1, softDaysToExam.value ?? 1);
+  const weekCount = Math.min(12, Math.max(1, Math.ceil(days / 7)));
+  const points = softKnowledgePoints.value.length ? softKnowledgePoints.value : ['综合知识', '上机实操', '错题复盘'];
+  return Array.from({ length: weekCount }, (_, index) => {
+    const start = new Date(`${softExamDate.value}T00:00:00`);
+    start.setDate(start.getDate() - (weekCount - index) * 7);
+    const focus = points[index % points.length];
+    return {
+      week: index + 1,
+      date: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`,
+      title: `第 ${index + 1} 周 · ${focus}`,
+      task: index === 0 ? '梳理知识点 + 20 道客观题' : index === weekCount - 1 ? '整套模考 + 上机题复盘' : `复习 ${focus} + 20 道题 + 1 道上机`,
+    };
+  });
+});
+function softPlanStorageValue() {
+  return {
+    region: softExamRegion.value,
+    session: softExamSession.value,
+    examDate: softExamDate.value,
+    registrationDeadline: softRegistrationDeadline.value,
+  };
+}
+function restoreSoftPlan() {
+  try {
+    const raw = localStorage.getItem(SOFT_PLAN_KEY);
+    if (!raw) {
+      softExamSession.value = softSessionOptions.value[0];
+      return;
+    }
+    const saved = JSON.parse(raw) as Partial<ReturnType<typeof softPlanStorageValue>>;
+    if (saved.region) softExamRegion.value = saved.region;
+    if (saved.session) softExamSession.value = saved.session;
+    if (saved.examDate) softExamDate.value = saved.examDate;
+    if (saved.registrationDeadline) softRegistrationDeadline.value = saved.registrationDeadline;
+  } catch { /* ignore */ }
+}
+function persistSoftPlan() {
+  try { localStorage.setItem(SOFT_PLAN_KEY, JSON.stringify(softPlanStorageValue())); } catch { /* ignore */ }
+}
+async function loadSoftExamRegions() {
+  const r = await api.get<{ data: SoftRegion[] }>('/learning/soft-exam/regions');
+  softRegions.value = unwrap<SoftRegion[]>(r) || [];
+  if (!softRegions.value.some((item) => item.name === softExamRegion.value)) {
+    softExamRegion.value = softRegions.value[0]?.name || '北京';
+  }
+}
+async function loadSoftExamLive() {
+  if (!softExamRegion.value) return;
+  softLiveLoading.value = true;
+  softLiveError.value = '';
+  softLiveInfo.value = null;
+  try {
+    const r = await api.get<{ data: SoftLiveInfo }>(`/learning/soft-exam/live?region=${encodeURIComponent(softExamRegion.value)}`);
+    softLiveInfo.value = unwrap<SoftLiveInfo>(r);
+  } catch (e) {
+    softLiveError.value = e instanceof Error ? e.message : '官方动态获取失败';
+  } finally {
+    softLiveLoading.value = false;
+  }
+}
+function openOfficialUrl(url: string) {
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+function icsDate(value: string) {
+  return value.replace(/-/g, '');
+}
+function icsEscape(value: string) {
+  return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+}
+function downloadExamReminder() {
+  if (!softExamDate.value) {
+    ElMessage.warning('请先选择考试日期');
+    return;
+  }
+  const lines = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//YanZhi//Soft Exam Planner//CN', 'CALSCALE:GREGORIAN',
+  ];
+  const event = (uid: string, date: string, title: string, description: string, alarmDays: number[] = []) => {
+    lines.push(
+      'BEGIN:VEVENT',
+      `UID:${uid}@yanzhi.local`,
+      `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')}`,
+      `DTSTART;VALUE=DATE:${icsDate(date)}`,
+      `DTEND;VALUE=DATE:${icsDate(date)}`,
+      `SUMMARY:${icsEscape(title)}`,
+      `DESCRIPTION:${icsEscape(description)}`,
+    );
+    for (const days of alarmDays) {
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-P${days}D`, `DESCRIPTION:${icsEscape(title)}`, 'END:VALARM');
+    }
+    lines.push('END:VEVENT');
+  };
+  const specialty = visibleSoftMaterials.value[0]?.specialty || softExamRegion.value;
+  if (softRegistrationDeadline.value) {
+    event('registration-deadline', softRegistrationDeadline.value, `软考报名截止 · ${specialty}`, `地区：${softExamRegion.value}`, [7, 1]);
+  }
+  event('soft-exam', softExamDate.value, `软考考试 · ${specialty}`, `地区：${softExamRegion.value} · ${softExamSession.value}`, [30, 7, 1]);
+  for (const plan of softStudyPlan.value) {
+    event(`study-${plan.week}`, plan.date, plan.title, plan.task);
+  }
+  lines.push('END:VCALENDAR');
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `软考-${softExamRegion.value}-${softExamDate.value}-提醒.ics`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+async function showRegistrationGuide() {
+  const specialty = visibleSoftMaterials.value[0]?.specialty || '软考';
+  const live = softLiveInfo.value;
+  const latest = live?.notices.slice(0, 3).map((item) => `· ${item.title}`).join('\n') || '· 请先刷新官方动态';
+  const guide = [
+    `${softExamRegion.value} · ${specialty} · ${softExamSession.value}`,
+    `考试日期：${softExamDate.value || '未设置'}`,
+    `报名截止：${softRegistrationDeadline.value || '未设置'}`,
+    '',
+    '报名前检查：',
+    '1. 身份证件、学历/工作年限证明、符合要求的电子照片',
+    '2. 核对所选地区报名条件与属地要求',
+    '3. 登录官方报名入口，本人完成信息填报、资格审核与缴费',
+    '',
+    '最新官方动态：',
+    latest,
+    '',
+    '安全说明：验证码、支付和最终提交必须由本人操作，AI 不代填敏感身份信息。',
+  ].join('\n');
+  try { await navigator.clipboard?.writeText(guide); } catch { /* clipboard may be unavailable */ }
+  await ElMessageBox.alert(guide, 'AI 报名检查清单', {
+    confirmButtonText: '打开官方报名入口',
+    cancelButtonText: '关闭',
+    showCancelButton: true,
+    customStyle: { whiteSpace: 'pre-wrap', maxWidth: '560px' },
+  }).then(() => openOfficialUrl(live?.registrationUrl || 'https://bm.ruankao.org.cn/sign/welcome')).catch(() => {});
+}
+const softMaterialLoading = ref('');
+async function loadSoftMaterials() {
+  const r = await api.get<{ data: SoftMaterial[] }>('/learning/soft-exam/materials');
+  softMaterials.value = unwrap<SoftMaterial[]>(r) || [];
+}
+async function downloadSoftMaterial(material: SoftMaterial) {
+  if (softMaterialLoading.value) return;
+  softMaterialLoading.value = material.id;
+  try {
+    const r = await api.get<{ data: SoftMaterial & { content: string } }>(`/learning/soft-exam/materials/${encodeURIComponent(material.id)}`);
+    const detail = unwrap<SoftMaterial & { content: string }>(r);
+    if (!detail) throw new Error('资料内容为空');
+    const fileName = detail.fileName || material.fileName;
+    const saveDirect = (window as any).electronAPI?.softExam?.saveMaterial as
+      | ((name: string, content: string) => Promise<{ ok: boolean; path?: string; error?: string }>)
+      | undefined;
+    if (saveDirect) {
+      const saved = await saveDirect(fileName, detail.content);
+      if (!saved?.ok || !saved.path) throw new Error(saved?.error || '保存失败');
+      ElMessage.success({ message: `已保存到 ${saved.path}`, duration: 4500 });
+      return;
+    }
+    const blob = new Blob([detail.content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success('学习清单已交给浏览器下载');
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? `下载失败：${e.message}` : '下载失败');
+  } finally {
+    softMaterialLoading.value = '';
+  }
+}
 async function loadSubjects() {
   const r = await api.get<SubjectDef[]>('/learning/subjects');
   const list = unwrap<SubjectDef[]>(r);
@@ -54,15 +291,80 @@ async function loadSubjects() {
 }
 async function switchSubject(key: string) {
   if (!SUBJECTS.value.find((s) => s.key === key)?.ready) return;
+  const wasSoft = subject.value === '软考';
+  const wasSecurity = subject.value === '网络安全';
   subject.value = key;
   activeBook.value = null;
   levels.value = [];
+  if (key === '软考') {
+    tab.value = 'exam';
+    softSideTab.value = 'exam';
+    rightCollapsed.value = false;
+    rightWidth.value = Math.max(rightWidth.value, 360);
+    void loadSoftMaterials();
+    void loadSoftExamRegions();
+    void loadSoftExamLive();
+  } else if (wasSoft) {
+    tab.value = 'drill';
+  } else if (key === '网络安全') {
+    tab.value = 'security';
+    rightCollapsed.value = false;
+    rightWidth.value = Math.max(rightWidth.value, 300);
+  } else if (wasSecurity) {
+    tab.value = 'drill';
+  }
   await loadCourses();
+}
+function onSubjectChange(event: Event) {
+  void switchSubject((event.target as HTMLSelectElement).value);
 }
 
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam'>('drill');
-const tabDefs = [
+const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security'>('drill');
+const leftWidth = ref(300);
+const rightWidth = ref(280);
+const leftCollapsed = ref(false);
+const rightCollapsed = ref(false);
+let stopColumnResize: (() => void) | null = null;
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+function startColumnResize(side: 'left' | 'right', event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  stopColumnResize?.();
+  const startX = event.clientX;
+  const startWidth = side === 'left' ? leftWidth.value : rightWidth.value;
+  const onMove = (moveEvent: PointerEvent) => {
+    const delta = moveEvent.clientX - startX;
+    if (side === 'left') leftWidth.value = clamp(startWidth + delta, 220, 520);
+    else rightWidth.value = clamp(startWidth - delta, 240, 520);
+  };
+  const onUp = () => stopColumnResize?.();
+  stopColumnResize = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    stopColumnResize = null;
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp, { once: true });
+}
+const gridStyle = computed(() => {
+  const rightVisibleWidth = rightCollapsed.value
+    ? 0
+    : tab.value === 'coach' && !coachHistoryOpen.value
+      ? 44
+      : rightWidth.value;
+  return {
+    '--lp-left-w': `${leftCollapsed.value ? 0 : leftWidth.value}px`,
+    '--lp-right-w': `${rightVisibleWidth}px`,
+  } as Record<string, string>;
+});
+const gridClasses = computed(() => ({
+  'coach-mode': tab.value === 'coach',
+  'history-collapsed': tab.value === 'coach' && !coachHistoryOpen.value,
+  'left-collapsed': leftCollapsed.value,
+  'right-collapsed': rightCollapsed.value,
+}));
+const ENGLISH_TAB_DEFS = [
   { key: 'drill', label: '单词闯关' },
   { key: 'coach', label: '陪练对话' },
   { key: 'words', label: '词汇表' },
@@ -71,6 +373,13 @@ const tabDefs = [
   { key: 'reading', label: '范文阅读' },
   { key: 'exam', label: '历年真题' },
 ] as const;
+const SOFT_TAB_DEFS = [{ key: 'exam', label: '软考备考' }] as const;
+const SECURITY_TAB_DEFS = [{ key: 'security', label: '安全路线' }] as const;
+const tabDefs = computed(() => subject.value === '软考'
+  ? SOFT_TAB_DEFS
+  : subject.value === '网络安全'
+    ? SECURITY_TAB_DEFS
+    : ENGLISH_TAB_DEFS);
 function switchTab(k: typeof tab.value) {
   tab.value = k;
   if (k === 'coach') void ensureCoachConv(); // 复用/创建陪练会话（不跳路由，内嵌对话）
@@ -101,19 +410,50 @@ async function loadAll() {
 }
 
 // ── 课程地图（P1-D）：学段分组，点课即选中（关卡出现在中栏）──
-type CourseView = { id: string; name: string; stage: string; bookId: string; bookName: string; wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number; dueCount: number; progressPct: number };
+type CourseView = {
+  id: string; name: string; stage: string; bookId: string; bookName: string;
+  wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number;
+  dueCount: number; progressPct: number; kind: 'vocab' | 'exam' | 'security';
+  examLevel?: '中级' | '高级'; examSpecialty?: string;
+  securityPathId?: string;
+};
 type CourseGroup = { stage: string; courses: CourseView[] };
 const courses = ref<CourseGroup[]>([]);
 const activeCourseId = ref('');
 async function loadCourses() {
-  const r = await api.get<{ data: CourseGroup[] }>(`/learning/courses?subject=${encodeURIComponent(subject.value)}`);
+  const requestedSubject = subject.value;
+  const r = await api.get<{ data: CourseGroup[] }>(`/learning/courses?subject=${encodeURIComponent(requestedSubject)}`);
+  // 快速切换科目时，旧请求晚到不能覆盖新科目课程目录。
+  if (subject.value !== requestedSubject) return;
   courses.value = unwrap<CourseGroup[]>(r) || [];
+  if (subject.value === '软考') {
+    const options = courses.value.flatMap((g) => g.courses).filter((c) => c.kind === 'exam');
+    if (!softExamSpecialty.value || !options.some((c) => c.examSpecialty === softExamSpecialty.value)) {
+      softExamSpecialty.value = options[0]?.examSpecialty || '全部';
+    }
+  }
+  if (subject.value === '网络安全') {
+    const options = courses.value.flatMap((g) => g.courses).filter((c) => c.kind === 'security');
+    if (!securityPathId.value || !options.some((c) => c.securityPathId === securityPathId.value)) {
+      securityPathId.value = options[0]?.securityPathId || '';
+    }
+  }
   if (!sceneCourseId.value) {
     sceneCourseId.value = activeCourseId.value || courses.value[0]?.courses[0]?.id || '';
   }
   if (tab.value === 'scenes' && sceneCourseId.value) void loadScenes();
 }
 function openCourse(c: CourseView) {
+  if (c.kind === 'exam') {
+    softExamSpecialty.value = c.examSpecialty || '全部';
+    tab.value = 'exam';
+    return;
+  }
+  if (c.kind === 'security') {
+    securityPathId.value = c.securityPathId || '';
+    tab.value = 'security';
+    return;
+  }
   // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）；
   // 但用户正在词汇表通读时保持当前 Tab（换书词汇表跟着换，不把人踢回闯关）
   if (tab.value !== 'words' && tab.value !== 'scenes') tab.value = 'drill';
@@ -577,10 +917,30 @@ type ReadingDetail = ReadingBrief & { paras: Array<{ en: string; zh: string }> }
 const readings = ref<ReadingBrief[]>([]);
 const readingActive = ref<ReadingDetail | null>(null);
 const collecting = ref('');
+const readingLevel = ref<'全部' | '简单' | '中级' | '困难'>('全部');
+const readingTopic = ref('全部');
+const READING_LEVELS = ['全部', '简单', '中级', '困难'] as const;
+function readingLevelOf(cefr: string): '简单' | '中级' | '困难' {
+  if (cefr === 'A1' || cefr === 'A2') return '简单';
+  if (cefr === 'B1') return '中级';
+  return '困难';
+}
+const readingTopics = computed(() => ['全部', ...new Set(readings.value.map((r) => r.topic))]);
+const filteredReadings = computed(() =>
+  readings.value.filter((r) =>
+    (readingLevel.value === '全部' || readingLevelOf(r.cefr) === readingLevel.value) &&
+    (readingTopic.value === '全部' || r.topic === readingTopic.value),
+  ),
+);
 async function loadReadings() {
   const r = await api.get<{ data: ReadingBrief[] }>('/learning/readings');
   readings.value = unwrap<ReadingBrief[]>(r) || [];
+  if (!readingActive.value && readings.value.length) await openReading(readings.value[0].id);
 }
+watch([readingLevel, readingTopic], () => {
+  if (readingActive.value && filteredReadings.value.some((r) => r.id === readingActive.value?.id)) return;
+  if (filteredReadings.value.length) void openReading(filteredReadings.value[0].id);
+});
 async function openReading(id: string) {
   if (readingActive.value?.id === id) return;
   const r = await api.get<{ data: ReadingDetail }>(`/learning/readings/${id}`);
@@ -665,6 +1025,9 @@ async function startCoaching() {
   if (startingChat.value) return;
   startingChat.value = true;
   try {
+    coachTypingMode.value = false;
+    coachHistoryOpen.value = false;
+    coachSceneInfoOpen.value = false;
     // 自由陪练不沿用上一个场景会话，确保两种任务各自独立。
     if (activeScene.value) {
       activeScene.value = null;
@@ -696,8 +1059,52 @@ const coachSending = ref(false);
 const coachVoiceOn = ref(true);
 const practiceMicEnabled = ref(false);
 const coachMicState = ref<'idle' | 'requesting' | 'ready' | 'recording' | 'transcribing'>('idle');
+const coachTypingMode = ref(false);
+const coachHistoryOpen = ref(false);
+const coachSceneInfoOpen = ref(false);
+const coachEntryRef = ref<HTMLInputElement | null>(null);
 const coachMsgs = computed(() => (coachConvId.value ? chat.messagesByConv[coachConvId.value] || [] : []));
 const coachStreaming = computed(() => !!coachConvId.value && chat.isConvStreaming(coachConvId.value));
+const isCoachPresetPrompt = (text: string) =>
+  /^(I am ready\. Please start|Hi! I want to practice English\.|请根据当前场景|请提示我怎么说)/.test(text.trim());
+const coachUserLines = computed(() =>
+  coachMsgs.value
+    .filter((m) => m.role === 'user')
+    .map((m) => String(m.content || '').trim())
+    .filter((text) => text && !isCoachPresetPrompt(text)),
+);
+const latestCoachUserLine = computed(() => coachUserLines.value[coachUserLines.value.length - 1] || '');
+const coachRound = computed(() => coachUserLines.value.length);
+const coachCurrentReply = computed(() => {
+  const last = [...coachMsgs.value].reverse().find((m) => m.role === 'assistant' && coachTextOf(m).trim());
+  if (last) return coachTextOf(last);
+  if (activeScene.value) return activeScene.value.guide.coachEn;
+  return "Hi, I'm ready. What would you like to practice today?";
+});
+const latestCoachSceneResult = computed(() => {
+  for (let i = coachMsgs.value.length - 1; i >= 0; i -= 1) {
+    const rows = sceneResultsOf(coachMsgs.value[i]);
+    if (rows.length) return rows[rows.length - 1];
+  }
+  return null;
+});
+watch(latestCoachSceneResult, (value) => {
+  if (value) coachHistoryOpen.value = true;
+});
+const coachTalkLabel = computed(() => {
+  if (coachMicState.value === 'recording') return '正在听你说';
+  if (coachMicState.value === 'transcribing') return '正在识别';
+  if (coachMicState.value === 'requesting') return '正在打开麦克风';
+  if (coachStreaming.value) return '言言正在回答';
+  if (coachSending.value) return '正在发送';
+  return '点一下，开始说';
+});
+const coachTalkHint = computed(() => {
+  if (coachMicState.value === 'recording') return '说完再点一下，我会自动发送';
+  if (coachMicState.value === 'transcribing') return '请稍等，我在听写你的句子';
+  if (coachStreaming.value) return '先听言言说完，或者点「停止」打断';
+  return activeScene.value ? '直接说英语，中英混说也可以' : '不用打字，开口和言言聊';
+});
 let coachMicStream: MediaStream | null = null;
 let coachMicRecorder: MediaRecorder | null = null;
 let coachMicChunks: Blob[] = [];
@@ -735,6 +1142,7 @@ function startCoachRecording() {
     coachMicRecorder.onstop = () => { void recognizeCoachRecording(); };
     coachMicRecorder.start();
     coachMicState.value = 'recording';
+    stageRef.value?.play('look');
   } catch {
     coachMicState.value = 'ready';
     ElMessage.warning('录音启动失败，可以直接打字继续');
@@ -791,6 +1199,13 @@ async function toggleCoachMic() {
   if (coachMicState.value === 'idle' && !(await primeCoachMic())) return;
   practiceMicEnabled.value = true;
   startCoachRecording();
+}
+
+async function toggleCoachTyping() {
+  coachTypingMode.value = !coachTypingMode.value;
+  if (!coachTypingMode.value) return;
+  await nextTick();
+  coachEntryRef.value?.focus();
 }
 
 function stopCoachMic() {
@@ -854,6 +1269,8 @@ async function sendCoach(preset?: string) {
       return;
     }
     if (!preset) coachInput.value = '';
+    coachHistoryOpen.value = false;
+    stageRef.value?.play('hop');
     await chat.sendMessage(content, resolved.platform, resolved.model, undefined, {}, convId);
     // AI 说完 → 宠物读出来；朗读结束后自动重新开麦，形成「用户一句、模型一句」的轮次。
     if (coachVoiceOn.value) speakLastCoachReply();
@@ -868,7 +1285,11 @@ async function sendCoach(preset?: string) {
 
 function coachTextOf(m: { role: string; content?: string }): string {
   if (m.role !== 'assistant') return String(m.content || '');
-  return stripSceneResultBlocks(String(m.content || ''));
+  return stripSceneResultBlocks(String(m.content || ''))
+    .replace(/\*\*/g, '')
+    .replace(/^---+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // 浏览器本地 TTS（en-US）：长句朗读用它（单词朗读走 tts-packs 合成，场景结算卡同款思路）
@@ -954,52 +1375,62 @@ onMounted(() => {
   //   页面挂载即把模式切到 learning（与顶栏模式切换器同一函数，幂等）。
   if (activeMode.value !== 'learning') setMode('learning');
   void loadSubjects();
+  restoreSoftPlan();
+  void loadSoftExamRegions();
 });
 onMounted(loadAll);
 onMounted(loadTtsPack);
-onBeforeUnmount(stopCoachMic);
+onBeforeUnmount(() => {
+  stopColumnResize?.();
+  stopCoachMic();
+});
+watch(
+  [softExamRegion, softExamSession, softExamDate, softRegistrationDeadline],
+  () => persistSoftPlan(),
+);
+watch(softExamRegion, () => {
+  if (subject.value === '软考') void loadSoftExamLive();
+});
+watch(softExamDate, (value) => {
+  if (!value) return;
+  const date = new Date(`${value}T00:00:00`);
+  if (!Number.isFinite(date.getTime())) return;
+  softExamSession.value = `${date.getFullYear()}年${date.getMonth() < 6 ? '上' : '下'}半年`;
+});
 </script>
 
 <template>
   <div class="learning-page">
-    <header class="lp-header">
-      <div class="lp-head-left">
-        <h1>学习模式</h1>
-        <p class="lp-sub">
-          <template v-if="profile.cefr">当前等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · 目标：{{ profile.goals }}</span></template>
-          <template v-else>还没有定级——点「开始陪练」，先做个 3 分钟摸底对话</template>
-          <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
-        </p>
-        <div class="lp-subjects">
-          <button
-            v-for="s in SUBJECTS" :key="s.key"
-            class="lp-subject" :class="{ active: subject === s.key }"
-            :disabled="!s.ready" :title="s.ready ? '' : '筹备中'"
-            @click="switchSubject(s.key)"
-          >{{ s.label }}<i v-if="!s.ready" class="lp-soon">筹备中</i></button>
-        </div>
+    <div class="lp-topbar">
+      <label class="lp-subject-select">
+        <span>科目</span>
+        <select :value="subject" aria-label="选择学习科目" @change="onSubjectChange">
+          <option v-for="s in SUBJECTS" :key="s.key" :value="s.key" :disabled="!s.ready">
+            {{ s.label }}{{ s.ready ? '' : '（筹备中）' }}
+          </option>
+        </select>
+      </label>
+      <div class="lp-top-status">
+        <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
+        <template v-else-if="subject === '网络安全'">网络安全 · 分支路线 · 仅授权靶场实验</template>
+        <template v-else-if="profile.cefr">等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · {{ profile.goals }}</span></template>
+        <template v-else>先和言言聊 3 分钟，自动完成定级</template>
+        <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
       </div>
-      <div class="lp-header-actions">
-        <LearnStage ref="stageRef" class="lp-avatar-stage" compact />
-        <button
-          class="lp-coach"
-          :disabled="startingChat"
-          :title="startingChat ? '正在创建陪练会话' : '开始陪练，和 AI 用英语聊'"
-          @click="startCoaching"
-        >
-          <Mic :size="16" />
-          {{ startingChat ? '创建中…' : '开始陪练' }}
-        </button>
-      </div>
-    </header>
+    </div>
 
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
-    <div class="lp-grid">
+    <div class="lp-grid" :class="gridClasses" :style="gridStyle">
       <!-- 左：科目课程地图 + 我的词单 -->
-      <section class="lp-card lp-col-left">
+      <section v-show="!leftCollapsed" class="lp-card lp-col-left">
         <div class="lp-card-head">
           <h2>课程</h2>
-          <button class="lp-mini" @click="showCreate = !showCreate">{{ showCreate ? '收起' : '+ 自定义词单' }}</button>
+          <div class="lp-card-actions">
+            <button v-if="subject === '英语'" class="lp-mini" @click="showCreate = !showCreate">{{ showCreate ? '收起' : '+ 自定义词单' }}</button>
+            <button class="lp-collapse-btn" title="收起左侧栏" aria-label="收起左侧栏" @click="leftCollapsed = true">
+              <ChevronLeft :size="14" />
+            </button>
+          </div>
         </div>
 
         <div v-if="showCreate" class="lp-create">
@@ -1036,26 +1467,60 @@ onBeforeUnmount(stopCoachMic);
         <div class="lp-courses">
           <div v-for="grp in courses" :key="grp.stage" class="lp-stage">
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
-            <button
-              v-for="c in grp.courses" :key="c.id"
-              class="lp-course" :class="{ active: activeBook?.id === c.bookId || sceneCourseId === c.id, done: c.progressPct === 100 }"
-              @click="openCourse(c)"
-            >
-              <span class="lp-course-row">
-                <span class="lp-course-name">{{ c.name }}<i v-if="c.dueCount > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ c.dueCount }}</i></span>
-                <span class="lp-course-pct">{{ c.progressPct }}%</span>
-              </span>
-              <span class="lp-course-bar"><span class="lp-course-fill" :style="{ width: c.progressPct + '%' }"></span></span>
-              <span class="lp-course-meta">{{ c.clearedLevels }}/{{ c.totalLevels }} 关 · {{ c.wordCount }} 词</span>
-            </button>
+            <template v-for="c in grp.courses" :key="c.id">
+              <button
+                v-if="c.kind === 'exam'"
+                class="lp-course lp-course-exam"
+                :class="{ active: softExamSpecialty === c.examSpecialty }"
+                @click="openCourse(c)"
+              >
+                <span class="lp-course-row">
+                  <span class="lp-course-name">{{ c.name }}</span>
+                  <span class="lp-soft-course-state">
+                    <Check v-if="softExamSpecialty === c.examSpecialty" :size="13" />
+                    <span class="lp-soft-course-level">{{ c.examLevel }}</span>
+                  </span>
+                </span>
+                <span class="lp-course-meta">综合知识 · 上机题 · 2023–2025</span>
+              </button>
+              <button
+                v-else-if="c.kind === 'security'"
+                class="lp-course lp-course-security"
+                :class="{ active: securityPathId === c.securityPathId }"
+                @click="openCourse(c)"
+              >
+                <span class="lp-course-row">
+                  <span class="lp-course-name">{{ c.name }}</span>
+                  <span class="lp-security-course-state">
+                    <Check v-if="securityPathId === c.securityPathId" :size="13" />
+                    <span class="lp-security-course-level">路线</span>
+                  </span>
+                </span>
+                <span class="lp-course-meta">方法论 · 示例代码 · 授权靶场</span>
+              </button>
+              <button
+                v-else
+                class="lp-course" :class="{ active: activeBook?.id === c.bookId || sceneCourseId === c.id, done: c.progressPct === 100 }"
+                @click="openCourse(c)"
+              >
+                <span class="lp-course-row">
+                  <span class="lp-course-name">{{ c.name }}<i v-if="c.dueCount > 0" class="lp-due-badge" title="有到期词待复习">🟡 {{ c.dueCount }}</i></span>
+                  <span class="lp-course-pct">{{ c.progressPct }}%</span>
+                </span>
+                <span class="lp-course-bar"><span class="lp-course-fill" :style="{ width: c.progressPct + '%' }"></span></span>
+                <span class="lp-course-meta">{{ c.clearedLevels }}/{{ c.totalLevels }} 关 · {{ c.wordCount }} 词</span>
+              </button>
+            </template>
           </div>
           <p v-if="!courses.length && !loading" class="lp-hint">课程加载中…</p>
         </div>
       </section>
 
+      <div v-show="!leftCollapsed" class="lp-column-resizer" title="拖动调整左侧宽度" @pointerdown="startColumnResize('left', $event)"></div>
+
       <!-- 中：工作区（Tab 只切这里） -->
       <section class="lp-card lp-col-mid">
-        <div class="lp-tabs">
+        <div v-if="tabDefs.length > 1" class="lp-tabs">
           <button
             v-for="t in tabDefs" :key="t.key"
             class="lp-tab" :class="{ active: tab === t.key }"
@@ -1063,134 +1528,135 @@ onBeforeUnmount(stopCoachMic);
           >{{ t.label }}</button>
         </div>
 
-        <!-- 陪练对话：内嵌中栏（不跳路由），AI 输出英文 + 自动朗读 -->
+        <!-- 陪练：宠物是对话主体，文本框只作为降级输入 -->
         <template v-if="tab === 'coach'">
-          <div class="lp-coach-chat">
-            <section v-if="activeScene" class="lp-live-scene">
-              <div class="lp-live-scene-head">
-                <div>
-                  <p class="lp-eyebrow">{{ activeScene.courseName }} · {{ activeScene.theme }}</p>
-                  <h3>{{ activeScene.title }}</h3>
-                </div>
-                <div class="lp-live-scene-badges">
-                  <span>{{ sceneLevelText(activeScene.level) }}</span>
-                  <span>{{ activeScene.cefr }}</span>
-                  <span>{{ activeScene.minutes }} 分钟</span>
-                </div>
+          <div class="lp-coach-chat lp-voice-studio">
+            <div class="lp-practice-head">
+              <div class="lp-practice-title">
+                <p class="lp-eyebrow">{{ activeScene ? `${activeScene.courseName} · ${activeScene.theme}` : '自由口语陪练' }}</p>
+                <h2>{{ activeScene ? activeScene.title : '和言言聊聊今天' }}</h2>
+                <p>{{ activeScene ? activeScene.scene : '不用准备台词，直接开口。说错了也没关系，言言会顺着你的意思继续聊。' }}</p>
               </div>
-              <p class="lp-live-scene-desc">{{ activeScene.scene }}</p>
-              <div class="lp-live-roles">
-                <span><b>AI</b> {{ activeScene.roles[0] }}</span>
-                <span><b>你</b> {{ activeScene.roles[1] }}</span>
-                <span><Target :size="13" /> {{ activeScene.exitHint }}</span>
-              </div>
-
-              <div class="lp-scene-guide" :class="`mode-${sceneScriptMode}`">
-                <template v-if="sceneScriptMode === 'simple' || sceneScriptMode === 'medium'">
-                  <div class="lp-guide-line coach">
-                    <span class="lp-guide-who">AI 先说</span>
-                    <div>
-                      <p>{{ activeScene.guide.coachEn }}</p>
-                      <small v-if="sceneScriptMode === 'simple'">{{ activeScene.guide.coachZh }}</small>
-                    </div>
-                    <button class="lp-speak" title="朗读 AI 开场" @click="speakCoachText(activeScene.guide.coachEn)">
-                      <Volume2 :size="15" />
-                    </button>
-                  </div>
-                  <div class="lp-guide-line user">
-                    <span class="lp-guide-who">轮到你</span>
-                    <div>
-                      <p>{{ activeScene.guide.userEn }}</p>
-                      <small v-if="sceneScriptMode === 'simple'" class="lp-guide-phonetic">{{ activeScene.guide.userPhonetic }}</small>
-                      <small v-if="sceneScriptMode === 'simple'">{{ activeScene.guide.userZh }}</small>
-                    </div>
-                    <button class="lp-speak" title="朗读示范" @click="speakCoachText(activeScene.guide.userEn)">
-                      <Volume2 :size="15" />
-                    </button>
-                  </div>
-                </template>
-                <div v-else class="lp-guide-hidden">
-                  <Lightbulb :size="18" />
-                  <div>
-                    <p>高级模式：台本已隐藏</p>
-                    <small>直接开口或请 AI 给一句提示。中文、英文、中英混说都可以。</small>
-                  </div>
-                </div>
-              </div>
-
-              <div class="lp-live-scene-actions">
-                <span class="lp-mic-status" :class="coachMicState">
-                  <Mic v-if="coachMicState === 'recording'" :size="14" />
-                  <LoaderCircle v-else-if="coachMicState === 'transcribing' || coachMicState === 'requesting'" :size="14" class="lp-spin" />
-                  <MicOff v-else :size="14" />
-                  {{ coachMicState === 'recording' ? '正在听你说，说完点一下停止' : coachMicState === 'transcribing' ? '正在识别你的话…' : coachMicState === 'ready' ? '麦克风已就绪，AI 说完会自动开始' : '麦克风未开启，可直接打字' }}
-                </span>
-                <button v-if="sceneScriptMode !== 'advanced'" class="lp-mini" @click="toggleCoachMic">
-                  {{ coachMicState === 'recording' ? '结束并发送' : '照着台本说' }}
+              <div class="lp-practice-tools">
+                <button class="lp-tool-button" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">
+                  <Volume2 :size="15" />
                 </button>
-                <button class="lp-mini" :disabled="coachSending" @click="askSceneHint">
-                  <Lightbulb :size="14" /> 不会说，给我提示
+                <button v-if="activeScene" class="lp-tool-button" :class="{ active: coachSceneInfoOpen }" @click="coachSceneInfoOpen = !coachSceneInfoOpen">
+                  <Lightbulb :size="15" /> 场景提示
                 </button>
-                <button class="lp-mini" @click="tab = 'scenes'">换一个场景</button>
-              </div>
-            </section>
-
-            <div class="lp-chat-msgs">
-              <template v-for="(m, mi) in coachMsgs" :key="m.id || mi">
-                <div v-if="m.role === 'user' || (m.role === 'assistant' && coachTextOf(m).trim())" class="lp-chat-row" :class="m.role">
-                  <div class="lp-chat-bubble">
-                    <p class="lp-chat-text">{{ coachTextOf(m) }}</p>
-                    <button v-if="m.role === 'assistant' && coachTextOf(m).trim()" class="lp-speak" title="朗读这句" @click="speakCoachText(coachTextOf(m))">
-                      <Volume2 :size="14" />
-                    </button>
-                  </div>
-                </div>
-                <template v-for="(sr, si) in sceneResultsOf(m)" :key="`${m.id || mi}-sr-${si}`">
-                  <SceneResultCard
-                    v-if="sr.ok"
-                    :result="sr.result"
-                    :can-retry="!!activeScene"
-                    :retrying="startingScene === activeScene?.id"
-                    @retry="activeScene && startScene(activeScene)"
-                  />
-                  <div v-else class="lp-scene-result-error">场景结算数据有误：{{ sr.error }}</div>
-                </template>
-              </template>
-              <div v-if="coachStreaming" class="lp-chat-typing">陪练正在输入…</div>
-              <div v-if="!coachMsgs.length && !coachStreaming" class="lp-empty">
-                <p class="lp-empty-title">{{ activeScene ? '正在进入场景…' : '和英语陪练开聊吧' }}</p>
-                <p class="lp-hint">你可以说中文、英文或中英混说；AI 说完会自动开麦，轮到你回应。</p>
-                <button class="lp-mini" @click="sendCoach('Hi! I want to practice English. Please start with a few easy questions.')">
-                  Hi, let's start! 👋
-                </button>
+                <button class="lp-tool-button" @click="tab = 'scenes'">换场景</button>
               </div>
             </div>
-            <div class="lp-chat-input">
-              <button class="lp-mini lp-input-icon" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">
-                <Volume2 v-if="coachVoiceOn" :size="16" />
-                <Volume2 v-else :size="16" class="lp-muted-icon" />
-              </button>
+
+            <section v-if="activeScene && coachSceneInfoOpen" class="lp-scene-compact">
+              <div class="lp-scene-compact-roles">
+                <span><b>AI</b> {{ activeScene.roles[0] }}</span>
+                <span><b>你</b> {{ activeScene.roles[1] }}</span>
+                <span><Target :size="12" /> {{ activeScene.exitHint }}</span>
+              </div>
+              <div v-if="sceneScriptMode !== 'advanced'" class="lp-scene-lines">
+                <div>
+                  <span>AI 先说</span>
+                  <p>{{ activeScene.guide.coachEn }}</p>
+                  <button class="lp-speak" title="朗读 AI 开场" @click="speakCoachText(activeScene.guide.coachEn)">
+                    <Volume2 :size="13" />
+                  </button>
+                </div>
+                <div>
+                  <span>轮到你</span>
+                  <p>{{ activeScene.guide.userEn }}</p>
+                  <small v-if="sceneScriptMode === 'simple'">{{ activeScene.guide.userZh }}</small>
+                  <button class="lp-speak" title="朗读示范" @click="speakCoachText(activeScene.guide.userEn)">
+                    <Volume2 :size="13" />
+                  </button>
+                </div>
+              </div>
+              <p v-else class="lp-hint">高级模式已隐藏台本。可以直接说，或点下方「给我提示」。</p>
+            </section>
+
+            <div class="lp-pet-stage" :class="{ listening: coachMicState === 'recording', thinking: coachStreaming }">
+              <LearnStage ref="stageRef" class="lp-coach-stage" :view-scale="2.25" />
+              <div class="lp-speech-column">
+                <div class="lp-pet-speech">
+                  <div class="lp-pet-speech-head">
+                    <span>言言</span>
+                    <i v-if="activeScene">{{ activeScene.roles[0] }}</i>
+                    <i v-else>英语陪练</i>
+                  </div>
+                  <p>{{ coachCurrentReply }}</p>
+                  <button
+                    v-if="!coachMsgs.length && !coachStreaming"
+                    class="lp-coach-start"
+                    :disabled="startingChat"
+                    @click="startCoaching"
+                  >
+                    <Mic :size="14" /> {{ startingChat ? '正在准备…' : '让言言先开场' }}
+                  </button>
+                  <button class="lp-speak" title="再听一遍" @click="speakCoachText(coachCurrentReply)">
+                    <Volume2 :size="15" />
+                  </button>
+                </div>
+                <div v-if="latestCoachUserLine" class="lp-user-echo">
+                  <span>你刚说</span>
+                  <p>{{ latestCoachUserLine }}</p>
+                </div>
+              </div>
+              <div class="lp-mic-radar" :class="coachMicState" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+              </div>
+            </div>
+
+            <SceneResultCard
+              v-if="latestCoachSceneResult?.ok"
+              :result="latestCoachSceneResult.result"
+              :can-retry="!!activeScene"
+              :retrying="startingScene === activeScene?.id"
+              @retry="activeScene && startScene(activeScene)"
+            />
+            <div v-else-if="latestCoachSceneResult && !latestCoachSceneResult.ok" class="lp-scene-result-error">
+              场景结算数据有误：{{ latestCoachSceneResult.error }}
+            </div>
+
+            <div class="lp-voice-dock">
               <button
-                class="lp-mic-button"
-                :class="{ recording: coachMicState === 'recording', busy: coachMicState === 'transcribing' || coachMicState === 'requesting' }"
-                :disabled="coachMicState === 'transcribing' || coachMicState === 'requesting'"
-                :title="coachMicState === 'recording' ? '结束并发送' : '开始说英语或中文'"
+                class="lp-talk-button"
+                :class="{ recording: coachMicState === 'recording', busy: coachMicState === 'transcribing' || coachMicState === 'requesting' || coachStreaming }"
+                :disabled="coachMicState === 'transcribing' || coachMicState === 'requesting' || coachStreaming"
+                :aria-label="coachMicState === 'recording' ? '结束录音并发送' : '开始说话'"
                 @click="toggleCoachMic"
               >
-                <LoaderCircle v-if="coachMicState === 'transcribing' || coachMicState === 'requesting'" :size="16" class="lp-spin" />
-                <MicOff v-else-if="coachMicState === 'recording'" :size="16" />
-                <Mic v-else :size="16" />
+                <LoaderCircle v-if="coachMicState === 'transcribing' || coachMicState === 'requesting'" :size="26" class="lp-spin" />
+                <MicOff v-else-if="coachMicState === 'recording'" :size="26" />
+                <Mic v-else :size="26" />
               </button>
+              <div class="lp-talk-copy" role="status">
+                <strong>{{ coachTalkLabel }}</strong>
+                <span>{{ coachTalkHint }}</span>
+              </div>
+              <div class="lp-dock-actions">
+                <button class="lp-tool-button" :class="{ active: coachTypingMode }" @click="toggleCoachTyping">
+                  <Keyboard :size="15" /> 打字
+                </button>
+                <button v-if="activeScene" class="lp-tool-button" :disabled="coachSending" @click="askSceneHint">
+                  <Lightbulb :size="15" /> 给我提示
+                </button>
+                <button v-if="coachStreaming" class="lp-tool-button danger" @click="chat.stop(coachConvId)">停止</button>
+              </div>
+            </div>
+
+            <div v-if="coachTypingMode" class="lp-text-fallback">
               <input
-                v-model="coachInput" class="lp-chat-entry"
-                :placeholder="activeScene ? '说英语或中文都可以，也可以直接打字…' : '说英语或中文都可以…（回车发送）'"
+                ref="coachEntryRef"
+                v-model="coachInput"
+                class="lp-chat-entry"
+                :placeholder="activeScene ? '说英语或中文都可以…' : '不方便开口时，在这里打字…'"
                 @keyup.enter="sendCoach()"
               />
-              <button v-if="coachStreaming" class="lp-primary lp-stop" @click="chat.stop(coachConvId)">⏹ 停止</button>
-              <button v-else class="lp-primary" :disabled="coachSending || !coachInput.trim()" @click="sendCoach()">
+              <button class="lp-primary" :disabled="coachSending || !coachInput.trim()" @click="sendCoach()">
                 {{ coachSending ? '发送中…' : '发送' }}
               </button>
             </div>
+
           </div>
         </template>
 
@@ -1486,37 +1952,108 @@ onBeforeUnmount(stopCoachMic);
           </div>
         </template>
 
-        <!-- 范文阅读：列表 chips + 阅读器 -->
+        <!-- 范文阅读：左侧素材库，右侧阅读器 -->
         <template v-else-if="tab === 'reading'">
-          <div class="lp-reading-chips">
-            <button
-              v-for="r in readings" :key="r.id"
-              class="lp-chip" :class="{ active: readingActive?.id === r.id }"
-              @click="openReading(r.id)"
-            >{{ r.title }} <i>{{ r.cefr }}</i></button>
-          </div>
-          <div v-if="readingActive" class="lp-reader">
-            <h3>{{ readingActive.title }} <span class="lp-kind">{{ readingActive.cefr }}</span></h3>
-            <p class="lp-hint">🔊 逐段朗读；划选英文单词后点「收词」进词本（进「阅读生词」词单）。</p>
-            <div v-for="(p, i) in readingActive.paras" :key="i" class="lp-para">
-              <p class="lp-para-en" @mouseup="collectSelection">{{ p.en }} <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(p.en)">🔊</button> <button class="lp-speak" title="设为跟读目标（右栏录音打分）" @click="shadowTarget = p.en">🎙</button></p>
-              <p class="lp-para-zh">{{ p.zh }}</p>
+          <div class="lp-reading-layout">
+            <aside class="lp-reading-library">
+              <div class="lp-reading-library-head">
+                <h3>范文库</h3>
+                <span>{{ filteredReadings.length }} 篇</span>
+              </div>
+              <div class="lp-reading-levels" role="group" aria-label="按难度筛选">
+                <button
+                  v-for="level in READING_LEVELS" :key="level"
+                  :class="{ active: readingLevel === level }"
+                  @click="readingLevel = level"
+                >{{ level }}</button>
+              </div>
+              <label class="lp-reading-topic">主题
+                <select v-model="readingTopic">
+                  <option v-for="topic in readingTopics" :key="topic" :value="topic">{{ topic }}</option>
+                </select>
+              </label>
+              <div class="lp-reading-list">
+                <button
+                  v-for="r in filteredReadings" :key="r.id"
+                  class="lp-reading-card" :class="{ active: readingActive?.id === r.id }"
+                  @click="openReading(r.id)"
+                >
+                  <span class="lp-reading-card-top">
+                    <b>{{ r.title }}</b>
+                    <i class="lp-reading-difficulty" :class="`level-${readingLevelOf(r.cefr)}`">{{ readingLevelOf(r.cefr) }}</i>
+                  </span>
+                  <span class="lp-reading-card-meta">{{ r.topic }} · {{ r.paraCount }} 段 · {{ r.cefr }}</span>
+                </button>
+                <p v-if="!filteredReadings.length" class="lp-hint">这个分类还没有范文。</p>
+              </div>
+            </aside>
+
+            <article v-if="readingActive" class="lp-reader">
+              <header class="lp-reader-head">
+                <div>
+                  <div class="lp-reader-badges">
+                    <span>{{ readingActive.topic }}</span>
+                    <span>{{ readingLevelOf(readingActive.cefr) }}</span>
+                    <span>{{ readingActive.cefr }}</span>
+                  </div>
+                  <h3>{{ readingActive.title }}</h3>
+                </div>
+                <BookOpen :size="20" />
+              </header>
+              <p class="lp-reader-tip">读音、点词、跟读和收词都在原文里完成。</p>
+              <div v-for="(p, i) in readingActive.paras" :key="i" class="lp-para">
+                <p class="lp-para-en" @mouseup="collectSelection">
+                  {{ p.en }}
+                  <span class="lp-para-actions">
+                    <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读这一段" @click="speak(p.en)"><Volume2 :size="13" /></button>
+                    <button class="lp-speak" title="设为跟读目标" @click="shadowTarget = p.en"><Mic :size="13" /></button>
+                  </span>
+                </p>
+                <p class="lp-para-zh">{{ p.zh }}</p>
+              </div>
+              <button class="lp-reader-collect" :disabled="!!collecting" @click="collectSelection">
+                {{ collecting ? `查询「${collecting}」中…` : '收词（先划选一个英文词）' }}
+              </button>
+            </article>
+
+            <div v-else class="lp-reader-empty">
+              <BookOpen :size="28" />
+              <p>从左侧选一篇范文</p>
+              <span>可以按难度和主题筛选。</span>
             </div>
-            <button class="lp-mini" :disabled="!!collecting" @click="collectSelection">
-              {{ collecting ? `查询「${collecting}」中…` : '📥 收词（先划选一个英文词）' }}
-            </button>
           </div>
-          <p v-else class="lp-hint">上方选一篇范文开始阅读。</p>
+        </template>
+
+        <!-- 网络安全：独立分支路线与授权靶场 -->
+        <template v-else-if="tab === 'security'">
+          <CyberSecurityWorkbench
+            :path-id="securityPathId"
+            @select-path="securityPathId = $event"
+          />
         </template>
 
         <!-- 历年真题：考研 / 高考客观题训练 -->
         <template v-else-if="tab === 'exam'">
-          <ExamTrainer />
+          <ExamTrainer
+            :initial-filter="subject === '软考' ? '软考' : '全部'"
+            :initial-soft-specialty="subject === '软考' ? softExamSpecialty : '全部'"
+            :scoped-subject="subject === '软考' ? '软考' : '全部'"
+          />
         </template>
       </section>
 
+      <div
+        v-show="!rightCollapsed && !(tab === 'coach' && !coachHistoryOpen)"
+        class="lp-column-resizer"
+        title="拖动调整右侧宽度"
+        @pointerdown="startColumnResize('right', $event)"
+      ></div>
+
       <!-- 右：状态栏（始终可见） -->
-      <section class="lp-card lp-col-right">
+      <section v-show="tab !== 'coach' && subject === '英语' && !rightCollapsed" class="lp-card lp-col-right">
+        <button class="lp-collapse-btn lp-collapse-right" title="收起右侧栏" aria-label="收起右侧栏" @click="rightCollapsed = true">
+          <ChevronRight :size="14" />
+        </button>
         <div class="lp-card-head"><h2>今日复习</h2></div>
         <div class="lp-review">
           <p class="lp-review-count">🔥 <b>{{ dueCount }}</b> 个词到期</p>
@@ -1552,6 +2089,226 @@ onBeforeUnmount(stopCoachMic);
         </ul>
         <p v-else class="lp-hint">还没有记录。陪练纠过的表达会自动进这里。</p>
       </section>
+
+      <aside v-if="subject === '网络安全' && !rightCollapsed" class="lp-card lp-col-right lp-security-boundary">
+        <button class="lp-collapse-btn lp-collapse-right" title="收起右侧栏" aria-label="收起右侧栏" @click="rightCollapsed = true">
+          <ChevronRight :size="14" />
+        </button>
+        <div class="lp-card-head"><h2>安全边界</h2></div>
+        <div class="lp-security-warning">
+          <ShieldCheck :size="17" />
+          <p>只测试自己的系统、明确授权的资产或本地靶场。公网目标、未授权扫描和破坏性验证不提供操作步骤。</p>
+        </div>
+        <div class="lp-security-rule">
+          <h3>操作原则</h3>
+          <ul>
+            <li>先确认范围、时间窗和停止条件</li>
+            <li>只做低影响、最小复现</li>
+            <li>证据脱敏，测试数据及时清理</li>
+            <li>高风险动作必须单独审批</li>
+          </ul>
+        </div>
+        <div class="lp-security-rule">
+          <h3>当前路线</h3>
+          <p>{{ courses.flatMap((g) => g.courses).find((c) => c.securityPathId === securityPathId)?.name || '请选择路线' }}</p>
+        </div>
+        <div class="lp-security-rule">
+          <h3>学习产出</h3>
+          <p>每条路线包含风险说明、防御控制、错误/安全代码对照和本地靶场步骤。</p>
+        </div>
+      </aside>
+
+      <aside v-if="subject === '软考' && !rightCollapsed" class="lp-card lp-col-right lp-soft-materials">
+        <button v-show="!rightCollapsed" class="lp-collapse-btn lp-collapse-right" title="收起右侧栏" aria-label="收起右侧栏" @click="rightCollapsed = true">
+          <ChevronRight :size="14" />
+        </button>
+        <div class="lp-soft-side-tabs">
+          <button :class="{ active: softSideTab === 'exam' }" @click="softSideTab = 'exam'">考试信息</button>
+          <button :class="{ active: softSideTab === 'materials' }" @click="softSideTab = 'materials'">学习清单</button>
+          <button :class="{ active: softSideTab === 'knowledge' }" @click="softSideTab = 'knowledge'">知识体系</button>
+        </div>
+
+        <div v-if="softSideTab === 'exam'" class="lp-soft-exam-panel">
+          <div class="lp-soft-plan-form">
+            <label>
+              <span><MapPin :size="12" /> 地区</span>
+              <select v-model="softExamRegion" @change="loadSoftExamLive">
+                <option v-for="region in softRegions" :key="region.name" :value="region.name">{{ region.name }}</option>
+              </select>
+            </label>
+            <label>
+              <span>期次</span>
+              <select v-model="softExamSession">
+                <option v-for="session in softSessionOptions" :key="session" :value="session">{{ session }}</option>
+              </select>
+            </label>
+            <label>
+              <span>考试日期</span>
+              <input v-model="softExamDate" type="date" />
+            </label>
+            <label>
+              <span>报名截止</span>
+              <input v-model="softRegistrationDeadline" type="date" />
+            </label>
+          </div>
+          <div class="lp-soft-countdown"><Clock3 :size="15" />{{ softCountdownText }}</div>
+          <div class="lp-soft-actions">
+            <button class="lp-primary" @click="openOfficialUrl(softLiveInfo?.registrationUrl || 'https://bm.ruankao.org.cn/sign/welcome')">官方报名入口</button>
+            <button class="lp-mini" @click="downloadExamReminder">下载考试提醒</button>
+            <button class="lp-mini" @click="showRegistrationGuide">AI 报名检查</button>
+          </div>
+
+          <div class="lp-soft-section-head">
+            <h3>官方动态</h3>
+            <button class="lp-mini" :disabled="softLiveLoading" @click="loadSoftExamLive">{{ softLiveLoading ? '获取中…' : '刷新' }}</button>
+          </div>
+          <p v-if="softLiveError" class="lp-soft-live-error">{{ softLiveError }}</p>
+          <p v-else-if="softLiveInfo" class="lp-soft-live-time">
+            {{ softLiveInfo.region }} · {{ softLiveInfo.status === 'live' ? '已获取官方页面' : '部分信息使用官方入口兜底' }} ·
+            {{ new Date(softLiveInfo.fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
+          </p>
+          <div v-if="softLiveInfo?.notices.length" class="lp-soft-notices">
+            <button v-for="notice in softLiveInfo.notices.slice(0, 8)" :key="notice.url" @click="openOfficialUrl(notice.url)">
+              <span>{{ notice.source }}</span>
+              <b>{{ notice.title }}</b>
+            </button>
+          </div>
+          <p v-else-if="!softLiveLoading && !softLiveError" class="lp-hint">暂时没有提取到通知，请使用官方入口查看最新公告。</p>
+
+          <div class="lp-soft-section-head">
+            <h3>复习计划</h3>
+            <span>{{ softStudyPlan.length }} 周</span>
+          </div>
+          <div v-if="softStudyPlan.length" class="lp-soft-study-plan">
+            <article v-for="plan in softStudyPlan" :key="plan.week">
+              <span>W{{ plan.week }}</span>
+              <div><b>{{ plan.title }}</b><p>{{ plan.task }}</p></div>
+            </article>
+          </div>
+          <p v-else class="lp-hint">选择考试日期后自动生成复习计划。</p>
+        </div>
+
+        <div v-else-if="softSideTab === 'materials'" class="lp-soft-material-panel">
+          <div class="lp-card-head">
+            <h2>{{ focusedSoftMaterial?.specialty || '软考学习清单' }}</h2>
+            <span class="lp-soft-material-range">Markdown</span>
+          </div>
+          <p class="lp-hint">这里下载的是言智整理的学习清单，不是官方教材或官方原题。保存后可在清单中定位章节，再阅读官方最新版教程。</p>
+          <div v-if="visibleSoftMaterials.length" class="lp-soft-material-list">
+            <article v-for="m in visibleSoftMaterials" :key="m.id" class="lp-soft-material">
+              <div class="lp-soft-material-badges">
+                <span>{{ m.level }}</span>
+                <span>{{ m.specialty }}</span>
+                <span>{{ m.chapterCount }} 个章节</span>
+              </div>
+              <h3>{{ m.title }}</h3>
+              <p>{{ m.description }}</p>
+              <button class="lp-mini" :disabled="softMaterialLoading === m.id" @click="downloadSoftMaterial(m)">
+                {{ softMaterialLoading === m.id ? '正在保存…' : '下载学习清单（.md）' }}
+              </button>
+            </article>
+          </div>
+          <p v-else class="lp-hint">资料加载中…</p>
+          <div class="lp-soft-official-books">
+            <div class="lp-soft-section-head">
+              <h3>官方考试用书</h3>
+              <span>非 Markdown</span>
+            </div>
+            <p>考试大纲、教程和试题解析由官方出版，需通过官方考试用书页查看版本与购买渠道。</p>
+            <button class="lp-primary" @click="openOfficialUrl(focusedSoftMaterial?.officialBooksUrl || 'https://www.ruankao.org.cn/book/main.html')">
+              打开官方考试用书页
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="lp-soft-knowledge-panel">
+          <div v-if="focusedSoftMaterial" class="lp-soft-knowledge">
+            <div class="lp-card-head">
+              <h2>{{ focusedSoftMaterial.specialty }} · 知识体系</h2>
+              <span class="lp-soft-material-range">{{ focusedSoftMaterial.chapterCount }} 章节</span>
+            </div>
+            <p class="lp-hint">{{ focusedSoftMaterial.coverageNote }}</p>
+            <section v-for="(domain, di) in focusedSoftMaterial.knowledgeDomains" :key="domain.title" class="lp-soft-knowledge-domain">
+              <h3><span>{{ String(di + 1).padStart(2, '0') }}</span>{{ domain.title }}</h3>
+              <div class="lp-soft-knowledge-chapters">
+                <span v-for="chapter in domain.chapters" :key="chapter">{{ chapter }}</span>
+              </div>
+            </section>
+            <div class="lp-soft-official-books">
+              <div class="lp-soft-section-head">
+                <h3>对应官方教材</h3>
+                <span>最新版</span>
+              </div>
+              <button
+                v-for="book in focusedSoftMaterial.books"
+                :key="book.kind"
+                class="lp-soft-book"
+                @click="openOfficialUrl(book.officialUrl)"
+              >
+                <span>{{ book.kind }}</span>
+                <b>{{ book.title }}</b>
+                <small>{{ book.publisher }} · ISBN {{ book.isbn }}</small>
+                <small>{{ book.note }}</small>
+              </button>
+            </div>
+          </div>
+          <p v-else class="lp-hint">知识体系加载中…</p>
+        </div>
+      </aside>
+
+      <aside v-if="tab === 'coach' && !rightCollapsed" class="lp-card lp-col-right lp-coach-side" :class="{ collapsed: !coachHistoryOpen }">
+        <div class="lp-side-head">
+          <div class="lp-side-title">
+            <History :size="15" />
+            <span>{{ coachHistoryOpen ? '对话记录' : '记录' }}</span>
+          </div>
+          <button
+            class="lp-side-toggle"
+            :title="coachHistoryOpen ? '收起对话记录' : '展开对话记录'"
+            :aria-expanded="coachHistoryOpen"
+            @click="coachHistoryOpen = !coachHistoryOpen"
+          >
+            <ChevronRight v-if="coachHistoryOpen" :size="15" />
+            <ChevronLeft v-else :size="15" />
+          </button>
+        </div>
+        <div v-show="coachHistoryOpen" class="lp-side-body">
+          <p class="lp-side-meta">{{ coachRound }} 轮 · 只保留这次陪练</p>
+          <div class="lp-chat-msgs">
+            <template v-for="(m, mi) in coachMsgs" :key="m.id || mi">
+              <div v-if="(m.role === 'user' && !isCoachPresetPrompt(String(m.content || ''))) || (m.role === 'assistant' && coachTextOf(m).trim())" class="lp-chat-row" :class="m.role">
+                <div class="lp-chat-bubble">
+                  <p class="lp-chat-text">{{ coachTextOf(m) }}</p>
+                  <button v-if="m.role === 'assistant' && coachTextOf(m).trim()" class="lp-speak" title="朗读这句" @click="speakCoachText(coachTextOf(m))">
+                    <Volume2 :size="14" />
+                  </button>
+                </div>
+              </div>
+              <template v-for="(sr, si) in sceneResultsOf(m)" :key="`${m.id || mi}-sr-${si}`">
+                <SceneResultCard
+                  v-if="sr.ok"
+                  :result="sr.result"
+                  :can-retry="!!activeScene"
+                  :retrying="startingScene === activeScene?.id"
+                  @retry="activeScene && startScene(activeScene)"
+                />
+                <div v-else class="lp-scene-result-error">场景结算数据有误：{{ sr.error }}</div>
+              </template>
+            </template>
+            <div v-if="!coachMsgs.length && !coachStreaming" class="lp-empty">
+              <p class="lp-empty-title">还没有对话</p>
+              <p class="lp-hint">和言言开口后，文字会出现在这里。</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <button v-if="leftCollapsed" class="lp-expand-rail left" title="展开左侧栏" aria-label="展开左侧栏" @click="leftCollapsed = false">
+        <ChevronRight :size="15" />
+      </button>
+      <button v-if="rightCollapsed" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
+        <ChevronLeft :size="15" />
+      </button>
     </div>
   </div>
 </template>
@@ -1559,27 +2316,33 @@ onBeforeUnmount(stopCoachMic);
 <style scoped>
 /* ★ 高度用 flex 撑满 main-content（视口 − 顶栏 − 底部状态栏），绝不能写 100vh ——
    100vh 是视口全高，会把学习页底部压到状态栏底下（用户实报：左栏最后一项永远被裁一半）。 */
-.learning-page { padding: 20px 24px; max-width: 1400px; width: 100%; margin: 0 auto; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
-.lp-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; flex-shrink: 0; }
-.lp-head-left { flex: 1; min-width: 0; }
-.lp-header h1 { font-size: 22px; margin: 0 0 4px; }
-.lp-sub { margin: 0; color: #646a73; font-size: 13px; }
+.learning-page { padding: 10px 16px 14px; max-width: none; width: 100%; margin: 0; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
+.lp-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-shrink: 0; min-height: 32px; }
+.lp-subject-select { display: inline-flex; align-items: center; gap: 7px; color: var(--color-text-secondary); font-size: 11px; }
+.lp-subject-select select { height: 30px; min-width: 110px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-text); padding: 0 28px 0 10px; font-size: 12px; cursor: pointer; }
+.lp-subject-select select:focus { outline: 2px solid color-mix(in srgb, #3370ff 35%, transparent); outline-offset: 1px; }
+.lp-top-status { color: var(--color-text-secondary); font-size: 12px; text-align: right; }
+.lp-top-status b { color: var(--color-text); }
 .lp-streak { margin-left: 10px; color: #e8590c; font-weight: 600; }
-.lp-subjects { display: flex; gap: 6px; margin-top: 8px; }
-.lp-subject { border: 1px solid #d0d3d9; background: var(--glass-bg); color: #4e5469; border-radius: 999px; padding: 3px 14px; font-size: 12px; cursor: pointer; }
-.lp-subject.active { background: #1f2329; border-color: #1f2329; color: #fff; }
-.lp-subject:disabled { opacity: .5; cursor: not-allowed; }
-.lp-soon { font-style: normal; font-size: 10px; margin-left: 3px; opacity: .8; }
-.lp-header-actions { display: grid; grid-template-columns: 104px 128px; align-items: end; gap: 8px; width: 240px; flex: 0 0 240px; padding-top: 2px; }
-.lp-coach { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 128px; height: 36px; border: none; background: #3370ff; color: #fff; padding: 0 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.lp-coach:hover { background: #2861d9; }
-.lp-coach:disabled { opacity: .6; cursor: default; }
-.lp-avatar-stage { width: 104px; height: 140px; min-height: 0; flex-shrink: 0; }
 /* ★ 每栏独立滚动（用户实报「答题卷看不全/滚动没有」「最后一个显示不完整」）：
    此前用 max-height: calc(100vh - 180px) 魔法数估头部高度，估不准 ⇒ 最后一项被视口裁半。
    改为 flex 精确贴合：页面占满视口，grid 弹性吃掉 header 之外的剩余高度，三栏 stretch 等高，
    栏内滚动 —— 高度永远正好，不依赖任何估算常数。 */
-.lp-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; flex: 1; min-height: 0; }
+.lp-grid { position: relative; display: grid; grid-template-columns: var(--lp-left-w, 300px) 8px minmax(0, 1fr) 8px var(--lp-right-w, 280px); gap: 0; flex: 1; min-height: 0; }
+.lp-grid.coach-mode { grid-template-columns: var(--lp-left-w, 300px) 8px minmax(0, 1fr) 8px var(--lp-right-w, 300px); }
+.lp-column-resizer { position: relative; width: 8px; cursor: col-resize; touch-action: none; }
+.lp-column-resizer::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 3px; width: 2px; border-radius: 2px; background: var(--color-border); transition: background .15s ease; }
+.lp-column-resizer:hover::after, .lp-column-resizer:active::after { background: #3370ff; }
+.lp-grid.left-collapsed .lp-column-resizer:first-of-type { display: none; }
+.lp-card-actions { display: flex; align-items: center; gap: 6px; }
+.lp-collapse-btn { width: 26px; height: 26px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.lp-collapse-btn:hover { border-color: #9dbcf7; color: #245bdb; }
+.lp-collapse-right { position: absolute; top: 10px; right: 10px; z-index: 2; }
+.lp-col-right { position: relative; }
+.lp-expand-rail { position: absolute; top: 50%; z-index: 5; width: 26px; height: 64px; transform: translateY(-50%); border: 1px solid var(--color-border); background: var(--glass-bg); color: var(--color-text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 8px rgba(0, 0, 0, .08); }
+.lp-expand-rail.left { left: 0; border-left: 0; border-radius: 0 8px 8px 0; }
+.lp-expand-rail.right { right: 0; border-right: 0; border-radius: 8px 0 0 8px; }
+.lp-expand-rail:hover { color: #245bdb; background: #f0f5ff; }
 .lp-col-left, .lp-col-mid, .lp-col-right { height: 100%; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 /* 细滚动条：让「内容可滚」有明确视觉暗示（用户实报过"滚动没有/显示不完整"） */
 .lp-col-left::-webkit-scrollbar, .lp-col-mid::-webkit-scrollbar, .lp-col-right::-webkit-scrollbar { width: 6px; }
@@ -1594,7 +2357,7 @@ onBeforeUnmount(stopCoachMic);
 .lp-create { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #f0f1f3; }
 .lp-create input, .lp-create textarea, .lp-input { border: 1px solid #d0d3d9; border-radius: 6px; padding: 7px 9px; font-size: 13px; width: 100%; box-sizing: border-box; }
 .lp-hint { color: #8f959e; font-size: 12px; margin: 6px 0 0; }
-.lp-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.lp-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-shrink: 0; }
 .lp-tab { border: 1px solid #e5e6eb; background: var(--glass-bg); color: #4e5469; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
 .lp-tab.active { background: #3370ff; border-color: #3370ff; color: #fff; }
 .lp-courses { display: flex; flex-direction: column; gap: 10px; }
@@ -1604,6 +2367,17 @@ onBeforeUnmount(stopCoachMic);
 .lp-course:hover { border-color: #3370ff; }
 .lp-course.active { border-color: #3370ff; background: #f0f5ff; }
 .lp-course.done { background: #f0fff4; border-color: #b7ebc9; }
+.lp-course-exam { background: var(--glass-bg); border-color: var(--color-border); }
+.lp-course-exam:hover { border-color: #a855f7; }
+.lp-course-exam.active { border-color: #9333ea; background: #f3e8ff; box-shadow: inset 3px 0 0 #9333ea; }
+.lp-soft-course-state { display: inline-flex; align-items: center; gap: 5px; color: #7e22ce; }
+.lp-soft-course-state .lucide-check { color: #9333ea; }
+.lp-course-security { background: var(--glass-bg); border-color: var(--color-border); }
+.lp-course-security:hover { border-color: #0f766e; }
+.lp-course-security.active { border-color: #0f766e; background: #ecfdf5; box-shadow: inset 3px 0 0 #0f766e; }
+.lp-security-course-level { color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 600; }
+.lp-security-course-state { display: inline-flex; align-items: center; gap: 5px; color: #0f766e; }
+.lp-soft-course-level { color: #7e22ce; background: #f3e8ff; border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 600; }
 .lp-course-row { display: flex; justify-content: space-between; align-items: center; }
 .lp-course-name { font-size: 13px; font-weight: 600; }
 .lp-course-pct { font-size: 11px; color: #3370ff; font-weight: 600; }
@@ -1686,6 +2460,136 @@ onBeforeUnmount(stopCoachMic);
 .lp-chat-entry { flex: 1; }
 .lp-input-icon { width: 34px; height: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .lp-muted-icon { opacity: .35; }
+
+/* 宠物主舞台：陪练时只保留一个说话入口，对话文字默认收起。 */
+.lp-voice-studio { gap: 0; }
+.lp-practice-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 0 2px 10px; }
+.lp-practice-title { min-width: 0; }
+.lp-practice-title h2 { margin: 2px 0 3px; font-size: 18px; line-height: 1.35; color: var(--color-text); }
+.lp-practice-title > p:last-child { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; max-width: 680px; }
+.lp-practice-tools { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+.lp-tool-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; border: 1px solid var(--color-border); background: var(--glass-bg); color: var(--color-text-secondary); border-radius: 7px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.lp-tool-button:hover { border-color: #9dbcf7; color: #245bdb; }
+.lp-tool-button.active { border-color: #9dbcf7; background: #f0f5ff; color: #245bdb; }
+.lp-tool-button.danger { border-color: #fecaca; background: #fff7f7; color: #b91c1c; }
+.lp-tool-button:disabled { opacity: .5; cursor: default; }
+.lp-scene-compact { border: 1px solid #dbe5f5; border-left: 3px solid #3370ff; border-radius: 0 8px 8px 0; background: #f8fbff; padding: 8px 10px; margin-bottom: 8px; }
+.lp-scene-compact-roles { display: flex; flex-wrap: wrap; gap: 5px 14px; color: #646a73; font-size: 11px; }
+.lp-scene-compact-roles span { display: inline-flex; align-items: center; gap: 4px; }
+.lp-scene-compact-roles b { color: #1f2329; }
+.lp-scene-lines { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+.lp-scene-lines > div { position: relative; border: 1px solid #e5e6eb; border-radius: 7px; background: var(--glass-bg); padding: 7px 28px 7px 9px; }
+.lp-scene-lines span { color: #3370ff; font-size: 10px; font-weight: 700; }
+.lp-scene-lines > div:last-child span { color: #0f8a3d; }
+.lp-scene-lines p { margin: 2px 0 0; color: #1f2329; font-size: 12px; line-height: 1.5; }
+.lp-scene-lines small { display: block; margin-top: 2px; color: #8f959e; font-size: 10px; }
+.lp-scene-lines .lp-speak { position: absolute; top: 5px; right: 4px; }
+.lp-pet-stage { position: relative; flex: 1; min-height: 330px; display: grid; grid-template-columns: minmax(250px, 340px) minmax(0, 1fr); grid-template-areas: "pet speech"; align-items: center; gap: 20px; padding: 18px; border: 1px solid #e3e8f2; border-radius: 12px; background: #f7f9fc; overflow: hidden; }
+.lp-coach-stage { grid-area: pet; align-self: end; width: 340px; height: 290px; min-height: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+.lp-speech-column { grid-area: speech; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.lp-pet-speech { position: relative; border: 1px solid #dbe5f5; border-radius: 12px; background: var(--glass-bg); padding: 12px 42px 12px 14px; box-sizing: border-box; }
+.lp-pet-speech::after { content: ""; position: absolute; left: -7px; top: 42px; width: 12px; height: 12px; border-left: 1px solid #dbe5f5; border-bottom: 1px solid #dbe5f5; background: var(--glass-bg); transform: rotate(45deg); }
+.lp-pet-speech-head { display: flex; align-items: center; gap: 7px; color: #245bdb; font-size: 11px; font-weight: 700; }
+.lp-pet-speech-head i { font-style: normal; color: #8f959e; font-weight: 400; }
+.lp-pet-speech p { margin: 4px 0 0; color: var(--color-text); font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.lp-pet-speech > .lp-speak { position: absolute; right: 8px; bottom: 8px; }
+.lp-coach-start { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; border: 1px solid #3370ff; border-radius: 7px; background: #3370ff; color: #fff; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.lp-coach-start:disabled { opacity: .55; cursor: default; }
+.lp-user-echo { border: 1px solid #b7ebc9; border-radius: 9px; background: #f3fff6; padding: 7px 10px; }
+.lp-user-echo span { display: block; color: #0f8a3d; font-size: 10px; font-weight: 700; }
+.lp-user-echo p { margin: 2px 0 0; color: #1f2329; font-size: 12px; line-height: 1.45; }
+.lp-mic-radar { position: absolute; left: 170px; bottom: 20px; display: none; align-items: flex-end; gap: 4px; transform: translateX(-50%); }
+.lp-mic-radar.recording { display: flex; }
+.lp-mic-radar i { width: 3px; height: 10px; border-radius: 2px; background: #d4380d; animation: lp-wave 1s ease-in-out infinite; }
+.lp-mic-radar i:nth-child(2) { height: 18px; animation-delay: .12s; }
+.lp-mic-radar i:nth-child(3) { height: 14px; animation-delay: .24s; }
+.lp-mic-radar i:nth-child(4) { height: 8px; animation-delay: .36s; }
+@keyframes lp-wave { 0%, 100% { transform: scaleY(.55); } 50% { transform: scaleY(1.35); } }
+.lp-voice-dock { display: flex; align-items: center; gap: 12px; padding: 12px 2px 8px; }
+.lp-talk-button { width: 62px; height: 62px; flex: 0 0 62px; border: 0; border-radius: 50%; background: #3370ff; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 12px rgba(51, 112, 255, .22); }
+.lp-talk-button:hover { background: #2861d9; }
+.lp-talk-button.recording { background: #d4380d; animation: lp-mic-pulse 1.3s ease-in-out infinite; }
+.lp-talk-button.busy { opacity: .72; cursor: default; }
+.lp-talk-copy { display: flex; flex-direction: column; gap: 2px; min-width: 180px; flex: 1; }
+.lp-talk-copy strong { color: var(--color-text); font-size: 15px; }
+.lp-talk-copy span { color: var(--color-text-secondary); font-size: 12px; }
+.lp-dock-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.lp-text-fallback { display: flex; gap: 8px; padding: 0 2px 10px; }
+.lp-text-fallback .lp-chat-entry { min-width: 0; }
+.lp-coach-side { display: flex; flex-direction: column; overflow: hidden; padding: 12px; transition: padding .18s ease; }
+.lp-coach-side.collapsed { padding: 12px 5px; align-items: center; }
+.lp-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
+.lp-side-title { display: flex; align-items: center; gap: 7px; color: var(--color-text); font-size: 12px; font-weight: 600; min-width: 0; }
+.lp-side-toggle { width: 26px; height: 26px; flex: 0 0 26px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.lp-side-toggle:hover { border-color: #9dbcf7; color: #245bdb; }
+.lp-coach-side.collapsed .lp-side-head { flex-direction: column; gap: 8px; }
+.lp-coach-side.collapsed .lp-side-title { flex-direction: column; gap: 7px; }
+.lp-coach-side.collapsed .lp-side-title span { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px; }
+.lp-side-body { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 8px; }
+.lp-side-meta { margin: 0 0 7px; color: var(--color-text-tertiary); font-size: 10px; flex-shrink: 0; }
+.lp-side-body .lp-chat-msgs { flex: 1; min-height: 0; max-height: none; overflow-y: auto; padding: 2px 2px 8px; }
+.lp-side-body .lp-chat-row { margin-bottom: 9px; }
+.lp-side-body .lp-chat-bubble { max-width: 94%; padding: 8px 10px; }
+.lp-side-body .lp-chat-text { font-size: 12px; line-height: 1.55; }
+.lp-soft-materials { overflow-y: auto; }
+.lp-soft-side-tabs { display: flex; gap: 3px; margin: 0 32px 10px 0; padding: 3px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--glass-bg-hover); }
+.lp-soft-side-tabs button { flex: 1; min-width: 0; white-space: nowrap; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); padding: 5px 4px; font-size: 10px; cursor: pointer; }
+.lp-soft-side-tabs button.active { background: var(--glass-bg); color: #7e22ce; font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+.lp-soft-exam-panel { display: flex; flex-direction: column; gap: 9px; }
+.lp-soft-plan-form { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.lp-soft-plan-form label { display: flex; flex-direction: column; gap: 3px; color: var(--color-text-tertiary); font-size: 10px; }
+.lp-soft-plan-form label > span { display: inline-flex; align-items: center; gap: 3px; }
+.lp-soft-plan-form select, .lp-soft-plan-form input { width: 100%; box-sizing: border-box; height: 30px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text); padding: 0 7px; font-size: 11px; }
+.lp-soft-countdown { display: flex; align-items: center; gap: 6px; border: 1px solid #e9d5ff; border-radius: 8px; background: #faf5ff; color: #7e22ce; padding: 8px 10px; font-size: 13px; font-weight: 600; }
+.lp-soft-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.lp-soft-actions .lp-primary { flex: 1 1 100%; }
+.lp-soft-actions .lp-mini { flex: 1; }
+.lp-soft-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; padding-top: 9px; border-top: 1px solid var(--color-border); }
+.lp-soft-section-head h3 { margin: 0; color: var(--color-text); font-size: 12px; }
+.lp-soft-section-head > span { color: var(--color-text-tertiary); font-size: 10px; }
+.lp-soft-live-time { margin: 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.5; }
+.lp-soft-live-error { margin: 0; color: #b91c1c; font-size: 11px; }
+.lp-soft-notices { display: flex; flex-direction: column; gap: 5px; }
+.lp-soft-notices button { width: 100%; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-text); padding: 7px 8px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.lp-soft-notices button:hover { border-color: #a855f7; background: #fdfbff; }
+.lp-soft-notices span { color: #7e22ce; font-size: 9px; font-weight: 700; }
+.lp-soft-notices b { font-size: 11px; line-height: 1.45; font-weight: 500; }
+.lp-soft-study-plan { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.lp-soft-study-plan article { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 7px; border-bottom: 1px dashed var(--color-border); padding: 5px 0; }
+.lp-soft-study-plan article > span { color: #7e22ce; font-size: 10px; font-weight: 700; }
+.lp-soft-study-plan b { color: var(--color-text); font-size: 11px; }
+.lp-soft-study-plan p { margin: 2px 0 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.45; }
+.lp-soft-material-panel, .lp-soft-knowledge-panel, .lp-soft-knowledge { display: flex; flex-direction: column; gap: 5px; }
+.lp-soft-material-range { color: #7e22ce; background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 999px; padding: 2px 7px; font-size: 10px; }
+.lp-soft-material-list { display: flex; flex-direction: column; gap: 9px; margin-top: 9px; }
+.lp-soft-material { border: 1px solid #e9d5ff; border-radius: 8px; background: #fdfbff; padding: 9px; }
+.lp-soft-material-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+.lp-soft-material-badges span { border: 1px solid #e9d5ff; border-radius: 4px; background: #faf5ff; color: #7e22ce; padding: 1px 5px; font-size: 9px; }
+.lp-soft-material h3 { margin: 5px 0 3px; color: var(--color-text); font-size: 12px; line-height: 1.45; }
+.lp-soft-material p { margin: 0 0 7px; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.5; }
+.lp-soft-material .lp-mini { width: 100%; }
+.lp-soft-official-books { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding: 10px; border: 1px solid #dbe5f5; border-radius: 8px; background: #f8fbff; }
+.lp-soft-official-books .lp-soft-section-head { margin: 0; padding: 0; border: 0; }
+.lp-soft-official-books p { margin: 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.55; }
+.lp-soft-official-books .lp-primary { width: 100%; box-sizing: border-box; }
+.lp-soft-knowledge-domain { padding: 8px 0; border-bottom: 1px dashed var(--color-border); }
+.lp-soft-knowledge-domain h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--color-text); font-size: 12px; }
+.lp-soft-knowledge-domain h3 span { color: #7e22ce; font-size: 9px; font-weight: 700; }
+.lp-soft-knowledge-chapters { display: flex; flex-wrap: wrap; gap: 4px; }
+.lp-soft-knowledge-chapters span { border: 1px solid var(--color-border); border-radius: 5px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 2px 5px; font-size: 9px; line-height: 1.4; }
+.lp-soft-book { width: 100%; border: 1px solid #dbe5f5; border-radius: 7px; background: var(--glass-bg); color: var(--color-text); padding: 7px 8px; display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer; }
+.lp-soft-book:hover { border-color: #9dbcf7; background: #f0f5ff; }
+.lp-soft-book > span { color: #245bdb; font-size: 9px; font-weight: 700; }
+.lp-soft-book b { font-size: 11px; line-height: 1.45; }
+.lp-soft-book small { color: var(--color-text-tertiary); font-size: 9px; line-height: 1.45; }
+.lp-security-boundary { overflow-y: auto; }
+.lp-security-warning { display: flex; align-items: flex-start; gap: 8px; border-left: 3px solid #d97706; border-radius: 0 8px 8px 0; background: #fffbeb; padding: 9px 10px; color: #92400e; }
+.lp-security-warning svg { flex-shrink: 0; }
+.lp-security-warning p { margin: 0; font-size: 10px; line-height: 1.55; }
+.lp-security-rule { border-top: 1px solid var(--color-border); margin-top: 10px; padding-top: 9px; }
+.lp-security-rule h3 { margin: 0 0 4px; color: var(--color-text); font-size: 12px; }
+.lp-security-rule ul { margin: 0; padding-left: 17px; color: var(--color-text-secondary); font-size: 10px; line-height: 1.65; }
+.lp-security-rule p { margin: 0; color: var(--color-text-secondary); font-size: 10px; line-height: 1.55; }
 .lp-mic-button { width: 38px; height: 38px; border: 1px solid #d6e4ff; border-radius: 50%; background: #f0f5ff; color: #3370ff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
 .lp-mic-button:hover { border-color: #3370ff; background: #e8f1ff; }
 .lp-mic-button.recording { color: #fff; background: #d4380d; border-color: #d4380d; animation: lp-mic-pulse 1.3s ease-in-out infinite; }
@@ -1806,17 +2710,28 @@ onBeforeUnmount(stopCoachMic);
 @media (max-width: 900px) {
   :global(.main-content:has(.learning-page)) { overflow-y: auto; overscroll-behavior: contain; }
   .learning-page { padding: 12px; min-height: 0; height: auto; flex: none; }
-  .lp-header { flex-direction: column; align-items: stretch; gap: 10px; }
-  .lp-head-left { width: 100%; }
-  .lp-subjects { flex-wrap: wrap; }
-  .lp-header-actions { width: 100%; grid-template-columns: 96px minmax(128px, 180px); justify-content: space-between; }
-  .lp-avatar-stage { width: 96px; height: 124px; min-height: 0; align-self: flex-end; }
-  .lp-coach { width: 100%; min-width: 128px; max-width: 180px; }
+  .lp-topbar { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .lp-top-status { text-align: left; }
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
+  .lp-column-resizer { display: none; }
   .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
   .lp-col-mid:has(> .lp-coach-chat) { overflow: visible; min-height: 70vh; }
   .lp-coach-chat { min-height: 70vh; }
   .lp-chat-msgs { min-height: 260px; max-height: 50vh; }
+  .lp-practice-head { flex-direction: column; }
+  .lp-practice-tools { justify-content: flex-start; }
+  .lp-scene-lines { grid-template-columns: 1fr; }
+  .lp-pet-stage { min-height: 0; grid-template-columns: 1fr; grid-template-areas: "speech" "pet"; gap: 10px; padding: 12px; }
+  .lp-speech-column { grid-area: speech; }
+  .lp-pet-speech::after { left: 50%; top: auto; bottom: -7px; border: 0; border-right: 1px solid #dbe5f5; border-bottom: 1px solid #dbe5f5; transform: translateX(-50%) rotate(45deg); }
+  .lp-coach-stage { grid-area: pet; justify-self: center; width: 310px; height: 280px; }
+  .lp-mic-radar { left: 50%; bottom: 12px; }
+  .lp-coach-side.collapsed { min-height: 40px; padding: 7px 12px; align-items: stretch; }
+  .lp-coach-side.collapsed .lp-side-head { flex-direction: row; }
+  .lp-coach-side.collapsed .lp-side-title { flex-direction: row; }
+  .lp-coach-side.collapsed .lp-side-title span { writing-mode: horizontal-tb; letter-spacing: 0; }
+  .lp-voice-dock { align-items: flex-start; flex-wrap: wrap; }
+  .lp-dock-actions { width: 100%; justify-content: flex-start; }
   .lp-tabs { overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
   .lp-tab { flex-shrink: 0; }
   .lp-scene-head { align-items: stretch; flex-direction: column; }
@@ -1840,12 +2755,53 @@ onBeforeUnmount(stopCoachMic);
 .lp-g-ex p, .lp-g-pairs p { margin: 0 0 2px; }
 .lp-g-pairs .wrong { color: #d4380d; }
 .lp-g-pairs .right { color: #0f8a3d; }
-.lp-reading-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-.lp-chip { border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; color: #1f2329; }
-.lp-chip.active { border-color: #3370ff; background: #f0f5ff; color: #3370ff; }
-.lp-chip i { font-style: normal; font-size: 10px; color: #8f959e; margin-left: 4px; }
-.lp-reader h3 { margin: 0 0 6px; font-size: 16px; }
+.lp-col-mid:has(> .lp-reading-layout) { overflow: hidden; display: flex; flex-direction: column; }
+.lp-reading-layout { flex: 1; min-height: 0; width: 100%; display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: stretch; }
+.lp-reading-library { min-height: 0; overflow-y: auto; border-right: 1px solid var(--color-border); padding-right: 14px; }
+.lp-reading-library-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.lp-reading-library-head h3 { margin: 0; color: var(--color-text); font-size: 14px; }
+.lp-reading-library-head span { color: var(--color-text-tertiary); font-size: 10px; }
+.lp-reading-levels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.lp-reading-levels button { border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 5px 2px; font-size: 10px; cursor: pointer; }
+.lp-reading-levels button:hover { border-color: #9dbcf7; color: #245bdb; }
+.lp-reading-levels button.active { border-color: #3370ff; background: #3370ff; color: #fff; }
+.lp-reading-topic { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 9px 0; color: var(--color-text-tertiary); font-size: 10px; }
+.lp-reading-topic select { min-width: 120px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text); padding: 5px 7px; font-size: 11px; }
+.lp-reading-list { display: flex; flex-direction: column; gap: 6px; }
+.lp-reading-card { width: 100%; text-align: left; border: 1px solid var(--color-border); border-radius: 8px; background: var(--glass-bg); color: var(--color-text); padding: 8px 9px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.lp-reading-card:hover { border-color: #9dbcf7; background: #f8fbff; }
+.lp-reading-card.active { border-color: #3370ff; background: #f0f5ff; }
+.lp-reading-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
+.lp-reading-card-top b { font-size: 12px; line-height: 1.4; }
+.lp-reading-card-meta { color: var(--color-text-tertiary); font-size: 10px; }
+.lp-reading-difficulty { flex: 0 0 auto; border-radius: 4px; padding: 1px 5px; font-size: 9px; font-style: normal; font-weight: 600; }
+.lp-reading-difficulty.level-简单 { color: #0f8a3d; background: #eefaf2; }
+.lp-reading-difficulty.level-中级 { color: #245bdb; background: #eef4ff; }
+.lp-reading-difficulty.level-困难 { color: #b45309; background: #fff7e8; }
+.lp-reader { min-height: 0; overflow-y: auto; padding-right: 8px; }
+.lp-reader-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.lp-reader-head h3 { margin: 5px 0 0; color: var(--color-text); font-size: 19px; line-height: 1.35; }
+.lp-reader-head > svg { color: #3370ff; flex-shrink: 0; }
+.lp-reader-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+.lp-reader-badges span { border: 1px solid var(--color-border); border-radius: 999px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 2px 7px; font-size: 10px; }
+.lp-reader-tip { margin: 7px 0 14px; color: var(--color-text-tertiary); font-size: 11px; }
 .lp-para { margin-bottom: 12px; }
-.lp-para-en { font-size: 14px; line-height: 1.7; margin: 0; cursor: text; }
-.lp-para-zh { font-size: 12px; color: #8f959e; margin: 2px 0 0; }
+.lp-para-en { font-size: 15px; line-height: 1.8; margin: 0; cursor: text; color: var(--color-text); }
+.lp-para-zh { font-size: 12px; color: var(--color-text-tertiary); margin: 4px 0 0; line-height: 1.65; }
+.lp-para-actions { display: inline-flex; align-items: center; gap: 1px; margin-left: 3px; }
+.lp-para-actions .lp-speak { width: 22px; height: 22px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); }
+.lp-para-actions .lp-speak:hover { background: #f0f5ff; color: #245bdb; }
+.lp-reader-collect { margin-top: 4px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 6px 10px; font-size: 11px; cursor: pointer; }
+.lp-reader-collect:hover { border-color: #9dbcf7; color: #245bdb; }
+.lp-reader-collect:disabled { opacity: .55; cursor: default; }
+.lp-reader-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; min-height: 260px; color: var(--color-text-tertiary); }
+.lp-reader-empty p { margin: 0; color: var(--color-text-secondary); font-size: 13px; }
+.lp-reader-empty span { font-size: 11px; }
+@media (max-width: 900px) {
+  .lp-col-mid:has(> .lp-reading-layout) { overflow: visible; }
+  .lp-reading-layout { grid-template-columns: 1fr; min-height: 0; }
+  .lp-reading-library { border-right: 0; border-bottom: 1px solid var(--color-border); padding: 0 0 12px; overflow: visible; }
+  .lp-reading-list { max-height: 320px; overflow-y: auto; }
+  .lp-reader { overflow: visible; padding-right: 0; }
+}
 </style>

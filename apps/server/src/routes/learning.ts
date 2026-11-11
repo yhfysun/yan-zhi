@@ -16,6 +16,9 @@ import {
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
+import { SOFT_MATERIALS, getSoftMaterial } from '../learning/exam-papers-extra.js';
+import { SOFT_EXAM_REGIONS, getSoftExamLiveInfo } from '../learning/soft-exam-live.js';
+import { listSecurityPaths, getSecurityPath } from '../learning/security-curriculum.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { scorePronunciation } from '../learning/pronunciation.js';
 import type { DrillAnswer } from '../learning/srs.js';
@@ -176,12 +179,12 @@ router.post('/answer/check', (req, res) => {
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// GET /api/learning/exams —— 历年真题目录（可选 ?type=考研|高考）
+// GET /api/learning/exams —— 历年真题目录（可选 ?type=考研|高考|软考）
 router.get('/exams', (req, res) => {
   try {
     const type = String(req.query.type || '');
-    if (type && type !== '考研' && type !== '高考') {
-      res.status(400).json({ error: 'type 只能是考研或高考' });
+    if (type && type !== '考研' && type !== '高考' && type !== '软考') {
+      res.status(400).json({ error: 'type 只能是考研、高考或软考' });
       return;
     }
     res.json({ data: listExamPapers((type || undefined) as ExamType | undefined) });
@@ -197,7 +200,50 @@ router.get('/exams/:id', (req, res) => {
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
-// POST /api/learning/exams/:id/submit —— 交卷判分（客观题），返回逐题解析
+// GET /api/learning/soft-exam/materials —— 软考近三年学习资料目录
+router.get('/soft-exam/materials', (_req, res) => {
+  res.json({ data: SOFT_MATERIALS });
+});
+
+// GET /api/learning/soft-exam/materials/:id —— 下载内容（前端转 Blob 保存）
+router.get('/soft-exam/materials/:id', (req, res) => {
+  const material = getSoftMaterial(String(req.params.id));
+  if (!material) { res.status(404).json({ error: '软考资料不存在' }); return; }
+  res.json({ data: material });
+});
+
+// GET /api/learning/soft-exam/regions —— 地区与官方入口（静态白名单）
+router.get('/soft-exam/regions', (_req, res) => {
+  res.json({ data: SOFT_EXAM_REGIONS });
+});
+
+// GET /api/learning/soft-exam/live?region=北京 —— 全国 + 地区官方动态，10 分钟缓存
+router.get('/soft-exam/live', async (req, res) => {
+  try {
+    const region = String(req.query.region || '').trim();
+    if (!region || region.length > 20) {
+      res.status(422).json({ error: 'region 无效' });
+      return;
+    }
+    res.json({ data: await getSoftExamLiveInfo(region) });
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : '官方动态获取失败' });
+  }
+});
+
+// GET /api/learning/security/paths —— 网络安全分支路线与模块
+router.get('/security/paths', (_req, res) => {
+  res.json({ data: listSecurityPaths() });
+});
+
+// GET /api/learning/security/paths/:id —— 单条安全路线
+router.get('/security/paths/:id', (req, res) => {
+  const path = getSecurityPath(String(req.params.id));
+  if (!path) { res.status(404).json({ error: '安全路线不存在' }); return; }
+  res.json({ data: path });
+});
+
+// POST /api/learning/exams/:id/submit —— 客观题判分；上机题保留作答并返回参考要点
 router.post('/exams/:id/submit', (req, res) => {
   try {
     const answers = req.body?.answers;
@@ -209,7 +255,14 @@ router.post('/exams/:id/submit', (req, res) => {
     for (const [key, value] of Object.entries(answers as Record<string, unknown>)) {
       if (Number.isInteger(value)) normalized[key] = Number(value);
     }
-    res.json({ data: submitExamPaper(userIdOf(req), String(req.params.id), normalized) });
+    const texts: Record<string, string> = {};
+    const rawTexts = req.body?.texts;
+    if (rawTexts && typeof rawTexts === 'object' && !Array.isArray(rawTexts)) {
+      for (const [key, value] of Object.entries(rawTexts as Record<string, unknown>)) {
+        if (typeof value === 'string') texts[key] = value;
+      }
+    }
+    res.json({ data: submitExamPaper(userIdOf(req), String(req.params.id), normalized, texts) });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 

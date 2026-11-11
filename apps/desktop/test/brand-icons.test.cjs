@@ -61,7 +61,21 @@ test('Windows taskbar uses the native BMP ICO in dev and packaged builds', () =>
   assert.match(main, /assets',\s*'icons',\s*'icon-dev\.bmp\.ico'/, 'dev windows must use icon-dev.bmp.ico');
   assert.match(main, /function applyWindowIcon\(win\)/, 'window icons must be applied through one helper');
   assert.match(main, /app\.on\('browser-window-created',\s*\(_e,\s*win\)\s*=>\s*applyWindowIcon\(win\)\)/);
-  assert.match(main, /if \(app\.isPackaged\)\s*\{\s*app\.setAppUserModelId\('com\.yanzhi\.desktop'\)/);
+  assert.match(
+    main,
+    /app\.isPackaged\s*\?\s*'com\.yanzhi\.desktop'\s*:\s*'com\.yanzhi\.desktop\.dev'/,
+    'dev must use its own AUMID instead of Electron or the packaged app identity',
+  );
+  assert.match(
+    main,
+    /app\.setAppUserModelId\(WINDOWS_APP_USER_MODEL_ID\)/,
+    'the selected AUMID must be registered before windows are created',
+  );
+  assert.match(
+    main,
+    /win\.setAppDetails\(\{[\s\S]*?appId:\s*WINDOWS_APP_USER_MODEL_ID,[\s\S]*?appIconPath:\s*iconPath,/,
+    'Windows shell icon details must follow the selected runtime icon',
+  );
 
   for (const file of [
     'apps/desktop/electron-builder.full.yml',

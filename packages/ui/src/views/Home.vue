@@ -172,7 +172,7 @@ interface HomeMenuItem {
 const menuItems = computed<HomeMenuItem[]>(() => [
   { path: '/chat', name: '任务', desc: '与大模型多任务并行、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
   ...(isModeAvailable('learning')
-    ? [{ path: '/learning', name: '学习模式', desc: '英语闯关陪练：字母音标到四六级雅思托福 11 门课程 + AI 陪练 + 语法微课', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' }]
+    ? [{ path: '/learning', name: '学习模式', desc: '英语闯关、软考中高级备考、网络安全分支路线与授权靶场 + AI 陪练', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' }]
     : []),
   { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },

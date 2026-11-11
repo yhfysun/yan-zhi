@@ -1733,7 +1733,21 @@ function applyWindowIcon(win) {
   if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
   try {
     const iconPath = getAppIconPath();
-    if (fs.existsSync(iconPath)) win.setIcon(iconPath);
+    if (!fs.existsSync(iconPath)) return;
+    win.setIcon(iconPath);
+    // setIcon 只写 WM_GETICON；Win11 任务栏还会走 AppUserModelID/Shell 分组。
+    // 同步下发 appIconPath，才能覆盖 electron.exe 的原子图标。
+    win.setAppDetails({
+      appId: WINDOWS_APP_USER_MODEL_ID,
+      appIconPath: iconPath,
+      appIconIndex: 0,
+      ...(app.isPackaged
+        ? { relaunchCommand: process.execPath, relaunchDisplayName: '言智' }
+        : {
+            relaunchCommand: `"${process.execPath}" "${app.getAppPath()}" --dev`,
+            relaunchDisplayName: '言智 Dev',
+          }),
+    });
   } catch (e) {
     if (!app.isPackaged) console.warn('[window-icon] setIcon 失败:', e && e.message);
   }
@@ -10540,6 +10554,25 @@ ipcMain.handle('db:transaction', (e, sqls) => {
 // ============================================================
 // IPC：文件系统（Node.js fs）
 // ============================================================
+// 软考学习清单直接落盘：固定到「系统下载目录/言智资料/软考」，
+// 不经过 will-download，因此不会触发系统“另存为”弹窗。
+ipcMain.handle('learning:save-soft-material', async (_event, payload = {}) => {
+  try {
+    const rawName = path.basename(String(payload.filename || '软考学习清单.md'));
+    const safeName = (rawName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || '软考学习清单.md')
+      .replace(/\.md$/i, '') + '.md';
+    const content = String(payload.content || '');
+    if (!content.trim()) return { ok: false, error: '资料内容为空' };
+    const dir = path.join(app.getPath('downloads'), '言智资料', '软考');
+    await fsp.mkdir(dir, { recursive: true });
+    const savedPath = uniqueDownloadPath(dir, safeName);
+    await fsp.writeFile(savedPath, content, 'utf-8');
+    return { ok: true, path: savedPath, dir };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 ipcMain.handle('fs:readFile', (e, p) => fsp.readFile(p, 'utf-8'));
 
 ipcMain.handle('fs:readFileBase64', async (e, p) => {
@@ -13909,6 +13942,17 @@ app.whenReady().then(() => {
 // 应用启动
 // ============================================================
 
+// ★ dev 也必须注册独立的 AppUserModelID（2026-11-11 Win11 实测）：
+//   未注册时 Explorer 按 electron.exe 分组，窗口的 WM_GETICON 虽是言智，
+//   任务栏仍会使用进程默认的原子图标。dev 使用独立 ID 既避开安装版 AUMID，
+//   又让 setAppDetails() 下发的品牌图标真正落到任务栏按钮。
+const WINDOWS_APP_USER_MODEL_ID = app.isPackaged
+  ? 'com.yanzhi.desktop'
+  : 'com.yanzhi.desktop.dev';
+if (process.platform === 'win32') {
+  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+}
+
 // CDP 统一架构：开启远程调试端口，后端 Playwright 通过 CDP 连接到 Electron BrowserView，
 // 所有 browser_ 工具操作同一个浏览器实例，预览面板就是这个 BrowserView（与豆包 CNGC Browser Use 架构一致）。
 // 端口可通过环境变量 YANZHI_CDP_PORT 显式指定；默认用 0 让 Chromium 自动挑空闲端口，
@@ -14111,12 +14155,6 @@ app.whenReady().then(async () => {
     }
   }, RENDERER_PROBE_EVERY_MS).unref?.();
   if (process.platform === 'win32') {
-    // ★ 只有真实安装版注册生产 AUMID。dev 绝不能抢 com.yanzhi.desktop：
-    //   Windows 会按 AUMID 回查开始菜单快捷方式；一旦旧的 Electron.lnk 持有同一
-    //   AUMID，安装版任务栏就会显示 electron.exe 的原子图标。
-    if (app.isPackaged) {
-      app.setAppUserModelId('com.yanzhi.desktop');
-    }
     // dev / 安装版的所有新窗口（DevTools、悬浮窗等）都补品牌 icon。
     // DevTools 若与主窗口同组且没有 icon，会把任务栏组图标拖成 exe 默认图标。
     app.on('browser-window-created', (_e, win) => applyWindowIcon(win));
