@@ -5,8 +5,8 @@
   "type": "module",
   "description": "言智移动端（Capacitor，原生 SQLite 插件）",
   "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "dev": "node ../../scripts/sync-yanzhi-icons.cjs && vite",
+    "build": "node ../../scripts/sync-yanzhi-icons.cjs && vue-tsc && vite build",
     "icons:android": "node scripts/gen-android-icons.cjs",
     "native:sms": "node scripts/apply-native-sms.cjs",
     "native:perms": "node scripts/apply-native-permissions.cjs",

@@ -24,6 +24,7 @@ const run = (script, args) => execFileSync(process.execPath, [script, ...args], 
   stdio: 'inherit',
 });
 
+run(path.join(repoRoot, 'scripts', 'sync-yanzhi-icons.cjs'), []);
 run(path.join(desktopDir, 'scripts', 'set-edition.cjs'), [edition]);
 
 const cfgPath = path.join(desktopDir, 'edition.json');

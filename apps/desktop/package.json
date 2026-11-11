@@ -6,10 +6,10 @@
   "main": "main.cjs",
   "description": "言智 - 语言可控的智能体平台",
   "scripts": {
-    "dev": "concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
+    "dev": "node ../../scripts/sync-yanzhi-icons.cjs && concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
     "build": "vite build",
-    "electron:dev": "concurrently \"vite\" \"electron . --dev\"",
-    "electron:preview": "vite build && electron .",
+    "electron:dev": "node ../../scripts/sync-yanzhi-icons.cjs && concurrently \"vite\" \"electron . --dev\"",
+    "electron:preview": "node ../../scripts/sync-yanzhi-icons.cjs && vite build && electron .",
     "electron:build": "node ./scripts/prepare-edition-build.cjs basic && pnpm --filter @yan-zhi/server build && vite build && node ../../scripts/verify-mode-prune.cjs && node ./scripts/pre-sign-license.cjs && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.full.yml",
     "electron:build:full": "node -e \"console.warn('[deprecated] electron:build:full 实为 basic 档（历史命名），请用 electron:build:basic / :pro / :all')\" && node ./scripts/prepare-edition-build.cjs basic && pnpm --filter @yan-zhi/server build && vite build && node ../../scripts/verify-mode-prune.cjs && node ./scripts/pre-sign-license.cjs && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.full.yml",
     "electron:build:lite": "node ./scripts/prepare-edition-build.cjs lite && pnpm --filter @yan-zhi/server build && vite build && node ../../scripts/verify-mode-prune.cjs && node ./scripts/pre-sign-license.cjs && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.lite.yml",

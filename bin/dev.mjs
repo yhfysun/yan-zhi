@@ -769,6 +769,11 @@ async function main() {
   await syncDeps();
   await manageCache();
   await syncStaleBuiltinPlugins();
+  execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'sync-yanzhi-icons.cjs')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
 
   // 开发实例与安装版**同端口**（2026-10-10 起），且共用同一套库 →
   //   端口被正式版占用时**必须中止启动**，不能像旧版那样只警告然后继续。

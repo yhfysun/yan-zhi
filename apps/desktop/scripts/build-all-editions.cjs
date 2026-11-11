@@ -73,6 +73,10 @@ if (separate) {
 
 const desktopDir = path.join(__dirname, '..');
 const repoRoot = path.resolve(desktopDir, '..', '..');
+execFileSync(process.execPath, [path.join(repoRoot, 'scripts', 'sync-yanzhi-icons.cjs')], {
+  cwd: repoRoot,
+  stdio: 'inherit',
+});
 const {
   parseModesArg,
 } = require(path.join(repoRoot, 'scripts', 'lib', 'mode-build.cjs'));

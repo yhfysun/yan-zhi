@@ -22,8 +22,16 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const DESKTOP = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(DESKTOP, '..', '..');
 const DEFAULT_SERVER_BASE = 'http://127.0.0.1:3001';
 const SERVER_BASE_FILE = path.join(DESKTOP, 'resources', 'server-base.json');
+
+const iconSync = spawnSync(
+  process.execPath,
+  [path.join(REPO_ROOT, 'scripts', 'sync-yanzhi-icons.cjs')],
+  { cwd: REPO_ROOT, stdio: 'inherit' },
+);
+if (iconSync.status !== 0) fail('approved 图标同步失败');
 
 function readArg(name) {
   const inline = process.argv.find((a) => a.startsWith(`--${name}=`));

@@ -5,7 +5,7 @@
  *
  *   项目里**从来没有**任何图标生成脚本 —— `apps/mobile/android/.../res/mipmap-*`
  *   一直是 Capacitor 脚手架默认产物：
- *     · 位图（09-05 用旧的蓝色大脑图生成过一次，之后言智 logo 换成白底黑「言」字，
+ *     · 位图（09-05 用旧的蓝色大脑图生成过一次，之后言智 logo 换成 approved 黑白插画，
  *       但没人重新生成）；
  *   · `mipmap-anydpi-v26` 下的 ic_launcher 与 ic_launcher_round 描述文件，
  *     以及 `drawable` / `drawable-v24` 下的前景背景 vector
@@ -29,12 +29,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('node:child_process');
 
 const MOBILE_DIR = path.join(__dirname, '..');
 const REPO_ROOT = path.join(MOBILE_DIR, '..', '..');
 const RES_DIR = path.join(MOBILE_DIR, 'android', 'app', 'src', 'main', 'res');
 
-/** 源图：言智 logo（1024×1024 RGBA，白底 + 黑「言」字） */
+/** 源图：YanZhi approved 黑白插画（1024×1024 RGBA，透明底） */
 const DEFAULT_SOURCE = path.join(REPO_ROOT, 'assets', 'icons', 'icon.png');
 
 /** legacy 启动图标尺寸（Android 官方 mipmap 密度表） */
@@ -48,11 +49,11 @@ const ADAPTIVE_SIZES = {
 /**
  * adaptive 前景里 logo 占画布的比例。
  * Android 只保证中间 66/108 ≈ 61% 不被裁切；留一点余量取 0.60，
- * 避免「言」字的笔画边缘被圆角遮罩切掉。
+ * 避免标志线条被圆角遮罩切掉。
  */
 const ADAPTIVE_CONTENT_RATIO = 0.60;
 
-/** 品牌背景色（与 logo 的白底一致，保证圆角裁剪处颜色连续） */
+/** Android adaptive icon 所需的平台背景色；透明源图本身不带底板。 */
 const BRAND_BG = '#FFFFFF';
 
 function resolveSharp() {
@@ -92,6 +93,16 @@ function circleMaskSvg(size) {
 }
 
 (async () => {
+  const iconSync = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'sync-yanzhi-icons.cjs')],
+    { cwd: REPO_ROOT, stdio: 'inherit' },
+  );
+  if (iconSync.status !== 0) {
+    console.error('[icons] approved 图标同步失败');
+    process.exit(1);
+  }
+
   const argv = process.argv.slice(2);
   const srcIdx = argv.indexOf('--source');
   const source = srcIdx >= 0 ? path.resolve(argv[srcIdx + 1]) : DEFAULT_SOURCE;
@@ -175,10 +186,10 @@ function circleMaskSvg(size) {
   write(path.join(RES_DIR, 'mipmap-anydpi-v26', 'ic_launcher_round.xml'), Buffer.from(adaptiveXml, 'utf8'));
 
   // ---------- 3. 背景色 ----------
-  // ★ 覆盖脚手架默认的 #000000 / 青绿 #26A69A，与 logo 白底一致。
+  // ★ 覆盖脚手架默认的 #000000 / 青绿 #26A69A；Android 背景层保持品牌白色。
   const bgXml = `<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 言智 logo 底色（白）。adaptive icon 的 background 层。 -->
+    <!-- Android adaptive icon 背景层；桌面/Web 图标本身为透明底。 -->
     <color name="ic_launcher_background">${BRAND_BG}</color>
 </resources>
 `;
