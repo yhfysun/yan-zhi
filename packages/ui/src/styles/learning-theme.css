@@ -10,19 +10,21 @@
   --lp-on-primary: var(--skin-btn-text, #fff);
   --lp-action: color-mix(in srgb, var(--color-primary) 65%, #000);
   --lp-action-hover: color-mix(in srgb, var(--color-primary) 55%, #000);
-  --lp-surface: var(--glass-bg);
-  --lp-surface-hover: var(--glass-bg-hover);
+  --lp-panel: var(--skin-panel-bg, var(--glass-bg));
+  --lp-panel-strong: var(--skin-panel-bg-strong, var(--glass-bg));
+  --lp-surface: var(--skin-panel-bg-strong, var(--glass-bg));
+  --lp-surface-hover: color-mix(in srgb, var(--skin-surface-hover, var(--glass-bg-hover)) 94%, transparent);
   --lp-input-bg: var(--skin-input-bg, var(--color-bg-elevated));
-  --lp-border: var(--glass-border, var(--color-border));
-  --lp-border-strong: var(--color-border-strong);
+  --lp-border: color-mix(in srgb, var(--skin-text, var(--color-text)) 13%, transparent);
+  --lp-border-strong: color-mix(in srgb, var(--skin-text, var(--color-text)) 22%, transparent);
   --lp-text: var(--color-text);
   --lp-text-secondary: var(--color-text-secondary);
   --lp-text-tertiary: var(--color-text-tertiary);
-  --lp-primary-soft: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg));
-  --lp-primary-soft-hover: color-mix(in srgb, var(--color-primary) 20%, var(--glass-bg));
-  --lp-success-soft: color-mix(in srgb, var(--color-success) 13%, var(--glass-bg));
-  --lp-warning-soft: color-mix(in srgb, var(--color-warning) 14%, var(--glass-bg));
-  --lp-danger-soft: color-mix(in srgb, var(--color-danger) 13%, var(--glass-bg));
+  --lp-primary-soft: color-mix(in srgb, var(--color-primary) 11%, var(--skin-surface-raised, var(--glass-bg)));
+  --lp-primary-soft-hover: color-mix(in srgb, var(--color-primary) 17%, var(--skin-surface-raised, var(--glass-bg)));
+  --lp-success-soft: color-mix(in srgb, var(--color-success) 11%, var(--skin-surface-raised, var(--glass-bg)));
+  --lp-warning-soft: color-mix(in srgb, var(--color-warning) 12%, var(--skin-surface-raised, var(--glass-bg)));
+  --lp-danger-soft: color-mix(in srgb, var(--color-danger) 11%, var(--skin-surface-raised, var(--glass-bg)));
   color: var(--lp-text);
   color-scheme: light;
 }
@@ -93,6 +95,29 @@ html body .app-shell .learning-page :is(
 ) {
   border-color: var(--lp-border);
   background-color: var(--lp-surface);
+}
+
+/* The three workspace columns are page-level surfaces. Keep the wallpaper
+   visible in the gutters, not through every card and line of body text. */
+.app-shell .learning-page .lp-card {
+  border-color: var(--lp-border);
+  background-color: var(--lp-panel);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--skin-text, var(--color-text)) 8%, transparent);
+}
+
+.app-shell .learning-page :is(
+  .lp-subject-select select,
+  .lp-tab,
+  .sec-branch-map button,
+  .sec-module,
+  .sec-self-check,
+  .sec-context-grid section,
+  .sec-code,
+  .sec-code-languages,
+  .sec-code-languages button
+) {
+  border-color: var(--lp-border);
+  background-color: var(--lp-panel-strong);
 }
 
 .app-shell .learning-page :is(

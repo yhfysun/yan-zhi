@@ -262,6 +262,42 @@ function hexToRgba(hex: string, alpha: number): string {
 const relativeLuminance = luminance;
 
 /**
+ * 皮肤表面明暗不只看系统主题，还要看皮肤自己的玻璃色。
+ *
+ * 例如「赛博宵」在浅色模式下仍使用深蓝玻璃 #0E1626。过去这里会把它强行漂白到
+ * 近白，再叠半透明壁纸，结果就是整页灰蒙蒙。正确策略是：皮肤玻璃本身深，就保留
+ * 深色表面并自动使用浅色文字；只有玻璃本身偏亮时才走浅色表面。
+ */
+export function resolveSkinSurfaceTone(input: {
+  themeDark: boolean;
+  glass?: string;
+  glassDark?: string;
+  surfaceColor?: string;
+  patternIsDark?: boolean;
+}): 'light' | 'dark' {
+  if (input.themeDark || input.patternIsDark) return 'dark';
+  const candidate = input.glass ?? input.surfaceColor ?? input.glassDark;
+  if (!candidate || !/^#[0-9a-f]{3,8}$/i.test(candidate)) return 'light';
+  return relativeLuminance(candidate) < 0.36 ? 'dark' : 'light';
+}
+
+/**
+ * 背景图优先：皮肤包常把 glassAlpha 配到 .55~.86，叠加后壁纸只剩一层灰色。
+ * 这里按表面类型封顶，保证面板和 chrome 始终能看清背景图。
+ */
+export function clampSkinGlassAlpha(
+  raw: number | undefined,
+  surfaceDark: boolean,
+  kind: 'surface' | 'panel' | 'small',
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const max = kind === 'panel'
+    ? (surfaceDark ? 0.16 : 0.18)
+    : (surfaceDark ? 0.18 : 0.20);
+  return Math.min(raw, max);
+}
+
+/**
  * 若颜色偏暗则往白色方向提亮到目标亮度附近（用于浅色主题下的玻璃底色兜底）。
  * 皮肤作者常把 glass 也写成深色（如玻璃色 #0E1626），浅色主题直接拿来用会得到
  * "深底 + 派生出的近黑文字" → 不可读。这里把过深的底色拉回浅色区间。
@@ -1109,7 +1145,15 @@ export const useSettingsStore = defineStore('settings', () => {
    */
   function applySurface(sf: SkinSurface, pluginId: string | null) {
     const root = document.documentElement.style;
-    const dark = settings.value.darkMode;
+    const themeDark = settings.value.darkMode;
+    const surfaceTone = resolveSkinSurfaceTone({
+      themeDark,
+      glass: sf.glass,
+      glassDark: sf.glassDark,
+      surfaceColor: sf.surfaceColor,
+      patternIsDark: sf.patternIsDark,
+    });
+    const surfaceDark = surfaceTone === 'dark';
     // 元素级变量先清空：重复 applySkin（切皮肤 / 切深浅 / HMR）时，
     // 上一套皮肤未在本次重新下发的值不会残留（残留 = "换了皮肤观感没变"）。
     for (const v of SKIN_ELEMENT_VARS) root.removeProperty(v);
@@ -1144,7 +1188,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // ===== 配色兜底链：皮肤显式值 → 由 primary 自动派生 → 主题基线 =====
     // 关键改动（P0-2）：所有兜底不再用硬编码中性灰，改从皮肤主色派生，
     // 27 套皮肤即使一个字段都不填，暗色下也各有各的色相，不再千篇一律的灰。
-    const dv = deriveSkinTokens(currentSkinPrimary, dark);
+    const dv = deriveSkinTokens(currentSkinPrimary, surfaceDark);
 
     // ===== 浅色模式玻璃底自动提亮（2026-09-13 修「亮色系黑底黑字」）=====
     // 皮肤 manifest 里的 glass / glassDark 是成对写的，但绝大多数皮肤作者把
@@ -1154,10 +1198,10 @@ export const useSettingsStore = defineStore('settings', () => {
     // 修复：浅色模式下若解析出的玻璃色亮度 < 0.62（明显偏深），往白里提亮到 0.9 附近，
     // 保证浅色主题下玻璃永远是浅底；同时把文字层按"实际底色明暗"重新选向，
     // 避免"深底 + 深字"或"浅底 + 浅字"任一侧翻车。
-    const glassRaw = dark
+    const glassRaw = surfaceDark
       ? (sf.glassDark ?? sf.surfaceColor ?? dv.surface)
       : (sf.glass ?? sf.surfaceColor ?? dv.surface);
-    const tint = dark ? glassRaw : lightenIfDark(glassRaw, 0.9);
+    const tint = surfaceDark ? glassRaw : lightenIfDark(glassRaw, 0.9);
     /**
      * 文字取深/取浅的判据 —— 按「**实际渲染出来的表面**」而非玻璃底色。
      *
@@ -1174,7 +1218,7 @@ export const useSettingsStore = defineStore('settings', () => {
      * 皮肤仍可用 surface.patternIsDark 显式覆盖（如自带深色部件图）。
      */
     const hasParts = !!(sf.taskListPattern || sf.inputPattern || sf.buttonPattern || sf.dialogPattern);
-    const patternLum = sf.patternIsDark === true ? 0.12 : (dark ? 0.22 : 0.62);
+    const patternLum = sf.patternIsDark === true ? 0.12 : (surfaceDark ? 0.22 : 0.62);
     const surfaceIsLight = hasParts
       ? patternLum >= 0.5
       : relativeLuminance(tint) >= 0.62;
@@ -1196,15 +1240,13 @@ export const useSettingsStore = defineStore('settings', () => {
     // ⚠️ 只有皮肤**显式配置**了 glassAlpha/glassAlphaDark 才下发。
     //    未配置时不下发 → skin.css 的回落值（.42/.30/.72/.62）成为真实默认值。
     //    这就是"改 CSS 就能调透明度"的前提，替代此前"JS 全量兜底 echo"的做法。
-    const alphaRaw = dark ? sf.glassAlphaDark : sf.glassAlpha;
-    const alpha = alphaRaw === undefined
-      ? undefined
-      : (dark ? alphaRaw : Math.min(alphaRaw, 0.72));
-    const border = dark ? (sf.borderDark ?? sf.border) : sf.border;
+    const alphaRaw = surfaceDark ? (sf.glassAlphaDark ?? sf.glassAlpha) : sf.glassAlpha;
+    const alpha = clampSkinGlassAlpha(alphaRaw, surfaceDark, 'surface');
+    const border = surfaceDark ? (sf.borderDark ?? sf.border) : sf.border;
     root.setProperty('--skin-glass-tint', tint);
     if (alpha !== undefined) {
       root.setProperty('--skin-glass-alpha', String(alpha));
-      root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
+      root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 0.34)));
     }
     if (border) root.setProperty('--skin-glass-border', border);
 
@@ -1215,12 +1257,16 @@ export const useSettingsStore = defineStore('settings', () => {
     //     （.30 反直觉地更实：它不在 backdrop-filter 元素的嵌套采样链里，
     //      底部输入条那层 blur 是按 0.30 混合进下方玻璃的，值越小越暗 → 文字越清楚）
     // 皮肤可用 panelAlphaDark / panelAlphaSmallDark 覆盖。
-    if (dark) {
-      if (sf.panelAlphaDark !== undefined) root.setProperty('--skin-glass-alpha-panel', String(sf.panelAlphaDark));
-      if (sf.panelAlphaSmallDark !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(sf.panelAlphaSmallDark));
+    if (surfaceDark) {
+      const panelAlpha = clampSkinGlassAlpha(sf.panelAlphaDark, surfaceDark, 'panel');
+      const smallAlpha = clampSkinGlassAlpha(sf.panelAlphaSmallDark, surfaceDark, 'small');
+      if (panelAlpha !== undefined) root.setProperty('--skin-glass-alpha-panel', String(panelAlpha));
+      if (smallAlpha !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(smallAlpha));
     } else {
-      if (sf.panelAlphaLight !== undefined) root.setProperty('--skin-glass-alpha-panel', String(sf.panelAlphaLight));
-      if (sf.panelAlphaSmallLight !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(sf.panelAlphaSmallLight));
+      const panelAlpha = clampSkinGlassAlpha(sf.panelAlphaLight, surfaceDark, 'panel');
+      const smallAlpha = clampSkinGlassAlpha(sf.panelAlphaSmallLight, surfaceDark, 'small');
+      if (panelAlpha !== undefined) root.setProperty('--skin-glass-alpha-panel', String(panelAlpha));
+      if (smallAlpha !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(smallAlpha));
     }
 
     // ===== 文本层：皮肤模式下 --color-text* 由皮肤配色接管 =====
@@ -1236,7 +1282,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // ===== 容器三级 + 控件层 =====
     // 浅色主题保护（同 tint）：皮肤若给了深色容器色（大量皮肤作者只按暗色配一遍），
     // 直接落到浅色主题会得到深底浅字/深底深字。这里在浅色模式下统一做提亮兜底。
-    const sh = (v: string) => (dark ? v : lightenIfDark(v, 0.9));
+    const sh = (v: string) => (surfaceDark ? v : lightenIfDark(v, 0.9));
     root.setProperty('--skin-surface', sh(sf.surfaceColor ?? dv.surface));
     root.setProperty('--skin-surface-raised', sh(sf.surfaceRaisedColor ?? dv.surfaceRaised));
     root.setProperty('--skin-surface-sunken', sh(sf.surfaceSunkenColor ?? dv.surfaceSunken));
@@ -1278,7 +1324,7 @@ export const useSettingsStore = defineStore('settings', () => {
       const defText = /^#[0-9a-f]{3,8}$/i.test(btnBgSolid)
         ? (contrastRatio(btnBgSolid, '#ffffff') >= 4.5 ? '#ffffff'
           : contrastRatio(btnBgSolid, '#141414') >= 4.5 ? '#141414'
-            : (dark ? '#F2F0EA' : '#141414'))
+            : (surfaceDark ? '#F2F0EA' : '#141414'))
         : '';
       if (defText) root.setProperty('--skin-btn-text-default', defText);
     }
@@ -1288,7 +1334,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // 取值优先 radius，其次 cardRadius，最后 buttonRadius（老皮肤字段兼容）。
     const skinRadius = sf.radius ?? sf.cardRadius ?? sf.buttonRadius;
     if (skinRadius !== undefined) root.setProperty('--skin-radius', `${skinRadius}px`);
-    const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
+    const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (surfaceDark ? '#F2F0EA' : '#141414');
     const btnText = sf.buttonText ?? sf.onPrimary;
     if (btnText) root.setProperty('--skin-btn-text', btnText);
     else if (sf.buttonRadius !== undefined || sf.radius !== undefined) root.setProperty('--skin-btn-text', autoBtnText);
@@ -1305,7 +1351,12 @@ export const useSettingsStore = defineStore('settings', () => {
     const overlayTintDark = mixHex(dv.surface, '#000000', 0.25);
     const overlayTintLight = mixHex(dv.surface, '#FFFFFF', 0.55);
     root.setProperty('--skin-overlay-tint', sf.wallpaperOverlayTintDark ?? overlayTintDark);
-    root.setProperty('--skin-overlay-tint-light', sf.wallpaperOverlayTint ?? overlayTintLight);
+    root.setProperty(
+      '--skin-overlay-tint-light',
+      surfaceDark
+        ? (sf.wallpaperOverlayTintDark ?? overlayTintDark)
+        : (sf.wallpaperOverlayTint ?? overlayTintLight),
+    );
 
     // 弹窗遮罩：未配置时用派生色（带皮肤色相的半透明）—— 派生本身已含透明度，
     // 故与圆角/图案不同，这里恒下发（CSS 回落的 #0f172a 是无关皮肤色相的冷蓝灰）。
@@ -1369,7 +1420,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const themedPattern = (light?: string, darkVariant?: string) => {
       if (!light && !darkVariant) return undefined;
       let base: string | undefined;
-      if (dark) {
+      if (surfaceDark) {
         base = darkVariant
           ?? (light && /\.webp$/i.test(light) ? light.replace(/\.webp$/i, '-dark.webp') : light);
       } else {
@@ -1432,7 +1483,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // 这里逐张下发为 --skin-card-N-pattern；skin.css 按 nth-child 循环取用，
     // 同一列卡片自然错开成多套外观（且稳定可复现，不用 JS 记随机状态）。
     // 未配置 cardPatterns 的插件皮肤：回落单张（taskListPattern）→ 观感与改造前一致。
-    const cardList = dark
+    const cardList = surfaceDark
       ? (sf.cardPatternsDark ?? sf.cardPatterns)
       : sf.cardPatterns;
     if (cardList && cardList.length) {

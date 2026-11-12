@@ -153,12 +153,17 @@ html[data-skin="on"] .home-page {
   --el-text-color-placeholder: var(--skin-text-tertiary, #a8abb2);
   --el-text-color-disabled: var(--skin-text-tertiary, #c0c4cc);
 
-  /* 玻璃参数默认值（浅色）：标准 .82 / 三栏 .72 / 小面板 .62 */
-  --skin-glass-alpha: 0.82;
-  --skin-glass-alpha-hover: 0.90;
-  --skin-glass-alpha-panel: 0.72;
-  --skin-glass-alpha-panel-sm: 0.62;
+  /* 背景图优先：面板只保留极薄色纱，壁纸始终清晰可见 */
+  --skin-glass-alpha: 0.18;
+  --skin-glass-alpha-hover: 0.28;
+  --skin-glass-alpha-panel: 0.12;
+  --skin-glass-alpha-panel-sm: 0.16;
   --skin-glass-blur: 0px;
+  --skin-chrome-bg: color-mix(in srgb, var(--skin-surface-raised, var(--skin-surface, #f8fafc)) 18%, transparent);
+  --skin-panel-bg: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #f5f1ea)) 16%, transparent);
+  --skin-panel-bg-strong: color-mix(in srgb, var(--skin-surface-raised, var(--skin-glass-tint, #f5f1ea)) 20%, transparent);
+  --skin-popover-veil: color-mix(in srgb, var(--skin-surface-raised, var(--skin-glass-tint, #f5f1ea)) 92%, transparent);
+  --skin-menu-veil: color-mix(in srgb, var(--skin-surface-raised, var(--skin-glass-tint, #f5f1ea)) 94%, transparent);
   /* 部件图贴合方式默认值：cover + no-repeat + center。
      2026-09-13 用户要求「图片不要挤压……就是一张大图居中，把容器覆盖掉」——
      即部件图按容器裁切（cover），而不是拉伸变形（fill）或平铺（repeat）。
@@ -171,12 +176,12 @@ html[data-skin="on"] .home-page {
      那正是「按钮 8 / 卡片 10 / 弹窗 14」各走各的漂移来源。 */
   --skin-radius: 14px;
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha) * 100%), transparent);
+  --glass-bg: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #f5f1ea)) calc(var(--skin-glass-alpha) * 100%), transparent);
   --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover) * 100%), transparent));
   /* 三栏面板专用玻璃（左会话栏 / 中对话列 / 右预览栏） */
-  --glass-bg-panel: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
+  --glass-bg-panel: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #f5f1ea)) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
   /* 小面板专用玻璃（底部输入条 / 工具条 / 吸顶小背板） */
-  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
+  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #f5f1ea)) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
   --glass-filter: none;
   --glass-border: var(--skin-glass-border, rgba(26, 26, 26, 0.14));
 
@@ -240,19 +245,22 @@ html[data-skin="on"] .home-page {
   --el-text-color-placeholder: var(--skin-text-tertiary, #8D9095);
   --el-text-color-disabled: var(--skin-text-tertiary, #6C6E72);
 
-  /* 玻璃参数默认值（深色）：标准 .50 / 三栏 .42 / 小面板 .30。
-     比浅色整体更透，让暗色壁纸的霓虹细节主导观感（用户反馈"一直灰蒙蒙"的
-     主因就是深色下三栏长期停在 0.5+ 的半透黑 → 壁纸被糊成一片灰）。 */
-  --skin-glass-alpha: 0.50;
-  --skin-glass-alpha-hover: 0.62;
-  --skin-glass-alpha-panel: 0.42;
-  --skin-glass-alpha-panel-sm: 0.30;
+  /* 背景图优先：深色模式同样只加薄纱，不把壁纸盖成整块深色 */
+  --skin-glass-alpha: 0.14;
+  --skin-glass-alpha-hover: 0.22;
+  --skin-glass-alpha-panel: 0.10;
+  --skin-glass-alpha-panel-sm: 0.14;
   --skin-glass-blur: 0px;
+  --skin-chrome-bg: color-mix(in srgb, var(--skin-surface-raised, var(--skin-surface, #18212d)) 14%, transparent);
+  --skin-panel-bg: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #1d1d1c)) 12%, transparent);
+  --skin-panel-bg-strong: color-mix(in srgb, var(--skin-surface-raised, var(--skin-glass-tint, #1d1d1c)) 18%, transparent);
+  --skin-popover-veil: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #1d1d1c)) 82%, transparent);
+  --skin-menu-veil: color-mix(in srgb, var(--skin-surface-raised, var(--skin-glass-tint, #1d1d1c)) 86%, transparent);
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha) * 100%), transparent);
+  --glass-bg: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #1d1d1c)) calc(var(--skin-glass-alpha) * 100%), transparent);
   --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover) * 100%), transparent));
-  --glass-bg-panel: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
-  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
+  --glass-bg-panel: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #1d1d1c)) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
+  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-surface, var(--skin-glass-tint, #1d1d1c)) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
   --glass-filter: none;
   --glass-border: var(--skin-glass-border, rgba(255, 255, 255, 0.13));
 
@@ -315,6 +323,13 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .side-nav-desktop {
   backdrop-filter: none; /* 侧栏与内容不重叠，无需二次模糊，避免性能浪费 */
   -webkit-backdrop-filter: none;
+}
+
+/* App chrome sits directly on the wallpaper. Give it a stable, skin-tinted
+   readability layer instead of the generic 72% light glass. */
+html[data-skin="on"] .title-bar {
+  background: var(--skin-chrome-bg) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--skin-text, #1f2329) 11%, transparent) !important;
 }
 
 /* ===== 任务页三栏：左栏（会话列表）/ 中栏 / 右侧预览面板统一玻璃 =====
@@ -849,6 +864,73 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   -webkit-backdrop-filter: none;
   border-color: var(--glass-border-strong);
   box-shadow: var(--skin-shadow, var(--overlay-shadow));
+}
+
+/* Plugin part images are not guaranteed to have a matching light/dark variant.
+   Text-bearing overlays therefore always get a skin-tinted veil over the image.
+   This keeps the artwork visible while preventing dark-menu/dark-text collisions. */
+html[data-theme="light"][data-skin="on"] :is(
+  .el-popper.is-light,
+  .el-dropdown-menu,
+  .el-select-dropdown,
+  .hm-sub,
+  .app-menu-list,
+  .ctx-menu
+) {
+  color: var(--skin-text, var(--color-text)) !important;
+  background-color: var(--skin-dropdown-bg, var(--skin-surface-raised, #f8fafc)) !important;
+  background-image:
+    linear-gradient(var(--skin-popover-veil), var(--skin-popover-veil)),
+    var(--skin-dialog-pattern, none) !important;
+  background-size: auto, var(--skin-pattern-size, cover) !important;
+  background-repeat: no-repeat, var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+  border-color: color-mix(in srgb, var(--skin-text, var(--color-text)) 15%, transparent) !important;
+}
+
+html[data-theme="light"][data-skin="on"] :is(
+  .el-popper.is-light.yz-menu-popper,
+  .el-dropdown-menu,
+  .el-select-dropdown,
+  .hm-sub,
+  .app-menu-list,
+  .ctx-menu
+) {
+  background-image:
+    linear-gradient(var(--skin-menu-veil), var(--skin-menu-veil)),
+    var(--skin-menu-pattern, var(--skin-dialog-pattern, none)) !important;
+}
+
+html[data-theme="dark"][data-skin="on"] :is(
+  .el-popper.is-light,
+  .el-dropdown-menu,
+  .el-select-dropdown,
+  .hm-sub,
+  .app-menu-list,
+  .ctx-menu
+) {
+  color: var(--skin-text, var(--color-text)) !important;
+  background-color: var(--skin-dropdown-bg, var(--skin-surface-raised, #18212d)) !important;
+  background-image:
+    linear-gradient(var(--skin-popover-veil), var(--skin-popover-veil)),
+    var(--skin-dialog-pattern, none) !important;
+  background-size: auto, var(--skin-pattern-size, cover) !important;
+  background-repeat: no-repeat, var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+  border-color: color-mix(in srgb, var(--skin-text, var(--color-text)) 15%, transparent) !important;
+}
+
+html[data-theme="dark"][data-skin="on"] :is(
+  .el-popper.is-light.yz-menu-popper,
+  .el-dropdown-menu,
+  .el-select-dropdown,
+  .hm-sub,
+  .app-menu-list,
+  .ctx-menu
+) {
+  background-image:
+    linear-gradient(var(--skin-menu-veil), var(--skin-menu-veil)),
+    var(--skin-menu-pattern, var(--skin-dialog-pattern, none)) !important;
 }
 /* 弹窗边框装饰图案（border-image），皮肤可在 surface.borderPattern 配置 SVG/PNG */
 [data-skin="on"] .el-dialog,
@@ -1605,16 +1687,25 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-position: center !important;
 }
 
-/* ===== 浏览器 chrome（tab 栏 + 工具栏 + 书签栏）：2026-10-17 用户要求与起始页一致，
-   全部透出 3D 壁纸（「红框里面这块呢？说一步做一步？」）——
-   原「browser 图案 cover + 45%/55% 玻璃垫底 + 暗色 90% 深玻璃」整套废止。
-   --skin-browser-pattern 各皮肤 manifest 仍在下发，只是此处**不再消费**（留回滚余地）；
-   文字/图标可读性走 --skin-text 派生（下方 1331 起的规则不变）。 ===== */
-[data-skin="on"] .browser-tabbar,
-[data-skin="on"] .browser-toolbar,
-[data-skin="on"] .bookmarks-bar {
+/* ===== 浏览器 chrome（tab 栏 + 工具栏 + 书签栏）=====
+   chrome 与标题栏必须使用同一套皮肤表面。此前把 tabbar/toolbar 强制透明，
+   在赛博宵这类深色壁纸 + 浅色主题下会变成「深壁纸 + 深字 + 白标签」三套色阶，
+   标签栏和工具栏像从另一个界面拼进来。
+   现改为消费 --skin-chrome-bg：壁纸仍透过 88%~93% 的皮肤色，但文字对比稳定。
+   --skin-browser-pattern 保留但不再消费，避免皮肤纹理把高频控件搅得更花。 ===== */
+html[data-skin="on"] .browser-tabbar,
+html[data-skin="on"] .browser-toolbar,
+html[data-skin="on"] .bookmarks-bar {
   background-image: none !important;
-  background-color: transparent !important;
+  background-color: var(--skin-chrome-bg) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-skin="on"] .browser-tabbar {
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+html[data-skin="on"] .browser-toolbar {
+  border-bottom-color: color-mix(in srgb, var(--color-primary) 18%, transparent) !important;
 }
 /* 头部文字/图标：强制与外壳玻璃底对比，杜绝白底白字（头部看不见）。
    2026-09-13「全面接管」：原先写死 #202124 / #5f6368 / #e8eaed 三档常数，
@@ -1666,15 +1757,23 @@ html[data-skin="on"] .browser-shell {
 html[data-skin="on"] .browser-tabbar,
 html[data-skin="on"] .browser-toolbar,
 html[data-skin="on"] .bookmarks-bar {
-  /* 背景已由上方 chrome 透明规则接管（!important），此处只管分隔线颜色 */
+  /* 背景由上方统一 chrome 表面接管，此处只管分隔线颜色 */
   border-color: var(--skin-glass-border, var(--el-border-color-lighter, #e0e0e0));
 }
 html[data-skin="on"] .tab-item {
+  border: 1px solid transparent;
+  background-color: transparent;
   color: var(--skin-text-secondary, var(--el-text-color-secondary, #5f6368));
 }
 html[data-skin="on"] .tab-item.active {
-  background: var(--skin-surface-raised, var(--el-bg-color, #fff));
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 16%,
+    var(--skin-surface-raised, var(--el-bg-color, #fff))
+  );
+  border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
   color: var(--skin-text, var(--el-text-color-primary, #202124));
+  box-shadow: inset 0 -2px 0 var(--color-primary);
 }
 html[data-skin="on"] .tab-item:hover,
 html[data-skin="on"] .tab-close:hover,
