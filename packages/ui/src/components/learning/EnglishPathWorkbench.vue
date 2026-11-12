@@ -1,11 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, Clock3, Lightbulb, MessageCircle, Sparkles, Volume2, X } from 'lucide-vue-next';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Bookmark,
+  BookmarkCheck,
+  BookOpen,
+  CheckCircle2,
+  Clock3,
+  Lightbulb,
+  MessageCircle,
+  Sparkles,
+  Target,
+  Volume2,
+  X,
+} from 'lucide-vue-next';
 import { api } from '../../api/client';
 
+type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking';
+type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
 type PathStep = {
   id: string;
-  kind: 'phonics' | 'roots' | 'grammar' | 'story' | 'speaking';
+  kind: PathStepKind;
   title: string;
   goal: string;
   minutes: number;
@@ -13,7 +29,9 @@ type PathStep = {
   pattern?: string;
   tip: string;
   examples: Array<{ en: string; zh: string }>;
+  wordFamily?: Array<{ word: string; gloss: string; note?: string }>;
   task: string;
+  quickCheck?: QuickCheck;
 };
 type PathStage = {
   id: string;
@@ -22,33 +40,97 @@ type PathStage = {
   level: string;
   steps: PathStep[];
 };
+type PhaseKey = 'concept' | 'examples' | 'practice' | 'check';
+type Phase = { key: PhaseKey; label: string; hint: string };
 
 const emit = defineEmits<{ practice: []; scenes: []; 'focus-change': [active: boolean] }>();
+const POSITION_KEY = 'yz.learning.path.position.v2';
+const COMPLETED_KEY = 'yz.learning.path.completed.v2';
+const SAVED_KEY = 'yz.learning.path.saved.v2';
+const PHASES: Phase[] = [
+  { key: 'concept', label: '理解', hint: '先抓住本课规则' },
+  { key: 'examples', label: '例句', hint: '在语境里看懂' },
+  { key: 'practice', label: '练习', hint: '马上输出一次' },
+  { key: 'check', label: '自测', hint: '确认真的会了' },
+];
+
 const stages = ref<PathStage[]>([]);
 const stageIndex = ref(0);
 const stepIndex = ref(0);
+const phaseIndex = ref(0);
+const completedIds = ref<string[]>([]);
+const savedIds = ref<string[]>([]);
 const loading = ref(true);
 const error = ref('');
 const focusing = ref(false);
+const checkChoice = ref<number | null>(null);
+const checkSubmitted = ref(false);
+const dialogRef = ref<HTMLElement | null>(null);
 let previousBodyOverflow = '';
+let lastFocusTrigger: HTMLElement | null = null;
+
 const stage = computed(() => stages.value[stageIndex.value] || null);
 const step = computed(() => stage.value?.steps[stepIndex.value] || null);
+const phase = computed(() => PHASES[phaseIndex.value] || PHASES[0]);
 const totalSteps = computed(() => stages.value.reduce((sum, item) => sum + item.steps.length, 0));
-const completedSteps = computed(() =>
-  stages.value.slice(0, stageIndex.value).reduce((sum, item) => sum + item.steps.length, 0) + stepIndex.value,
+const completedCount = computed(() => completedIds.value.length);
+const progress = computed(() => totalSteps.value ? Math.round((completedCount.value / totalSteps.value) * 100) : 0);
+const currentStepCompleted = computed(() => !!step.value && completedIds.value.includes(step.value.id));
+const currentStepSaved = computed(() => !!step.value && savedIds.value.includes(step.value.id));
+const answerCorrect = computed(() => !!step.value?.quickCheck && checkChoice.value === step.value.quickCheck.answer);
+const isLastPhase = computed(() => phaseIndex.value === PHASES.length - 1);
+const currentGlobalIndex = computed(() =>
+  stages.value.slice(0, stageIndex.value).reduce((sum, item) => sum + item.steps.length, 0) + stepIndex.value + 1,
 );
-const progress = computed(() => totalSteps.value ? Math.round((completedSteps.value / totalSteps.value) * 100) : 0);
-const kindLabel: Record<PathStep['kind'], string> = {
+const wordChips = computed(() => {
+  if (step.value?.wordFamily?.length) return step.value.wordFamily.slice(0, 12).map((entry) => entry.word);
+  const source = step.value?.examples[0]?.en || '';
+  return [...new Set(source
+    .split(/[·→/,，;；|]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2 && item.length <= 28 && /^[A-Za-z][A-Za-z'’ -]*$/.test(item)))].slice(0, 12);
+});
+const kindLabel: Record<PathStepKind, string> = {
   phonics: '自然拼读',
   roots: '词根词缀',
   grammar: '句型语法',
-  story: '故事阅读',
+  fable: '寓言精读',
+  story: '短篇故事',
+  'long-story': '长篇连载',
   speaking: '口语输出',
 };
 
 function unwrap<T>(response: unknown): T | null {
   if (response && typeof response === 'object' && 'data' in response) return (response as { data: T }).data;
   return null;
+}
+
+function restoreLocalState() {
+  try {
+    const savedCompleted = JSON.parse(localStorage.getItem(COMPLETED_KEY) || '[]') as unknown;
+    if (Array.isArray(savedCompleted)) completedIds.value = savedCompleted.filter((id): id is string => typeof id === 'string');
+    const savedLessons = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]') as unknown;
+    if (Array.isArray(savedLessons)) savedIds.value = savedLessons.filter((id): id is string => typeof id === 'string');
+    const savedPosition = JSON.parse(localStorage.getItem(POSITION_KEY) || 'null') as { stage?: string; step?: string } | null;
+    if (!savedPosition) return;
+    const stageAt = stages.value.findIndex((item) => item.id === savedPosition.stage);
+    if (stageAt < 0) return;
+    const stepAt = stages.value[stageAt].steps.findIndex((item) => item.id === savedPosition.step);
+    stageIndex.value = stageAt;
+    stepIndex.value = Math.max(0, stepAt);
+  } catch {
+    completedIds.value = [];
+  }
+}
+
+function persistLocalState() {
+  try {
+    localStorage.setItem(POSITION_KEY, JSON.stringify({ stage: stage.value?.id || '', step: step.value?.id || '' }));
+    localStorage.setItem(COMPLETED_KEY, JSON.stringify(completedIds.value));
+    localStorage.setItem(SAVED_KEY, JSON.stringify(savedIds.value));
+  } catch {
+    // Restricted browser contexts can still use the course without persistence.
+  }
 }
 
 async function loadPath() {
@@ -58,6 +140,7 @@ async function loadPath() {
     const response = await api.get<{ data: PathStage[] }>('/learning/path');
     stages.value = unwrap<PathStage[]>(response) || [];
     if (!stages.value.length) error.value = '学习路线暂时为空';
+    restoreLocalState();
   } catch (e) {
     error.value = e instanceof Error ? e.message : '学习路线加载失败';
   } finally {
@@ -66,17 +149,26 @@ async function loadPath() {
 }
 
 function selectStage(index: number) {
-  closeFocus();
   stageIndex.value = Math.max(0, Math.min(stages.value.length - 1, index));
   stepIndex.value = 0;
 }
 
+function resetLessonState() {
+  phaseIndex.value = 0;
+  checkChoice.value = null;
+  checkSubmitted.value = false;
+}
+
 function openFocus(index = stepIndex.value) {
-  stepIndex.value = Math.max(0, Math.min((stage.value?.steps.length || 1) - 1, index));
+  if (!stage.value) return;
+  lastFocusTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  stepIndex.value = Math.max(0, Math.min(stage.value.steps.length - 1, index));
+  resetLessonState();
   focusing.value = true;
   emit('focus-change', true);
   previousBodyOverflow = document.body.style.overflow;
   document.body.style.overflow = 'hidden';
+  void nextTick(() => dialogRef.value?.focus());
 }
 
 function closeFocus() {
@@ -84,23 +176,52 @@ function closeFocus() {
   focusing.value = false;
   emit('focus-change', false);
   document.body.style.overflow = previousBodyOverflow;
+  void nextTick(() => {
+    if (lastFocusTrigger?.isConnected) lastFocusTrigger.focus();
+    lastFocusTrigger = null;
+  });
 }
 
-function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') closeFocus();
-}
-
-function moveStep(delta: number) {
-  if (!stage.value) return;
-  const next = stepIndex.value + delta;
-  if (next >= 0 && next < stage.value.steps.length) {
-    stepIndex.value = next;
+function movePhase(delta: number) {
+  const next = phaseIndex.value + delta;
+  if (next >= 0 && next < PHASES.length) {
+    phaseIndex.value = next;
     return;
   }
-  const nextStage = stageIndex.value + delta;
-  if (nextStage < 0 || nextStage >= stages.value.length) return;
-  stageIndex.value = nextStage;
-  stepIndex.value = delta > 0 ? 0 : stages.value[nextStage].steps.length - 1;
+  if (delta < 0) return;
+  markCurrentComplete();
+}
+
+function markCurrentComplete() {
+  if (!step.value) return;
+  if (!completedIds.value.includes(step.value.id)) {
+    completedIds.value = [...completedIds.value, step.value.id];
+    persistLocalState();
+  }
+  closeFocus();
+}
+
+function chooseAnswer(index: number) {
+  if (checkSubmitted.value) return;
+  checkChoice.value = index;
+}
+
+function submitCheck() {
+  if (!step.value?.quickCheck || checkChoice.value == null) return;
+  checkSubmitted.value = true;
+}
+
+function retryCheck() {
+  checkChoice.value = null;
+  checkSubmitted.value = false;
+}
+
+function toggleSaved() {
+  if (!step.value) return;
+  savedIds.value = currentStepSaved.value
+    ? savedIds.value.filter((id) => id !== step.value?.id)
+    : [...savedIds.value, step.value.id];
+  persistLocalState();
 }
 
 function speak(text: string) {
@@ -113,34 +234,52 @@ function speak(text: string) {
   synth.speak(utterance);
 }
 
-function restorePosition() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('yz.learning.path.position') || 'null') as { stage?: string; step?: string } | null;
-    if (!saved) return;
-    const si = stages.value.findIndex((item) => item.id === saved.stage);
-    if (si < 0) return;
-    const ti = stages.value[si].steps.findIndex((item) => item.id === saved.step);
-    stageIndex.value = si;
-    stepIndex.value = Math.max(0, ti);
-  } catch { /* 本地进度损坏时从第一课开始 */ }
+function handleKeydown(event: KeyboardEvent) {
+  if (!focusing.value) return;
+  if (event.key === 'Escape') {
+    closeFocus();
+    return;
+  }
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  const isTyping = !!target?.closest('input, textarea, select, [contenteditable="true"]');
+  if (!isTyping && event.key === 'ArrowRight') {
+    event.preventDefault();
+    movePhase(1);
+    return;
+  }
+  if (!isTyping && event.key === 'ArrowLeft') {
+    event.preventDefault();
+    movePhase(-1);
+    return;
+  }
+  if (event.key !== 'Tab' || !dialogRef.value) return;
+  const focusable = [...dialogRef.value.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.value)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 watch([stageIndex, stepIndex], () => {
-  try {
-    localStorage.setItem('yz.learning.path.position', JSON.stringify({
-      stage: stage.value?.id || '',
-      step: step.value?.id || '',
-    }));
-  } catch { /* 隐私模式不阻止学习 */ }
+  resetLessonState();
+  persistLocalState();
 });
 
 onMounted(async () => {
-  window.addEventListener('keydown', onKeydown);
+  window.addEventListener('keydown', handleKeydown);
   await loadPath();
-  restorePosition();
 });
+
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('keydown', handleKeydown);
   if (focusing.value) emit('focus-change', false);
   document.body.style.overflow = previousBodyOverflow;
 });
@@ -150,20 +289,20 @@ onBeforeUnmount(() => {
   <section class="lp-path">
     <header class="lp-path-head">
       <div>
-        <span class="lp-path-kicker"><Sparkles :size="13" /> 零基础学习主线</span>
-        <h2>每次只学一个点，马上开口用</h2>
-        <p>自然拼读 → 词根词缀 → 句型语法 → 故事输入 → 真实交流</p>
+        <span class="lp-path-kicker"><Sparkles :size="13" /> 英语学习主线</span>
+        <h2>从会读，到读懂，再到真正说出来</h2>
+        <p>自然拼读、词根记忆、结构语法、寓言、短篇与长篇故事，一课只走一个完整学习循环。</p>
       </div>
       <div class="lp-path-actions">
         <button type="button" class="lp-path-action" @click="emit('scenes')"><BookOpen :size="14" /> 场景练习</button>
-        <button type="button" class="lp-path-action primary" @click="emit('practice')"><MessageCircle :size="14" /> 自由发挥</button>
+        <button type="button" class="lp-path-action primary" @click="emit('practice')"><MessageCircle :size="14" /> 自由开口</button>
       </div>
     </header>
 
     <div class="lp-path-progress">
       <span>总进度</span>
       <div><i :style="{ width: progress + '%' }"></i></div>
-      <b>{{ completedSteps }} / {{ totalSteps }}</b>
+      <b>{{ completedCount }} / {{ totalSteps }} 课</b>
     </div>
 
     <nav class="lp-path-stages" aria-label="英语学习阶段">
@@ -171,12 +310,12 @@ onBeforeUnmount(() => {
         v-for="(item, index) in stages"
         :key="item.id"
         type="button"
-        :class="{ active: index === stageIndex, done: index < stageIndex }"
+        :class="{ active: index === stageIndex, done: item.steps.every((lesson) => completedIds.includes(lesson.id)) }"
         @click="selectStage(index)"
       >
         <span>{{ String(index + 1).padStart(2, '0') }}</span>
         <b>{{ item.title }}</b>
-        <small>{{ item.level }}</small>
+        <small>{{ item.level }} · {{ item.steps.length }} 课</small>
       </button>
     </nav>
 
@@ -190,21 +329,9 @@ onBeforeUnmount(() => {
           <h3>{{ stage.title }}</h3>
           <p>{{ stage.subtitle }}</p>
         </div>
-        <div class="lp-path-step-tabs" role="tablist" aria-label="阶段课程">
-          <button
-            v-for="(item, index) in stage.steps"
-            :key="item.id"
-            type="button"
-            role="tab"
-            :aria-selected="index === stepIndex"
-            :class="{ active: index === stepIndex, done: index < stepIndex }"
-            @click="openFocus(index)"
-          >
-            <CheckCircle2 v-if="index < stepIndex" :size="12" />
-            <span v-else>{{ index + 1 }}</span>
-            {{ item.title }}
-          </button>
-        </div>
+        <span class="lp-path-stage-progress">
+          {{ stage.steps.filter((lesson) => completedIds.includes(lesson.id)).length }} / {{ stage.steps.length }} 已完成
+        </span>
       </div>
 
       <div class="lp-path-step-list">
@@ -212,10 +339,15 @@ onBeforeUnmount(() => {
           v-for="(item, index) in stage.steps"
           :key="item.id"
           type="button"
+          :class="{ complete: completedIds.includes(item.id) }"
           @click="openFocus(index)"
         >
-          <span>{{ String(index + 1).padStart(2, '0') }}</span>
+          <span class="lp-path-step-number">
+            <CheckCircle2 v-if="completedIds.includes(item.id)" :size="15" />
+            <template v-else>{{ String(index + 1).padStart(2, '0') }}</template>
+          </span>
           <div>
+            <span class="lp-path-kind" :class="`kind-${item.kind}`">{{ kindLabel[item.kind] }}</span>
             <b>{{ item.title }}</b>
             <p>{{ item.goal }}</p>
           </div>
@@ -226,12 +358,12 @@ onBeforeUnmount(() => {
     </template>
 
     <p class="lp-path-method">
-      路线吸收自然拼读、词根词缀、结构语法、可理解输入和情景输出等公开学习方法，课程文本为原创改写；
-      延伸视频请优先选择原作者公开发布的内容。
+      每个知识点按“理解 → 例句 → 练习 → 自测”展开；故事课程使用原创改写和公版寓言，不复制付费课程原文。
     </p>
 
     <section
       v-if="focusing && stage && step"
+      ref="dialogRef"
       class="lp-path-immersive"
       role="dialog"
       aria-modal="true"
@@ -239,64 +371,211 @@ onBeforeUnmount(() => {
       tabindex="-1"
     >
       <header class="lp-path-immersive-head">
-        <button type="button" class="lp-path-back" @click="closeFocus"><ArrowLeft :size="14" /> 返回路线</button>
-        <div>
-          <span>{{ stage.title }}</span>
+        <button type="button" class="lp-path-back" @click="closeFocus"><ArrowLeft :size="15" /><span>返回路线</span></button>
+        <div class="lp-path-crumb">
+          <span>{{ kindLabel[step.kind] }}</span>
           <i>/</i>
           <b>{{ step.title }}</b>
         </div>
-        <button type="button" aria-label="关闭当前课程" @click="closeFocus"><X :size="15" /></button>
-      </header>
-      <div class="lp-path-immersive-layout">
-        <nav class="lp-path-immersive-rail" aria-label="本阶段课程">
-          <span>{{ stage.level }}</span>
-          <button
-            v-for="(item, index) in stage.steps"
-            :key="item.id"
-            type="button"
-            :class="{ active: index === stepIndex, done: index < stepIndex }"
-            @click="stepIndex = index"
-          >
-            <i>{{ index < stepIndex ? '✓' : String(index + 1).padStart(2, '0') }}</i>
-            <div><b>{{ item.title }}</b><small>{{ kindLabel[item.kind] }}</small></div>
-          </button>
-        </nav>
-        <main class="lp-path-immersive-main">
-          <div class="lp-path-paper">
-            <div class="lp-path-paper-head">
-              <p>{{ kindLabel[step.kind] }} · {{ stage.title }}</p>
-              <h1>{{ step.title }}</h1>
-              <span><Clock3 :size="13" /> 约 {{ step.minutes }} 分钟 · {{ step.goal }}</span>
-            </div>
-            <div class="lp-path-paper-body">
-              <div v-if="step.pattern" class="lp-path-pattern">
-                <span>今天只记这个结构</span>
-                <b>{{ step.pattern }}</b>
-                <button type="button" aria-label="朗读句型" @click="speak(step.pattern)"><Volume2 :size="14" /></button>
-              </div>
-              <p class="lp-path-explanation">{{ step.explanation }}</p>
-              <div class="lp-path-examples">
-                <div v-for="example in step.examples" :key="example.en">
-                  <p>{{ example.en }}</p>
-                  <small>{{ example.zh }}</small>
-                  <button type="button" aria-label="朗读例句" @click="speak(example.en)"><Volume2 :size="13" /></button>
-                </div>
-              </div>
-              <div class="lp-path-tip"><Lightbulb :size="14" /><span>{{ step.tip }}</span></div>
-              <div class="lp-path-task">
-                <span>现在动手</span>
-                <p>{{ step.task }}</p>
-                <button type="button" @click="emit('practice')">去自由表达 <ArrowRight :size="14" /></button>
-              </div>
-            </div>
+        <div class="lp-path-head-meta">
+          <div class="lp-path-head-progress" :aria-label="`课程总进度 ${progress}%`">
+            <span><i :style="{ width: progress + '%' }"></i></span>
+            <small>{{ currentGlobalIndex }} / {{ totalSteps }}</small>
           </div>
+          <button
+            type="button"
+            class="lp-path-save"
+            :class="{ active: currentStepSaved }"
+            :aria-label="currentStepSaved ? '取消收藏本课' : '收藏本课'"
+            :aria-pressed="currentStepSaved"
+            @click="toggleSaved"
+          >
+            <BookmarkCheck v-if="currentStepSaved" :size="15" />
+            <Bookmark v-else :size="15" />
+          </button>
+          <button type="button" aria-label="关闭当前课程" @click="closeFocus"><X :size="15" /></button>
+        </div>
+      </header>
+
+      <div class="lp-path-immersive-layout">
+        <nav class="lp-path-immersive-rail" aria-label="本课学习步骤">
+          <div class="lp-path-rail-course">
+            <span>{{ stage.title }} · {{ kindLabel[step.kind] }}</span>
+            <b>{{ step.title }}</b>
+            <small>{{ currentStepCompleted ? '本课已完成，可随时复习' : `第 ${currentGlobalIndex} 课 · 约 ${step.minutes} 分钟` }}</small>
+          </div>
+          <button
+            v-for="(item, index) in PHASES"
+            :key="item.key"
+            type="button"
+            :class="{ active: index === phaseIndex, done: index < phaseIndex }"
+            :aria-current="index === phaseIndex ? 'step' : undefined"
+            @click="phaseIndex = index"
+          >
+            <i>{{ index < phaseIndex ? '✓' : String(index + 1).padStart(2, '0') }}</i>
+            <div><b>{{ item.label }}</b><small>{{ item.hint }}</small></div>
+          </button>
+          <div class="lp-path-rail-status">
+            <span><i :style="{ width: progress + '%' }"></i></span>
+            <small>{{ currentStepSaved ? '已收藏' : '进度自动保存' }}</small>
+          </div>
+        </nav>
+
+        <main class="lp-path-immersive-main">
+          <article class="lp-path-paper">
+            <header class="lp-path-paper-head">
+              <div class="lp-path-paper-title">
+                <div>
+                  <p>{{ kindLabel[step.kind] }} · {{ phase.label }}</p>
+                  <h1>{{ step.title }}</h1>
+                </div>
+                <span v-if="currentStepCompleted" class="lp-path-complete-badge"><CheckCircle2 :size="13" /> 已完成</span>
+              </div>
+              <span class="lp-path-paper-meta">
+                <span class="lp-path-time"><Clock3 :size="13" /> {{ step.minutes }} 分钟</span>
+                <i></i>
+                <span class="lp-path-goal">{{ step.goal }}</span>
+              </span>
+            </header>
+
+            <div class="lp-path-paper-body" aria-live="polite">
+              <section v-if="phase.key === 'concept'" class="lp-path-lesson-stage">
+                <div class="lp-path-lead">
+                  <span>本课目标</span>
+                  <p>{{ step.goal }}</p>
+                </div>
+                <div v-if="step.pattern" class="lp-path-pattern">
+                  <span>核心结构</span>
+                  <b>{{ step.pattern }}</b>
+                  <button type="button" class="lp-path-listen" aria-label="朗读结构" @click="speak(step.pattern)"><Volume2 :size="16" /></button>
+                </div>
+                <div class="lp-path-concept-grid">
+                  <div class="lp-path-concept-copy">
+                    <p class="lp-path-explanation">{{ step.explanation }}</p>
+                    <div class="lp-path-tip"><Lightbulb :size="16" /><span>{{ step.tip }}</span></div>
+                  </div>
+                  <aside class="lp-path-notes">
+                    <header><span>本课速记</span><small>点词可朗读</small></header>
+                    <div v-if="wordChips.length" class="lp-path-word-chips">
+                      <button v-for="word in wordChips" :key="word" type="button" @click="speak(word)">{{ word }}</button>
+                    </div>
+                    <p v-else>{{ step.goal }}</p>
+                    <div class="lp-path-finish-rule">
+                      <CheckCircle2 :size="14" />
+                      <span>能不看例句，用这个结构说出一句自己的话。</span>
+                    </div>
+                  </aside>
+                </div>
+              </section>
+
+              <section v-else-if="phase.key === 'examples'" class="lp-path-lesson-stage">
+                <header class="lp-path-section-head">
+                  <div><BookOpen :size="16" /><span>原文与理解</span></div>
+                  <small>{{ step.examples.length }} 段</small>
+                </header>
+                <section v-if="step.wordFamily?.length" class="lp-path-word-family" aria-label="同根词族">
+                  <header>
+                    <div><Sparkles :size="15" /><span>同根词族</span></div>
+                    <small>{{ step.wordFamily.length }} 词 · 点击朗读</small>
+                  </header>
+                  <div class="lp-path-word-grid">
+                    <button
+                      v-for="entry in step.wordFamily"
+                      :key="entry.word"
+                      type="button"
+                      @click="speak(entry.word)"
+                    >
+                      <b>{{ entry.word }}</b>
+                      <span>{{ entry.gloss }}</span>
+                      <small v-if="entry.note">{{ entry.note }}</small>
+                    </button>
+                  </div>
+                </section>
+                <div class="lp-path-examples">
+                  <article v-for="(example, index) in step.examples" :key="example.en">
+                    <span>{{ String(index + 1).padStart(2, '0') }}</span>
+                    <div>
+                      <p>{{ example.en }}</p>
+                      <small>{{ example.zh }}</small>
+                    </div>
+                    <button type="button" aria-label="朗读这段英文" @click="speak(example.en)"><Volume2 :size="14" /></button>
+                  </article>
+                </div>
+              </section>
+
+              <section v-else-if="phase.key === 'practice'" class="lp-path-lesson-stage">
+                <div class="lp-path-task">
+                  <span>现在动手</span>
+                  <p>{{ step.task }}</p>
+                </div>
+                <div class="lp-path-practice-plan">
+                  <div><b>1</b><span>先照例句读一遍，确认词和结构。</span></div>
+                  <div><b>2</b><span>替换成与你有关的信息，不看原文说一遍。</span></div>
+                  <div><b>3</b><span>打开自由陪练，把这个表达真正用出去。</span></div>
+                </div>
+                <div class="lp-path-practice-actions">
+                  <button type="button" class="lp-path-practice-action" @click="emit('practice')">
+                    <MessageCircle :size="15" /> 去自由表达
+                  </button>
+                  <button type="button" class="lp-path-secondary-action" @click="phaseIndex = 3">
+                    直接自测 <ArrowRight :size="14" />
+                  </button>
+                </div>
+              </section>
+
+              <section v-else-if="phase.key === 'check' && step.quickCheck" class="lp-path-lesson-stage">
+                <header class="lp-path-section-head">
+                  <div><Target :size="16" /><span>本课小测</span></div>
+                  <small>不计惩罚，只看有没有理解</small>
+                </header>
+                <h2>{{ step.quickCheck.question }}</h2>
+                <div class="lp-path-choices">
+                  <button
+                    v-for="(option, index) in step.quickCheck.options"
+                    :key="option"
+                    type="button"
+                    :class="{
+                      picked: checkChoice === index,
+                      correct: checkSubmitted && index === step.quickCheck.answer,
+                      wrong: checkSubmitted && checkChoice === index && index !== step.quickCheck.answer,
+                    }"
+                    @click="chooseAnswer(index)"
+                  >
+                    <span>{{ String.fromCharCode(65 + index) }}</span>
+                    {{ option }}
+                  </button>
+                </div>
+                <button
+                  v-if="!checkSubmitted"
+                  type="button"
+                  class="lp-path-check-action"
+                  :disabled="checkChoice == null"
+                  @click="submitCheck"
+                >
+                  确认答案
+                </button>
+                <div v-else class="lp-path-feedback" :class="{ correct: answerCorrect }">
+                  <b>{{ answerCorrect ? '理解正确' : '再想一步' }}</b>
+                  <p>{{ step.quickCheck.explanation }}</p>
+                  <button v-if="!answerCorrect" type="button" @click="retryCheck">再选一次</button>
+                </div>
+              </section>
+            </div>
+          </article>
+
           <footer class="lp-path-footer">
-            <button type="button" :disabled="stageIndex === 0 && stepIndex === 0" @click="moveStep(-1)">
-              <ArrowLeft :size="14" /> 上一课
+            <button type="button" :disabled="phaseIndex === 0" aria-keyshortcuts="ArrowLeft" title="上一步（←）" @click="movePhase(-1)">
+              <ArrowLeft :size="14" /> 上一步
             </button>
-            <span>第 {{ stageIndex + 1 }} 阶段 · {{ stepIndex + 1 }}/{{ stage.steps.length }}</span>
-            <button type="button" class="primary" :disabled="stageIndex === stages.length - 1 && stepIndex === stage.steps.length - 1" @click="moveStep(1)">
-              下一课 <ArrowRight :size="14" />
+            <div class="lp-path-phase-progress">
+              <span><i :style="{ width: ((phaseIndex + 1) / PHASES.length) * 100 + '%' }"></i></span>
+              <small>{{ phase.label }} · {{ phaseIndex + 1 }} / {{ PHASES.length }}</small>
+            </div>
+            <button v-if="!isLastPhase" type="button" class="primary" aria-keyshortcuts="ArrowRight" title="下一步（→）" @click="movePhase(1)">
+              下一步 <ArrowRight :size="14" />
+            </button>
+            <button v-else type="button" class="primary" @click="markCurrentComplete">
+              {{ currentStepCompleted ? '完成复习' : '完成本课' }} <CheckCircle2 :size="14" />
             </button>
           </footer>
         </main>
@@ -312,137 +591,320 @@ onBeforeUnmount(() => {
 .lp-path-head h2 { margin: 5px 0 3px; font-size: 20px; line-height: 1.35; letter-spacing: 0; }
 .lp-path-head p { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; }
 .lp-path-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
-.lp-path-action, .lp-path-footer button, .lp-path-task button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 6px 10px; font-size: 11px; cursor: pointer; }
-.lp-path-action.primary, .lp-path-footer button.primary, .lp-path-task button { border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 15%, var(--glass-bg)); color: var(--color-primary); }
+.lp-path-action,
+.lp-path-footer button,
+.lp-path-practice-action,
+.lp-path-check-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--glass-bg);
+  color: var(--color-text-secondary);
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.lp-path-action.primary,
+.lp-path-footer button.primary,
+.lp-path-practice-action,
+.lp-path-check-action {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg));
+  color: var(--color-primary);
+}
 .lp-path-progress { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; color: var(--color-text-tertiary); font-size: 10px; }
 .lp-path-progress > div { height: 5px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--color-text) 10%, transparent); }
 .lp-path-progress i { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); }
-.lp-path-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
-.lp-path-stages button { display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-areas: "no title" "no level"; gap: 1px 7px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--glass-bg); color: var(--color-text); padding: 7px 8px; text-align: left; cursor: pointer; }
+.lp-path-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 7px; }
+.lp-path-stages button {
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr);
+  grid-template-areas: "no title" "no level";
+  gap: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--glass-bg);
+  color: var(--color-text);
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+}
 .lp-path-stages button > span { grid-area: no; align-self: center; color: var(--color-text-tertiary); font-size: 10px; font-weight: 700; }
 .lp-path-stages button b { grid-area: title; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .lp-path-stages button small { grid-area: level; color: var(--color-text-tertiary); font-size: 9px; }
-.lp-path-stages button.active { border-color: color-mix(in srgb, var(--color-primary) 62%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 14%, var(--glass-bg)); }
+.lp-path-stages button.active { border-color: color-mix(in srgb, var(--color-primary) 62%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg)); }
 .lp-path-stages button.active > span { color: var(--color-primary); }
-.lp-path-stages button.done { opacity: .72; }
+.lp-path-stages button.done { border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-border)); }
 .lp-path-stage-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--color-border); padding-bottom: 9px; }
-.lp-path-stage-head > div:first-child > span { color: var(--color-primary); font-size: 10px; font-weight: 700; }
+.lp-path-stage-head > div > span { color: var(--color-primary); font-size: 10px; font-weight: 700; }
 .lp-path-stage-head h3 { margin: 2px 0; font-size: 16px; }
 .lp-path-stage-head p { margin: 0; color: var(--color-text-secondary); font-size: 11px; }
-.lp-path-step-tabs { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
-.lp-path-step-tabs button { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--color-border); border-radius: 999px; background: var(--glass-bg); color: var(--color-text-tertiary); padding: 4px 8px; font-size: 9px; cursor: pointer; }
-.lp-path-step-tabs button.active { border-color: var(--color-primary); color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg)); }
-.lp-path-step-tabs button.done { color: var(--color-success); }
+.lp-path-stage-progress { color: var(--color-text-tertiary); font-size: 10px; }
 .lp-path-step-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.lp-path-step-list > button { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 16px; align-items: center; gap: 9px; min-width: 0; border: 1px solid var(--color-border); border-radius: 8px; background: var(--glass-bg); color: var(--color-text); padding: 11px; text-align: left; cursor: pointer; }
-.lp-path-step-list > button:hover { border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 9%, var(--glass-bg)); }
-.lp-path-step-list > button > span { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--color-primary) 12%, transparent); color: var(--color-primary); font-size: 10px; font-weight: 700; }
+.lp-path-step-list > button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--glass-bg);
+  color: var(--color-text);
+  padding: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.lp-path-step-list > button:hover,
+.lp-path-step-list > button.complete { border-color: color-mix(in srgb, var(--color-primary) 52%, var(--color-border)); }
+.lp-path-step-number { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--color-primary) 11%, transparent); color: var(--color-primary); font-size: 10px; font-weight: 700; }
 .lp-path-step-list > button > div { min-width: 0; }
+.lp-path-kind { display: inline-block; margin-bottom: 3px; color: var(--color-text-tertiary); font-size: 9px; }
+.lp-path-kind.kind-roots { color: #0f766e; }
+.lp-path-kind.kind-grammar { color: #245bdb; }
+.lp-path-kind.kind-fable { color: #b45309; }
+.lp-path-kind.kind-story { color: #7e22ce; }
+.lp-path-kind.kind-long-story { color: #9a3412; }
 .lp-path-step-list b { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .lp-path-step-list p { display: -webkit-box; overflow: hidden; margin: 3px 0 0; color: var(--color-text-tertiary); font-size: 9px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .lp-path-step-list small { color: var(--color-text-tertiary); font-size: 9px; white-space: nowrap; }
-.lp-path-focus { display: flex; flex-direction: column; gap: 9px; border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--color-border)); border-radius: 10px; background: var(--skin-panel-bg, var(--glass-bg)); padding: 14px; }
-.lp-path-focus-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.lp-path-focus-meta span { border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border)); border-radius: 4px; background: color-mix(in srgb, var(--color-primary) 10%, transparent); color: var(--color-primary); padding: 2px 6px; font-size: 9px; font-weight: 700; }
-.lp-path-focus-meta i { display: inline-flex; align-items: center; gap: 4px; color: var(--color-text-tertiary); font-size: 9px; font-style: normal; }
-.lp-path-focus > h3 { margin: 0; font-size: 19px; line-height: 1.35; }
-.lp-path-goal { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
-.lp-path-pattern { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 4px 8px; border-left: 3px solid var(--color-primary); background: color-mix(in srgb, var(--color-primary) 7%, var(--glass-bg)); padding: 8px 9px; }
-.lp-path-pattern span { grid-column: 1; color: var(--color-text-tertiary); font-size: 9px; }
-.lp-path-pattern b { grid-column: 1; color: var(--color-text); font-size: 14px; line-height: 1.5; }
-.lp-path-pattern button, .lp-path-examples button { display: inline-grid; place-items: center; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-primary); cursor: pointer; }
-.lp-path-pattern button { grid-column: 2; grid-row: 1 / span 2; width: 28px; height: 28px; align-self: center; }
-.lp-path-explanation { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.75; }
-.lp-path-examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.lp-path-examples > div { position: relative; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); padding: 8px 36px 8px 9px; }
-.lp-path-examples p { margin: 0; font-size: 12px; line-height: 1.6; }
-.lp-path-examples small { display: block; margin-top: 3px; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.5; }
-.lp-path-examples button { position: absolute; top: 7px; right: 7px; width: 24px; height: 24px; }
-.lp-path-tip { display: flex; align-items: flex-start; gap: 6px; color: var(--color-warning); font-size: 11px; line-height: 1.6; }
-.lp-path-tip svg { flex: none; margin-top: 1px; }
-.lp-path-task { display: flex; align-items: center; gap: 9px; border-top: 1px solid var(--color-border); padding-top: 9px; }
-.lp-path-task > span { flex: none; color: var(--color-primary); font-size: 10px; font-weight: 700; }
-.lp-path-task p { flex: 1; margin: 0; color: var(--color-text-secondary); font-size: 11px; line-height: 1.55; }
-.lp-path-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.lp-path-footer > span { color: var(--color-text-tertiary); font-size: 9px; }
-.lp-path-footer button:disabled { opacity: .42; cursor: default; }
+.lp-path-method { margin: 0; color: var(--color-text-tertiary); font-size: 9px; line-height: 1.55; }
 .lp-path-hint { margin: 8px 0; color: var(--color-text-tertiary); font-size: 11px; }
 .lp-path-hint.error { color: var(--color-danger); }
-.lp-path-method { margin: 0; color: var(--color-text-tertiary); font-size: 9px; line-height: 1.55; }
+
 .lp-path-immersive {
-  --path-focus-bg: color-mix(in srgb, var(--skin-surface, #0a131a) 82%, #071018);
-  --path-focus-panel: color-mix(in srgb, var(--skin-surface-raised, #14212a) 82%, #0d1922);
-  --path-focus-line: rgba(172, 211, 214, .17);
+  --path-focus-bg: #081017;
+  --path-focus-panel: #101a23;
+  --path-focus-line: rgba(172, 211, 214, .18);
   --path-focus-ink: #eef7f5;
   --path-focus-muted: #a4b8b8;
   --path-focus-accent: #46c8b8;
+  --path-paper: #f5f7f4;
+  --path-paper-ink: #17262b;
+  --path-paper-muted: #5e7074;
   position: fixed;
   inset: 0;
   z-index: 3000;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--path-focus-bg);
   color: var(--path-focus-ink);
+  background: linear-gradient(135deg, var(--path-focus-bg), #0a1620 58%, #071018);
   outline: none;
 }
-.lp-path-immersive-head { flex: 0 0 58px; display: grid; grid-template-columns: auto minmax(0, 1fr) 34px; align-items: center; gap: 18px; padding: 0 22px; border-bottom: 1px solid var(--path-focus-line); background: color-mix(in srgb, var(--path-focus-bg) 94%, transparent); }
-.lp-path-back, .lp-path-immersive-head > button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 32px; border: 1px solid var(--path-focus-line); border-radius: 6px; background: var(--path-focus-panel); color: var(--path-focus-muted); padding: 5px 9px; font-size: 11px; cursor: pointer; }
-.lp-path-immersive-head > button { width: 32px; padding: 0; }
-.lp-path-immersive-head > div { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--path-focus-muted); font-size: 11px; white-space: nowrap; }
-.lp-path-immersive-head > div span, .lp-path-immersive-head > div b { overflow: hidden; text-overflow: ellipsis; }
-.lp-path-immersive-head > div i { opacity: .45; font-style: normal; }
-.lp-path-immersive-head > div b { color: var(--path-focus-ink); }
-.lp-path-immersive-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
-.lp-path-immersive-rail { min-height: 0; overflow-y: auto; padding: 22px 14px; border-right: 1px solid var(--path-focus-line); background: color-mix(in srgb, var(--path-focus-panel) 72%, transparent); }
-.lp-path-immersive-rail > span { display: block; margin: 0 9px 10px; color: var(--path-focus-accent); font-size: 9px; font-weight: 700; }
-.lp-path-immersive-rail button { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%; min-height: 56px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--path-focus-muted); padding: 8px 9px; text-align: left; cursor: pointer; }
+.lp-path-immersive-head {
+  flex: 0 0 58px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--path-focus-line);
+  background: color-mix(in srgb, var(--path-focus-bg) 92%, transparent);
+  backdrop-filter: blur(18px);
+}
+.lp-path-back,
+.lp-path-head-meta button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid var(--path-focus-line);
+  border-radius: 6px;
+  background: var(--path-focus-panel);
+  color: var(--path-focus-muted);
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.lp-path-back:hover,
+.lp-path-head-meta button:hover { border-color: color-mix(in srgb, var(--path-focus-accent) 42%, transparent); color: var(--path-focus-ink); }
+.lp-path-head-meta { display: flex; align-items: center; gap: 8px; color: var(--path-focus-muted); font-size: 10px; }
+.lp-path-head-meta button { width: 32px; padding: 0; }
+.lp-path-head-meta .lp-path-save.active { border-color: color-mix(in srgb, var(--path-focus-accent) 46%, transparent); background: color-mix(in srgb, var(--path-focus-accent) 13%, var(--path-focus-panel)); color: var(--path-focus-accent); }
+.lp-path-head-progress { display: flex; align-items: center; gap: 7px; margin-right: 3px; }
+.lp-path-head-progress > span { display: block; width: 48px; height: 5px; overflow: hidden; border-radius: 999px; background: rgba(159,179,180,.16); }
+.lp-path-head-progress i { display: block; height: 100%; border-radius: inherit; background: var(--path-focus-accent); }
+.lp-path-head-progress small { color: var(--path-focus-muted); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lp-path-crumb { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; }
+.lp-path-crumb span { flex: 0 0 auto; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--path-focus-accent) 24%, transparent); border-radius: 999px; color: var(--path-focus-accent); font-size: 9px; }
+.lp-path-crumb b { overflow: hidden; color: var(--path-focus-ink); text-overflow: ellipsis; white-space: nowrap; }
+.lp-path-crumb i { color: rgba(164,184,184,.45); font-style: normal; }
+.lp-path-immersive-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr); }
+.lp-path-immersive-rail {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 14px;
+  border-right: 1px solid var(--path-focus-line);
+  background: color-mix(in srgb, var(--path-focus-panel) 72%, transparent);
+}
+.lp-path-rail-course { display: flex; flex-direction: column; gap: 4px; margin: 0 8px 16px; padding-bottom: 15px; border-bottom: 1px solid var(--path-focus-line); }
+.lp-path-rail-course span { color: var(--path-focus-accent); font-size: 9px; font-weight: 700; }
+.lp-path-rail-course b { color: var(--path-focus-ink); font-size: 12px; line-height: 1.5; }
+.lp-path-rail-course small { color: var(--path-focus-muted); font-size: 9px; line-height: 1.5; }
+.lp-path-immersive-rail button {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 56px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--path-focus-muted);
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
 .lp-path-immersive-rail button i { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--path-focus-line); border-radius: 50%; font-size: 9px; font-style: normal; }
-.lp-path-immersive-rail button div { min-width: 0; }
-.lp-path-immersive-rail button b { display: block; overflow: hidden; color: var(--path-focus-ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.lp-path-immersive-rail button b { display: block; color: var(--path-focus-ink); font-size: 11px; }
 .lp-path-immersive-rail button small { display: block; margin-top: 2px; color: var(--path-focus-muted); font-size: 9px; }
-.lp-path-immersive-rail button:hover { border-color: var(--path-focus-line); }
 .lp-path-immersive-rail button.active { border-color: color-mix(in srgb, var(--path-focus-accent) 42%, transparent); background: color-mix(in srgb, var(--path-focus-accent) 11%, transparent); box-shadow: inset 2px 0 0 var(--path-focus-accent); }
-.lp-path-immersive-rail button.active i, .lp-path-immersive-rail button.done i { border-color: var(--path-focus-accent); color: var(--path-focus-accent); }
+.lp-path-immersive-rail button.active i,
+.lp-path-immersive-rail button.done i { border-color: var(--path-focus-accent); color: var(--path-focus-accent); }
+.lp-path-immersive-rail button:hover { background: rgba(255,255,255,.035); transform: translateX(2px); }
+.lp-path-rail-status { display: flex; flex-direction: column; gap: 7px; margin: auto 8px 0; padding-top: 16px; }
+.lp-path-rail-status > span { height: 4px; overflow: hidden; border-radius: 999px; background: rgba(159,179,180,.14); }
+.lp-path-rail-status i { display: block; height: 100%; border-radius: inherit; background: var(--path-focus-accent); }
+.lp-path-rail-status small { color: var(--path-focus-muted); font-size: 9px; }
 .lp-path-immersive-main { min-width: 0; min-height: 0; overflow-y: auto; padding: 24px clamp(18px, 4vw, 58px) 18px; }
-.lp-path-paper { width: min(900px, 100%); min-height: calc(100% - 48px); margin: 0 auto; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; background: #f4f7f5; color: #18252b; box-shadow: 0 22px 68px rgba(0,0,0,.28); }
-.lp-path-paper-head { padding: 27px 32px 21px; border-bottom: 1px solid rgba(24,37,43,.11); }
+.lp-path-paper { width: min(940px, 100%); margin: 0 auto; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; background: var(--path-paper); color: var(--path-paper-ink); box-shadow: 0 22px 68px rgba(0,0,0,.28); }
+.lp-path-paper-head { padding: 25px 30px 19px; border-bottom: 1px solid rgba(24,37,43,.11); }
+.lp-path-paper-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .lp-path-paper-head p { margin: 0; color: #0f766e; font-size: 10px; font-weight: 700; }
-.lp-path-paper-head h1 { margin: 7px 0 7px; font-size: 27px; line-height: 1.25; letter-spacing: 0; }
-.lp-path-paper-head > span { display: inline-flex; align-items: center; gap: 5px; color: #5d6d72; font-size: 11px; line-height: 1.5; }
-.lp-path-paper-body { display: flex; flex-direction: column; gap: 14px; padding: 24px 32px 30px; }
-.lp-path-immersive .lp-path-pattern { grid-template-columns: minmax(0, 1fr) 32px; border-left-color: #0f766e; background: #e8f2ef; padding: 11px 12px; }
-.lp-path-immersive .lp-path-pattern span { color: #5d6d72; font-size: 10px; }
-.lp-path-immersive .lp-path-pattern b { color: #18252b; font-size: 17px; }
-.lp-path-immersive .lp-path-pattern button, .lp-path-immersive .lp-path-examples button { border-color: rgba(24,37,43,.15); background: #fff; color: #0f766e; }
-.lp-path-immersive .lp-path-explanation { color: #3f5157; font-size: 15px; line-height: 1.9; }
-.lp-path-immersive .lp-path-examples > div { border-color: rgba(24,37,43,.12); background: #fff; padding: 12px 42px 12px 13px; }
-.lp-path-immersive .lp-path-examples p { color: #1f3036; font-size: 15px; line-height: 1.65; }
-.lp-path-immersive .lp-path-examples small { color: #64757a; font-size: 11px; }
-.lp-path-immersive .lp-path-tip { color: #9a5b12; font-size: 12px; }
-.lp-path-immersive .lp-path-task { border-top-color: rgba(24,37,43,.12); }
-.lp-path-immersive .lp-path-task > span { color: #0f766e; }
-.lp-path-immersive .lp-path-task p { color: #3f5157; font-size: 13px; }
-.lp-path-immersive .lp-path-task button { border-color: #0f766e; background: #0f766e; color: #fff; }
-.lp-path-immersive-main > .lp-path-footer { width: min(900px, 100%); margin: 12px auto 0; color: var(--path-focus-muted); }
-.lp-path-immersive .lp-path-footer button { border-color: var(--path-focus-line); background: var(--path-focus-panel); color: var(--path-focus-muted); }
-.lp-path-immersive .lp-path-footer button.primary { border-color: var(--path-focus-accent); background: color-mix(in srgb, var(--path-focus-accent) 16%, var(--path-focus-panel)); color: var(--path-focus-accent); }
+.lp-path-paper-head h1 { margin: 7px 0 0; font-size: clamp(25px, 3vw, 36px); line-height: 1.18; letter-spacing: 0; }
+.lp-path-paper-meta { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin-top: 10px; color: var(--path-paper-muted); font-size: 11px; line-height: 1.5; }
+.lp-path-time { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.lp-path-goal { min-width: 0; }
+.lp-path-paper-meta i { width: 3px; height: 3px; margin: 0 3px; border-radius: 50%; background: currentColor; opacity: .55; }
+.lp-path-complete-badge { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px 8px; border: 1px solid rgba(15,138,61,.24); border-radius: 999px; background: #eefaf2; color: #0f8a3d; font-size: 9px; font-weight: 600; }
+.lp-path-paper-body { padding: 22px 30px 28px; }
+.lp-path-lesson-stage { display: flex; flex-direction: column; gap: 17px; }
+.lp-path-lead { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 18px; align-items: start; padding: 17px 19px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); }
+.lp-path-lead span { color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-path-lead p { margin: 0; color: var(--path-paper-ink); font-size: 16px; line-height: 1.65; }
+.lp-path-pattern { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 4px 8px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); padding: 11px 12px; }
+.lp-path-pattern span { grid-column: 1; color: var(--path-paper-muted); font-size: 10px; }
+.lp-path-pattern b { grid-column: 1; color: var(--path-paper-ink); font-size: 17px; line-height: 1.5; }
+.lp-path-pattern button { grid-column: 2; grid-row: 1 / span 2; align-self: center; display: inline-grid; place-items: center; width: 32px; height: 32px; border: 1px solid rgba(15,118,110,.24); border-radius: 7px; background: #fff; color: #0f766e; cursor: pointer; }
+.lp-path-pattern button:hover { background: #0f766e; color: #fff; }
+.lp-path-concept-grid { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 18px; align-items: start; }
+.lp-path-concept-copy { display: flex; flex-direction: column; gap: 14px; }
+.lp-path-explanation { margin: 0; color: #3f5157; font-size: 15px; line-height: 1.9; }
+.lp-path-tip { display: flex; align-items: flex-start; gap: 7px; color: #9a5b12; font-size: 12px; line-height: 1.65; }
+.lp-path-tip svg { flex: none; margin-top: 1px; }
+.lp-path-notes { padding: 15px; border: 1px solid rgba(24,37,43,.11); border-radius: 7px; background: #eef3f1; }
+.lp-path-notes header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.lp-path-notes header span { color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-path-notes header small { color: var(--path-paper-muted); font-size: 9px; }
+.lp-path-notes > p { margin: 9px 0 0; color: var(--path-paper-muted); font-size: 11px; line-height: 1.65; }
+.lp-path-word-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 11px; }
+.lp-path-word-chips button { border: 1px solid rgba(15,118,110,.2); border-radius: 999px; background: #fff; color: #0f766e; padding: 4px 8px; font-size: 10px; cursor: pointer; }
+.lp-path-word-chips button:hover { border-color: #0f766e; background: color-mix(in srgb, #0f766e 7%, #fff); }
+.lp-path-finish-rule { display: flex; align-items: flex-start; gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(24,37,43,.1); color: var(--path-paper-muted); font-size: 10px; line-height: 1.6; }
+.lp-path-finish-rule svg { flex: none; margin-top: 1px; color: #0f8a3d; }
+.lp-path-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lp-path-section-head > div { display: inline-flex; align-items: center; gap: 6px; color: #0f766e; font-size: 11px; font-weight: 700; }
+.lp-path-section-head small { color: var(--path-paper-muted); font-size: 9px; }
+.lp-path-section-head + h2 { margin: 2px 0 0; color: var(--path-paper-ink); font-size: 21px; line-height: 1.45; }
+.lp-path-word-family { overflow: hidden; border: 1px solid rgba(15,118,110,.16); border-radius: 7px; background: #eef3f1; }
+.lp-path-word-family > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid rgba(15,118,110,.12); }
+.lp-path-word-family > header > div { display: inline-flex; align-items: center; gap: 6px; color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-path-word-family > header small { color: var(--path-paper-muted); font-size: 9px; }
+.lp-path-word-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: rgba(15,118,110,.1); }
+.lp-path-word-grid button { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border: 0; background: #f8faf9; padding: 10px 11px; text-align: left; cursor: pointer; }
+.lp-path-word-grid button:hover { background: #fff; }
+.lp-path-word-grid b { color: #0f766e; font-size: 12px; }
+.lp-path-word-grid span { color: var(--path-paper-ink); font-size: 10px; line-height: 1.45; }
+.lp-path-word-grid small { display: -webkit-box; overflow: hidden; color: var(--path-paper-muted); font-size: 9px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.lp-path-examples { display: flex; flex-direction: column; gap: 10px; }
+.lp-path-examples article { display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; gap: 12px; align-items: start; padding: 15px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: #fff; }
+.lp-path-examples article > span { color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-path-examples p { margin: 0; color: #1f3036; font-size: 15px; line-height: 1.75; }
+.lp-path-examples small { display: block; margin-top: 5px; color: var(--path-paper-muted); font-size: 11px; line-height: 1.65; }
+.lp-path-examples button { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid rgba(24,37,43,.15); border-radius: 6px; background: #fff; color: #0f766e; cursor: pointer; }
+.lp-path-task { padding: 17px 19px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); }
+.lp-path-task span { color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-path-task p { margin: 7px 0 0; color: var(--path-paper-ink); font-size: 15px; line-height: 1.8; }
+.lp-path-practice-plan { display: flex; flex-direction: column; gap: 8px; }
+.lp-path-practice-plan div { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 9px; padding: 10px 12px; border: 1px solid rgba(24,37,43,.11); border-radius: 6px; }
+.lp-path-practice-plan b { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: color-mix(in srgb, #0f766e 10%, var(--path-paper)); color: #0f766e; font-size: 10px; }
+.lp-path-practice-plan span { color: var(--path-paper-muted); font-size: 12px; line-height: 1.7; }
+.lp-path-practice-action,
+.lp-path-check-action { align-self: flex-start; min-height: 36px; padding: 7px 13px; font-size: 12px; }
+.lp-path-practice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.lp-path-secondary-action { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 7px 13px; border: 1px solid rgba(24,37,43,.14); border-radius: 7px; background: #fff; color: var(--path-paper-muted); font-size: 12px; cursor: pointer; }
+.lp-path-secondary-action:hover { border-color: #0f766e; color: #0f766e; }
+.lp-path-check-action:disabled { opacity: .4; cursor: default; }
+.lp-path-choices { display: flex; flex-direction: column; gap: 7px; }
+.lp-path-choices button { display: flex; align-items: center; gap: 10px; width: 100%; border: 1px solid rgba(24,37,43,.13); border-radius: 6px; background: #fff; color: var(--path-paper-ink); padding: 11px 12px; text-align: left; font-size: 13px; cursor: pointer; }
+.lp-path-choices button > span { display: inline-grid; place-items: center; flex: 0 0 25px; width: 25px; height: 25px; border-radius: 50%; background: var(--path-paper); color: var(--path-paper-muted); font-size: 10px; font-weight: 700; }
+.lp-path-choices button.picked { border-color: #0f766e; background: color-mix(in srgb, #0f766e 6%, #fff); }
+.lp-path-choices button.correct { border-color: #0f8a3d; background: #eefaf2; }
+.lp-path-choices button.wrong { border-color: #d4380d; background: #fff5f2; }
+.lp-path-feedback { padding: 13px 15px; border-left: 3px solid #d4380d; background: #fff5f2; }
+.lp-path-feedback.correct { border-left-color: #0f8a3d; background: #eefaf2; }
+.lp-path-feedback b { color: #b42318; font-size: 13px; }
+.lp-path-feedback.correct b { color: #0f8a3d; }
+.lp-path-feedback p { margin: 5px 0 0; color: var(--path-paper-muted); font-size: 12px; line-height: 1.75; }
+.lp-path-feedback button { margin-top: 8px; border: 0; background: transparent; color: #0f766e; padding: 0; font-size: 11px; font-weight: 600; cursor: pointer; }
+.lp-path-footer { width: min(940px, 100%); margin: 12px auto 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lp-path-footer button { border-color: var(--path-focus-line); background: var(--path-focus-panel); color: var(--path-focus-muted); }
+.lp-path-footer button.primary { border-color: var(--path-focus-accent); background: color-mix(in srgb, var(--path-focus-accent) 16%, var(--path-focus-panel)); color: var(--path-focus-accent); }
+.lp-path-footer button:disabled { opacity: .35; cursor: default; }
+.lp-path-phase-progress { min-width: 180px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.lp-path-phase-progress > span { width: 100%; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(159,179,180,.16); }
+.lp-path-phase-progress i { display: block; height: 100%; border-radius: inherit; background: var(--path-focus-accent); transition: width .2s ease; }
+.lp-path-phase-progress small { color: var(--path-focus-muted); font-size: 9px; }
 @media (max-width: 900px) {
-  .lp-path-head, .lp-path-stage-head, .lp-path-task { align-items: flex-start; flex-direction: column; }
-  .lp-path-actions, .lp-path-step-tabs { justify-content: flex-start; }
-  .lp-path-stages { display: flex; overflow-x: auto; padding-bottom: 3px; }
-  .lp-path-stages button { flex: 0 0 128px; }
+  .lp-path-head,
+  .lp-path-stage-head { align-items: flex-start; flex-direction: column; }
+  .lp-path-actions { justify-content: flex-start; }
+  .lp-path-stage-head > div { width: 100%; }
   .lp-path-step-list { grid-template-columns: 1fr; }
-  .lp-path-examples { grid-template-columns: 1fr; }
-  .lp-path-immersive-head { grid-template-columns: auto minmax(0, 1fr) 32px; padding: 0 12px; }
-  .lp-path-immersive-head > div span, .lp-path-immersive-head > div i { display: none; }
-  .lp-path-back { font-size: 0; width: 32px; padding: 0; }
-  .lp-path-immersive-layout { grid-template-columns: 1fr; }
-  .lp-path-immersive-rail { display: flex; overflow-x: auto; overflow-y: hidden; gap: 6px; padding: 9px 12px; border-right: 0; border-bottom: 1px solid var(--path-focus-line); }
-  .lp-path-immersive-rail > span { display: none; }
-  .lp-path-immersive-rail button { flex: 0 0 150px; min-height: 44px; }
+  .lp-path-immersive-head { grid-template-columns: auto minmax(0, 1fr) auto; padding: 0 12px; }
+  .lp-path-crumb span,
+  .lp-path-crumb i,
+  .lp-path-head-progress small { display: none; }
+  .lp-path-back { width: 32px; padding: 0; font-size: 0; }
+  .lp-path-immersive-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .lp-path-immersive-rail { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 9px 12px; border-right: 0; border-bottom: 1px solid var(--path-focus-line); }
+  .lp-path-rail-course,
+  .lp-path-rail-status { display: none; }
+  .lp-path-immersive-rail button { flex: 0 0 142px; min-height: 44px; }
+  .lp-path-immersive-rail button small { display: none; }
   .lp-path-immersive-main { padding: 12px; }
-  .lp-path-paper-head, .lp-path-paper-body { padding-left: 19px; padding-right: 19px; }
+  .lp-path-concept-grid { grid-template-columns: 1fr; }
+  .lp-path-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lp-path-paper-head,
+  .lp-path-paper-body { padding-left: 19px; padding-right: 19px; }
+}
+@media (max-width: 620px) {
+  .lp-path-immersive-head { gap: 8px; padding: 0 8px; }
+  .lp-path-head-progress > span { width: 34px; }
+  .lp-path-head-meta { gap: 5px; }
+  .lp-path-crumb b { font-size: 10px; }
+  .lp-path-paper-head { padding-top: 20px; }
+  .lp-path-paper-title { gap: 8px; }
   .lp-path-paper-head h1 { font-size: 23px; }
+  .lp-path-paper-meta { flex-wrap: wrap; gap: 5px; }
+  .lp-path-paper-meta > i { display: none; }
+  .lp-path-goal { flex-basis: 100%; }
+  .lp-path-notes { padding: 13px; }
+  .lp-path-word-grid { grid-template-columns: 1fr; }
+  .lp-path-lead { grid-template-columns: 1fr; gap: 7px; padding: 14px; }
+  .lp-path-examples article { grid-template-columns: 26px minmax(0, 1fr) 28px; gap: 8px; padding: 12px; }
+  .lp-path-examples p { font-size: 14px; }
+  .lp-path-footer { gap: 6px; }
+  .lp-path-footer button { min-width: 84px; padding: 6px 8px; }
+  .lp-path-phase-progress { min-width: 0; }
+  .lp-path-phase-progress small { display: none; }
 }
 </style>

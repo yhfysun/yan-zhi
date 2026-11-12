@@ -194,6 +194,130 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-avatar-stage')).toBeFalsy()
   })
 
+  it('★ 英语主线：寓言课按理解/例句/练习/自测四步沉浸学习，完成后记录进度', async () => {
+    const { api } = await import('../api/client')
+    const getMock = vi.mocked(api.get)
+    const lesson = {
+      id: 'fable_tortoise',
+      kind: 'fable',
+      title: '寓言：The Tortoise and the Hare',
+      goal: '读懂对比关系并解释“慢而稳”',
+      minutes: 14,
+      explanation: '寓言先看角色做了什么，再看结果和道理。',
+      pattern: 'slow and steady wins the race',
+      tip: '先说行为，再说结果。',
+      examples: [{ en: 'The tortoise kept walking.', zh: '乌龟一直走。' }],
+      wordFamily: [
+        { word: 'import', gloss: '进口', note: 'im- 向内 + port' },
+        { word: 'export', gloss: '出口', note: 'ex- 向外 + port' },
+        { word: 'transport', gloss: '运输', note: 'trans- 跨越 + port' },
+        { word: 'portable', gloss: '便携的', note: 'port + -able' },
+        { word: 'report', gloss: '报告' },
+        { word: 'support', gloss: '支持' },
+        { word: 'porter', gloss: '搬运工' },
+        { word: 'teleport', gloss: '瞬间传送' },
+      ],
+      task: '用三句话复述故事。',
+      quickCheck: {
+        question: 'Why did the tortoise win?',
+        options: ['He ran faster.', 'He kept moving.', 'He took a shorter road.', 'He woke up earlier.'],
+        answer: 1,
+        explanation: '重点是持续行动，而不是速度。',
+      },
+    }
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path')) {
+        return {
+          data: [{
+            id: 'fable-reading',
+            title: '寓言精读',
+            subtitle: '短故事里练推断',
+            level: 'A2-B1',
+            steps: [lesson],
+          }],
+        }
+      }
+      return defaultGet(url)
+    })
+    localStorage.removeItem('yz.learning.path.completed.v2')
+    localStorage.removeItem('yz.learning.path.saved.v2')
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-kind')?.textContent).toContain('寓言精读'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-immersive')).toBeTruthy())
+    expect(el.querySelector('.lp-path-immersive-rail')?.textContent).toContain('理解')
+    expect(el.querySelector('.lp-path-immersive-rail')?.textContent).toContain('自测')
+    expect(el.querySelector('.lp-path-explanation')?.textContent).toContain('角色做了什么')
+    ;(el.querySelector('.lp-path-save') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-path-save')?.getAttribute('aria-pressed')).toBe('true')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(el.querySelector('.lp-path-examples')?.textContent).toContain('The tortoise kept walking.')
+    expect(el.querySelectorAll('.lp-path-word-grid button').length).toBe(8)
+    ;(el.querySelectorAll('.lp-path-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-path-task')?.textContent).toContain('用三句话复述故事')
+    ;(el.querySelectorAll('.lp-path-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-path-choices')?.textContent).toContain('He kept moving.')
+    ;(el.querySelectorAll('.lp-path-choices button')[1] as HTMLElement).click()
+    await nextTick()
+    expect((el.querySelector('.lp-path-check-action') as HTMLButtonElement).disabled).toBe(false)
+    ;(el.querySelector('.lp-path-check-action') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-feedback')).toBeTruthy())
+    expect(el.querySelector('.lp-path-feedback')?.textContent).toContain('理解正确')
+    expect(el.querySelector('.lp-path-feedback')?.textContent).toContain('持续行动')
+    ;(el.querySelectorAll('.lp-path-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-path-immersive')).toBeFalsy()
+    expect(JSON.parse(localStorage.getItem('yz.learning.path.completed.v2') || '[]')).toContain('fable_tortoise')
+  })
+
+  it('★ 语法微课：列表只负责选知识点，打开后进入全屏三步微课', async () => {
+    const { api } = await import('../api/client')
+    const getMock = vi.mocked(api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/learning/grammar')) {
+        return {
+          data: [{ id: 'g_present_3rd', title: '第三人称单数 -s', cefr: 'A1', group: '时态', rule: 'he/she/it 后动词加 -s。' }],
+        }
+      }
+      if (url.includes('/learning/grammar/g_present_3rd')) {
+        return {
+          data: {
+            id: 'g_present_3rd',
+            title: '第三人称单数 -s',
+            cefr: 'A1',
+            group: '时态',
+            rule: 'he/she/it 后动词加 -s。',
+            examples: [{ en: 'She likes coffee.', zh: '她喜欢咖啡。' }],
+            pairs: [{ wrong: 'She like coffee.', right: 'She likes coffee.', why: '第三人称单数漏了 -s。' }],
+          },
+        }
+      }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((button) => button.textContent?.includes('语法微课'))!.click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.grammar-card').length).toBe(1))
+    expect(el.querySelector('.lp-grammar-detail')).toBeFalsy()
+    ;(el.querySelector('.grammar-card') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.grammar-focus')).toBeTruthy())
+    expect(el.querySelector('.grammar-rule')?.textContent).toContain('he/she/it')
+    expect(el.querySelector('.lp-topbar')?.hasAttribute('inert')).toBe(true)
+    ;(el.querySelectorAll('.grammar-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.grammar-example')?.textContent).toContain('She likes coffee.')
+    ;(el.querySelectorAll('.grammar-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.grammar-pair')?.textContent).toContain('She like coffee.')
+    ;(el.querySelectorAll('.grammar-footer button')[1] as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.grammar-focus')).toBeFalsy()
+    expect(document.body.style.overflow).toBe('')
+  })
+
   it('左右栏支持拖拽宽度，并可分别收起和展开', async () => {
     const el = await mountPage()
     const grid = el.querySelector('.lp-grid') as HTMLElement
@@ -481,7 +605,15 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-col-left')).toBeFalsy()
     expect(el.querySelector('.lp-security-boundary')).toBeFalsy()
     expect(el.querySelector('.sec-glossary')).toBeFalsy()
-    expect(el.querySelectorAll('.sec-path-switcher button').length).toBe(2)
+    expect(el.querySelectorAll('.sec-level-switcher button').length).toBe(3)
+    expect([...el.querySelectorAll('.sec-level-switcher button')].map((button) => button.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      '入门 1',
+      '进阶 1',
+      '高级 0',
+    ])
+    expect(el.querySelector('.sec-level-switcher button[aria-pressed="true"]')?.textContent).toContain('入门')
+    expect(el.querySelectorAll('.sec-path-switcher button').length).toBe(1)
+    expect([...el.querySelectorAll('.sec-path-switcher button')].every((button) => button.textContent?.includes('个知识点'))).toBe(true)
     expect(el.querySelectorAll('.sec-module-card').length).toBe(1)
     expect(el.querySelector('.sec-module-card')?.textContent).toContain('威胁建模')
     expect(el.querySelector('.sec-focus')).toBeFalsy()
@@ -545,8 +677,12 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(document.body.style.overflow).toBe('')
     expect(el.querySelector('.lp-topbar')?.hasAttribute('inert')).toBe(false)
 
-    ;(el.querySelectorAll('.sec-path-switcher button')[1] as HTMLElement).click()
+    ;([...el.querySelectorAll('.sec-level-switcher button')] as HTMLElement[]).find((button) => button.textContent?.includes('进阶'))!.click()
     await vi.waitFor(() => expect(el.querySelector('.sec-overview-copy h1')?.textContent).toContain('Web 漏洞'))
+    expect(el.querySelectorAll('.sec-path-switcher button').length).toBe(1)
+    expect(el.querySelector('.sec-path-switcher button')?.textContent).toContain('Web 漏洞与攻击防御')
+    ;([...el.querySelectorAll('.sec-level-switcher button')] as HTMLElement[]).find((button) => button.textContent?.includes('入门'))!.click()
+    await vi.waitFor(() => expect(el.querySelector('.sec-overview-copy h1')?.textContent).toContain('安全基础'))
   })
 
   it('闯关单题聚焦：点关卡后一次只渲染一题，进度条与圆点导航工作', async () => {

@@ -44,6 +44,7 @@ type SecurityPath = {
   id: string; name: string; level: '入门' | '进阶' | '高级'; description: string;
   audience: string; prerequisites: string[]; nextPathIds: string[]; tags: string[]; glossary?: SecurityTerm[]; modules: SecurityModule[];
 };
+type SecurityLevel = SecurityPath['level'];
 type StudyStepKey = 'concept' | 'reasoning' | 'defense' | 'lab' | 'check';
 type StudyStep = { key: StudyStepKey; label: string; hint: string };
 
@@ -54,10 +55,13 @@ const emit = defineEmits<{
 }>();
 
 const PROGRESS_KEY = 'yz_security_progress_v1';
+const SECURITY_LEVELS: SecurityLevel[] = ['入门', '进阶', '高级'];
 const paths = ref<SecurityPath[]>([]);
 const loading = ref(true);
 const error = ref('');
 const completed = ref<Record<string, boolean>>({});
+const activeLevel = ref<SecurityLevel>('入门');
+const levelPathMemory = ref<Partial<Record<SecurityLevel, string>>>({});
 
 const focusedModuleId = ref('');
 const activeStep = ref<StudyStepKey>('concept');
@@ -104,6 +108,12 @@ async function loadPaths() {
 const activePath = computed(() =>
   paths.value.find((path) => path.id === props.pathId) || paths.value[0] || null,
 );
+const visiblePaths = computed(() => paths.value.filter((path) => path.level === activeLevel.value));
+const levelCounts = computed<Record<SecurityLevel, number>>(() => {
+  const counts: Record<SecurityLevel, number> = { 入门: 0, 进阶: 0, 高级: 0 };
+  for (const path of paths.value) counts[path.level] += 1;
+  return counts;
+});
 const prerequisites = computed(() => activePath.value
   ? paths.value.filter((path) => activePath.value?.prerequisites.includes(path.id))
   : []);
@@ -181,6 +191,17 @@ function selectPath(id: string) {
   closeFocus();
   emit('select-path', id);
 }
+function selectLevel(level: SecurityLevel) {
+  if (level === activeLevel.value) return;
+  const remembered = levelPathMemory.value[level];
+  const target = paths.value.find((path) => path.id === remembered && path.level === level)
+    || paths.value.find((path) => path.level === level);
+  if (!target) return;
+  closeFocus();
+  activeLevel.value = level;
+  levelPathMemory.value = { ...levelPathMemory.value, [level]: target.id };
+  emit('select-path', target.id);
+}
 function selectStep(key: StudyStepKey) {
   activeStep.value = key;
   answerVisible.value = false;
@@ -257,6 +278,11 @@ watch(focused, (isFocused) => {
     document.body.style.overflow = previousBodyOverflow;
   }
 });
+watch(activePath, (path) => {
+  if (!path) return;
+  activeLevel.value = path.level;
+  levelPathMemory.value = { ...levelPathMemory.value, [path.level]: path.id };
+}, { immediate: true });
 watch(() => props.pathId, () => {
   closeFocus();
   resetFocusState();
@@ -312,17 +338,29 @@ onBeforeUnmount(() => {
               <span>{{ completedCount }} / {{ activePath.modules.length }} 模块</span>
             </div>
           </div>
-          <nav class="sec-path-switcher" aria-label="安全路线">
+          <div class="sec-level-switcher" role="group" aria-label="按难度查看安全路线">
             <button
-              v-for="path in paths"
+              v-for="level in SECURITY_LEVELS"
+              :key="level"
+              type="button"
+              :aria-pressed="activeLevel === level"
+              @click="selectLevel(level)"
+            >
+              {{ level }} <b>{{ levelCounts[level] }}</b>
+            </button>
+          </div>
+          <nav class="sec-path-switcher" :aria-label="`${activeLevel}安全路线`">
+            <button
+              v-for="path in visiblePaths"
               :key="path.id"
               type="button"
               :class="{ active: path.id === activePath.id }"
               @click="selectPath(path.id)"
             >
-              <span>{{ path.level }}</span>
+              <span>{{ path.modules.length }} 个知识点</span>
               <b>{{ path.name }}</b>
             </button>
+            <p v-if="!visiblePaths.length" class="sec-path-empty">该难度暂无安全路线</p>
           </nav>
         </header>
 
@@ -616,6 +654,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Overview stays a readable route map; the full-screen study surface starts at .sec-focus. */
 .sec-workbench {
   min-width: 0;
   color: var(--color-text);
@@ -712,16 +751,60 @@ onBeforeUnmount(() => {
   color: #0f766e;
   font-size: 12px;
 }
-.sec-path-switcher {
-  display: flex;
+.sec-level-switcher {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: 18px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.sec-level-switcher button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   gap: 7px;
-  overflow-x: auto;
-  margin-top: 20px;
-  padding-bottom: 2px;
+  min-width: 84px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sec-level-switcher button b {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+}
+.sec-level-switcher button:hover {
+  color: var(--color-text);
+  background: color-mix(in srgb, #0f766e 6%, transparent);
+}
+.sec-level-switcher button[aria-pressed="true"] {
+  background: color-mix(in srgb, #0f766e 12%, var(--color-surface));
+  color: #0f766e;
+  font-weight: 700;
+}
+.sec-level-switcher button[aria-pressed="true"] b {
+  background: color-mix(in srgb, #0f766e 16%, transparent);
+  color: #0f766e;
+}
+.sec-path-switcher {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 7px;
+  margin-top: 10px;
 }
 .sec-path-switcher button {
-  flex: 0 0 auto;
-  min-width: 154px;
+  min-width: 0;
   padding: 9px 12px;
   border: 1px solid var(--color-border);
   border-radius: 7px;
@@ -749,6 +832,15 @@ onBeforeUnmount(() => {
 }
 .sec-path-switcher button.active b,
 .sec-path-switcher button.active span { color: #0f766e; }
+.sec-path-empty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--color-border);
+  border-radius: 7px;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
 .sec-module-browser {
   padding: 20px 22px 22px;
   border: 1px solid var(--color-border);
@@ -1640,6 +1732,12 @@ onBeforeUnmount(() => {
 
 @media (max-width: 620px) {
   .sec-overview-title-row { flex-direction: column; }
+  .sec-level-switcher {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+  .sec-level-switcher button { min-width: 0; }
   .sec-progress { flex-direction: row; align-self: flex-start; }
   .sec-progress-ring { width: 46px; height: 46px; }
   .sec-progress-ring::before { width: 36px; height: 36px; }

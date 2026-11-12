@@ -17,6 +17,7 @@ import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbenc
 import SubjectPicker from '../components/learning/SubjectPicker.vue';
 import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
+import GrammarWorkbench from '../components/learning/GrammarWorkbench.vue';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
@@ -82,6 +83,7 @@ const softMaterials = ref<SoftMaterial[]>([]);
 const securityPathId = ref('');
 const securityFocusing = ref(false);
 const pathFocusing = ref(false);
+const grammarFocusing = ref(false);
 type SoftRegion = { name: string; officialUrl: string; registrationUrl: string };
 type SoftLiveNotice = { title: string; url: string; source: '全国' | '地区' };
 type SoftLiveInfo = {
@@ -330,6 +332,7 @@ async function switchSubject(key: string) {
     securityFocusing.value = false;
   }
   pathFocusing.value = false;
+  grammarFocusing.value = false;
   await loadCourses();
 }
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
@@ -406,7 +409,6 @@ function switchTab(k: typeof tab.value) {
   if (k === 'coach') void ensureCoachConv(); // 复用/创建陪练会话（不跳路由，内嵌对话）
   if (k === 'words' && activeBook.value) void loadBookWords(true);
   if (k === 'scenes') void ensureSceneCourse();
-  if (k === 'grammar' && !grammarList.value.length) loadGrammar();
   if (k === 'reading' && !readings.value.length) loadReadings();
 }
 
@@ -958,21 +960,6 @@ function askSceneHint() {
     ? '请根据当前场景和我上一句的意思，给我一句自然、可直接跟读的英文'
     : `请提示我怎么说“${activeScene.value.guide.userEn}”`;
   void sendCoach(`${target}。先给英文，再给一句中文解释，然后继续角色对话。`);
-}
-
-// ── 语法微课（P1-B）：列表行内展开，不跳页 ──
-type GrammarBrief = { id: string; title: string; cefr: string; group: string; rule: string };
-type GrammarDetail = GrammarBrief & { examples: Array<{ en: string; zh: string }>; pairs: Array<{ wrong: string; right: string; why: string }> };
-const grammarList = ref<GrammarBrief[]>([]);
-const grammarActive = ref<GrammarDetail | null>(null);
-async function loadGrammar() {
-  const r = await api.get<{ data: GrammarBrief[] }>('/learning/grammar');
-  grammarList.value = unwrap<GrammarBrief[]>(r) || [];
-}
-async function openGrammar(id: string) {
-  if (grammarActive.value?.id === id) { grammarActive.value = null; return; } // 再点收起
-  const r = await api.get<{ data: GrammarDetail }>(`/learning/grammar/${id}`);
-  grammarActive.value = unwrap<GrammarDetail>(r) || null;
 }
 
 // ── 范文阅读（P1-C）──
@@ -1666,7 +1653,7 @@ watch(softExamDate, (value) => {
 
 <template>
   <div class="learning-page">
-    <div class="lp-topbar" :inert="securityFocusing || pathFocusing || undefined">
+    <div class="lp-topbar" :inert="securityFocusing || pathFocusing || grammarFocusing || undefined">
       <SubjectPicker :value="subject" :options="SUBJECTS" @select="switchSubject" />
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
@@ -2223,35 +2210,9 @@ watch(softExamDate, (value) => {
           </div>
         </template>
 
-        <!-- 语法微课：行内展开 -->
+        <!-- 语法微课：总览列表和全屏三步微课分离 -->
         <template v-else-if="tab === 'grammar'">
-          <div class="lp-grammar-list">
-            <div v-for="g in grammarList" :key="g.id" class="lp-grammar-item">
-              <button class="lp-grammar-row" @click="openGrammar(g.id)">
-                <b>{{ g.title }}</b>
-                <span class="lp-kind">{{ g.group }} · {{ g.cefr }}</span>
-                <span class="lp-grammar-rule">{{ g.rule }}</span>
-              </button>
-              <div v-if="grammarActive?.id === g.id" class="lp-grammar-detail">
-                <h3>例句</h3>
-                <ul class="lp-g-ex">
-                  <li v-for="(e, i) in grammarActive.examples" :key="i">
-                    <p>{{ e.en }} <button class="lp-speak" :disabled="ttsSpeaking" @click="speak(e.en)">🔊</button></p>
-                    <p class="lp-hint">{{ e.zh }}</p>
-                  </li>
-                </ul>
-                <h3>正误对照</h3>
-                <ul class="lp-g-pairs">
-                  <li v-for="(pt, i) in grammarActive.pairs" :key="i">
-                    <p class="wrong"><s>{{ pt.wrong }}</s></p>
-                    <p class="right">✅ {{ pt.right }} <button class="lp-speak" :disabled="ttsSpeaking" @click="speak(pt.right)">🔊</button></p>
-                    <p class="lp-hint">为什么：{{ pt.why }}</p>
-                  </li>
-                </ul>
-              </div>
-            </div>
-            <p v-if="!grammarList.length" class="lp-hint">语法点加载中…</p>
-          </div>
+          <GrammarWorkbench @focus-change="grammarFocusing = $event" />
         </template>
 
         <!-- 范文阅读：左侧素材库，右侧阅读器 -->
@@ -3094,18 +3055,6 @@ watch(softExamDate, (value) => {
   .lp-chat-input { flex-wrap: wrap; }
   .lp-chat-entry { min-width: 180px; }
 }
-.lp-grammar-list { display: flex; flex-direction: column; gap: 6px; }
-.lp-grammar-item { border: 1px solid #eef0f3; border-radius: 8px; overflow: hidden; }
-.lp-grammar-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: #fafbfc; padding: 9px 10px; cursor: pointer; color: #1f2329; font-size: 13px; }
-.lp-grammar-row:hover { background: #f0f5ff; }
-.lp-grammar-rule { flex: 1; color: #8f959e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lp-grammar-detail { padding: 10px 12px; border-top: 1px solid #f0f1f3; background: var(--glass-bg); }
-.lp-grammar-detail h3 { font-size: 13px; color: #4e5469; margin: 10px 0 6px; }
-.lp-g-ex, .lp-g-pairs { list-style: none; margin: 0; padding: 0; font-size: 13px; }
-.lp-g-ex li, .lp-g-pairs li { padding: 5px 0; border-bottom: 1px dashed #eee; }
-.lp-g-ex p, .lp-g-pairs p { margin: 0 0 2px; }
-.lp-g-pairs .wrong { color: #d4380d; }
-.lp-g-pairs .right { color: #0f8a3d; }
 .lp-col-mid:has(> .lp-reading-layout) { overflow: hidden; display: flex; flex-direction: column; }
 .lp-reading-layout { flex: 1; min-height: 0; width: 100%; display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: stretch; }
 .lp-reading-library { min-height: 0; overflow-y: auto; border-right: 1px solid var(--color-border); padding-right: 14px; }
