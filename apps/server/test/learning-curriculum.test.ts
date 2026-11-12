@@ -12,13 +12,13 @@ import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import { LEARNING_AGENT_ID } from '../src/builtin-learning-agents';
 
 describe('课程学段目录', () => {
-  it('31 门课且 id 唯一；词书、软考和安全路线边界清晰', () => {
-    expect(COURSE_CATALOG.length).toBe(31);
+  it('36 门课且 id 唯一；词书、软考和安全路线边界清晰', () => {
+    expect(COURSE_CATALOG.length).toBe(36);
     expect(new Set(COURSE_CATALOG.map((c) => c.id)).size).toBe(COURSE_CATALOG.length);
     const vocab = COURSE_CATALOG.filter((c) => !c.kind || c.kind === 'vocab');
     expect(new Set(vocab.map((c) => c.bookId)).size).toBe(vocab.length);
     expect(COURSE_CATALOG.filter((c) => c.kind === 'exam')).toHaveLength(4);
-    expect(COURSE_CATALOG.filter((c) => c.kind === 'security')).toHaveLength(7);
+    expect(COURSE_CATALOG.filter((c) => c.kind === 'security')).toHaveLength(12);
   });
 
   it('★ 每门课的 bookId 都有真实内容包（指空 = 选课拿不到词）', () => {
@@ -45,6 +45,11 @@ describe('课程学段目录', () => {
     expect(names).toContain('软件设计师');
     expect(names).toContain('系统架构设计师');
     expect(names).toContain('授权渗透测试');
+    expect(names).toContain('密码学与 PKI');
+    expect(names).toContain('身份与访问管理');
+    expect(names).toContain('API 与移动安全');
+    expect(names).toContain('云与容器安全');
+    expect(names).toContain('AI 与 LLM 安全');
     expect(names).toContain('多语言安全编码');
     expect(names).toContain('自动化攻防靶场');
     expect(names).toContain('安全开发与 DevSecOps');
@@ -70,7 +75,7 @@ describe('课程学段目录', () => {
     }
     expect(COURSE_CATALOG.filter((c) => c.subject === '英语').length).toBe(20);
     expect(COURSE_CATALOG.filter((c) => c.subject === '软考').length).toBe(4);
-    expect(COURSE_CATALOG.filter((c) => c.subject === '网络安全').length).toBe(7);
+    expect(COURSE_CATALOG.filter((c) => c.subject === '网络安全').length).toBe(12);
   });
 
   it('★ 全量词书：常规课程 >= 200 词，必背专题 >= 80 词，词条无空值、无重复', () => {
@@ -197,6 +202,8 @@ describe('分级范文', () => {
     expect(READING_PASSAGES.some((r) => r.cefr === 'B1')).toBe(true);
     expect(READING_PASSAGES.some((r) => /^B2$/.test(r.cefr))).toBe(true);
     expect(READING_PASSAGES.some((r) => r.topic === '日常生活')).toBe(true);
+    expect(READING_PASSAGES.filter((r) => r.topic === '寓言').length).toBeGreaterThanOrEqual(3);
+    expect(READING_PASSAGES.some((r) => r.topic === '长篇连载' && r.paras.length >= 4)).toBe(true);
   });
 
   it('★ 中英逐段对齐：每段 en/zh 都非空（错位 = 阅读页静默串段）', () => {

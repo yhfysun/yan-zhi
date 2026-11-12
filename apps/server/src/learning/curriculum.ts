@@ -171,6 +171,111 @@ export const READING_PASSAGES: ReadingPassage[] = [
       { en: 'The question is not whether technology makes us patient or impatient. It is whether we use it to hide from effort or to understand why effort takes time.', zh: '问题不在于科技让我们更有耐心还是更没耐心，而在于我们是用它逃避投入，还是理解为什么投入需要时间。' },
     ],
   },
+  {
+    id: 'rp_fable_tortoise_a2', title: 'The Tortoise and the Hare', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A hare laughed at a tortoise for walking so slowly. The tortoise calmly accepted the challenge to race.', zh: '野兔嘲笑乌龟走得太慢。乌龟平静地接受了赛跑挑战。' },
+      { en: 'The hare ran far ahead and stopped for a nap. The tortoise kept moving, one step after another, without looking back.', zh: '野兔远远跑到前面，停下来睡午觉。乌龟一直向前，一步一步，没有回头。' },
+      { en: 'When the hare woke up, the tortoise was already at the finish line. Slow and steady had won the race.', zh: '野兔醒来时，乌龟已经到达终点。慢而稳赢了比赛。' },
+    ],
+  },
+  {
+    id: 'rp_fable_north_wind_b1', title: 'The North Wind and the Sun', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'The North Wind and the Sun argued about who was stronger. They chose a traveler in a warm coat as the judge of their power.', zh: '北风和太阳争论谁更强。他们选了一位穿暖外套的旅人作为力量的裁判。' },
+      { en: 'The North Wind blew as hard as he could, but the traveler held his coat tighter. Then the Sun shone gently, and the traveler soon took the coat off.', zh: '北风拼命吹，旅人却把外套裹得更紧。然后太阳温和地照耀，旅人很快脱下了外套。' },
+      { en: 'Gentle persuasion achieved what force could not. The Sun had won without a single loud word.', zh: '温和的说服做到了力量做不到的事。太阳没有大声说一句话就赢了。' },
+    ],
+  },
+  {
+    id: 'rp_fable_fox_a2', title: 'The Fox and the Grapes', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A hungry fox saw a bunch of ripe grapes hanging above him. He jumped once, twice, and many more times, but he could not reach them.', zh: '一只饥饿的狐狸看见头顶挂着一串熟葡萄。他跳了一次、两次，又跳了很多次，却够不到。' },
+      { en: 'Finally, he turned away and said, “Those grapes are probably sour anyway.”', zh: '最后，他转身走开，说：“那些葡萄反正大概是酸的。”' },
+      { en: 'The grapes had not changed. Only the fox’s story about them had. People still call this “sour grapes.”', zh: '葡萄没有变，变的只是狐狸对它们的说法。人们至今把这种现象叫作“酸葡萄”。' },
+    ],
+  },
+  {
+    id: 'rp_lantern_01_b1', title: 'The Lantern Keeper · Chapter 1', cefr: 'B1', topic: '长篇连载',
+    paras: [
+      { en: 'Every evening, Mara lit the old lantern at the top of the harbor tower. Ships used its light to find the narrow entrance between the rocks. Her father had kept the lantern for thirty years, and now the tower belonged to her.', zh: '每天晚上，玛拉都会点亮港口塔顶的旧灯笼。船只靠这盏灯找到礁石间狭窄的入口。她的父亲守了这盏灯三十年，如今灯塔归她照料。' },
+      { en: 'The village had changed. Bright electric beacons now stood along the coast, and people said the old tower would close before winter. Mara still climbed the stairs each night because the northern fishing boats refused to trust the new machines.', zh: '村庄变了。明亮的电子灯塔已经立满海岸，人们说旧塔会在冬天前关闭。玛拉仍然每晚爬楼梯，因为北方渔船不肯信任新机器。' },
+      { en: 'On the first cold night of October, she found a brass key beneath the lantern-room floor. It felt warm in her hand even though the room was freezing. A paper label was tied to it: “Do not light the red lamp.”', zh: '十月的第一个寒夜，她在灯笼房地板下发现一把黄铜钥匙。房间冰冷，钥匙在她手里却是温的。钥匙上系着纸签：“不要点亮红灯。”' },
+      { en: 'Mara looked at the lamp above her. It had only ever burned white. She had never seen a red lamp in the tower, and for the first time in years, the quiet room felt crowded with secrets.', zh: '玛拉抬头看头顶的灯。它从来只发出白光。她从没在塔里见过红灯。多年来第一次，这间安静的房间让她觉得挤满了秘密。' },
+    ],
+  },
+  {
+    id: 'rp_fable_wolf_a2', title: 'The Boy Who Cried Wolf', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A shepherd boy watched sheep near a village. One afternoon, he shouted, “Wolf! Wolf!” The villagers ran to help, but there was no wolf. He laughed at their worried faces.', zh: '一个牧羊男孩在村庄附近看羊。一天下午，他喊：“狼来了！”村民们跑来帮忙，却没有狼。他嘲笑他们担忧的样子。' },
+      { en: 'The next day he did it again. This time the villagers were angry, but they still came. When they found no wolf, they warned him not to lie again.', zh: '第二天他又这样做。这次村民很生气，但还是来了。发现没有狼后，他们警告他不要再撒谎。' },
+      { en: 'Then a real wolf appeared. The boy shouted for help, but nobody believed him. The sheep scattered, and he learned that trust is hard to rebuild once it is broken.', zh: '后来真的狼出现了。男孩大声求救，却没人相信。羊群四散，他明白了信任一旦破碎就很难重建。' },
+    ],
+  },
+  {
+    id: 'rp_fable_lion_mouse_a2', title: 'The Lion and the Mouse', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A mouse ran across a sleeping lion and woke him. The lion caught the tiny creature under one paw. “Why should I let you go?” he asked.', zh: '一只老鼠跑过熟睡的狮子，把他吵醒了。狮子用一只爪子抓住这个小家伙，问：“我为什么要放你走？”' },
+      { en: '“I may be small,” the mouse said, “but one day I could help you.” The lion laughed, yet he lifted his paw and let the mouse go.', zh: '“我虽然小，”老鼠说，“但有一天也许能帮到你。”狮子笑了，却抬起爪子放走了老鼠。' },
+      { en: 'Weeks later, the lion was caught in a hunter’s net. The mouse chewed through the ropes and set him free. The lion never laughed at small kindness again.', zh: '几周后，狮子被猎人的网困住。老鼠咬断绳索救了他。狮子从此不再嘲笑微小的善意。' },
+    ],
+  },
+  {
+    id: 'rp_fable_ant_a2', title: 'The Ant and the Grasshopper', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'All summer, the ant carried food to its nest. The grasshopper sang in the sunshine and asked why the ant worked so hard.', zh: '整个夏天，蚂蚁都在往巢里搬食物。蚱蜢在阳光下唱歌，问蚂蚁为什么这么辛苦。' },
+      { en: '“Winter will come,” said the ant. The grasshopper laughed. “There is plenty of time.” He kept singing while the ant kept working.', zh: '“冬天会来的，”蚂蚁说。蚱蜢笑了：“时间多着呢。”他继续唱歌，蚂蚁继续工作。' },
+      { en: 'When the cold arrived, food was hard to find. The ant had enough, but the grasshopper did not. The story does not say never to enjoy life; it says prepare while the sun is still warm.', zh: '寒冬到来时，食物很难找。蚂蚁够吃，蚱蜢却没有。故事不是叫人不享受生活，而是提醒人在还有余裕时做好准备。' },
+    ],
+  },
+  {
+    id: 'rp_fable_crow_a2', title: 'The Crow and the Pitcher', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A thirsty crow found a pitcher with a little water at the bottom. Its beak could not reach the water.', zh: '一只口渴的乌鸦找到一个水罐，罐底只有一点水，嘴却够不到。' },
+      { en: 'The crow did not give up. It picked up small stones and dropped them into the pitcher, one by one. Slowly, the water rose.', zh: '乌鸦没有放弃。它捡起小石子，一颗颗投进水罐。水位慢慢升高。' },
+      { en: 'At last, the crow could drink. A hard problem may not need one big answer; sometimes it yields to many small, patient steps.', zh: '最后，乌鸦喝到了水。难题不一定需要一个大答案，有时它会败给许多耐心的小步骤。' },
+    ],
+  },
+  {
+    id: 'rp_fable_dog_a2', title: 'The Dog and the Shadow', cefr: 'A2', topic: '寓言',
+    paras: [
+      { en: 'A dog carried a piece of meat across a bridge. Looking down, he saw another dog in the water with what seemed to be a larger piece.', zh: '一只狗叼着一块肉过桥。他低头看见水里还有一只狗，似乎叼着更大的一块。' },
+      { en: 'The dog opened his mouth to grab the better piece. His own meat fell into the river and disappeared.', zh: '狗张嘴去抢那块更好的肉。自己的肉却掉进河里，消失了。' },
+      { en: 'The “larger piece” was only a reflection. Wanting more can make us lose what is already in our hands.', zh: '那块“更大的肉”只是倒影。贪求更多，有时会失去手里已经拥有的东西。' },
+    ],
+  },
+  {
+    id: 'rp_fable_pots_b1', title: 'The Two Pots', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'A clay pot and an iron pot floated down a river together. The iron pot invited the clay pot to stay close for safety.', zh: '一只陶罐和一只铁罐一起顺河漂流。铁罐邀请陶罐靠近些，说这样更安全。' },
+      { en: 'The clay pot refused. “You are strong, but if we touch, I will break. Your safety is not my safety.”', zh: '陶罐拒绝了：“你很结实，但我们一碰，我就会碎。你的安全不是我的安全。”' },
+      { en: 'The two pots traveled separately and both reached the shore. Differences in strength may require differences in boundaries.', zh: '两只罐子分开漂流，都到了岸边。力量不同，需要的边界也可能不同。' },
+    ],
+  },
+  {
+    id: 'rp_fable_sticks_b1', title: 'The Bundle of Sticks', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'A father gave his sons a bundle of sticks and asked each one to break it. None of them could.', zh: '一位父亲给儿子们一捆树枝，让每个人试着折断。没人做得到。' },
+      { en: 'Then he untied the bundle and gave each son a single stick. They broke the sticks easily. “Together you are strong,” he said. “Divided, you are easy to break.”', zh: '然后他解开绳子，给每个儿子一根树枝。他们很容易就折断了。“团结时你们很强，”他说，“分散时很容易被折断。”' },
+      { en: 'The lesson is not that people must always agree. It is that shared problems require cooperation, not isolated effort.', zh: '寓意不是要求所有人永远意见一致，而是共同问题需要合作，而不是各自孤立应对。' },
+    ],
+  },
+  {
+    id: 'rp_fable_milkmaid_b1', title: 'The Milkmaid and Her Pail', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'A milkmaid carried a pail of milk on her head and began planning what she would buy with the money. She imagined eggs, chickens, and a fine dress.', zh: '一个挤奶女工头顶一桶牛奶，开始盘算卖钱后买什么。她想象着鸡蛋、小鸡和一条漂亮裙子。' },
+      { en: 'Thinking about the dress, she tossed her head as if she were already wearing it. The pail fell, and the milk spilled into the road.', zh: '想到裙子时，她像已经穿上一样甩了一下头。奶桶掉下来，牛奶洒在路上。' },
+      { en: 'She had counted future gains before securing the present one. Plans are useful, but they cannot replace the next careful step.', zh: '她在守住眼前的成果前就盘算未来收益。计划有用，但不能替代下一步的谨慎行动。' },
+    ],
+  },
+  {
+    id: 'rp_fable_mice_b1', title: 'The Town Mouse and the Country Mouse', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'The town mouse visited his cousin in the country. He found the simple food dull and invited the country mouse to the city.', zh: '城里的老鼠去乡下看望表亲，觉得简单食物很乏味，便邀请乡下老鼠进城。' },
+      { en: 'In the city, the food was rich, but every sound sent them running from cats and people. The country mouse could not eat in peace.', zh: '城里食物丰盛，但每个声音都让他们躲避猫和人。乡下老鼠根本无法安心吃饭。' },
+      { en: 'He returned home. “Plain food without fear is better than a feast in danger,” he said. Comfort and safety are part of the value of any choice.', zh: '他回到家里说：“没有恐惧的简单食物，胜过危险中的盛宴。”任何选择的价值都包含舒适与安全。' },
+    ],
+  },
 ];
 
 // ── 语法点第二批（P1 扩充至 40：覆盖中文母语者中高频痛点） ─────────────────────
@@ -251,11 +356,16 @@ export const COURSE_CATALOG: CourseDef[] = [
   { id: 'course_soft_system_architect', name: '系统架构设计师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '高级', examSpecialty: '系统架构设计师' },
   { id: 'course_soft_system_analyst', name: '系统分析师', subject: '软考', stage: '软考', kind: 'exam', examLevel: '高级', examSpecialty: '系统分析师' },
   { id: 'course_sec_fundamentals', name: '安全基础与威胁建模', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_fundamentals' },
+  { id: 'course_sec_crypto', name: '密码学与 PKI', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_crypto' },
   { id: 'course_sec_web', name: 'Web 漏洞与攻击防御', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_web' },
-  { id: 'course_sec_languages', name: '多语言安全编码', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_languages' },
+  { id: 'course_sec_identity', name: '身份与访问管理', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_identity' },
+  { id: 'course_sec_api', name: 'API 与移动安全', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_api' },
+  { id: 'course_sec_cloud', name: '云与容器安全', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_cloud' },
   { id: 'course_sec_pentest', name: '授权渗透测试', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_pentest' },
   { id: 'course_sec_automation', name: '自动化攻防靶场', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_automation' },
+  { id: 'course_sec_languages', name: '多语言安全编码', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_languages' },
   { id: 'course_sec_defense', name: '攻击防御与蓝队运营', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_defense' },
+  { id: 'course_sec_ai', name: 'AI 与 LLM 安全', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_ai' },
   { id: 'course_sec_devsecops', name: '安全开发与 DevSecOps', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_devsecops' },
 ];
 

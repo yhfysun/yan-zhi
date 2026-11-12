@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SECURITY_PATHS } from '../src/learning/security-curriculum';
+import { COURSE_CATALOG } from '../src/learning/curriculum';
 
 function teachingText(path: (typeof SECURITY_PATHS)[number]) {
   return [
@@ -26,9 +27,20 @@ function acronymsIn(text: string) {
 }
 
 describe('网络安全分支路线', () => {
-  it('覆盖基础、Web 攻防、授权渗透、自动化靶场、防御和 DevSecOps', () => {
+  it('覆盖基础、密码学、身份、Web、API、云、攻防、防御、AI 和 DevSecOps', () => {
     expect(SECURITY_PATHS.map((path) => path.id)).toEqual([
-      'sec_fundamentals', 'sec_web', 'sec_pentest', 'sec_automation', 'sec_languages', 'sec_defense', 'sec_devsecops',
+      'sec_fundamentals',
+      'sec_crypto',
+      'sec_web',
+      'sec_identity',
+      'sec_api',
+      'sec_cloud',
+      'sec_pentest',
+      'sec_automation',
+      'sec_languages',
+      'sec_defense',
+      'sec_ai',
+      'sec_devsecops',
     ]);
     expect(new Set(SECURITY_PATHS.map((path) => path.id)).size).toBe(SECURITY_PATHS.length);
   });
@@ -38,6 +50,46 @@ describe('网络安全分支路线', () => {
     for (const path of SECURITY_PATHS) {
       for (const id of [...path.prerequisites, ...path.nextPathIds]) expect(ids.has(id), `${path.id}:${id}`).toBe(true);
       expect(path.modules.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('课程目录与安全路线接口保持一致，刷新后不会丢失新路线', () => {
+    const catalog = COURSE_CATALOG
+      .filter((course) => course.kind === 'security')
+      .map((course) => ({ id: course.securityPathId, name: course.name }));
+    expect(catalog).toEqual(SECURITY_PATHS.map((path) => ({ id: path.id, name: path.name })));
+  });
+
+  it('安全路线覆盖入门、进阶和高级三档，切换难度时不会出现空分组', () => {
+    const counts = SECURITY_PATHS.reduce<Record<string, number>>((result, path) => {
+      result[path.level] = (result[path.level] || 0) + 1;
+      return result;
+    }, {});
+    expect(counts).toEqual({ 入门: 1, 进阶: 8, 高级: 3 });
+  });
+
+  it('每条主路线都有足够的连续训练，并覆盖网络、密码学、浏览器、API、云与供应链安全', () => {
+    const modules = SECURITY_PATHS.flatMap((path) => path.modules);
+    const ids = new Set(modules.map((mod) => mod.id));
+
+    expect(modules.length).toBeGreaterThanOrEqual(67);
+    for (const path of SECURITY_PATHS) expect(path.modules.length, path.id).toBeGreaterThanOrEqual(5);
+
+    for (const id of [
+      'sec_fund_http',
+      'sec_fund_crypto',
+      'sec_web_upload',
+      'sec_web_browser',
+      'sec_pentest_api',
+      'sec_pentest_cloud',
+      'sec_auto_api',
+      'sec_auto_triage',
+      'sec_def_vuln',
+      'sec_def_container',
+      'sec_dev_iac',
+      'sec_dev_sdlc',
+    ]) {
+      expect(ids.has(id), id).toBe(true);
     }
   });
 

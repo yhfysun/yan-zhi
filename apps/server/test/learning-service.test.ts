@@ -273,7 +273,7 @@ describe('关卡复习角标（P2 金色节点）', () => {
 });
 
 describe('课程学段总览', () => {
-  it('★ 20 门英语课 + 4 门软考专业 + 6 条安全路线按学段返回', () => {
+  it('★ 20 门英语课 + 4 门软考专业 + 12 条安全路线按学段返回', () => {
     const groups = getCourses(uid);
     expect(groups[0].stage).toBe('启蒙');
     const all = groups.flatMap((g) => g.courses);
@@ -282,7 +282,7 @@ describe('课程学段总览', () => {
     expect(soft).toHaveLength(4);
     expect(soft.every((c) => c.kind === 'exam')).toBe(true);
     const security = getCourses(uid, '网络安全').flatMap((g) => g.courses);
-    expect(security).toHaveLength(7);
+    expect(security).toHaveLength(12);
     expect(security.every((c) => c.kind === 'security' && !!c.securityPathId)).toBe(true);
     const cet4 = all.find((c) => c.name === '大学英语四级')!;
     // 全量词书接入后总关卡数按 20 词/关动态计算
@@ -298,7 +298,7 @@ describe('课程学段总览', () => {
   it('★ subject 过滤：英语 20 门课，未开科目的课程为空（扩展点真生效）', () => {
     expect(getCourses(uid, '英语').flatMap((g) => g.courses).length).toBe(20);
     expect(getCourses(uid, '软考').flatMap((g) => g.courses).length).toBe(4);
-    expect(getCourses(uid, '网络安全').flatMap((g) => g.courses).length).toBe(7);
+    expect(getCourses(uid, '网络安全').flatMap((g) => g.courses).length).toBe(12);
     expect(getCourses(uid, '日语')).toEqual([]);
   });
 });
