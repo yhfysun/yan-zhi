@@ -11,7 +11,7 @@
  *   - vue-router：只用到 useRouter().push
  * LearnStage 的宠物 store 走真实现（pinia + jsdom localStorage），默认 2D 渲染器不碰 WebGL。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import { createPinia } from 'pinia'
 import Learning from './Learning.vue'
@@ -60,6 +60,19 @@ vi.mock('../stores/platform', () => ({
 const { defaultGet } = vi.hoisted(() => ({
   defaultGet: async (url: string) => {
     if (url.includes('/learning/profile')) return { data: { cefr: 'B1', goals: '日常口语', streakDays: 3 } }
+    if (url.includes('/learning/path')) {
+      return {
+        data: [{
+          id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
+          steps: [{
+            id: 'sound_short_vowels', kind: 'phonics', title: '五个短元音', goal: '分清短元音', minutes: 8,
+            explanation: '先读单个音，再拼辅音。', pattern: 'cat · bed · sit',
+            tip: '慢读', examples: [{ en: 'A cat sat on a red mat.', zh: '一只猫坐在红垫子上。' }],
+            task: '慢读三遍。',
+          }],
+        }],
+      }
+    }
     if (url.includes('/learning/courses')) {
       return {
         data: [{ stage: '大学', courses: [
@@ -143,6 +156,7 @@ beforeEach(async () => {
   vi.mocked(api.post).mockReset()
   vi.mocked(api.post).mockImplementation(async () => ({ data: null }))
 })
+afterEach(() => vi.unstubAllGlobals())
 
 describe('Learning 工作区 · 挂载契约', () => {
   it('页头收成科目下拉与状态行，不再渲染标题、宠物或开始陪练按钮', async () => {
@@ -163,8 +177,9 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.subject-picker-menu')).toBeFalsy()
     expect(el.querySelector('.lp-coach')).toBeFalsy()
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
-    expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
-    expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「单词闯关」
+    expect(tabs).toEqual(['零基础主线', '单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
+    expect(el.querySelector('.lp-grid')).toBeTruthy() // 默认落在「零基础主线」
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     expect(el.querySelector('.lp-header')).toBeFalsy()
     expect(el.querySelector('.lp-avatar-stage')).toBeFalsy()
   })
@@ -227,6 +242,28 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-wt-list')?.textContent).toContain('cancel')
     expect(el.querySelector('.lp-hint')?.textContent).toContain('20841')
     expect(el.querySelector('.lp-wt-search')).toBeTruthy()
+    const spoken: string[] = []
+    class FakeUtterance {
+      text: string
+      lang = ''
+      rate = 1
+      pitch = 1
+      onend: (() => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(text: string) { this.text = text }
+    }
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      speak: vi.fn((utterance: FakeUtterance) => {
+        spoken.push(utterance.text)
+        utterance.onend?.()
+      }),
+    })
+    const pronounce = el.querySelector('.lp-wt-pronounce') as HTMLButtonElement
+    expect(pronounce.disabled).toBe(false)
+    pronounce.click()
+    await vi.waitFor(() => expect(spoken).toEqual(['cancel']))
     // 三栏骨架仍在（布局不跳）
     expect(el.querySelector('.lp-grid')).toBeTruthy()
   })
@@ -749,11 +786,33 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(opts.agentId).toBe('a_builtin_learning_coach')
     expect(opts.source).toBe('learning')
     expect(opts.sourceMeta?.learningScene).toBe('sc_cet4_course')
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled())
+    const scenePrompt = (sendMessage.mock.calls[0] as unknown as [string])[0]
+    expect(scenePrompt).toContain('Current scene contract')
+    expect(scenePrompt).toContain('Good morning. Which course would you like to change?')
+    expect(scenePrompt).toContain('I would like to switch from Art History to Psychology.')
+    expect(scenePrompt).toContain('Do not say that answer for me')
+    expect(scenePrompt).toContain('Minimum learner rounds before finishing')
+    expect(scenePrompt).toContain('Do not output [SCENE_END]')
     await vi.waitFor(() => expect(el.querySelector('.lp-pet-stage')).toBeTruthy())
     expect(el.querySelector('.lp-practice-title')?.textContent).toContain('选课咨询')
     expect(el.querySelector('.lp-pet-speech')?.textContent).toContain('言言')
     // ★ 用户实报「场景卡跳到办公模式」：场景任务绝不 push 聊天详情路由
     expect(push).not.toHaveBeenCalled()
+    const freeButton = ([...el.querySelectorAll('button')] as HTMLButtonElement[])
+      .find((button) => button.textContent?.trim() === '自由发挥')!
+    freeButton.click()
+    await vi.waitFor(() => expect(createConversation).toHaveBeenCalledTimes(2))
+    const [freeTitle, freeOpts] = createConversation.mock.calls[1] as unknown as [
+      string,
+      { sourceMeta?: { learningKind?: string } },
+    ]
+    expect(freeTitle).toContain('英语陪练')
+    expect(freeOpts.sourceMeta?.learningKind).toBe('free')
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
+    const freePrompt = (sendMessage.mock.calls[1] as unknown as [string])[0]
+    expect(freePrompt).toContain('freely, without a fixed scene')
+    expect(freePrompt).toContain('Do not use scene missions')
   })
 
   it('★ 开始陪练：内嵌中栏直接调 AI（不跳路由），带契约 id 建会话并发起英文对话', async () => {

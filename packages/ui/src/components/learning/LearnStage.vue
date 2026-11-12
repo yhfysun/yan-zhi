@@ -27,7 +27,7 @@ const props = withDefaults(defineProps<{ compact?: boolean; viewScale?: number }
 
 const store = usePetStore()
 store.init()
-const settings = ref<PetSettings>({ ...PET_DEFAULTS, ...store.settings })
+const settings = computed<PetSettings>(() => ({ ...PET_DEFAULTS, ...store.settings }))
 
 const state = ref<PetState>('idle')
 const action = ref<string | null>(null)
@@ -48,12 +48,14 @@ const useVrm3d = computed(
 const show2d = computed(
   () =>
     settings.value.renderer === '2d' ||
-    (settings.value.renderer === '3d' && settings.value.vrmMode !== 'off' && vrmLoadState.value !== 'ready')
+    (settings.value.renderer === '3d' && (settings.value.vrmMode === 'off' || vrmLoadState.value === 'error'))
 )
 const bodyStyle = computed(() => {
+  // VRM 的相机取景已经负责“完整装进画布”。外层再按 viewScale 放大，会让
+  // 630px 高的人物挤进 290px 舞台并从上方面板穿出去。3D 始终填满容器，
+  // viewScale 只用于 2D 精灵；用户自己的形象倍率由 Pet3D 的相机取景吸收。
   if (settings.value.renderer !== '3d') return {}
-  const s = (effectiveScale.value || 1) * displayScale.value
-  return { width: Math.round(190 * s) + 'px', height: Math.round(280 * s) + 'px' }
+  return { width: '100%', height: '100%' }
 })
 
 function toArrayBuffer(data: any): ArrayBuffer | null {
@@ -143,6 +145,7 @@ defineExpose({ play })
         :active="renderActive"
         :visible="renderVisible"
         :vrm-buffer="vrmBuffer"
+        :frame-fill="0.96"
         @vrm-state="(s: 'none' | 'loading' | 'ready' | 'error') => (vrmLoadState = s)"
       />
     </div>
@@ -156,8 +159,8 @@ defineExpose({ play })
   justify-content: center;
   min-height: 160px;
   border-radius: 10px;
-  background: linear-gradient(180deg, #f6f8fc 0%, #eef2f9 100%);
-  border: 1px solid #e5e6eb;
+  background: transparent;
+  border: 0;
   overflow: hidden;
 }
 .learn-stage.compact {
@@ -168,5 +171,12 @@ defineExpose({ play })
   border-radius: 8px;
   background: transparent;
 }
-.stage-body { position: relative; }
+.stage-body {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+}
 </style>

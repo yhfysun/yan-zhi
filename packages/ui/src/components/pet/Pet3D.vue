@@ -26,8 +26,10 @@ const props = withDefaults(
     visible?: boolean
     /** VRM 模型字节；为空时退回程序化素模 */
     vrmBuffer?: ArrayBuffer | null
+    /** VRM 在画布中的目标高度占比；悬浮宠物用 0.86，学习舞台可提高到 0.96 */
+    frameFill?: number
   }>(),
-  { action: null, scale: 1, walking: false, flip: false, active: true, visible: true, vrmBuffer: null }
+  { action: null, scale: 1, walking: false, flip: false, active: true, visible: true, vrmBuffer: null, frameFill: 0.86 }
 )
 /** VRM 状态外泄：父组件在加载中/失败时用 2D 精灵顶替（否则会闪出一只"素模熊"） */
 const emit = defineEmits<{ (e: 'vrm-state', state: 'none' | 'loading' | 'ready' | 'error'): void }>()
@@ -102,7 +104,7 @@ async function loadVrm(buffer: ArrayBuffer | null) {
     // 仅 dev：把 VRM 句柄挂到 window，方便用 CDP 调姿势（生产构建里这段会被摇树掉）
     if (import.meta.env.DEV) (window as any).__petVrm = next
     if (rig) rig.root.visible = false
-    frameVrm(next.height)
+    frameVrm(next.height * props.scale)
   } catch (err) {
     vrmState.value = 'error'
     console.warn('[pet] VRM 加载失败，退回程序化素模:', err && (err as Error).message)
@@ -123,7 +125,8 @@ function frameDefault() {
  */
 function frameVrm(height: number) {
   if (!camera) return
-  const visible = height / 0.86
+  const fill = Math.max(0.5, Math.min(1, props.frameFill))
+  const visible = height / fill
   const d = visible / 2 / Math.tan((camera.fov * Math.PI) / 360)
   camera.position.set(0, visible / 2, d)
   camera.lookAt(0, visible / 2, 0)
@@ -428,10 +431,12 @@ function resize() {
 onMounted(() => {
   if (!cv.value || !host.value) return
   renderer = new THREE.WebGLRenderer({ canvas: cv.value, alpha: true, antialias: true, powerPreference: 'low-power' })
+  renderer.setClearColor(0x000000, 0)
   renderer.setClearAlpha(0)
   renderer.outputColorSpace = THREE.SRGBColorSpace
 
   scene = new THREE.Scene()
+  scene.background = null
   camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100)
   camera.position.set(0, 3.1, 11)
   camera.lookAt(0, 1.85, 0)
@@ -475,6 +480,7 @@ watch(
   (s) => {
     rig?.root.scale.setScalar(s)
     loaded?.holder.scale.setScalar(s)
+    if (loaded) frameVrm(loaded.height * s)
   }
 )
 watch(
@@ -495,6 +501,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.pet3d { width: 100%; height: 100%; }
-.cv { width: 100%; height: 100%; display: block; }
+.pet3d, .cv { width: 100%; height: 100%; background: transparent !important; }
+.cv { display: block; }
 </style>

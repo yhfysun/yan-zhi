@@ -6,7 +6,7 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, ShieldCheck, Target, Volume2 } from 'lucide-vue-next';
+import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, ShieldCheck, Target, Volume2, X } from 'lucide-vue-next';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
@@ -15,6 +15,8 @@ import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
 import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
 import SubjectPicker from '../components/learning/SubjectPicker.vue';
+import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
+import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
@@ -317,18 +319,18 @@ async function switchSubject(key: string) {
     void loadSoftExamRegions();
     void loadSoftExamLive();
   } else if (wasSoft) {
-    tab.value = 'drill';
+    tab.value = 'path';
   } else if (key === '网络安全') {
     tab.value = 'security';
     rightCollapsed.value = false;
     rightWidth.value = Math.max(rightWidth.value, 300);
   } else if (wasSecurity) {
-    tab.value = 'drill';
+    tab.value = 'path';
   }
   await loadCourses();
 }
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security'>('drill');
+const tab = ref<'path' | 'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security'>('path');
 const leftWidth = ref(300);
 const rightWidth = ref(280);
 const leftCollapsed = ref(false);
@@ -373,6 +375,7 @@ const gridClasses = computed(() => ({
   'right-collapsed': rightCollapsed.value,
 }));
 const ENGLISH_TAB_DEFS = [
+  { key: 'path', label: '零基础主线' },
   { key: 'drill', label: '单词闯关' },
   { key: 'coach', label: '陪练对话' },
   { key: 'words', label: '词汇表' },
@@ -475,8 +478,11 @@ const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom'
 // ── 闯关状态 ──
 const drillLevel = ref<number | null>(null);
 const questions = ref<Question[]>([]);
-/** 听写题需要 TTS 念词——无语音包时整卷过滤掉听写（判分只按提交的题） */
-const activeQuestions = computed(() => (ttsPackId.value ? questions.value : questions.value.filter((q) => q.kind !== 'dictation')));
+/** 听写题需要可用的朗读能力：本地语音包或浏览器/Electron 系统语音均可。 */
+const canReadAloud = computed(() =>
+  !!ttsPackId.value || (typeof window !== 'undefined' && 'speechSynthesis' in window),
+);
+const activeQuestions = computed(() => (canReadAloud.value ? questions.value : questions.value.filter((q) => q.kind !== 'dictation')));
 const answers = ref<Record<string, string>>({}); // qid → 选项/输入
 const submitting = ref(false);
 const result = ref<DrillResult | null>(null);
@@ -534,7 +540,7 @@ function nextOrSubmit() {
 const focusInput = ref<HTMLInputElement | null>(null);
 watch(qIndex, async () => {
   const q = currentQ.value;
-  if (q?.kind === 'dictation' && ttsPackId.value) void speak(q.audio || '');
+  if (q?.kind === 'dictation' && canReadAloud.value) void speak(q.audio || '');
   await nextTick();
   focusInput.value?.focus();
 });
@@ -836,6 +842,40 @@ const sceneScriptMode = computed(() => {
   if (!activeScene.value) return '';
   return activeScene.value.level === '热身' ? 'simple' : activeScene.value.level === '挑战' ? 'medium' : 'advanced';
 });
+function sceneMinimumRoundsFor(scene: SceneCard): number {
+  return Math.max(3, scene.missions.length + 1);
+}
+function sceneStartPrompt(scene: SceneCard): string {
+  const minimumRounds = sceneMinimumRoundsFor(scene);
+  return [
+    `I am ready. Please start the "${scene.title}" scenario as ${scene.roles[0]}.`,
+    '[Current scene contract - follow this and nothing unrelated]',
+    `Setting: ${scene.setting}`,
+    `Situation: ${scene.scene}`,
+    `AI role: ${scene.roles[0]}. My role: ${scene.roles[1]}.`,
+    `Your opening line: "${scene.guide.coachEn}"`,
+    `My target answer is "${scene.guide.userEn}" (${scene.guide.userZh}). Do not say that answer for me; prompt me to produce it.`,
+    `Missions: ${scene.missions.join(' / ')}`,
+    `Minimum learner rounds before finishing: ${minimumRounds}. Do not output [SCENE_END] or scene_result before I have answered at least ${minimumRounds} times.`,
+    'Teach it like a textbook unit, not a one-question quiz:',
+    '1. Give one compact sentence pattern or useful words before asking.',
+    '2. Ask only one question per turn.',
+    '3. After my answer, briefly recast or correct it, then connect it to the next mission.',
+    '4. Cover every mission across separate rounds, then add one transfer question using the same pattern in a new situation.',
+    '5. Only after all missions and the transfer round, summarize the lesson and emit [SCENE_END] with scene_result.',
+    'Stay in this exact scene. Do not reuse another scenario, another opening, or unrelated conversation history.',
+  ].join('\n');
+}
+function sceneContinuationPrompt(scene: SceneCard, round: number): string {
+  const mission = scene.missions[Math.min(round, scene.missions.length - 1)] || scene.missions[0] || '';
+  return [
+    `Continue the current scene "${scene.title}".`,
+    `We have completed ${round} of ${sceneMinimumRoundsFor(scene)} required learner rounds.`,
+    'Do not score or output scene_result yet.',
+    `Continue with mission: ${mission}.`,
+    'Give one short sentence pattern, ask one question, and wait for my answer.',
+  ].join('\n');
+}
 
 async function ensureSceneCourse() {
   if (!sceneCourseId.value) {
@@ -870,6 +910,7 @@ function sceneResultsOf(m: { role: string; content?: string }) {
 
 async function startScene(scene: SceneCard) {
   if (startingScene.value) return;
+  clearSceneContinuation();
   startingScene.value = scene.id;
   try {
     // 点击按钮本身是用户手势：先申请麦克风权限，等陪练说完第一轮再自动录音。
@@ -879,16 +920,21 @@ async function startScene(scene: SceneCard) {
       agentId: LEARNING_AGENT_ID,
       source: 'learning',
       sourceMeta: {
+        learningKind: 'scene',
         learningScene: scene.id,
         learningCourseId: scene.courseId,
-      } as unknown as { url?: string; host?: string; scope?: string },
+      },
     });
     coachConvId.value = convId;
+    coachConversationKind.value = 'scene';
+    coachConversationSceneId.value = scene.id;
     activeScene.value = scene;
+    sceneContinuationGuard = '';
+    sceneAutoContinueCount = 0;
     await chat.loadMessages(convId);
     tab.value = 'coach';
     await nextTick();
-    await sendCoach(`I am ready. Please start the "${scene.title}" scenario as ${scene.roles[0]}.`);
+    await sendCoach(sceneStartPrompt(scene));
   } catch (e) {
     ElMessage.error(e instanceof Error ? `场景启动失败：${e.message}` : '场景启动失败，请稍后重试');
   } finally {
@@ -1031,6 +1077,7 @@ async function toggleRecord() {
 const startingChat = ref(false);
 async function startCoaching() {
   if (startingChat.value) return;
+  clearSceneContinuation();
   startingChat.value = true;
   try {
     coachTypingMode.value = false;
@@ -1040,13 +1087,22 @@ async function startCoaching() {
     if (activeScene.value) {
       activeScene.value = null;
       coachConvId.value = '';
+      coachConversationKind.value = '';
+      coachConversationSceneId.value = '';
     }
+    coachConversationKind.value = 'free';
+    coachConversationSceneId.value = '';
     practiceMicEnabled.value = true;
     await primeCoachMic();
     await ensureCoachConv();
     tab.value = 'coach'; // ★ 内嵌对话：留在学习模式，不跳聊天页（用户实报"又跳到办公模式"）
     if (!coachMsgs.value.length) {
-      await sendCoach('Hi! I want to practice English. Please start with a few easy questions.');
+      await sendCoach([
+        'Hi! I want to practice English freely, without a fixed scene.',
+        'Start with one short question about what I want to talk about today.',
+        'Then continue naturally one question at a time, follow my topic, and recast important mistakes briefly.',
+        'Do not use scene missions, role-play scripts, or scene_result unless I ask for a scene.',
+      ].join('\n'));
     } else {
       speakLastCoachReply();
     }
@@ -1058,10 +1114,25 @@ async function startCoaching() {
     startingChat.value = false;
   }
 }
+async function startFreePractice() {
+  clearSceneContinuation();
+  stopCoachMic();
+  stopCoachSpeak();
+  activeScene.value = null;
+  coachConvId.value = '';
+  coachConversationKind.value = 'free';
+  coachConversationSceneId.value = '';
+  coachSceneInfoOpen.value = false;
+  coachHistoryOpen.value = false;
+  tab.value = 'coach';
+  await startCoaching();
+}
 
 // ── 陪练对话（内嵌中栏：复用 chat store 的会话/消息/SSE 链路，AI 输出英文后自动朗读）──
 const platformStore = usePlatformStore();
 const coachConvId = ref('');
+const coachConversationKind = ref<'free' | 'scene' | ''>('');
+const coachConversationSceneId = ref('');
 const coachInput = ref('');
 const coachSending = ref(false);
 const coachVoiceOn = ref(true);
@@ -1074,7 +1145,7 @@ const coachEntryRef = ref<HTMLInputElement | null>(null);
 const coachMsgs = computed(() => (coachConvId.value ? chat.messagesByConv[coachConvId.value] || [] : []));
 const coachStreaming = computed(() => !!coachConvId.value && chat.isConvStreaming(coachConvId.value));
 const isCoachPresetPrompt = (text: string) =>
-  /^(I am ready\. Please start|Hi! I want to practice English\.|请根据当前场景|请提示我怎么说)/.test(text.trim());
+  /^(I am ready\. Please start|Continue the current scene|Hi! I want to practice English\.|请根据当前场景|请提示我怎么说)/.test(text.trim());
 const coachUserLines = computed(() =>
   coachMsgs.value
     .filter((m) => m.role === 'user')
@@ -1083,21 +1154,73 @@ const coachUserLines = computed(() =>
 );
 const latestCoachUserLine = computed(() => coachUserLines.value[coachUserLines.value.length - 1] || '');
 const coachRound = computed(() => coachUserLines.value.length);
+const sceneTargetRounds = computed(() =>
+  activeScene.value ? sceneMinimumRoundsFor(activeScene.value) : 0,
+);
+const sceneCurrentMission = computed(() => {
+  const scene = activeScene.value;
+  if (!scene) return '';
+  return scene.missions[Math.min(coachRound.value, scene.missions.length - 1)] || '';
+});
+const sceneProgressPct = computed(() => {
+  if (!sceneTargetRounds.value) return 0;
+  return Math.min(100, Math.round((coachRound.value / sceneTargetRounds.value) * 100));
+});
 const coachCurrentReply = computed(() => {
   const last = [...coachMsgs.value].reverse().find((m) => m.role === 'assistant' && coachTextOf(m).trim());
   if (last) return coachTextOf(last);
   if (activeScene.value) return activeScene.value.guide.coachEn;
   return "Hi, I'm ready. What would you like to practice today?";
 });
-const latestCoachSceneResult = computed(() => {
+const rawLatestCoachSceneResult = computed(() => {
   for (let i = coachMsgs.value.length - 1; i >= 0; i -= 1) {
-    const rows = sceneResultsOf(coachMsgs.value[i]);
-    if (rows.length) return rows[rows.length - 1];
+    const message = coachMsgs.value[i];
+    const rows = sceneResultsOf(message);
+    if (rows.length) {
+      return {
+        block: rows[rows.length - 1],
+        messageKey: String(message.id || `${i}:${message.content || ''}`),
+      };
+    }
   }
   return null;
 });
+const latestCoachSceneResult = computed(() => {
+  const result = rawLatestCoachSceneResult.value?.block || null;
+  if (!activeScene.value || coachRound.value < sceneTargetRounds.value) return null;
+  return result;
+});
 watch(latestCoachSceneResult, (value) => {
   if (value) coachHistoryOpen.value = true;
+});
+let sceneContinuationGuard = '';
+let sceneAutoContinueCount = 0;
+let sceneContinuationTimer = 0;
+function clearSceneContinuation() {
+  window.clearTimeout(sceneContinuationTimer);
+  sceneContinuationTimer = 0;
+}
+watch(rawLatestCoachSceneResult, (value) => {
+  const scene = activeScene.value;
+  if (!value || !scene || coachRound.value >= sceneTargetRounds.value) return;
+  const marker = `${scene.id}:${value.messageKey}`;
+  if (marker === sceneContinuationGuard || sceneAutoContinueCount >= 2) return;
+  sceneContinuationGuard = marker;
+  sceneAutoContinueCount += 1;
+  stopCoachMic();
+  clearSceneContinuation();
+  let attempts = 0;
+  const continueScene = () => {
+    const current = activeScene.value;
+    if (!current || coachRound.value >= sceneTargetRounds.value) return;
+    if ((coachSending.value || coachStreaming.value) && attempts < 20) {
+      attempts += 1;
+      sceneContinuationTimer = window.setTimeout(continueScene, 250);
+      return;
+    }
+    void sendCoach(sceneContinuationPrompt(current, coachRound.value));
+  };
+  sceneContinuationTimer = window.setTimeout(continueScene, 350);
 });
 const coachTalkLabel = computed(() => {
   if (coachMicState.value === 'recording') return '正在听你说';
@@ -1116,6 +1239,28 @@ const coachTalkHint = computed(() => {
 let coachMicStream: MediaStream | null = null;
 let coachMicRecorder: MediaRecorder | null = null;
 let coachMicChunks: Blob[] = [];
+let coachResumeTimer = 0;
+
+function clearCoachResumeTimer() {
+  window.clearTimeout(coachResumeTimer);
+  coachResumeTimer = 0;
+}
+
+/** TTS 结束到重新开麦之间留出回声尾音，避免把自己的扬声器声音识别成用户输入。 */
+function scheduleCoachRecording(delayMs = 550) {
+  clearCoachResumeTimer();
+  if (!practiceMicEnabled.value || coachMicState.value !== 'ready') return;
+  coachResumeTimer = window.setTimeout(() => {
+    coachResumeTimer = 0;
+    if (
+      !coachSending.value
+      && !coachStreaming.value
+      && coachMicState.value === 'ready'
+    ) {
+      startCoachRecording();
+    }
+  }, delayMs);
+}
 
 /** 打开麦克风但先不录音：用户点击场景时完成权限申请，等 AI 说完再自动录。 */
 async function primeCoachMic(): Promise<boolean> {
@@ -1130,7 +1275,13 @@ async function primeCoachMic(): Promise<boolean> {
   }
   coachMicState.value = 'requesting';
   try {
-    coachMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    coachMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
     coachMicState.value = 'ready';
     return true;
   } catch {
@@ -1217,6 +1368,7 @@ async function toggleCoachTyping() {
 }
 
 function stopCoachMic() {
+  clearCoachResumeTimer();
   try {
     if (coachMicRecorder?.state === 'recording') {
       coachMicRecorder.onstop = null;
@@ -1230,21 +1382,49 @@ function stopCoachMic() {
   coachMicState.value = 'idle';
 }
 
-/** 复用最近的 learning 陪练会话（刷新不丢对话），没有才建新的 */
+function learningMetaOf(row: any): Record<string, unknown> {
+  const direct = row?.sourceMeta;
+  if (direct && typeof direct === 'object') return direct as Record<string, unknown>;
+  try {
+    const parsed = row?.source_meta_json ? JSON.parse(String(row.source_meta_json)) : null;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 只复用自由陪练会话；场景会话必须按场景独立创建，不能串进“自由发挥”。 */
 async function ensureCoachConv(): Promise<string> {
-  if (coachConvId.value) return coachConvId.value;
+  if (coachConvId.value) {
+    const current = chat.conversations.find((row) => row.id === coachConvId.value);
+    const meta = learningMetaOf(current);
+    const kind = meta.learningKind || coachConversationKind.value;
+    const sceneId = String(meta.learningScene || coachConversationSceneId.value || '');
+    const stillValid = activeScene.value
+      ? kind === 'scene' && sceneId === activeScene.value.id
+      : kind === 'free';
+    if (stillValid) return coachConvId.value;
+    coachConvId.value = '';
+    coachConversationKind.value = '';
+    coachConversationSceneId.value = '';
+  }
   const r = await api.get<any[]>('/conversations?mode=learning&limit=20');
   const list = unwrap<any[]>(r) || [];
-  const freeCoach = list.find((row) => {
-    const meta = row?.sourceMeta || (() => {
-      try { return row?.source_meta_json ? JSON.parse(String(row.source_meta_json)) : null; } catch { return null; }
-    })();
-    return !meta?.learningScene;
-  });
+  const freeCoach = activeScene.value ? null : list.find((row) => learningMetaOf(row).learningKind === 'free');
   if (freeCoach) {
     coachConvId.value = String(freeCoach.id);
+    coachConversationKind.value = 'free';
+    coachConversationSceneId.value = '';
   } else {
-    coachConvId.value = await chat.createConversation('英语陪练', { agentId: LEARNING_AGENT_ID, source: 'learning' });
+    coachConvId.value = await chat.createConversation(`场景：${activeScene.value?.title || '英语陪练'}`, {
+      agentId: LEARNING_AGENT_ID,
+      source: 'learning',
+      sourceMeta: activeScene.value
+        ? { learningKind: 'scene', learningScene: activeScene.value.id, learningCourseId: activeScene.value.courseId }
+        : { learningKind: 'free' },
+    });
+    coachConversationKind.value = activeScene.value ? 'scene' : 'free';
+    coachConversationSceneId.value = activeScene.value?.id || '';
   }
   await chat.loadMessages(coachConvId.value);
   return coachConvId.value;
@@ -1282,7 +1462,7 @@ async function sendCoach(preset?: string) {
     await chat.sendMessage(content, resolved.platform, resolved.model, undefined, {}, convId);
     // AI 说完 → 宠物读出来；朗读结束后自动重新开麦，形成「用户一句、模型一句」的轮次。
     if (coachVoiceOn.value) speakLastCoachReply();
-    else if (practiceMicEnabled.value) startCoachRecording();
+    else scheduleCoachRecording();
   } catch (e) {
     console.error('[learning] 陪练发送失败', e);
     ElMessage.error(e instanceof Error ? `发送失败：${e.message}` : '发送失败，请稍后重试');
@@ -1315,16 +1495,21 @@ function speakCoachText(text: string) {
     const u = new SpeechSynthesisUtterance(t);
     u.lang = /[\u3400-\u9fff]/.test(t) ? 'zh-CN' : 'en-US';
     u.rate = 0.95;
-    u.onend = () => {
+    const finish = () => {
       stageRef.value?.play('wave');
       const finished = coachMsgs.value.some((m) => sceneResultsOf(m).some((r) => r.ok));
-      if (practiceMicEnabled.value && !finished) startCoachRecording();
+      if (coachVoiceOn.value && practiceMicEnabled.value && !finished) scheduleCoachRecording();
     };
+    u.onend = finish;
+    u.onerror = finish;
     speechSynthesis.speak(u);
     stageRef.value?.play('pet');
   } catch { /* 环境无 TTS（如旧 jsdom）→ 静默 */ }
 }
-function stopCoachSpeak() { try { speechSynthesis.cancel(); } catch { /* 同上 */ } }
+function stopCoachSpeak() {
+  clearCoachResumeTimer();
+  try { speechSynthesis.cancel(); } catch { /* 同上 */ }
+}
 function toggleCoachVoice() {
   coachVoiceOn.value = !coachVoiceOn.value;
   if (!coachVoiceOn.value) {
@@ -1347,33 +1532,92 @@ function react(r: DrillResult) {
   stageRef.value?.play(r.passed ? 'hop' : 'look');
 }
 
-// ── 单词朗读（P0-6）：复用既有 tts-packs 的 preview 合成端点，零 server 改动 ──
+// ── 单词朗读（P0-6）：优先本地语音包，缺失时回退系统 en-US 语音 ──
 type TtsItem = { id: string; name: string; installed: boolean };
 const ttsPackId = ref<string | null>(null);
 const ttsSpeaking = ref(false);
+const ttsActiveWord = ref('');
 const ttsPlaying = ref<HTMLAudioElement | null>(null);
+let ttsRequestSeq = 0;
 async function loadTtsPack() {
   try {
     const r = await api.get<{ items: TtsItem[] }>('/tts-packs');
     const items = unwrap<{ items: TtsItem[] }>(r)?.items || [];
     ttsPackId.value = items.find((t) => t.installed)?.id || null;
-  } catch { /* 语音包接口不可用则隐藏朗读按钮 */ }
+  } catch { /* 语音包接口不可用不影响系统语音兜底 */ }
 }
+
+function stopWordSpeech() {
+  ttsRequestSeq += 1;
+  try { window.speechSynthesis?.cancel(); } catch { /* 系统语音不可用时忽略 */ }
+  try { ttsPlaying.value?.pause(); } catch { /* 音频尚未加载时忽略 */ }
+  ttsPlaying.value = null;
+  ttsSpeaking.value = false;
+  ttsActiveWord.value = '';
+}
+
+function speakWithSystemVoice(text: string, word: string): boolean {
+  const synth = window.speechSynthesis;
+  if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return false;
+  try {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US';
+    u.rate = 0.86;
+    u.pitch = 1;
+    const finish = () => {
+      ttsSpeaking.value = false;
+      ttsActiveWord.value = '';
+    };
+    u.onend = finish;
+    u.onerror = finish;
+    ttsSpeaking.value = true;
+    ttsActiveWord.value = word;
+    synth.speak(u);
+    return true;
+  } catch {
+    ttsSpeaking.value = false;
+    ttsActiveWord.value = '';
+    return false;
+  }
+}
+
 async function speak(text: string) {
-  if (!ttsPackId.value || ttsSpeaking.value || !text.trim()) return;
+  const word = text.trim();
+  if (!word) return;
+  if (ttsSpeaking.value) stopWordSpeech();
+  const seq = ++ttsRequestSeq;
+
+  // 没有安装语音包也能点：直接使用系统语音，避免按钮变成永远不可点。
+  if (!ttsPackId.value) {
+    if (!speakWithSystemVoice(word, word)) ElMessage.warning('当前系统没有可用的英语语音');
+    return;
+  }
+
   ttsSpeaking.value = true;
+  ttsActiveWord.value = word;
   try {
     const r = await api.post<{ url?: string }>(`/tts-packs/${ttsPackId.value}/preview`, { text });
     const url = unwrap<{ url?: string }>(r)?.url;
-    if (!url) return;
+    if (seq !== ttsRequestSeq) return;
+    if (!url) throw new Error('语音合成未返回音频地址');
     ttsPlaying.value?.pause();
     const audio = new Audio(url);
     ttsPlaying.value = audio;
-    audio.addEventListener('ended', () => (ttsSpeaking.value = false));
-    audio.addEventListener('error', () => (ttsSpeaking.value = false));
+    const finish = () => {
+      if (seq !== ttsRequestSeq) return;
+      ttsSpeaking.value = false;
+      ttsActiveWord.value = '';
+      ttsPlaying.value = null;
+    };
+    audio.addEventListener('ended', finish);
+    audio.addEventListener('error', finish);
     await audio.play();
   } catch {
+    if (seq !== ttsRequestSeq) return;
     ttsSpeaking.value = false;
+    ttsActiveWord.value = '';
+    if (!speakWithSystemVoice(word, word)) ElMessage.warning('朗读失败，请检查系统语音');
   }
 }
 
@@ -1389,8 +1633,11 @@ onMounted(() => {
 onMounted(loadAll);
 onMounted(loadTtsPack);
 onBeforeUnmount(() => {
+  clearSceneContinuation();
   stopColumnResize?.();
   stopCoachMic();
+  stopCoachSpeak();
+  stopWordSpeech();
 });
 watch(
   [softExamRegion, softExamSession, softExamDate, softRegistrationDeadline],
@@ -1529,31 +1776,60 @@ watch(softExamDate, (value) => {
           >{{ t.label }}</button>
         </div>
 
+        <template v-if="tab === 'path'">
+          <EnglishPathWorkbench
+            @practice="startCoaching"
+            @scenes="tab = 'scenes'; ensureSceneCourse()"
+          />
+        </template>
+
         <!-- 陪练：宠物是对话主体，文本框只作为降级输入 -->
-        <template v-if="tab === 'coach'">
+        <template v-else-if="tab === 'coach'">
           <div class="lp-coach-chat lp-voice-studio">
             <div class="lp-practice-head">
               <div class="lp-practice-title">
                 <p class="lp-eyebrow">{{ activeScene ? `${activeScene.courseName} · ${activeScene.theme}` : '自由口语陪练' }}</p>
                 <h2>{{ activeScene ? activeScene.title : '和言言聊聊今天' }}</h2>
                 <p>{{ activeScene ? activeScene.scene : '不用准备台词，直接开口。说错了也没关系，言言会顺着你的意思继续聊。' }}</p>
+                <div v-if="activeScene" class="lp-scene-round-progress">
+                  <span>第 {{ Math.min(coachRound + 1, sceneTargetRounds) }}/{{ sceneTargetRounds }} 轮</span>
+                  <div><i :style="{ width: sceneProgressPct + '%' }"></i></div>
+                  <small>{{ coachRound >= sceneTargetRounds ? '等待复盘结算' : sceneCurrentMission }}</small>
+                </div>
               </div>
               <div class="lp-practice-tools">
                 <button class="lp-tool-button" :title="coachVoiceOn ? '自动朗读：开' : '自动朗读：关'" @click="toggleCoachVoice">
                   <Volume2 :size="15" />
                 </button>
+                <LearningAvatarPicker />
                 <button v-if="activeScene" class="lp-tool-button" :class="{ active: coachSceneInfoOpen }" @click="coachSceneInfoOpen = !coachSceneInfoOpen">
                   <Lightbulb :size="15" /> 场景提示
                 </button>
+                <button v-if="activeScene" class="lp-tool-button" @click="startFreePractice">自由发挥</button>
                 <button class="lp-tool-button" @click="tab = 'scenes'">换场景</button>
               </div>
             </div>
 
             <section v-if="activeScene && coachSceneInfoOpen" class="lp-scene-compact">
+              <header class="lp-scene-compact-head">
+                <b>{{ activeScene.title }} · 场景提示</b>
+                <button type="button" aria-label="关闭场景提示" @click="coachSceneInfoOpen = false">
+                  <X :size="14" />
+                </button>
+              </header>
               <div class="lp-scene-compact-roles">
                 <span><b>AI</b> {{ activeScene.roles[0] }}</span>
                 <span><b>你</b> {{ activeScene.roles[1] }}</span>
                 <span><Target :size="12" /> {{ activeScene.exitHint }}</span>
+              </div>
+              <div class="lp-scene-mission-track" aria-label="场景任务进度">
+                <span
+                  v-for="(mission, index) in activeScene.missions"
+                  :key="mission"
+                  :class="{ done: coachRound > index, active: coachRound === index }"
+                >
+                  <b>{{ index + 1 }}</b>{{ mission }}
+                </span>
               </div>
               <div v-if="sceneScriptMode !== 'advanced'" class="lp-scene-lines">
                 <div>
@@ -1576,7 +1852,7 @@ watch(softExamDate, (value) => {
             </section>
 
             <div class="lp-pet-stage" :class="{ listening: coachMicState === 'recording', thinking: coachStreaming }">
-              <LearnStage ref="stageRef" class="lp-coach-stage" :view-scale="2.25" />
+              <LearnStage ref="stageRef" class="lp-coach-stage" :view-scale="2.8" />
               <div class="lp-speech-column">
                 <div class="lp-pet-speech">
                   <div class="lp-pet-speech-head">
@@ -1678,12 +1954,12 @@ watch(softExamDate, (value) => {
               <!-- 题干 -->
               <div v-if="currentQ.kind === 'choice'" class="lp-focus-body">
                 <p class="lp-focus-word">{{ currentQ.prompt }}<i v-if="currentQ.phonetic" class="lp-focus-pho">{{ currentQ.phonetic }}</i>
-                  <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(currentQ.prompt)">🔊</button>
+                  <button class="lp-speak" :disabled="ttsSpeaking" title="朗读单词" @click="speak(currentQ.prompt)">🔊</button>
                 </p>
                 <p class="lp-focus-hint">选出正确的中文释义</p>
               </div>
               <div v-else-if="currentQ.kind === 'dictation'" class="lp-focus-body">
-                <button class="lp-bigplay" :disabled="ttsSpeaking || !ttsPackId" title="播放单词" @click="speak(currentQ.audio || '')">🔊 播放单词</button>
+                <button class="lp-bigplay" :disabled="ttsSpeaking" title="播放单词" @click="speak(currentQ.audio || '')">🔊 播放单词</button>
                 <p class="lp-focus-hint">听发音拼写（{{ currentQ.hint }}）</p>
               </div>
               <div v-else-if="currentQ.kind === 'cloze'" class="lp-focus-body">
@@ -1790,7 +2066,7 @@ watch(softExamDate, (value) => {
               <p>答对 {{ result.correct }} / {{ result.total }} · {{ result.passed ? '过关！✅' : '没过，再练一轮 —— 错的词已回复习盒' }}</p>
               <ul>
                 <li v-for="r in result.results" :key="r.qid" :class="{ wrong: !r.correct }">
-                  <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(r.word)">🔊</button>
+                  <button class="lp-speak" :disabled="ttsSpeaking" @click="speak(r.word)">🔊</button>
                   <b>{{ r.word }}</b> · {{ r.correct ? '✔ 正确' : `你的答案「${r.given || '未作答'}」 · 正确答案「${r.expected}」` }}
                 </li>
               </ul>
@@ -1839,8 +2115,22 @@ watch(softExamDate, (value) => {
             <p class="lp-hint">共 {{ wordTotal }} 词{{ wordQ ? '（搜索结果）' : '' }} · 第 {{ wordPage + 1 }} / {{ wordPageCount }} 页</p>
             <div class="lp-wt-list">
               <div v-for="w in wordRows" :key="w.word" class="lp-wt-row">
-                <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读单词" @click="speak(w.word)">🔊</button>
-                <b class="lp-wt-word">{{ w.word }}</b>
+                <button
+                  class="lp-wt-pronounce"
+                  :class="{ active: ttsSpeaking && ttsActiveWord === w.word }"
+                  :aria-label="`播放 ${w.word} 的英语发音`"
+                  title="播放英语发音"
+                  @click="speak(w.word)"
+                >
+                  <Volume2 :size="15" />
+                </button>
+                <button
+                  class="lp-wt-word"
+                  :class="{ speaking: ttsSpeaking && ttsActiveWord === w.word }"
+                  :aria-label="`朗读单词 ${w.word}`"
+                  title="点击朗读"
+                  @click="speak(w.word)"
+                >{{ w.word }}</button>
                 <i v-if="w.phonetic" class="lp-wt-pho">{{ w.phonetic }}</i>
                 <span class="lp-wt-gloss">{{ w.gloss }}</span>
               </div>
@@ -1855,7 +2145,7 @@ watch(softExamDate, (value) => {
           </template>
           <div v-else class="lp-empty">
             <p class="lp-empty-title">从左侧选一门课程后查看整本词汇表</p>
-            <p class="lp-hint">词汇表支持中英搜索与分页浏览；点 🔊 可听发音（需配置语音包）。</p>
+            <p class="lp-hint">词汇表支持中英搜索与分页浏览；点单词或扬声器即可听发音。</p>
           </div>
         </template>
 
@@ -1935,7 +2225,7 @@ watch(softExamDate, (value) => {
                 <h3>例句</h3>
                 <ul class="lp-g-ex">
                   <li v-for="(e, i) in grammarActive.examples" :key="i">
-                    <p>{{ e.en }} <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(e.en)">🔊</button></p>
+                    <p>{{ e.en }} <button class="lp-speak" :disabled="ttsSpeaking" @click="speak(e.en)">🔊</button></p>
                     <p class="lp-hint">{{ e.zh }}</p>
                   </li>
                 </ul>
@@ -1943,7 +2233,7 @@ watch(softExamDate, (value) => {
                 <ul class="lp-g-pairs">
                   <li v-for="(pt, i) in grammarActive.pairs" :key="i">
                     <p class="wrong"><s>{{ pt.wrong }}</s></p>
-                    <p class="right">✅ {{ pt.right }} <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" @click="speak(pt.right)">🔊</button></p>
+                    <p class="right">✅ {{ pt.right }} <button class="lp-speak" :disabled="ttsSpeaking" @click="speak(pt.right)">🔊</button></p>
                     <p class="lp-hint">为什么：{{ pt.why }}</p>
                   </li>
                 </ul>
@@ -2006,7 +2296,7 @@ watch(softExamDate, (value) => {
                 <p class="lp-para-en" @mouseup="collectSelection">
                   {{ p.en }}
                   <span class="lp-para-actions">
-                    <button class="lp-speak" :disabled="ttsSpeaking || !ttsPackId" title="朗读这一段" @click="speak(p.en)"><Volume2 :size="13" /></button>
+                    <button class="lp-speak" :disabled="ttsSpeaking" title="朗读这一段" @click="speak(p.en)"><Volume2 :size="13" /></button>
                     <button class="lp-speak" title="设为跟读目标" @click="shadowTarget = p.en"><Mic :size="13" /></button>
                   </span>
                 </p>
@@ -2377,8 +2667,8 @@ watch(softExamDate, (value) => {
 .lp-create { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #f0f1f3; }
 .lp-create input, .lp-create textarea, .lp-input { border: 1px solid #d0d3d9; border-radius: 6px; padding: 7px 9px; font-size: 13px; width: 100%; box-sizing: border-box; }
 .lp-hint { color: #8f959e; font-size: 12px; margin: 6px 0 0; }
-.lp-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-shrink: 0; }
-.lp-tab { border: 1px solid #e5e6eb; background: var(--glass-bg); color: #4e5469; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+.lp-tabs { display: flex; gap: 5px; margin-bottom: 14px; flex-shrink: 0; overflow-x: auto; scrollbar-width: thin; }
+.lp-tab { flex: 0 0 auto; white-space: nowrap; border: 1px solid #e5e6eb; background: var(--glass-bg); color: #4e5469; border-radius: 8px; padding: 7px 12px; font-size: 12px; cursor: pointer; }
 .lp-tab.active { background: #3370ff; border-color: #3370ff; color: #fff; }
 .lp-courses { display: flex; flex-direction: column; gap: 10px; }
 .lp-stage { display: flex; flex-direction: column; }
@@ -2427,9 +2717,13 @@ watch(softExamDate, (value) => {
 .lp-wt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .lp-wt-search { max-width: 280px; }
 .lp-wt-list { display: flex; flex-direction: column; }
-.lp-wt-row { display: flex; align-items: baseline; gap: 8px; padding: 7px 4px; border-bottom: 1px solid #f0f1f2; font-size: 13px; line-height: 1.5; }
+.lp-wt-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid #f0f1f2; font-size: 13px; line-height: 1.5; }
 .lp-wt-row:hover { background: #f7f8fa; }
-.lp-wt-word { min-width: 110px; color: #1f2329; }
+.lp-wt-pronounce { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-primary); cursor: pointer; }
+.lp-wt-pronounce:hover, .lp-wt-pronounce.active { border-color: color-mix(in srgb, var(--color-primary) 52%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 14%, var(--glass-bg)); }
+.lp-wt-pronounce.active svg { animation: lp-sound-pulse .75s ease-in-out infinite alternate; }
+.lp-wt-word { min-width: 110px; border: 0; background: transparent; padding: 3px 0; color: var(--color-text); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.lp-wt-word:hover, .lp-wt-word.speaking { color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px; }
 .lp-wt-pho { font-size: 11px; color: #8f959e; white-space: nowrap; }
 .lp-wt-gloss { color: #4e5460; }
 .lp-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #646a73; }
@@ -2438,7 +2732,7 @@ watch(softExamDate, (value) => {
 /* 陪练对话（内嵌）：气泡列表 + 底部输入条 */
 /* 中栏在陪练 Tab 下改为纵向 flex（tabs 固定 + 对话区吃满剩余），关闭外层滚动让气泡区独立滚 */
 .lp-col-mid:has(> .lp-coach-chat) { overflow: hidden; display: flex; flex-direction: column; }
-.lp-coach-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lp-coach-chat { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lp-live-scene { flex-shrink: 0; border: 1px solid #dbe5f5; background: linear-gradient(180deg, #f8fbff 0%, var(--glass-bg) 100%); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .lp-live-scene-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .lp-live-scene-head h3 { margin: 1px 0 0; font-size: 16px; color: #1f2329; }
@@ -2487,16 +2781,47 @@ watch(softExamDate, (value) => {
 .lp-practice-title { min-width: 0; }
 .lp-practice-title h2 { margin: 2px 0 3px; font-size: 18px; line-height: 1.35; color: var(--color-text); }
 .lp-practice-title > p:last-child { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; max-width: 680px; }
+.lp-scene-round-progress { display: grid; grid-template-columns: auto minmax(100px, 220px) minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 7px; color: var(--color-text-tertiary); font-size: 9px; }
+.lp-scene-round-progress > div { height: 4px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--color-text) 10%, transparent); }
+.lp-scene-round-progress i { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); transition: width .2s ease; }
+.lp-scene-round-progress small { overflow: hidden; color: var(--color-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .lp-practice-tools { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 .lp-tool-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; border: 1px solid var(--color-border); background: var(--glass-bg); color: var(--color-text-secondary); border-radius: 7px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .lp-tool-button:hover { border-color: #9dbcf7; color: #245bdb; }
 .lp-tool-button.active { border-color: #9dbcf7; background: #f0f5ff; color: #245bdb; }
 .lp-tool-button.danger { border-color: #fecaca; background: #fff7f7; color: #b91c1c; }
 .lp-tool-button:disabled { opacity: .5; cursor: default; }
-.lp-scene-compact { border: 1px solid #dbe5f5; border-left: 3px solid #3370ff; border-radius: 0 8px 8px 0; background: #f8fbff; padding: 8px 10px; margin-bottom: 8px; }
+.lp-scene-compact {
+  position: absolute;
+  top: 54px;
+  right: 0;
+  z-index: 70;
+  width: min(620px, calc(100% - 16px));
+  max-height: min(360px, calc(100vh - 220px));
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
+  border-left: 3px solid var(--color-primary);
+  border-radius: 9px;
+  background: var(--skin-popover-veil, var(--glass-bg-panel-sm, #f8fbff));
+  background-image: none;
+  padding: 10px 12px;
+  margin: 0;
+  box-shadow: 0 16px 40px color-mix(in srgb, #000 32%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.lp-scene-compact-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.lp-scene-compact-head b { color: var(--color-text); font-size: 12px; }
+.lp-scene-compact-head button { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); cursor: pointer; }
 .lp-scene-compact-roles { display: flex; flex-wrap: wrap; gap: 5px 14px; color: #646a73; font-size: 11px; }
 .lp-scene-compact-roles span { display: inline-flex; align-items: center; gap: 4px; }
 .lp-scene-compact-roles b { color: #1f2329; }
+.lp-scene-mission-track { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.lp-scene-mission-track span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--color-border); border-radius: 999px; background: var(--glass-bg); color: var(--color-text-secondary); padding: 2px 7px 2px 3px; font-size: 9px; }
+.lp-scene-mission-track b { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in srgb, var(--color-text) 10%, transparent); color: var(--color-text); font-size: 8px; }
+.lp-scene-mission-track span.active { border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border)); color: var(--color-primary); }
+.lp-scene-mission-track span.active b { background: var(--color-primary); color: #fff; }
+.lp-scene-mission-track span.done { opacity: .72; }
 .lp-scene-lines { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 .lp-scene-lines > div { position: relative; border: 1px solid #e5e6eb; border-radius: 7px; background: var(--glass-bg); padding: 7px 28px 7px 9px; }
 .lp-scene-lines span { color: #3370ff; font-size: 10px; font-weight: 700; }
@@ -2504,10 +2829,10 @@ watch(softExamDate, (value) => {
 .lp-scene-lines p { margin: 2px 0 0; color: #1f2329; font-size: 12px; line-height: 1.5; }
 .lp-scene-lines small { display: block; margin-top: 2px; color: #8f959e; font-size: 10px; }
 .lp-scene-lines .lp-speak { position: absolute; top: 5px; right: 4px; }
-.lp-pet-stage { position: relative; flex: 1; min-height: 330px; display: grid; grid-template-columns: minmax(250px, 340px) minmax(0, 1fr); grid-template-areas: "pet speech"; align-items: center; gap: 20px; padding: 18px; border: 1px solid #e3e8f2; border-radius: 12px; background: #f7f9fc; overflow: hidden; }
-.lp-coach-stage { grid-area: pet; align-self: end; width: 340px; height: 290px; min-height: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
-.lp-speech-column { grid-area: speech; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.lp-pet-speech { position: relative; border: 1px solid #dbe5f5; border-radius: 12px; background: var(--glass-bg); padding: 12px 42px 12px 14px; box-sizing: border-box; }
+.lp-pet-stage { position: relative; flex: 1; min-height: 380px; max-height: 480px; display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); grid-template-areas: "pet speech"; align-items: stretch; gap: 20px; padding: 10px 18px 0; border: 1px solid #e3e8f2; border-radius: 12px; background: #f7f9fc; overflow: hidden; }
+.lp-coach-stage { grid-area: pet; align-self: stretch; justify-self: center; width: min(380px, 100%); height: 100%; min-height: 0; border: 0; border-radius: 0; background: transparent !important; overflow: hidden; }
+.lp-speech-column { grid-area: speech; display: flex; flex-direction: column; justify-content: center; gap: 10px; min-width: 0; min-height: 0; max-height: 100%; overflow: hidden; }
+.lp-pet-speech { position: relative; max-height: min(300px, 46vh); overflow-y: auto; border: 1px solid #dbe5f5; border-radius: 12px; background: var(--glass-bg); padding: 12px 42px 12px 14px; box-sizing: border-box; }
 .lp-pet-speech::after { content: ""; position: absolute; left: -7px; top: 42px; width: 12px; height: 12px; border-left: 1px solid #dbe5f5; border-bottom: 1px solid #dbe5f5; background: var(--glass-bg); transform: rotate(45deg); }
 .lp-pet-speech-head { display: flex; align-items: center; gap: 7px; color: #245bdb; font-size: 11px; font-weight: 700; }
 .lp-pet-speech-head i { font-style: normal; color: #8f959e; font-weight: 400; }
@@ -2525,6 +2850,7 @@ watch(softExamDate, (value) => {
 .lp-mic-radar i:nth-child(3) { height: 14px; animation-delay: .24s; }
 .lp-mic-radar i:nth-child(4) { height: 8px; animation-delay: .36s; }
 @keyframes lp-wave { 0%, 100% { transform: scaleY(.55); } 50% { transform: scaleY(1.35); } }
+@keyframes lp-sound-pulse { from { transform: scale(.88); opacity: .72; } to { transform: scale(1.08); opacity: 1; } }
 .lp-voice-dock { display: flex; align-items: center; gap: 12px; padding: 12px 2px 8px; }
 .lp-talk-button { width: 62px; height: 62px; flex: 0 0 62px; border: 0; border-radius: 50%; background: #3370ff; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 12px rgba(51, 112, 255, .22); }
 .lp-talk-button:hover { background: #2861d9; }
@@ -2761,7 +3087,8 @@ watch(softExamDate, (value) => {
   .lp-pet-stage { min-height: 0; grid-template-columns: 1fr; grid-template-areas: "speech" "pet"; gap: 10px; padding: 12px; }
   .lp-speech-column { grid-area: speech; }
   .lp-pet-speech::after { left: 50%; top: auto; bottom: -7px; border: 0; border-right: 1px solid #dbe5f5; border-bottom: 1px solid #dbe5f5; transform: translateX(-50%) rotate(45deg); }
-  .lp-coach-stage { grid-area: pet; justify-self: center; width: 310px; height: 280px; }
+  .lp-coach-stage { grid-area: pet; justify-self: center; width: 330px; height: 340px; }
+  .lp-scene-compact { position: fixed; top: 92px; right: 12px; left: 12px; width: auto; max-height: calc(100vh - 160px); }
   .lp-mic-radar { left: 50%; bottom: 12px; }
   .lp-coach-side.collapsed { min-height: 40px; padding: 7px 12px; align-items: stretch; }
   .lp-coach-side.collapsed .lp-side-head { flex-direction: row; }

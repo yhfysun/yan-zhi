@@ -14,6 +14,7 @@ import {
   checkDrillAnswer, checkReviewAnswer,
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
+import { getEnglishPath } from '../learning/english-path.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
 import { SOFT_MATERIALS, getSoftMaterial } from '../learning/exam-papers-extra.js';
@@ -342,6 +343,11 @@ router.get('/courses', (req, res) => {
 // GET /api/learning/scenes —— 课程专属场景任务（?courseId= 过滤）
 router.get('/scenes', (req, res) => {
   res.json({ data: listSceneCards(String(req.query.courseId || '')) });
+});
+
+// GET /api/learning/path —— 零基础英语主线（拼读 / 词根 / 语法 / 故事 / 输出）
+router.get('/path', (_req, res) => {
+  res.json({ data: getEnglishPath() });
 });
 
 // GET /api/learning/grammar —— 语法点目录（列表：id/标题/级别/分组/一句话规则）
