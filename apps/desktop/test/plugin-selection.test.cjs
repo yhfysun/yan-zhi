@@ -103,7 +103,7 @@ test('可选插件：点名才带，默认 / all / 档位预设都不含它', ()
   assert.throws(() => resolvePluginSelection({ catalog, optional, plugins: 'desktop' }), /未知插件/);
 });
 
-test('构建模式 = 插件模式 ∪ 档位预设，完整档不能漏掉无插件的 learning', () => {
+test('learning 是 Pro 档插件模式，基础档不会漏带或误带', () => {
   const pluginsCatalog = loadCatalog();
   const modesCatalog = loadModesCatalog();
   const modesFor = (edition) => resolveBuildModes({
@@ -114,7 +114,33 @@ test('构建模式 = 插件模式 ∪ 档位预设，完整档不能漏掉无插
   });
 
   assert.deepEqual(modesFor('lite'), ['office']);
-  assert.deepEqual(modesFor('basic'), ['office', 'dev', 'wf', 'learning']);
+  assert.deepEqual(modesFor('basic'), ['office', 'dev', 'wf']);
   assert.deepEqual(modesFor('pro'), Object.keys(modesCatalog.modes));
   assert.ok(modesFor('pro').includes('learning'));
+  assert.equal(modesCatalog.modes.learning.pluginId, 'learning-mode');
+  assert.ok(!unionPresets(pluginsCatalog, ['basic']).includes('learning-mode'));
+  assert.ok(unionPresets(pluginsCatalog, ['pro']).includes('learning-mode'));
+});
+
+test('新增模式默认插件化且仅进 Pro；基础档旧模式必须显式保留', () => {
+  const pluginsCatalog = loadCatalog();
+  const modesCatalog = loadModesCatalog();
+  const legacyBasicModes = new Set(['dev-mode', 'wf-mode']);
+  const basic = new Set(pluginsCatalog.editionPresets.basic);
+  const lite = new Set(pluginsCatalog.editionPresets.lite);
+  const pro = new Set(pluginsCatalog.editionPresets.pro);
+
+  for (const [modeKey, mode] of Object.entries(modesCatalog.modes)) {
+    if (modeKey === 'office') continue;
+    assert.ok(mode.pluginId, `${modeKey} 必须由插件贡献，不能新增裸模式`);
+    const plugin = pluginsCatalog.plugins[mode.pluginId];
+    assert.ok(plugin, `${modeKey} 指向不存在的插件 ${mode.pluginId}`);
+    assert.equal(plugin.kind, 'mode', `${mode.pluginId} 必须声明 kind=mode`);
+    assert.equal(plugin.modeKey, modeKey, `${mode.pluginId} 与 ${modeKey} 的 modeKey 不一致`);
+    assert.ok(pro.has(mode.pluginId), `${mode.pluginId} 必须默认进入 Pro 档`);
+    if (!legacyBasicModes.has(mode.pluginId)) {
+      assert.ok(!basic.has(mode.pluginId), `${mode.pluginId} 默认只能进 Pro；要下放基础档必须显式改白名单`);
+      assert.ok(!lite.has(mode.pluginId), `${mode.pluginId} 不能默认进入 Lite 档`);
+    }
+  }
 });

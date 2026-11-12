@@ -117,11 +117,11 @@ describe('EDITION_MODES · 档位到模式的映射', () => {
     expect(EDITION_MODES.lite).toEqual(['office']);
   });
 
-  it('基础版是办公 + 工作流 + 开发 + 学习（剪辑与店铺运营归 pro）', () => {
+  it('基础版是办公 + 工作流 + 开发（学习、剪辑与店铺运营归 pro）', () => {
     // 2026-10-08 同步：clip（剪辑模式，第六模式）曾与 wf/dev 同档
     // 2026-10-16 同步：douyin 模式下线；用户拍板 clip 与 shop 一并归 pro，basic 只留 office/wf/dev
-    // 2026-11-08 同步：learning（学习模式）升独立模式，编译期内置，归 basic/pro
-    expect(EDITION_MODES.basic).toEqual(['office', 'wf', 'dev', 'learning']);
+    // 2026-11-12 同步：learning 插件化，归 learning-mode 插件，仅 pro 档默认包含
+    expect(EDITION_MODES.basic).toEqual(['office', 'wf', 'dev']);
   });
 
   it('高级版是全部八模式', () => {
@@ -149,12 +149,12 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
       },
       basic: {
         lite: ['office'],
-        basic: ['office', 'wf', 'dev', 'learning'],
-        pro: ['office', 'wf', 'dev', 'learning'],
+        basic: ['office', 'wf', 'dev'],
+        pro: ['office', 'wf', 'dev'],
       },
       pro: {
         lite: ['office'],
-        basic: ['office', 'wf', 'dev', 'learning'],
+        basic: ['office', 'wf', 'dev'],
         pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop', 'learning'],
       },
     };
@@ -167,7 +167,7 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
   });
 
   it('★ 高级包 + 基础码 = 基础档全量（用户拍板：高级包默认带基础码）', () => {
-    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'learning']);
+    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev']);
   });
 
   it('★ 构建档是硬上限：pro 码在阉割包里也只能开出办公模式', () => {
@@ -177,7 +177,7 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
 
   it('兜底档参与交集时不会意外放大权限', () => {
     expect(allowedModes('lite', FALLBACK_EDITION)).toEqual(['office']);
-    expect(allowedModes(DEFAULT_BUILD_EDITION, 'pro')).toEqual(['office', 'wf', 'dev', 'learning']);
+    expect(allowedModes(DEFAULT_BUILD_EDITION, 'pro')).toEqual(['office', 'wf', 'dev']);
   });
 });
 
@@ -188,7 +188,7 @@ describe('resolveBuildModes · 物理构建模式（--modes）', () => {
 
   it('未设置 YZ_BUILD_MODES 时退回档位清单（存量包行为不变）', () => {
     expect(resolveBuildModes(undefined, 'basic')).toEqual([...EDITION_MODES.basic]);
-    expect(allowedModes('basic', 'pro')).toEqual(['office', 'wf', 'dev', 'learning']);
+    expect(allowedModes('basic', 'pro')).toEqual(['office', 'wf', 'dev']);
   });
 
   it('解析逗号/空格/重复项，并保持集合语义', () => {
@@ -206,7 +206,7 @@ describe('resolveBuildModes · 物理构建模式（--modes）', () => {
 describe('验签结果携带档位与放行模式', () => {
   it('三档码在各自构建档下返回正确 modes', () => {
     expect(verify(codeOf('lite'), 'lite').modes).toEqual(['office']);
-    expect(verify(codeOf('basic'), 'basic').modes).toEqual(['office', 'wf', 'dev', 'learning']);
+    expect(verify(codeOf('basic'), 'basic').modes).toEqual(['office', 'wf', 'dev']);
     expect(verify(codeOf('pro'), 'pro').modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop', 'learning']);
   });
 
@@ -318,7 +318,7 @@ describe('预置授权码 · 按档各一份', () => {
       expect(r.valid).toBe(true);
       expect(r.buildEdition).toBe('pro');
       expect(r.edition).toBe('basic');
-      expect(r.modes).toEqual(['office', 'wf', 'dev', 'learning']);
+      expect(r.modes).toEqual(['office', 'wf', 'dev']);
     } finally {
       if (prevEd === undefined) delete process.env.YZ_DEFAULT_EDITION;
       else process.env.YZ_DEFAULT_EDITION = prevEd;

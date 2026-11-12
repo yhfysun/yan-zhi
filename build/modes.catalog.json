@@ -85,14 +85,14 @@
       "desc": "英语闯关陪练 · 课程进度",
       "route": "/learning",
       "entry": "views/Learning.vue",
-      "pluginId": null,
+      "pluginId": "learning-mode",
       "views": ["views/Learning.vue", "components/learning/LearnStage.vue"],
       "markers": ["Learning"]
     }
   },
   "editionPresets": {
     "lite": ["office"],
-    "basic": ["office", "wf", "dev", "learning"],
+    "basic": ["office", "wf", "dev"],
     "pro": ["office", "wf", "dev", "clip", "ops", "sec", "shop", "learning"]
   }
 }

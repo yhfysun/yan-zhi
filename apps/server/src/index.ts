@@ -134,6 +134,7 @@ import { clipModeManifest, clipModeModule } from './plugins/clip-mode.js';
 // 开发/工作流模式（P4）：纯视图模式插件 —— 只贡献模式元数据与路由（引擎/工具留基座）
 import { devModeManifest, devModeModule } from './plugins/dev-mode.js';
 import { wfModeManifest, wfModeModule } from './plugins/wf-mode.js';
+import { learningModeManifest, learningModeModule } from './plugins/learning-mode.js';
 import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
@@ -1049,6 +1050,8 @@ try {
     // 引擎与工具留基座，停用只让入口消失（会话/工程数据不动）。
     await registerPkgOrSource('dev-mode', () => mgr.registerBuiltin(devModeManifest, devModeModule));
     await registerPkgOrSource('wf-mode', () => mgr.registerBuiltin(wfModeManifest, wfModeModule));
+    // 学习模式（Pro）：纯视图插件，页面入口随插件选择集裁剪；学习数据与 API 留在基座。
+    await registerPkgOrSource('learning-mode', () => mgr.registerBuiltin(learningModeManifest, learningModeModule));
     // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
     if (!process.env.MOBILE_MODE) {
       await registerPkgOrSource('ops-shell', () => mgr.registerBuiltin(opsShellManifest, opsShellModule, true));

@@ -36,7 +36,8 @@ export const EDITION_MODES: Record<Edition, readonly string[]> = {
   // ★ 2026-10-16 用户拍板：clip（剪辑）与 shop（店铺运营）都归 pro ——
   //   剪辑要接成片与素材（重产出），店铺运营涉及真实店铺账号与（后续的）写操作，
   //   两者与 ops / sec 同属"动生产、要在场"的一档，故 basic 只留 office / wf / dev。
-  basic: ['office', 'wf', 'dev', 'learning'],
+  // ★ 2026-11-12 learning 改为 learning-mode 插件，归 Pro；basic 不再包含学习模式。
+  basic: ['office', 'wf', 'dev'],
   pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop', 'learning'],
 };
 

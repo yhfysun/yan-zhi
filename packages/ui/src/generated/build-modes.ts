@@ -12,7 +12,7 @@ export const BUILD_MODE_DEFS = [
   { key: "wf", label: "工作流模式", icon: "Connection", desc: "运行 · 调试 · 定时", route: "/workflow", pluginId: "wf-mode" },
   { key: "clip", label: "剪辑模式", icon: "VideoCamera", desc: "剪辑 · 字幕动画 · 成片", route: "/clip", pluginId: "clip-mode" },
   { key: "shop", label: "店铺运营模式", icon: "Shop", desc: "选品 · Listing · 利润 · 仓储", route: "/shop", pluginId: "shop-ops", desktopOnly: true },
-  { key: "learning", label: "学习模式", icon: "Reading", desc: "英语闯关陪练 · 课程进度", route: "/learning" },
+  { key: "learning", label: "学习模式", icon: "Reading", desc: "英语闯关陪练 · 课程进度", route: "/learning", pluginId: "learning-mode" },
 ] as const;
 
 export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "统一插件清单（唯一真相源，mode-pluginization P0）。office-core 为基座 core 模式，任何打包选择集必须包含。backendEntry/backend 指向当前源码；frontendViews 相对 packages/ui/src。editionPresets 是 P5 起打包脚本的目标预设（= 现状各档实际内容：后端插件全档随包，模式可见性由授权档决定）。改本文件必须同步 openspec/changes/mode-pluginization/tasks.md。",
+  "_comment": "统一插件清单（唯一真相源，mode-pluginization P0）。office-core 为基座 core 模式，任何打包选择集必须包含。除 office 外的模式必须由插件贡献，并默认只加入 Pro；现有基础档模式只能在测试白名单中显式保留。backendEntry/backend 指向当前源码；frontendViews 相对 packages/ui/src。editionPresets 是 P5 起打包脚本的目标预设（= 现状各档实际内容：后端插件全档随包，模式可见性由授权档决定）。改本文件必须同步 openspec/changes/mode-pluginization/tasks.md。",
   "plugins": {
     "office-core": {
       "kind": "mode",
@@ -47,6 +47,23 @@
       ],
       "defaultEnabled": true,
       "notes": "P4 纯视图插件：只贡献 mode 元数据与 /workflow 路由（workflow 引擎留基座）",
+      "frontendBundle": true
+    },
+    "learning-mode": {
+      "kind": "mode",
+      "modeKey": "learning",
+      "label": "学习模式",
+      "desc": "英语闯关陪练 · 课程进度",
+      "icon": "Reading",
+      "route": "/learning",
+      "backendEntry": "apps/server/src/plugins/learning-mode.ts",
+      "manifestExport": "learningModeManifest",
+      "backendNoop": true,
+      "frontendViews": [
+        "views/Learning.vue"
+      ],
+      "defaultEnabled": true,
+      "notes": "默认只在 Pro 档随包；学习数据、API 与学习陪练智能体留在基座，插件只贡献模式与页面入口",
       "frontendBundle": true
     },
     "clip-mode": {
@@ -246,6 +263,7 @@
       "android-mirror",
       "dev-mode",
       "wf-mode",
+      "learning-mode",
       "clip-mode",
       "ops-shell",
       "cicd-pipeline",

@@ -38,10 +38,10 @@ describe('runtime-modes', () => {
   });
 
   it('allowedModes 并入运行时插件模式（内置模式仍按 构建档 ∩ 授权档）', () => {
-    // 内置：pro 构建 + basic 授权 → office/wf/dev/learning（2026-11-08 learning 升独立内置模式）
-    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'learning']);
+    // learning 已插件化且归 Pro；pro 构建 + basic 授权只放行 office/wf/dev
+    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev']);
     setRuntimePluginModes(['report']);
-    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'learning', 'report']);
+    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'report']);
     // 运行时模式不受授权档表约束（表里根本不可能有未知模式），由插件启停把关
     expect(allowedModes('lite', 'lite')).toEqual(['office', 'report']);
   });

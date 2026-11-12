@@ -84,8 +84,8 @@ function modeKeysForSelection(catalog, ids, modesCatalog = loadModesCatalog()) {
 /**
  * 构建期模式集合：显式 --modes 最高优先；否则取「插件贡献模式 ∪ 档位预设模式」。
  *
- * ★ 必须并上档位预设：learning 这类内置模式没有插件依赖，只从插件推导会静默漏掉，
- *   最终打出“完整档却缺学习模式”的包。
+ * ★ 必须并上档位预设：即使未来出现暂时未插件化的历史模式，也不能只从插件推导，
+ *   否则会静默打出“完整档却缺模式”的包。
  */
 function resolveBuildModes({
   pluginsCatalog,

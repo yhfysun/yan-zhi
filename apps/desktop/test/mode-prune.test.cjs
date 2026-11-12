@@ -25,14 +25,15 @@ const {
 const catalog = readCatalog();
 
 test('清单包含全部模式且顺序稳定', () => {
-  // 2026-11-08 learning 升独立内置模式，进 modes.catalog.json（清单末位）
+  // learning 已插件化，但仍是清单末位的模式
   assert.deepEqual(allModeKeys(catalog), ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
 });
 
 test('resolveModes：显式模式优先于档位预设', () => {
   assert.deepEqual(resolveModes({ catalog, modes: ['dev', 'office'] }), ['office', 'dev']);
   assert.deepEqual(resolveModes({ catalog, edition: 'lite' }), ['office']);
-  assert.deepEqual(resolveModes({ catalog, edition: 'basic' }), ['office', 'dev', 'wf', 'learning']);
+  assert.deepEqual(resolveModes({ catalog, edition: 'basic' }), ['office', 'dev', 'wf']);
+  assert.deepEqual(resolveModes({ catalog, edition: 'pro' }), ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
 });
 
 test('resolveModes：未知模式 / 空集合必须报错（不能静默回落到全量）', () => {
@@ -116,16 +117,25 @@ test('构建清单记录排除项与标记串', () => {
   assert.ok(path.isAbsolute(MANIFEST_PATH));
 });
 
-test('Learning 路由与入口只能读构建期生成表，不能在共享代码里写死', () => {
+test('Learning 是插件贡献路由，共享路由表不能写死页面 import', () => {
   const uiSrc = path.resolve(__dirname, '..', '..', '..', 'packages', 'ui', 'src');
   const routerSrc = fs.readFileSync(path.join(uiSrc, 'router', 'index.ts'), 'utf8');
-  assert.match(routerSrc, /MODE_VIEW_LOADERS\.learning/);
   assert.doesNotMatch(routerSrc, /import\(['"]\.\.\/views\/Learning\.vue['"]\)/);
 
-  for (const rel of ['components/WebTopBar.vue', 'views/Home.vue']) {
-    const src = fs.readFileSync(path.join(uiSrc, rel), 'utf8');
-    assert.match(src, /isModeAvailable\(['"]learning['"]\)/, `${rel} 必须按构建/授权状态过滤学习入口`);
-  }
+  const pluginSrc = fs.readFileSync(
+    path.resolve(__dirname, '..', '..', '..', 'apps', 'server', 'src', 'plugins', 'learning-mode.ts'),
+    'utf8',
+  );
+  assert.match(pluginSrc, /component:\s*['"]views\/Learning\.vue['"]/);
+  assert.match(pluginSrc, /key:\s*['"]learning['"]/);
+
+  const home = fs.readFileSync(path.join(uiSrc, 'views', 'Home.vue'), 'utf8');
+  assert.match(home, /isModeAvailable\(['"]learning['"]\)/, 'Home.vue 必须按构建/授权状态过滤学习入口');
+
+  const topbar = fs.readFileSync(path.join(uiSrc, 'components', 'WebTopBar.vue'), 'utf8');
+  assert.match(topbar, /<ModeSwitcher/, 'WebTopBar.vue 必须通过 ModeSwitcher 渲染授权模式');
+  const switcher = fs.readFileSync(path.join(uiSrc, 'components', 'workbench', 'ModeSwitcher.vue'), 'utf8');
+  assert.match(switcher, /visibleModeDefs/, 'ModeSwitcher.vue 必须只遍历可见模式');
 });
 
 test('单档构建必须先按 edition 生成模式表，再执行 vite build', () => {
