@@ -6,7 +6,7 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, ShieldCheck, Target, Volume2, X } from 'lucide-vue-next';
+import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
 import { api } from '../api/client';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
@@ -80,6 +80,8 @@ type SoftMaterial = {
 };
 const softMaterials = ref<SoftMaterial[]>([]);
 const securityPathId = ref('');
+const securityFocusing = ref(false);
+const pathFocusing = ref(false);
 type SoftRegion = { name: string; officialUrl: string; registrationUrl: string };
 type SoftLiveNotice = { title: string; url: string; source: '全国' | '地区' };
 type SoftLiveInfo = {
@@ -322,11 +324,12 @@ async function switchSubject(key: string) {
     tab.value = 'path';
   } else if (key === '网络安全') {
     tab.value = 'security';
-    rightCollapsed.value = false;
-    rightWidth.value = Math.max(rightWidth.value, 300);
+    securityFocusing.value = false;
   } else if (wasSecurity) {
     tab.value = 'path';
+    securityFocusing.value = false;
   }
+  pathFocusing.value = false;
   await loadCourses();
 }
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
@@ -358,6 +361,12 @@ function startColumnResize(side: 'left' | 'right', event: PointerEvent) {
   window.addEventListener('pointerup', onUp, { once: true });
 }
 const gridStyle = computed(() => {
+  if (subject.value === '网络安全') {
+    return {
+      '--lp-left-w': '0px',
+      '--lp-right-w': '0px',
+    } as Record<string, string>;
+  }
   const rightVisibleWidth = rightCollapsed.value
     ? 0
     : tab.value === 'coach' && !coachHistoryOpen.value
@@ -373,6 +382,7 @@ const gridClasses = computed(() => ({
   'history-collapsed': tab.value === 'coach' && !coachHistoryOpen.value,
   'left-collapsed': leftCollapsed.value,
   'right-collapsed': rightCollapsed.value,
+  'security-workspace': subject.value === '网络安全',
 }));
 const ENGLISH_TAB_DEFS = [
   { key: 'path', label: '零基础主线' },
@@ -1656,11 +1666,11 @@ watch(softExamDate, (value) => {
 
 <template>
   <div class="learning-page">
-    <div class="lp-topbar">
+    <div class="lp-topbar" :inert="securityFocusing || pathFocusing || undefined">
       <SubjectPicker :value="subject" :options="SUBJECTS" @select="switchSubject" />
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
-        <template v-else-if="subject === '网络安全'">网络安全 · 分支路线 · 仅授权靶场实验</template>
+        <template v-else-if="subject === '网络安全'">网络安全 · 专注学习 · 仅授权靶场实验</template>
         <template v-else-if="profile.cefr">等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · {{ profile.goals }}</span></template>
         <template v-else>先和言言聊 3 分钟，自动完成定级</template>
         <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
@@ -1670,7 +1680,7 @@ watch(softExamDate, (value) => {
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
     <div class="lp-grid" :class="gridClasses" :style="gridStyle">
       <!-- 左：科目课程地图 + 我的词单 -->
-      <section v-show="!leftCollapsed" class="lp-card lp-col-left">
+      <section v-if="subject !== '网络安全' && !leftCollapsed" class="lp-card lp-col-left">
         <div class="lp-card-head">
           <h2>课程</h2>
           <div class="lp-card-actions">
@@ -1764,10 +1774,10 @@ watch(softExamDate, (value) => {
         </div>
       </section>
 
-      <div v-show="!leftCollapsed" class="lp-column-resizer" title="拖动调整左侧宽度" @pointerdown="startColumnResize('left', $event)"></div>
+      <div v-if="subject !== '网络安全' && !leftCollapsed" class="lp-column-resizer" title="拖动调整左侧宽度" @pointerdown="startColumnResize('left', $event)"></div>
 
       <!-- 中：工作区（Tab 只切这里） -->
-      <section class="lp-card lp-col-mid">
+      <section class="lp-card lp-col-mid" :class="{ 'lp-security-stage': subject === '网络安全' }">
         <div v-if="tabDefs.length > 1" class="lp-tabs">
           <button
             v-for="t in tabDefs" :key="t.key"
@@ -1780,6 +1790,7 @@ watch(softExamDate, (value) => {
           <EnglishPathWorkbench
             @practice="startCoaching"
             @scenes="tab = 'scenes'; ensureSceneCourse()"
+            @focus-change="pathFocusing = $event"
           />
         </template>
 
@@ -2320,6 +2331,7 @@ watch(softExamDate, (value) => {
           <CyberSecurityWorkbench
             :path-id="securityPathId"
             @select-path="securityPathId = $event"
+            @focus-change="securityFocusing = $event"
           />
         </template>
 
@@ -2334,7 +2346,7 @@ watch(softExamDate, (value) => {
       </section>
 
       <div
-        v-show="!rightCollapsed && !(tab === 'coach' && !coachHistoryOpen)"
+        v-show="subject !== '网络安全' && !rightCollapsed && !(tab === 'coach' && !coachHistoryOpen)"
         class="lp-column-resizer"
         title="拖动调整右侧宽度"
         @pointerdown="startColumnResize('right', $event)"
@@ -2380,34 +2392,6 @@ watch(softExamDate, (value) => {
         </ul>
         <p v-else class="lp-hint">还没有记录。陪练纠过的表达会自动进这里。</p>
       </section>
-
-      <aside v-if="subject === '网络安全' && !rightCollapsed" class="lp-card lp-col-right lp-security-boundary">
-        <button class="lp-collapse-btn lp-collapse-right" title="收起右侧栏" aria-label="收起右侧栏" @click="rightCollapsed = true">
-          <ChevronRight :size="14" />
-        </button>
-        <div class="lp-card-head"><h2>安全边界</h2></div>
-        <div class="lp-security-warning">
-          <ShieldCheck :size="17" />
-          <p>只测试自己的系统、明确授权的资产或本地靶场。公网目标、未授权扫描和破坏性验证不提供操作步骤。</p>
-        </div>
-        <div class="lp-security-rule">
-          <h3>操作原则</h3>
-          <ul>
-            <li>先确认范围、时间窗和停止条件</li>
-            <li>只做低影响、最小复现</li>
-            <li>证据脱敏，测试数据及时清理</li>
-            <li>高风险动作必须单独审批</li>
-          </ul>
-        </div>
-        <div class="lp-security-rule">
-          <h3>当前路线</h3>
-          <p>{{ courses.flatMap((g) => g.courses).find((c) => c.securityPathId === securityPathId)?.name || '请选择路线' }}</p>
-        </div>
-        <div class="lp-security-rule">
-          <h3>学习产出</h3>
-          <p>每条路线包含风险说明、防御控制、错误/安全代码对照和本地靶场步骤。</p>
-        </div>
-      </aside>
 
       <aside v-if="subject === '软考' && !rightCollapsed" class="lp-card lp-col-right lp-soft-materials">
         <button v-show="!rightCollapsed" class="lp-collapse-btn lp-collapse-right" title="收起右侧栏" aria-label="收起右侧栏" @click="rightCollapsed = true">
@@ -2616,10 +2600,10 @@ watch(softExamDate, (value) => {
         </div>
       </aside>
 
-      <button v-if="leftCollapsed" class="lp-expand-rail left" title="展开左侧栏" aria-label="展开左侧栏" @click="leftCollapsed = false">
+      <button v-if="leftCollapsed && subject !== '网络安全'" class="lp-expand-rail left" title="展开左侧栏" aria-label="展开左侧栏" @click="leftCollapsed = false">
         <ChevronRight :size="15" />
       </button>
-      <button v-if="rightCollapsed" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
+      <button v-if="rightCollapsed && subject !== '网络安全'" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
         <ChevronLeft :size="15" />
       </button>
     </div>
@@ -2640,6 +2624,9 @@ watch(softExamDate, (value) => {
    栏内滚动 —— 高度永远正好，不依赖任何估算常数。 */
 .lp-grid { position: relative; display: grid; grid-template-columns: var(--lp-left-w, 300px) 8px minmax(0, 1fr) 8px var(--lp-right-w, 280px); gap: 0; flex: 1; min-height: 0; }
 .lp-grid.coach-mode { grid-template-columns: var(--lp-left-w, 300px) 8px minmax(0, 1fr) 8px var(--lp-right-w, 300px); }
+.lp-grid.security-workspace { grid-template-columns: minmax(0, 1fr); }
+.lp-grid.security-workspace .lp-column-resizer { display: none; }
+.lp-grid.security-workspace .lp-security-stage { border: 0; background: transparent; padding: 0; overflow-y: auto; }
 .lp-column-resizer { position: relative; width: 8px; cursor: col-resize; touch-action: none; }
 .lp-column-resizer::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 3px; width: 2px; border-radius: 2px; background: var(--color-border); transition: background .15s ease; }
 .lp-column-resizer:hover::after, .lp-column-resizer:active::after { background: #3370ff; }
