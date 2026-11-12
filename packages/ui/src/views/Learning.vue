@@ -14,6 +14,7 @@ import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
 import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
+import SubjectPicker from '../components/learning/SubjectPicker.vue';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
@@ -326,10 +327,6 @@ async function switchSubject(key: string) {
   }
   await loadCourses();
 }
-function onSubjectChange(event: Event) {
-  void switchSubject((event.target as HTMLSelectElement).value);
-}
-
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
 const tab = ref<'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security'>('drill');
 const leftWidth = ref(300);
@@ -1413,14 +1410,7 @@ watch(softExamDate, (value) => {
 <template>
   <div class="learning-page">
     <div class="lp-topbar">
-      <label class="lp-subject-select">
-        <span>科目</span>
-        <select :value="subject" aria-label="选择学习科目" @change="onSubjectChange">
-          <option v-for="s in SUBJECTS" :key="s.key" :value="s.key" :disabled="!s.ready">
-            {{ s.label }}{{ s.ready ? '' : '（筹备中）' }}
-          </option>
-        </select>
-      </label>
+      <SubjectPicker :value="subject" :options="SUBJECTS" @select="switchSubject" />
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
         <template v-else-if="subject === '网络安全'">网络安全 · 分支路线 · 仅授权靶场实验</template>
@@ -1475,7 +1465,7 @@ watch(softExamDate, (value) => {
           </div>
         </div>
 
-        <div class="lp-courses">
+        <div class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
           <div v-for="grp in courses" :key="grp.stage" class="lp-stage">
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
             <template v-for="c in grp.courses" :key="c.id">
@@ -2351,9 +2341,6 @@ watch(softExamDate, (value) => {
    100vh 是视口全高，会把学习页底部压到状态栏底下（用户实报：左栏最后一项永远被裁一半）。 */
 .learning-page { padding: 10px 16px 14px; max-width: none; width: 100%; margin: 0; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
 .lp-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-shrink: 0; min-height: 32px; }
-.lp-subject-select { display: inline-flex; align-items: center; gap: 7px; color: var(--color-text-secondary); font-size: 11px; }
-.lp-subject-select select { height: 30px; min-width: 110px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--glass-bg); color: var(--color-text); padding: 0 28px 0 10px; font-size: 12px; cursor: pointer; }
-.lp-subject-select select:focus { outline: 2px solid color-mix(in srgb, #3370ff 35%, transparent); outline-offset: 1px; }
 .lp-top-status { color: var(--color-text-secondary); font-size: 12px; text-align: right; }
 .lp-top-status b { color: var(--color-text); }
 .lp-streak { margin-left: 10px; color: #e8590c; font-weight: 600; }
@@ -2760,6 +2747,11 @@ watch(softExamDate, (value) => {
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
   .lp-column-resizer { display: none; }
   .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
+  .lp-courses-security-mobile { flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .lp-courses-security-mobile .lp-stage { flex-direction: row; gap: 6px; }
+  .lp-courses-security-mobile .lp-stage-name { display: none; }
+  .lp-courses-security-mobile .lp-course-security { flex: 0 0 188px; }
+  .lp-courses-security-mobile .lp-course-meta { display: none; }
   .lp-col-mid:has(> .lp-coach-chat) { overflow: visible; min-height: 70vh; }
   .lp-coach-chat { min-height: 70vh; }
   .lp-chat-msgs { min-height: 260px; max-height: 50vh; }

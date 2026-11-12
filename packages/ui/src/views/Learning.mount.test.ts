@@ -16,6 +16,18 @@ import { createApp, nextTick, type App } from 'vue'
 import { createPinia } from 'pinia'
 import Learning from './Learning.vue'
 
+async function chooseSubject(el: Element, label: string) {
+  const trigger = el.querySelector('.subject-picker-trigger') as HTMLElement
+  trigger.click()
+  await vi.waitFor(() => {
+    expect([...el.querySelectorAll('.subject-picker-option')].some((option) => option.textContent?.includes(label))).toBe(true)
+  })
+  const option = [...el.querySelectorAll('.subject-picker-option')]
+    .find((item) => item.textContent?.includes(label)) as HTMLElement
+  option.click()
+  await nextTick()
+}
+
 const push = vi.fn(async () => {})
 vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
 
@@ -138,7 +150,17 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(el.querySelector('.lp-top-status')?.textContent).toContain('🔥 连续 3 天'))
     expect(el.querySelector('h1')).toBeFalsy()
     expect(el.querySelector('.lp-topbar')).toBeTruthy()
-    expect((el.querySelector('.lp-subject-select select') as HTMLSelectElement).value).toBe('英语')
+    expect(el.querySelector('.lp-subject-select select')).toBeFalsy()
+    const subjectTrigger = el.querySelector('.subject-picker-trigger') as HTMLButtonElement
+    expect(subjectTrigger.textContent).toContain('英语')
+    subjectTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await nextTick()
+    expect(subjectTrigger.getAttribute('aria-expanded')).toBe('true')
+    expect(el.querySelector('.subject-picker-menu')).toBeTruthy()
+    subjectTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(subjectTrigger.getAttribute('aria-expanded')).toBe('false')
+    expect(el.querySelector('.subject-picker-menu')).toBeFalsy()
     expect(el.querySelector('.lp-coach')).toBeFalsy()
     const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
     expect(tabs).toEqual(['单词闯关', '陪练对话', '词汇表', '场景卡', '语法微课', '范文阅读', '历年真题'])
@@ -300,10 +322,7 @@ describe('Learning 工作区 · 挂载契约', () => {
       return defaultGet(url)
     })
     const el = await mountPage()
-    const select = el.querySelector('.lp-subject-select select') as HTMLSelectElement
-    await vi.waitFor(() => expect([...select.options].some((o) => o.value === '软考')).toBe(true))
-    select.value = '软考'
-    select.dispatchEvent(new Event('change'))
+    await chooseSubject(el, '软考')
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-course-exam').length).toBe(2))
     expect(el.querySelector('.lp-tabs')).toBeFalsy()
     expect(el.querySelectorAll('.lp-tab').length).toBe(0)
@@ -333,6 +352,10 @@ describe('Learning 工作区 · 挂载契约', () => {
       {
         id: 'sec_fundamentals', name: '安全基础与威胁建模', level: '入门', description: '从资产和信任边界开始',
         audience: '开发与运维', prerequisites: [], nextPathIds: ['sec_web'], tags: ['STRIDE', 'TLS'],
+        glossary: [
+          { term: 'STRIDE', fullName: 'Spoofing / Tampering / Repudiation / Information disclosure / Denial of service / Elevation of privilege', explanation: '六类威胁检查表，用来系统提出威胁。' },
+          { term: 'TLS', fullName: 'Transport Layer Security', explanation: '保护网络传输机密性和完整性的协议。' },
+        ],
         modules: [{
           id: 'm_fund', title: '威胁建模', summary: '识别资产、边界和威胁',
           topics: ['资产', '边界', '威胁'], risk: '不做威胁建模容易遗漏业务逻辑风险。',
@@ -404,21 +427,33 @@ describe('Learning 工作区 · 挂载契约', () => {
       return defaultGet(url)
     })
     const el = await mountPage()
-    const select = el.querySelector('.lp-subject-select select') as HTMLSelectElement
-    await vi.waitFor(() => expect([...select.options].some((option) => option.value === '网络安全')).toBe(true))
-    select.value = '网络安全'
-    select.dispatchEvent(new Event('change'))
+    await chooseSubject(el, '网络安全')
     await vi.waitFor(() => expect(el.querySelector('.sec-workbench')).toBeTruthy())
     expect(el.querySelector('.lp-tabs')).toBeFalsy()
     expect(el.querySelectorAll('.lp-course-security').length).toBe(2)
     expect(el.querySelector('.lp-course-security.active')?.textContent).toContain('安全基础')
     expect(el.querySelector('.lp-security-boundary')?.textContent).toContain('只测试自己的系统')
     expect(el.querySelectorAll('.sec-branch-map button').length).toBe(2)
-    expect(el.querySelector('.sec-code')).toBeTruthy()
+    expect(el.querySelector('.sec-glossary')?.textContent).toContain('STRIDE')
+    expect(el.querySelector('.sec-glossary')?.textContent).toContain('六类威胁检查表')
+    expect(el.querySelectorAll('.sec-step-nav button').length).toBe(5)
     expect(el.querySelector('.sec-lesson')?.textContent).toContain('本节目标')
     expect(el.querySelector('.sec-lesson')?.textContent).toContain('资产')
+    expect(el.querySelector('.sec-walkthrough')).toBeFalsy()
+    expect(el.querySelector('.sec-code')).toBeFalsy()
+    ;([...el.querySelectorAll('.sec-step-nav button')] as HTMLElement[]).find((b) => b.textContent?.includes('推导'))!.click()
+    await nextTick()
     expect(el.querySelector('.sec-walkthrough')?.textContent).toContain('跟着推导一遍')
+    expect(el.querySelectorAll('.sec-walkthrough-focus').length).toBe(1)
+    expect(el.querySelector('.sec-walkthrough-focus')?.textContent).toContain('画流程')
+    expect(el.querySelectorAll('.sec-walkthrough-dots button').length).toBe(4)
+    ;(el.querySelectorAll('.sec-walkthrough-dots button')[2] as HTMLElement).click()
+    await nextTick()
     expect(el.querySelector('.sec-walkthrough')?.textContent).toContain('套 STRIDE')
+    expect(el.querySelector('.sec-lesson')).toBeFalsy()
+    ;([...el.querySelectorAll('.sec-step-nav button')] as HTMLElement[]).find((b) => b.textContent?.includes('攻防'))!.click()
+    await nextTick()
+    expect(el.querySelector('.sec-code')).toBeTruthy()
     expect(el.querySelector('.sec-code-origin')?.textContent).toContain('对应应用')
     expect(el.querySelector('.sec-code-origin')?.textContent).toContain('文件上传服务')
     expect(el.querySelector('.sec-code-origin')?.textContent).toContain('示例来源')
@@ -431,11 +466,21 @@ describe('Learning 工作区 · 挂载契约', () => {
     ;([...el.querySelectorAll('.sec-code-languages button')] as HTMLElement[]).find((b) => b.textContent === 'java')!.click()
     await nextTick()
     expect(el.querySelector('.sec-code')?.textContent).toContain('PreparedStatement')
+    ;([...el.querySelectorAll('.sec-step-nav button')] as HTMLElement[]).find((b) => b.textContent?.includes('实验'))!.click()
+    await nextTick()
     expect(el.querySelector('.sec-lab')?.textContent).toContain('本地授权靶场')
     expect(el.querySelector('.sec-lab')?.textContent).toContain('curl')
     expect(el.querySelector('.sec-lab-commands')?.textContent).toContain('/health')
+    ;([...el.querySelectorAll('.sec-step-nav button')] as HTMLElement[]).find((b) => b.textContent?.includes('自测'))!.click()
+    await nextTick()
     expect(el.querySelector('.sec-self-check')?.textContent).toContain('学完自测')
     expect(el.querySelector('.sec-self-check')?.textContent).toContain('为什么要先画数据流')
+    expect(el.querySelector('.sec-step-progress')?.textContent).toContain('5 / 5')
+    expect(el.querySelector('.sec-step-next')?.textContent).toContain('完成本节')
+    ;(el.querySelector('.sec-step-prev') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.sec-lab')).toBeTruthy()
+    expect(el.querySelector('.sec-self-check')).toBeFalsy()
     ;(el.querySelectorAll('.sec-branch-map button')[1] as HTMLElement).click()
     await vi.waitFor(() => expect(el.querySelector('.lp-course-security.active')?.textContent).toContain('Web 漏洞'))
   })
@@ -668,10 +713,7 @@ describe('Learning 工作区 · 挂载契约', () => {
     })
 
     const el = await mountPage()
-    const subjectSelect = el.querySelector('.lp-subject-select select') as HTMLSelectElement
-    await vi.waitFor(() => expect([...subjectSelect.options].some((o) => o.value === '软考')).toBe(true))
-    subjectSelect.value = '软考'
-    subjectSelect.dispatchEvent(new Event('change'))
+    await chooseSubject(el, '软考')
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-course-exam').length).toBe(2))
     ;([...el.querySelectorAll('.lp-course-exam')] as HTMLElement[]).find((b) => b.textContent?.includes('软件设计师'))!.click()
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-exam-card').length).toBe(2))

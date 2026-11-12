@@ -1,6 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { SECURITY_PATHS } from '../src/learning/security-curriculum';
 
+function teachingText(path: (typeof SECURITY_PATHS)[number]) {
+  return [
+    path.name,
+    path.description,
+    ...path.tags,
+    ...path.modules.flatMap((mod) => [
+      mod.title,
+      mod.summary,
+      mod.useCase || '',
+      mod.explanation || '',
+      ...mod.topics,
+      mod.risk,
+      mod.control,
+      ...(mod.lesson?.objectives || []),
+      ...(mod.lesson?.walkthrough.flatMap((step) => [step.title, step.detail]) || []),
+      ...(mod.lesson?.knowledgeChecks.flatMap((check) => [check.question, check.answer]) || []),
+    ]),
+  ].join('\n');
+}
+
+function acronymsIn(text: string) {
+  return new Set(text.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || []);
+}
+
 describe('网络安全分支路线', () => {
   it('覆盖基础、Web 攻防、授权渗透、自动化靶场、防御和 DevSecOps', () => {
     expect(SECURITY_PATHS.map((path) => path.id)).toEqual([
@@ -124,5 +148,36 @@ describe('网络安全分支路线', () => {
     expect(threat.lab?.expected).toContain('404');
     expect(threat.lab?.expected).toContain('403');
     expect(threat.lab?.expected).toContain('415');
+  });
+
+  it('STRIDE 必须解释六类威胁，而不是只把缩写放进标题', () => {
+    const threat = SECURITY_PATHS
+      .flatMap((path) => path.modules)
+      .find((mod) => mod.id === 'sec_fund_threat_model')!;
+    const stride = threat.lesson?.keyTerms.find((item) => item.term === 'STRIDE');
+
+    expect(stride).toBeTruthy();
+    expect(stride?.fullName).toContain('Spoofing');
+    expect(stride?.fullName).toContain('Elevation of privilege');
+    expect(stride?.explanation).toContain('六类');
+    expect(stride?.explanation).toContain('不是');
+  });
+
+  it('每条路线都有去重后的专业名词表，教学正文中的大写缩写都能找到解释', () => {
+    for (const path of SECURITY_PATHS) {
+      expect(path.glossary.length, path.id).toBeGreaterThanOrEqual(path.modules.length * 3);
+      expect(new Set(path.glossary.map((item) => item.term)).size, path.id).toBe(path.glossary.length);
+
+      const definedText = path.glossary
+        .flatMap((item) => [item.term, item.fullName || '', item.explanation])
+        .join('\n');
+      const undefined = [...acronymsIn(teachingText(path))]
+        .filter((acronym) => !new RegExp(`(^|[^A-Za-z0-9])${acronym}([^A-Za-z0-9]|$)`).test(definedText));
+
+      expect(undefined, path.id).toEqual([]);
+      for (const item of path.glossary) {
+        expect(item.explanation.length, `${path.id}:${item.term}`).toBeGreaterThan(12);
+      }
+    }
   });
 });

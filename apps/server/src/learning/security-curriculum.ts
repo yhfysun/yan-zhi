@@ -1,4 +1,10 @@
 import { SECURITY_MODULE_EXTRA_LABS, SECURITY_MODULE_LESSONS } from './security-lessons.js';
+import {
+  SECURITY_MODULE_TERM_KEYS,
+  SECURITY_PATH_TERM_KEYS,
+  securityTerms,
+  type SecurityTerm,
+} from './security-glossary.js';
 
 export type SecurityCodeExample = {
   language: string;
@@ -25,7 +31,7 @@ export type SecurityCodeVariant = {
 
 export type SecurityLesson = {
   objectives: string[];
-  keyTerms: Array<{ term: string; explanation: string }>;
+  keyTerms: SecurityTerm[];
   walkthrough: Array<{ title: string; detail: string }>;
   knowledgeChecks: Array<{ question: string; answer: string }>;
 };
@@ -61,10 +67,11 @@ export type SecurityPath = {
   prerequisites: string[];
   nextPathIds: string[];
   tags: string[];
+  glossary: SecurityTerm[];
   modules: SecurityModule[];
 };
 
-export const SECURITY_PATHS: SecurityPath[] = [
+const SECURITY_PATH_SEEDS: Array<Omit<SecurityPath, 'glossary'>> = [
   {
     id: 'sec_fundamentals',
     name: '安全基础与威胁建模',
@@ -704,6 +711,11 @@ export const SECURITY_PATHS: SecurityPath[] = [
   },
 ];
 
+export const SECURITY_PATHS: SecurityPath[] = SECURITY_PATH_SEEDS.map((path) => ({
+  ...path,
+  glossary: [],
+}));
+
 const SECURITY_MODULE_ENRICHMENTS: Record<string, Pick<SecurityModule, 'useCase' | 'explanation' | 'lesson' | 'code' | 'lab'>> = {
   sec_fund_threat_model: {
     useCase: '上线一个文件上传接口前，团队需要判断谁会访问、文件会进入哪里、失败后影响哪些用户和系统。',
@@ -953,13 +965,40 @@ const SECURITY_MODULE_ENRICHMENTS: Record<string, Pick<SecurityModule, 'useCase'
   },
 };
 
+function mergeSecurityTerms(...groups: SecurityTerm[][]): SecurityTerm[] {
+  const merged = new Map<string, SecurityTerm>();
+  for (const group of groups) {
+    for (const item of group) {
+      const existing = merged.get(item.term);
+      merged.set(item.term, {
+        ...item,
+        ...existing,
+        fullName: existing?.fullName || item.fullName,
+        explanation: existing?.explanation || item.explanation,
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
 for (const path of SECURITY_PATHS) {
   for (const mod of path.modules) {
     const enrichment = SECURITY_MODULE_ENRICHMENTS[mod.id];
     if (enrichment) Object.assign(mod, enrichment);
     if (!mod.lesson && SECURITY_MODULE_LESSONS[mod.id]) mod.lesson = SECURITY_MODULE_LESSONS[mod.id];
     if (!mod.lab && SECURITY_MODULE_EXTRA_LABS[mod.id]) mod.lab = SECURITY_MODULE_EXTRA_LABS[mod.id];
+    if (mod.lesson) {
+      const moduleKeys = SECURITY_MODULE_TERM_KEYS[
+        mod.id as keyof typeof SECURITY_MODULE_TERM_KEYS
+      ] || [];
+      mod.lesson.keyTerms = mergeSecurityTerms(securityTerms(moduleKeys), mod.lesson.keyTerms);
+    }
   }
+  const pathKeys = SECURITY_PATH_TERM_KEYS[path.id as keyof typeof SECURITY_PATH_TERM_KEYS] || [];
+  path.glossary = mergeSecurityTerms(
+    securityTerms(pathKeys),
+    path.modules.flatMap((mod) => mod.lesson?.keyTerms || []),
+  );
 }
 
 const MULTILANGUAGE_CODE_VARIANTS: Record<string, SecurityCodeVariant[]> = {
