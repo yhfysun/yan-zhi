@@ -73,6 +73,12 @@ export interface ConversationSourceMeta {
   scope?: string;
   /** 店铺运营任务所属的稳定项目 id（项目本身可由一条旧会话锚定） */
   shopProjectId?: string;
+  /** 学习陪练类型：free=自由发挥，scene=场景任务。两类会话必须隔离。 */
+  learningKind?: 'free' | 'scene';
+  /** 当前场景 id（仅 learningKind=scene） */
+  learningScene?: string;
+  /** 当前场景所属课程 id */
+  learningCourseId?: string;
 }
 
 /**
@@ -84,10 +90,11 @@ export function normalizeSourceMeta(v: unknown): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const src = v as Record<string, unknown>;
   const meta: ConversationSourceMeta = {};
-  for (const k of ['url', 'host', 'scope', 'shopProjectId'] as const) {
+  for (const k of ['url', 'host', 'scope', 'shopProjectId', 'learningScene', 'learningCourseId'] as const) {
     const val = src[k];
     if (typeof val === 'string' && val && val.length <= CONV_SOURCE_META_FIELD_MAX) meta[k] = val;
   }
+  if (src.learningKind === 'free' || src.learningKind === 'scene') meta.learningKind = src.learningKind;
   if (!Object.keys(meta).length) return null;
   const json = JSON.stringify(meta);
   return json.length > CONV_SOURCE_META_MAX ? null : json;
@@ -100,11 +107,12 @@ export function parseSourceMeta(json: unknown): ConversationSourceMeta {
     const parsed = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const out: ConversationSourceMeta = {};
-    for (const k of ['url', 'host', 'scope', 'shopProjectId'] as const) {
+    for (const k of ['url', 'host', 'scope', 'shopProjectId', 'learningScene', 'learningCourseId'] as const) {
       const val = (parsed as Record<string, unknown>)[k];
       // 与写入侧同一条长度上限：手工改过库的超长值也不该灌进列表渲染
       if (typeof val === 'string' && val && val.length <= CONV_SOURCE_META_FIELD_MAX) out[k] = val;
     }
+    if (parsed.learningKind === 'free' || parsed.learningKind === 'scene') out.learningKind = parsed.learningKind;
     return out;
   } catch {
     return {};

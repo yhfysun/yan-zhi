@@ -81,6 +81,9 @@ describe('英语学习陪练 · 教学宪法红线', () => {
   it('★ 场景结束标记 [SCENE_END] + JSON 降级策略', () => {
     expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('[SCENE_END]');
     expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('不要为凑 JSON 硬编造评分');
+    expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('自由陪练与场景陪练是两条链路');
+    expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('不能一问一答就结束');
+    expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('完成全部 mission');
   });
 
   it('词本边界：只读工具 + 不能替用户加词/改进度（写路径在应用 UI 与收尾钩子）', () => {

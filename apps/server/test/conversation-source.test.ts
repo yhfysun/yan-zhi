@@ -154,6 +154,9 @@ describe('会话来源标记 · 写入规范化', () => {
       host: 'a.b',
       scope: 'shop-project',
       shopProjectId: 'p_shop',
+      learningKind: 'scene',
+      learningScene: 'sc_cet4_course',
+      learningCourseId: 'course_cet4',
       evil: 'x',
     });
     expect(json).toBeTruthy();
@@ -162,6 +165,9 @@ describe('会话来源标记 · 写入规范化', () => {
       host: 'a.b',
       scope: 'shop-project',
       shopProjectId: 'p_shop',
+      learningKind: 'scene',
+      learningScene: 'sc_cet4_course',
+      learningCourseId: 'course_cet4',
     });
     expect(normalizeSourceMeta({})).toBeNull();
     expect(normalizeSourceMeta('not-an-object')).toBeNull();
@@ -170,6 +176,8 @@ describe('会话来源标记 · 写入规范化', () => {
     expect(parseSourceMeta(null)).toEqual({});
     // 超长直接丢（不做截断拼凑，免得存半条 URL 让人误判）
     expect(normalizeSourceMeta({ url: 'x'.repeat(5000) })).toBeNull();
+    expect(parseSourceMeta(normalizeSourceMeta({ learningKind: 'free' }))).toEqual({ learningKind: 'free' });
+    expect(normalizeSourceMeta({ learningKind: 'unexpected' })).toBeNull();
   });
 });
 

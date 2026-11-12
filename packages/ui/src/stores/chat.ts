@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart, GoalRun, GoalTemplate } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature, type ConversationSourceMeta } from '@yan-zhi/core';
 import { uid, PAGE_AGENT_ID } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
@@ -2047,7 +2047,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     if (target && !target.content) target.content = content;
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: { url?: string; host?: string; scope?: string; shopProjectId?: string } }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: ConversationSourceMeta }): Promise<string> {
     // 未显式指定时记录当前选中的智能体，保证会话打开时能还原
     let agentId = opts?.agentId;
     if (!agentId) {
