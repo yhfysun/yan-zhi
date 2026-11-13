@@ -5,6 +5,7 @@ import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
 import { resolveToolPath } from './fs-walk';
 import { toolError } from '../result';
+import { registerBackgroundJob } from './background-job-client';
 
 /** Windows shell 内置命令白名单（where 对这些返回非 0，需放行不预检） */
 const WIN_BUILTIN_COMMANDS = new Set([
@@ -103,7 +104,7 @@ async function checkCommandExists(main: string): Promise<{ exists: boolean; degr
 
 export class CmdExecTool implements BuiltInTool {
   name = 'cmd_exec';
-  description = '执行一条系统命令。支持 cmd / python / java / node / git 以及任何 CLI 工具，返回 stdout、stderr 与退出码。适用于跑脚本、编译代码或任何 shell 操作。执行前会预检命令是否存在于当前环境，避免子进程抛 ENOENT；若 curl/wget 缺失建议改用 browser_navigate 或内置 fetch。';
+  description = '执行一条系统命令。支持 cmd / python / java / node / git 以及任何 CLI 工具，返回 stdout、stderr 与退出码。适用于跑脚本、编译代码或任何 shell 操作。★ 打包、构建、测试套件、安装等可能跑很久的命令传 background=true：立刻返回统一后台任务 jobId，完成会自动唤醒，不会占着一次工具调用或触发前台超时。执行前会预检命令是否存在于当前环境，避免子进程抛 ENOENT。';
 
   inputSchema = {
     type: 'object',
@@ -124,6 +125,15 @@ export class CmdExecTool implements BuiltInTool {
       timeout: {
         type: 'number',
         description: 'Timeout in milliseconds. Default: 30000 (30s). Max: 300000 (5min).',
+      },
+      background: {
+        type: 'boolean',
+        description: 'true=后台长任务：打包、构建、批量处理等立即返回 jobId，完成自动唤醒，不受前台 30s 超时约束',
+      },
+      wakePolicy: {
+        type: 'string',
+        enum: ['resume', 'notify', 'silent'],
+        description: '后台任务结束后的唤醒策略：resume=自动续跑原会话（默认）、notify=只通知、silent=只更新任务卡',
       },
     },
     required: ['command'],
@@ -159,6 +169,59 @@ export class CmdExecTool implements BuiltInTool {
         return toolError(`命令 ${main} 在当前环境不可用。${hint}`);
       }
       // degrade=true → 预检不可靠，跳过预检直接执行（降级，不因预检误判阻断）
+    }
+
+    if (args.background === true) {
+      const { runCommandBackground } = await import('./command-runtime');
+      const bg = await runCommandBackground(command, cmdArgs.map(String), {
+        cwd,
+        workspaceDir,
+        ...(ctx?.env ? { env: ctx.env } : {}),
+      });
+      if (!bg.ok) return toolError(`Error: ${bg.error}`);
+      const job = bg.job;
+      const commandText = [command, ...cmdArgs.map(String)].join(' ');
+      const isBuild = /\b(build|package|compile|electron-builder|dist|bundle|install)\b/i.test(commandText);
+      const kind = isBuild ? 'package_build' : 'command_process';
+      const unified = ctx?.conversationId
+        ? await registerBackgroundJob({
+            kind,
+            conversationId: ctx.conversationId,
+            wakePolicy: (args.wakePolicy === 'notify' || args.wakePolicy === 'silent') ? args.wakePolicy : 'resume',
+            title: `${isBuild ? '后台构建' : '后台命令'} ${commandText}`.slice(0, 240),
+            status: 'running',
+            idempotencyKey: `command:${job.jobId}`,
+            adapterRef: `command:${job.jobId}`,
+            spec: {
+              nativeJobId: job.jobId,
+              workspaceDir,
+              jobDir: job.jobDir,
+              statusPath: job.statusPath,
+              logPath: job.logPath,
+              cwd: cwd || '',
+              command,
+              args: cmdArgs.map(String),
+            },
+            controlCapabilities: { pause: false, resume: false, cancel: true },
+          }, ctx)
+        : null;
+      const displayJobId = unified?.jobId || job.jobId;
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            `已在后台启动：${displayJobId}`,
+            `类型：${kind}`,
+            `作业目录：${job.jobDir}`,
+            `日志：${job.logPath}`,
+            '',
+            unified
+              ? `完成时自动唤醒原会话（wakePolicy=${unified.wakePolicy}）；不要持续轮询。`
+              : `查询：job_status { "jobId": "${job.jobId}" }`,
+            '后台任务不受前台超时约束，不要再用前台方式重跑；需要最新进度或控制时才查 job_status/job_control。',
+          ].join('\n'),
+        }],
+      };
     }
 
     try {

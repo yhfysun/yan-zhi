@@ -44,6 +44,40 @@ describe('零基础英语学习主线', () => {
     ).toBe(true);
   });
 
+  it('短元音使用可点击例词，IPA 与 en-US 发音一致且不会把结构符号交给 TTS', () => {
+    const lesson = ENGLISH_PATH[0].steps.find((step) => step.id === 'sound_short_vowels')!;
+    expect(lesson.sounds?.map((sound) => [sound.letter, sound.ipa, sound.word])).toEqual([
+      ['a', '/æ/', 'cat'],
+      ['e', '/ɛ/', 'bed'],
+      ['i', '/ɪ/', 'sit'],
+      ['o', '/ɑ/', 'hot'],
+      ['u', '/ʌ/', 'cup'],
+    ]);
+    expect(lesson.patternAudio).toBe('a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.');
+    expect(lesson.patternAudio).not.toMatch(/[\/→æɛɪɑʌ]/);
+    expect(lesson.pattern).toContain('/æ/');
+    expect(lesson.quickCheck?.options[lesson.quickCheck.answer]).toBe('cat · bed · sit · hot · cup');
+  });
+
+  it('所有含 IPA 的拼读结构都提供可点击例词，不把符号直接交给语音', () => {
+    const phonics = ENGLISH_PATH.find((stage) => stage.id === 'sounds')!.steps;
+    for (const lesson of phonics) {
+      if (!lesson.pattern?.includes('/')) continue;
+      expect(lesson.sounds?.length, lesson.id).toBeGreaterThan(0);
+      for (const sound of lesson.sounds!) {
+        expect(sound.word, `${lesson.id}:${sound.letter}`).toMatch(/^[A-Za-z][A-Za-z' -]*$/);
+        expect(sound.ipa.startsWith('/'), `${lesson.id}:${sound.letter}`).toBe(true);
+      }
+    }
+    const rColored = phonics.find((lesson) => lesson.id === 'sound_er_ir_ur')!;
+    expect(rColored.sounds?.map((sound) => [sound.letter, sound.ipa, sound.word])).toEqual([
+      ['er', '/ɚ/', 'teacher'],
+      ['ir', '/ɝ/', 'bird'],
+      ['ur', '/ɝ/', 'turn'],
+    ]);
+    expect(rColored.pattern).not.toContain('/ɜːr/');
+  });
+
   it('主线课程量足以形成完整学习路径，而不是示例卡', () => {
     expect(ENGLISH_PATH.reduce((sum, stage) => sum + stage.steps.length, 0)).toBeGreaterThanOrEqual(100);
     const counts = Object.fromEntries(ENGLISH_PATH.map((stage) => [stage.id, stage.steps.length]));
@@ -76,8 +110,10 @@ describe('零基础英语学习主线', () => {
     copy[0].title = 'changed';
     copy[0].steps[0].title = 'changed';
     copy[0].steps[0].quickCheck!.options[0] = 'changed';
+    copy[0].steps[0].sounds![0].word = 'changed';
     expect(ENGLISH_PATH[0].title).toBe('先会读');
     expect(ENGLISH_PATH[0].steps[0].title).toBe('五个短元音');
     expect(ENGLISH_PATH[0].steps[0].quickCheck!.options[0]).not.toBe('changed');
+    expect(ENGLISH_PATH[0].steps[0].sounds![0].word).toBe('cat');
   });
 });

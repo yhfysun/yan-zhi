@@ -16,7 +16,7 @@ import {
   PAGE_AGENT_ID,
   WEB_PAGE_OPERATION_SKILL_ID,
 } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, setBrowserToolWorkspaceDir, DEFAULT_SKIP_DIRS, BrowserRunRecipeTool, type SummaryCache } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, setBrowserToolWorkspaceDir, setBrowserToolJobContext, DEFAULT_SKIP_DIRS, BrowserRunRecipeTool, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
@@ -88,6 +88,7 @@ import {
 // 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
 import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
+import { RPA_RUNTIME_TOOLS } from './builtin-automation-agent.js';
 // 工件协议 + 任务计划调度（2026-10-08 多智能体协同）
 import { runWithArtifactCollector, formatSubAgentReturn, collectArtifact } from './services/artifacts.js';
 import { createPlan, runPlanToCompletion, getPlanStatusText, reassignPlanItem, registerPlanRunnerDeps } from './services/plan-runner.js';
@@ -4063,6 +4064,15 @@ async function runReActLoop(task: LlmTask, params: {
           userContent: params.userContent, // P2-1：动态工具路由的任务文本
         });
     if (modeFlags.answerOnly) toolsBuilt = [];
+    if (toolsBuilt.some((tool: any) => tool?.function?.name === 'job_status')) {
+      systemPromptBuilt += [
+        '',
+        '## 后台长任务',
+        '浏览器大文件下载、python_exec/cmd_exec 的 background=true 启动后，不要为了等待结果持续轮询。',
+        '启动回执里的 jobId 已登记到统一后台任务；完成会按 wakePolicy 自动通知或续跑原会话。',
+        '除非需要查看最新进度、暂停、恢复或取消，否则继续其它工作或结束本次回复。',
+      ].join('\n');
+    }
     // 只读权限：构建期就把写类工具从列表里摘掉，模型根本看不到（运行时 executeTool 还有拦截兜底）。
     // 注意：显式传入 params.tools 的场景（定时任务等）同样按会话权限裁剪，权限不因调用来源放松。
     toolsBuilt = filterToolsByPermission(task.permissionMode || 'readonly', toolsBuilt);
@@ -5480,7 +5490,7 @@ const ALWAYS_ALLOWED_BUILTINS = new Set([
   // buildToolsForBackend 无条件暴露的两条委派入口（不依赖挂载）
   'call_agent', 'list_sub_agents',
   // 后台作业状态轮询（只读，与 python_exec background=true 配套；见 buildToolsForBackend 同款暴露条件）
-  'job_status',
+  'job_status', 'job_control',
   ...INTERACTIVE_TOOLS,
 ]);
 
@@ -6349,7 +6359,14 @@ async function executeTool(
         //   落到 <工作目录>/downloads/，并把路径回传给模型。不下发的话只能落系统下载目录，
         //   模型拿不到可读路径（且此前会被原生「另存为」框卡死，见 main.cjs 下载接管注释）。
         const argsWithWs = (args && typeof args === 'object')
-          ? { ...(args as Record<string, unknown>), __workspaceDir: task.workspaceDir || undefined }
+          ? {
+              ...(args as Record<string, unknown>),
+              __workspaceDir: task.workspaceDir || undefined,
+              __conversationId: task.conversationId,
+              __taskId: task.id,
+              __toolCallId: toolCallId,
+              __wakePolicy: (args as any)?.wakePolicy || 'resume',
+            }
           : args;
         const raw = await callBrowserBridge(task.conversationId, toolName, argsWithWs, bridgeTimeout, browserFlowKey || SHARED_FLOW, task.userId);
         // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
@@ -6443,7 +6460,17 @@ async function executeTool(
     // ★ workspaceDir 必须传：工具用它把**相对路径**解析到工作目录（否则落到进程 cwd，
 //   实测 `02-work` / `.yan-zhi/tasks/<convId>` 一律 directory not found）。
 //   子智能体走同一个 executeTool → 自动同样受益。
-    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs, workspaceDir: task.workspaceDir, signal: task.abortController.signal, ...(task.toolEnv ? { env: task.toolEnv } : {}) };
+    const toolCtx = {
+      conversationId: task.conversationId,
+      userId: task.userId,
+      taskId: task.id,
+      toolCallId,
+      wakePolicy: 'resume' as const,
+      artifactDirs,
+      workspaceDir: task.workspaceDir,
+      signal: task.abortController.signal,
+      ...(task.toolEnv ? { env: task.toolEnv } : {}),
+    };
 
     // 文件修改快照：file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
     // ★ file_write 不走这里 —— 它的落盘路径由工具按会话目录决定，调用方执行前无法预知，
@@ -6467,6 +6494,13 @@ async function executeTool(
     // 工作目录同源透传（2026-10-26）：Playwright 链路的「导出/下载」据此落进
     // <工作目录>/downloads/，模型才能用文件工具直接读到导出的 Excel。
     setBrowserToolWorkspaceDir(task.workspaceDir);
+    setBrowserToolJobContext({
+      taskId: task.id,
+      toolCallId,
+      wakePolicy: (args as any)?.wakePolicy === 'notify' || (args as any)?.wakePolicy === 'silent'
+        ? (args as any).wakePolicy
+        : 'resume',
+    });
     const r = await registry.execute(toolName, args, toolCtx);
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     // ★ C 线（2026-10-21）：连续失败提醒 —— A 线（同参重复）/B 线（严格连续同工具）都抓不到
@@ -7599,6 +7633,18 @@ async function runSubAgentImpl(
         subTools.push({ type: 'function', function: { name: def.name, description: def.description, parameters: def.inputSchema } });
         break;
       }
+    }
+  }
+
+  // 子智能体只要具备浏览器/命令执行能力，也必须看得见统一后台任务状态与控制入口；
+  // 否则它启动大文件下载或打包后只能重复启动，或误以为任务已经丢失。
+  if (builtinIds.some(name => name.startsWith('browser_') || name === 'python_exec' || name === 'cmd_exec')) {
+    for (const tName of ['job_status', 'job_control']) {
+      if (seen.has(tName)) continue;
+      const def = registry.get(tName);
+      if (!def) continue;
+      seen.add(tName);
+      subTools.push({ type: 'function', function: { name: def.name, description: def.description, parameters: def.inputSchema } });
     }
   }
 
@@ -9613,6 +9659,20 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     });
   }
 
+  // 所有主智能体默认可发现固定脚本运行面。脚本编辑/发布工具仍只由 RPA Builder
+  // 或会话显式挂载，避免任意聊天智能体直接改正式资产。
+  if (agentId && agentId !== PAGE_AGENT_ID) {
+    for (const name of RPA_RUNTIME_TOOLS) {
+      if (skipUi(name) || seen.has(name) || !registry.has(name)) continue;
+      const def = registry.get(name)!;
+      seen.add(name);
+      tools.push({
+        type: 'function',
+        function: { name, description: def.description, parameters: def.inputSchema },
+      });
+    }
+  }
+
   // Skill 引用 PageAsset 时，自动暴露唯一执行入口。资产定义仍由 skill 引用/悬挂关系决定，
   // 这里只补工具面，避免“流程里写了 page asset、模型却看不到执行工具”的断链。
   if (agentId === PAGE_AGENT_ID && !seen.has('browser_run_page_operation') && registry.has('browser_run_page_operation')) {
@@ -9686,14 +9746,19 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   //      python_exec background=true 是长任务（ffmpeg 出片/渲染/下载）的正确走法，
   //      但启动后必须有人读状态 —— 没挂 job_status 的话模型只能反复前台重跑，
   //      又会被 30s 超时连坐杀掉子进程。cmd_exec 同属可能长跑的执行器，一并放行。
-  if ((toolIds.includes('python_exec') || toolIds.includes('cmd_exec'))
-      && registry.has('job_status') && !seen.has('job_status')) {
-    const def = registry.get('job_status')!;
-    seen.add('job_status');
-    tools.push({
-      type: 'function',
-      function: { name: 'job_status', description: def.description, parameters: def.inputSchema },
-    });
+  if (toolIds.includes('python_exec')
+      || toolIds.includes('cmd_exec')
+      || toolIds.includes('browser_download')
+      || toolIds.some(name => name.startsWith('browser_'))) {
+    for (const name of ['job_status', 'job_control']) {
+      if (seen.has(name) || !registry.has(name)) continue;
+      const def = registry.get(name)!;
+      seen.add(name);
+      tools.push({
+        type: 'function',
+        function: { name, description: def.description, parameters: def.inputSchema },
+      });
+    }
   }
 
   // 2) MCP 工具：agent.mcp_tool_mounts ∪ 会话级挂载（agent '*' 覆盖会话细粒度），暴露名与执行路由一致

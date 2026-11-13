@@ -10,6 +10,7 @@ export * from './llm/tool-args-advice';
 export * from './mcp/client';
 export * from './workflow/engine';
 export * from './workflow/nodes';
+export * from './automation/runner';
 export * from './compress/window';
 export * from './db/schema';
 // 会话来源标记（2026-10-16）：写入口与列表过滤的白名单唯一出口

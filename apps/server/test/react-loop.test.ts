@@ -264,6 +264,9 @@ vi.mock('@yan-zhi/core', () => ({
   // ★ 2026-10-26 补：下载自动落盘新增工作目录透传（llm-task-manager 顶层 import），
   //   同一类白名单缺失 —— 不补则工具执行即报 No "setBrowserToolWorkspaceDir" export。
   setBrowserToolWorkspaceDir: () => {},
+  // 2026-11-13：统一后台任务绑定（task/toolCall/wakePolicy）在同一工具出口设置。
+  // 白名单 mock 必须同步，否则所有工具执行都会先被缺失导出打断。
+  setBrowserToolJobContext: () => {},
   getBrowserToolWorkspaceDir: () => null,
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));

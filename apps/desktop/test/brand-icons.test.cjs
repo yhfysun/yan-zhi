@@ -61,10 +61,11 @@ test('Windows taskbar uses the native BMP ICO in dev and packaged builds', () =>
   assert.match(main, /assets',\s*'icons',\s*'icon-dev\.bmp\.ico'/, 'dev windows must use icon-dev.bmp.ico');
   assert.match(main, /function applyWindowIcon\(win\)/, 'window icons must be applied through one helper');
   assert.match(main, /app\.on\('browser-window-created',\s*\(_e,\s*win\)\s*=>\s*applyWindowIcon\(win\)\)/);
+  assert.match(main, /ensureDevTaskbarShortcut\(\{/, 'dev must provision the taskbar shell identity');
   assert.match(
     main,
-    /app\.isPackaged\s*\?\s*'com\.yanzhi\.desktop'\s*:\s*'com\.yanzhi\.desktop\.dev'/,
-    'dev must use its own AUMID instead of Electron or the packaged app identity',
+    /app\.isPackaged\s*\?\s*'com\.yanzhi\.desktop'\s*:\s*DEV_APP_USER_MODEL_ID/,
+    'dev must use its dedicated AUMID',
   );
   assert.match(
     main,
@@ -74,7 +75,7 @@ test('Windows taskbar uses the native BMP ICO in dev and packaged builds', () =>
   assert.match(
     main,
     /win\.setAppDetails\(\{[\s\S]*?appId:\s*WINDOWS_APP_USER_MODEL_ID,[\s\S]*?appIconPath:\s*iconPath,/,
-    'Windows shell icon details must follow the selected runtime icon',
+    'packaged Windows shell details must follow the runtime icon',
   );
 
   for (const file of [

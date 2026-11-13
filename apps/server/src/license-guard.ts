@@ -43,6 +43,9 @@ const EXEMPT_PREFIXES: readonly string[] = [
   '/health',
   '/license',       // 授权页自身：验签 / 取本机标识，必须能访问
   '/auth',          // 登录接口：授权门禁不该叠在登录之前
+  // 桌面主进程 -> 本机后端的后台任务回调。路由内部强制回环地址 + 可选内部 token，
+  // 远程来源一律 404；这里只绕过授权头，不能绕过其自身内部鉴权。
+  '/background-jobs/internal',
   '/generated',     // <img>/<video>/<audio> src，交付卡片缩略图依赖
   '/media/proxy',   // 同上：媒体代理给 <img> 用
   '/plugin-assets', // 皮肤壁纸走 CSS url() 与 <img>

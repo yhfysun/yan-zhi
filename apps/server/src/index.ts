@@ -40,12 +40,14 @@ import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel, cleanupLegacyDia
 import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
 import { markOrphanPlanItemsInterrupted } from './services/plan-runner.js';
 import { syncWorkflowTools } from './services/workflow-tool-registry.js';
-import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
+import { registerAutomationTools } from './services/automation-tools.js';
+import { emitConversationEvent, markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
 import sceneConfigRoutes from './routes/scene-configs.js';
 // 任务类型配置（2026-10-14）：动态创建任务类型 = 流程 + 智能体 + skill 挂载 + 父任务
 import taskTypeRoutes from './routes/task-types.js';
 import workflowRoutes from './routes/workflow.js';
+import automationRoutes from './routes/automation.js';
 import mcpRoutes from './routes/mcp.js';
 import mcpCredentialRoutes from './routes/mcp-credentials.js';
 import mcpAccessKeyRoutes from './routes/mcp-access-keys.js';
@@ -58,6 +60,7 @@ import skillMarketplaceRoutes from './routes/skill-marketplace-sources.js';
 import agentMarketplaceRoutes from './routes/agent-marketplace-sources.js';
 import marketplaceRoutes from './routes/marketplace.js';
 import browserRoutes from './routes/browser.js';
+import backgroundJobRoutes from './routes/background-jobs.js';
 import peersRoutes from './routes/peers.js';
 import lanRoutes from './routes/lan.js';
 import verificationCodeRoutes from './routes/verification-codes.js';
@@ -134,6 +137,7 @@ import { clipModeManifest, clipModeModule } from './plugins/clip-mode.js';
 // 开发/工作流模式（P4）：纯视图模式插件 —— 只贡献模式元数据与路由（引擎/工具留基座）
 import { devModeManifest, devModeModule } from './plugins/dev-mode.js';
 import { wfModeManifest, wfModeModule } from './plugins/wf-mode.js';
+import { rpaModeManifest, rpaModeModule } from './plugins/rpa-mode.js';
 import { learningModeManifest, learningModeModule } from './plugins/learning-mode.js';
 import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
@@ -151,6 +155,13 @@ import { registerPythonSelfHeal } from './services/python-self-heal.js';
 import { checkAndQuarantine } from './services/db-integrity.js';
 import { logCredentialAudit } from './services/credential-audit.js';
 import { createLogger, configureLogger } from './services/logger.js';
+import {
+  deliverPendingBackgroundJobEvents,
+  setBackgroundJobPublisher,
+  setBackgroundJobTerminalHandler,
+} from './services/background-jobs.js';
+import { wakeConversationForBackgroundJob } from './services/background-job-wake.js';
+import { startBackgroundJobRuntime } from './services/background-job-runtime.js';
 // ★★★ 日志落盘（2026-10-10）：必须在**其它模块打日志之前**配置好，
 //   否则启动早期的日志（db/插件/迁移）拿不到文件流，只进控制台 → 重启后现场丢失。
 //   ★ 为什么落 DATA_DIR/logs：与 data.db 同根，卸载/清理数据时一并带走，不散落。
@@ -192,6 +203,34 @@ setCustomToolDepPreparer({
 ensureToolsInitialized();
 
 const app = express();
+
+// 后台任务的 UI 更新走会话级 WebSocket 总线：只推低频状态与终态，不把高频日志灌进模型上下文。
+setBackgroundJobPublisher((job, reason) => {
+  emitConversationEvent(job.conversationId, {
+    type: 'background_job:updated',
+    reason,
+    job: {
+      jobId: job.id,
+      kind: job.kind,
+      status: job.status,
+      wakePolicy: job.wakePolicy,
+      title: job.title,
+      progress: job.progress,
+      bytesDone: job.bytesDone,
+      bytesTotal: job.bytesTotal,
+      speedBps: job.speedBps,
+      etaMs: job.etaMs,
+      etaAt: job.etaAt,
+      artifactPaths: job.artifactPaths,
+      error: job.error,
+      controlCapabilities: job.controlCapabilities,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      terminalAt: job.terminalAt,
+    },
+  });
+});
+setBackgroundJobTerminalHandler(wakeConversationForBackgroundJob);
 
 /**
  * 监听端口的取值口径（2026-10-31 收口）：
@@ -239,7 +278,14 @@ app.use('/api/workspace/upload', express.json({ limit: '64mb' }));
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, time: Date.now() });
+  res.json({
+    ok: true,
+    time: Date.now(),
+    app: 'yan-zhi-server',
+    pid: process.pid,
+    version: process.env.YZ_APP_VERSION || null,
+    buildId: process.env.YZ_APP_BUILD_ID || null,
+  });
 });
 
 // OIDC 回调由 IdP 重定向触发、带不了 license 头；路由必须先于 /api/auth 注册。
@@ -278,6 +324,7 @@ if (isLicenseGuardEnabled()) {
   logger.info('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
 }
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/background-jobs', backgroundJobRoutes);
 // 剪辑接口已随 clip-mode 插件挂载：/api/plugin/clip-mode/*（mode-pluginization P4）
 app.use('/api/conversations', fileRoutes);
 app.use('/api/workspace', workspaceFileRoutes);
@@ -300,6 +347,7 @@ app.use('/api/agents', agentRoutes);
 app.use('/api/scene-configs', sceneConfigRoutes);
 app.use('/api/task-types', taskTypeRoutes);
 app.use('/api/workflow', workflowRoutes);
+app.use('/api/automation', automationRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
 app.use('/api/mcp-credentials', mcpCredentialRoutes);
 app.use('/api/mcp-access-keys', mcpAccessKeyRoutes);
@@ -767,6 +815,14 @@ try {
   if (orphanTasks || orphanRuns || orphanPlans) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条、遗留计划项 ${orphanPlans} 条`);
   resumeWorkflowDeliveries();
 } catch (e) { logger.warn('[cleanup] 遗留运行回收/补投失败:', e); }
+
+// 统一后台长任务恢复：重挂仍在运行的 Python/命令作业；浏览器下载因进程内句柄丢失收敛为 stalled。
+// 之后补投数据库中尚未交付的终态事件，保证服务在终态回调落地后崩溃也能在下次启动续上。
+try {
+  startBackgroundJobRuntime();
+  deliverPendingBackgroundJobEvents();
+} catch (e) { logger.warn('[background-job] 启动恢复失败:', e); }
+
 try {
   startGoalScheduler();
 } catch (e) { logger.warn('[goal] 目标调度器启动失败:', e); }
@@ -873,6 +929,13 @@ try {
   if (t.registered.length) logger.info(`[workflow-tools] 已注册工作流工具 ${t.registered.length} 个: ${t.registered.join(', ')}`);
   if (t.removed.length) logger.info(`[workflow-tools] 已注销失效工作流工具 ${t.removed.length} 个`);
 } catch (e) { logger.warn('[workflow-tools] 注册失败:', e); }
+
+try {
+  const names = registerAutomationTools();
+  logger.info(`[automation-tools] 已注册 ${names.length} 个自动化工具`);
+} catch (e) {
+  logger.warn('[automation-tools] 注册失败:', e);
+}
 
 // 历史遗留诊断智能体清理：删掉手工创建的 diag_min_loop（含其 workflow_run），
 // 并把挂在它上面的会话重绑到真正的智能体 —— 必须先重绑再删，否则会话的
@@ -1050,6 +1113,7 @@ try {
     // 引擎与工具留基座，停用只让入口消失（会话/工程数据不动）。
     await registerPkgOrSource('dev-mode', () => mgr.registerBuiltin(devModeManifest, devModeModule));
     await registerPkgOrSource('wf-mode', () => mgr.registerBuiltin(wfModeManifest, wfModeModule));
+    await registerPkgOrSource('rpa-mode', () => mgr.registerBuiltin(rpaModeManifest, rpaModeModule));
     // 学习模式（Pro）：纯视图插件，页面入口随插件选择集裁剪；学习数据与 API 留在基座。
     await registerPkgOrSource('learning-mode', () => mgr.registerBuiltin(learningModeManifest, learningModeModule));
     // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过

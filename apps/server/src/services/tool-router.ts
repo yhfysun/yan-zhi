@@ -47,10 +47,10 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   'file_read', 'file_list', 'file_write', 'file_edit',
   'cmd_exec', 'python_exec',
   // 后台作业状态轮询：与 python_exec background=true 配套，裁掉会让长任务永远等不到结果
-  'job_status',
+  'job_status', 'job_control',
   // 浏览器四件套 + 代码模式 + 截图（pageAgent 主链路）
   'browser_navigate', 'browser_click', 'browser_type', 'browser_get_page_content',
-  'browser_run_script', 'browser_screenshot', 'browser_upload',
+  'browser_run_script', 'browser_screenshot', 'browser_list_upload_inputs', 'browser_upload',
   // 视觉识别（纯视觉兜底路线的执行件）
   'image_analyze',
   // 记忆底座（收尾沉淀用）

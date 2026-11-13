@@ -772,6 +772,15 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   try { await execFn(`ALTER TABLE message ADD COLUMN user_id TEXT;`); } catch { /* 列已存在 */ }
   // 迁移：scheduled_task 新增 group_id 列（定时任务分组）
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN group_id TEXT;`); } catch { /* 列已存在 */ }
+  // 与服务端定时任务保持同一列契约；本地/离线库也要能保存智能体、工作流、Runbook 和 RPA 绑定。
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN agent_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN platform_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN model_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN space_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN task_type TEXT DEFAULT 'chat';`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN workflow_agent_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN workflow_bundle_json TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN workflow_inputs_json TEXT;`); } catch { /* 列已存在 */ }
   // 迁移：新调度模型 schedule_json / expire_at
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN schedule_json TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN expire_at INTEGER;`); } catch { /* 列已存在 */ }
@@ -781,6 +790,10 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_inputs_json TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_approval_required INTEGER DEFAULT 0;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_approval_json TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN rpa_script_id TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN rpa_script_name TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN rpa_script_version INTEGER;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN rpa_inputs_json TEXT;`); } catch { /* 列已存在 */ }
 }
 
 /** 内置 skill 种子数据（三端共用，桌面端/移动端本地 sqlite 与服务端均会 upsert） */

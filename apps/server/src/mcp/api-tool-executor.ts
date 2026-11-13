@@ -135,6 +135,7 @@ import {
   refreshScheduledTaskScheduler,
 } from '../services/scheduled-tasks.js';
 import { latestScheduledRunbookRun, prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
+import { getAutomationScript } from '../services/automation.js';
 import {
   listOllamaMarket,
   pullOllamaModel,
@@ -5093,7 +5094,11 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const name = str(args, 'name');
         if (!name.trim()) return fail('任务名称为必填项');
-        const taskType = str(args, 'taskType') === 'runbook' ? 'runbook' : 'chat';
+        const taskType = str(args, 'taskType') === 'runbook'
+          ? 'runbook'
+          : str(args, 'taskType') === 'rpa_script'
+            ? 'rpa_script'
+            : 'chat';
         const prompt = str(args, 'prompt');
         if (taskType === 'chat' && !prompt.trim()) return fail('对话任务需要填写 prompt');
         const intervalMinutes = args.intervalMinutes == null ? null : num(args, 'intervalMinutes', 0);
@@ -5124,11 +5129,33 @@ export async function executeApiTool(
             return fail(error instanceof Error ? error.message : 'Runbook 调度配置无效');
           }
         }
+        let rpaBinding: { id: string; name: string; version: number; inputs: Record<string, unknown> } | null = null;
+        if (taskType === 'rpa_script') {
+          const scriptId = str(args, 'rpaScriptId');
+          if (!scriptId) return fail('RPA 定时任务需要指定 rpaScriptId');
+          if (args.rpaInputs !== undefined && (!args.rpaInputs || typeof args.rpaInputs !== 'object' || Array.isArray(args.rpaInputs))) {
+            return fail('RPA 参数必须是对象');
+          }
+          const script = getAutomationScript(uid, scriptId);
+          if (!script) return fail('自动化脚本不存在');
+          const version = args.rpaScriptVersion == null ? script.publishedVersion : num(args, 'rpaScriptVersion', 1);
+          if (!version || version !== script.publishedVersion) {
+            return fail('RPA 定时任务必须绑定当前已发布版本');
+          }
+          rpaBinding = {
+            id: script.id,
+            name: script.name,
+            version,
+            inputs: args.rpaInputs && typeof args.rpaInputs === 'object' && !Array.isArray(args.rpaInputs)
+              ? args.rpaInputs as Record<string, unknown>
+              : {},
+          };
+        }
         const id = uuid();
         const now = Date.now();
         const isEnabled = args.enabled === undefined ? true : !!args.enabled;
         db.prepare(
-          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, task_type, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)',
+          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, task_type, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, rpa_script_id, rpa_script_name, rpa_script_version, rpa_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, NULL, ?, ?, ?)',
         ).run(
           id, uid, name.trim(), prompt || null, cronExpr, intervalMinutes,
           ownConversationId(uid, str(args, 'conversationId')), str(args, 'agentId') || null,
@@ -5138,6 +5165,10 @@ export async function executeApiTool(
           runbookBinding?.runbookName || null,
           runbookBinding?.runbookVersion || null,
           runbookBinding ? JSON.stringify(runbookBinding.inputParams) : null,
+          rpaBinding?.id || null,
+          rpaBinding?.name || null,
+          rpaBinding?.version || null,
+          rpaBinding ? JSON.stringify(rpaBinding.inputs) : null,
           isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr }, now) : null,
           now, now,
         );
@@ -5150,8 +5181,16 @@ export async function executeApiTool(
         const existing = db.prepare('SELECT * FROM scheduled_task WHERE id = ? AND user_id = ?').get(id, uid) as any;
         if (!existing) return fail('任务不存在');
         const nextTaskType = args.taskType !== undefined
-          ? (str(args, 'taskType') === 'runbook' ? 'runbook' : 'chat')
-          : (existing.task_type === 'runbook' ? 'runbook' : 'chat');
+          ? (str(args, 'taskType') === 'runbook'
+            ? 'runbook'
+            : str(args, 'taskType') === 'rpa_script'
+              ? 'rpa_script'
+              : 'chat')
+          : (existing.task_type === 'runbook'
+            ? 'runbook'
+            : existing.task_type === 'rpa_script'
+              ? 'rpa_script'
+              : 'chat');
         const nextPrompt = args.prompt !== undefined ? str(args, 'prompt') : existing.prompt;
         if (nextTaskType === 'chat' && !String(nextPrompt || '').trim()) {
           return fail('对话任务需要填写 prompt');
@@ -5232,6 +5271,37 @@ export async function executeApiTool(
             'runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL',
             'runbook_inputs_json = NULL', 'runbook_approval_required = 0', 'runbook_approval_json = NULL',
           );
+        }
+        if (nextTaskType === 'rpa_script') {
+          const bindingChanged =
+            existing.task_type !== 'rpa_script' ||
+            args.rpaScriptId !== undefined ||
+            args.rpaScriptVersion !== undefined ||
+            args.rpaInputs !== undefined;
+          if (bindingChanged) {
+            const scriptId = args.rpaScriptId !== undefined ? str(args, 'rpaScriptId') : String(existing.rpa_script_id || '');
+            if (!scriptId) return fail('RPA 定时任务需要指定 rpaScriptId');
+            if (args.rpaInputs !== undefined && (!args.rpaInputs || typeof args.rpaInputs !== 'object' || Array.isArray(args.rpaInputs))) {
+              return fail('RPA 参数必须是对象');
+            }
+            const script = getAutomationScript(uid, scriptId);
+            if (!script) return fail('自动化脚本不存在');
+            const version = args.rpaScriptVersion !== undefined
+              ? num(args, 'rpaScriptVersion', 1)
+              : Number(existing.rpa_script_version || script.publishedVersion || 0);
+            if (!version || version !== script.publishedVersion) {
+              return fail('RPA 定时任务必须绑定当前已发布版本');
+            }
+            const inputs = args.rpaInputs !== undefined
+              ? args.rpaInputs as Record<string, unknown>
+              : (() => {
+                  try { return JSON.parse(existing.rpa_inputs_json || '{}'); } catch { return {}; }
+                })();
+            sets.push('rpa_script_id = ?', 'rpa_script_name = ?', 'rpa_script_version = ?', 'rpa_inputs_json = ?');
+            vals.push(script.id, script.name, version, JSON.stringify(inputs));
+          }
+        } else if (existing.task_type === 'rpa_script') {
+          sets.push('rpa_script_id = NULL', 'rpa_script_name = NULL', 'rpa_script_version = NULL', 'rpa_inputs_json = NULL');
         }
         if (sets.length === 0) return ok(existing);
 

@@ -31,12 +31,17 @@ const mocks = vi.hoisted(() => ({
       },
     }),
   ),
+  registerBackgroundJob: vi.fn(async () => null),
 }));
 
 vi.mock('./python-runtime', () => ({
   findPython: vi.fn(async () => '/usr/bin/python'),
   runPythonCode: mocks.runPythonCode,
   runPythonCodeBackground: mocks.runPythonCodeBackground,
+}));
+
+vi.mock('./background-job-client', () => ({
+  registerBackgroundJob: mocks.registerBackgroundJob,
 }));
 
 import { PythonExecTool } from './python-exec';
@@ -51,6 +56,7 @@ function lastOptions(): { cwd?: string } | undefined {
 beforeEach(() => {
   mocks.runPythonCode.mockClear();
   mocks.runPythonCodeBackground.mockClear();
+  mocks.registerBackgroundJob.mockClear();
 });
 
 describe('PythonExecTool cwd', () => {
@@ -94,5 +100,38 @@ describe('PythonExecTool background（2026-10-24：长任务不再被 30s 超时
       | undefined;
     expect(path.normalize(opts?.cwd || '')).toBe(path.normalize(path.join(WS, 'sub')));
     expect(opts?.workspaceDir).toBe(WS);
+  });
+
+  it('注册到统一后台任务后返回 job_bg id，并写明完成会自动唤醒', async () => {
+    mocks.registerBackgroundJob.mockResolvedValueOnce({
+      jobId: 'job_bg_1_deadbeef',
+      kind: 'python_process',
+      status: 'running',
+      wakePolicy: 'notify',
+      title: '后台转码',
+    } as any);
+    const r = await new PythonExecTool().execute(
+      { code: 'print(1)', background: true, wakePolicy: 'notify' },
+      {
+        workspaceDir: WS,
+        conversationId: 'conv1',
+        userId: 'u1',
+        taskId: 'task1',
+        toolCallId: 'call1',
+      },
+    );
+    const text = (r as { content: Array<{ text: string }> }).content[0].text;
+
+    expect(mocks.registerBackgroundJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'python_process',
+        conversationId: 'conv1',
+        wakePolicy: 'notify',
+        adapterRef: 'python:job_test_deadbeef',
+      }),
+      expect.objectContaining({ taskId: 'task1', toolCallId: 'call1' }),
+    );
+    expect(text).toContain('job_bg_1_deadbeef');
+    expect(text).toContain('自动唤醒');
   });
 });

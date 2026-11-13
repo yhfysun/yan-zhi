@@ -19,9 +19,11 @@ const block = mainCjs.slice(start, end);
 
 function loadBlock({
   exists = [],
+  sizes = {},
   downloadsDir = '/fake/Downloads',
   configuredDir = path.join(downloadsDir, '言智下载'),
   pickedDir = '',
+  backgroundJobPost = async () => ({ data: { jobId: 'job_bg_test_deadbeef' } }),
 } = {}) {
   let now = 1;
   const writes = [];
@@ -30,6 +32,10 @@ function loadBlock({
   const fakeFs = {
     existsSync: (p) => exists.includes(p),
     mkdirSync: () => {},
+    statSync: (p) => {
+      if (!exists.includes(p)) throw new Error(`ENOENT: ${p}`);
+      return { isFile: () => true, size: Object.hasOwn(sizes, p) ? sizes[p] : 4096 };
+    },
   };
   const fakeApp = { getPath: (k) => (k === 'downloads' ? downloadsDir : `/fake/${k}`) };
   const quietConsole = { log() {}, warn() {} };
@@ -51,7 +57,7 @@ function loadBlock({
   };
   const factory = new Function(
     'path', 'fs', 'app', 'require', 'console', 'setTimeout', 'clearTimeout',
-    'readHostConfig', 'writeHostConfig', 'mainWindow', 'dialog',
+    'readHostConfig', 'writeHostConfig', 'mainWindow', 'dialog', 'backgroundJobPost',
     block + `
       return {
         resolveDownloadDir,
@@ -59,12 +65,19 @@ function loadBlock({
         installBrowserDownloadHandler,
         attachDownloadToClickResult,
         markAgentBrowserActivity,
+        setAgentDownloadContext,
+        reportDownloadBackgroundJob,
         getRecords: () => downloadRecords,
         getSeq: () => downloadSeq,
         getConfiguredDir: () => loadConfiguredBrowserDownloadDir(),
         resetActivity: () => { agentBrowserActivityUntil = 0; },
         resolveBrowserDownloadDirPrompt,
         markBrowserDownloadUiReady,
+        ...(typeof queryDownloadStatus === 'function' ? { queryDownloadStatus } : {}),
+        ...(typeof waitForDownloadStatus === 'function' ? { waitForDownloadStatus } : {}),
+        ...(typeof updateDownloadProgress === 'function' ? { updateDownloadProgress } : {}),
+        ...(typeof controlDownload === 'function' ? { controlDownload } : {}),
+        ...(typeof waitForDownloadStartSince === 'function' ? { waitForDownloadStartSince } : {}),
       };`
   );
   const api = factory(
@@ -79,24 +92,35 @@ function loadBlock({
     writeHostConfig,
     fakeMainWindow,
     fakeDialog,
+    backgroundJobPost,
   );
   return { ...api, getWrites: () => writes, getDialogCalls: () => dialogCalls, getSent: () => sent };
 }
 
-function makeItem(filename) {
+function makeItem(filename, opts = {}) {
   const item = {
     filename,
     savedPath: null,
     setCalls: 0,
     doneCb: null,
+    receivedBytes: opts.receivedBytes ?? 4096,
+    totalBytes: opts.totalBytes ?? 0,
+    paused: opts.paused ?? false,
+    canResume: opts.canResume ?? false,
     getFilename: () => filename,
     getURL: () => 'blob:https://creator.douyin.com/abc',
-    getReceivedBytes: () => 4096,
+    getReceivedBytes: () => item.receivedBytes,
+    getTotalBytes: () => item.totalBytes,
+    isPaused: () => item.paused,
+    canResume: () => item.canResume,
+    getState: () => (item.paused ? 'interrupted' : 'progressing'),
     pauseCalls: 0,
     resumeCalls: 0,
+    cancelCalls: 0,
     events: [],
-    pause: () => { item.pauseCalls += 1; },
-    resume: () => { item.resumeCalls += 1; item.events.push('resume'); },
+    pause: () => { item.pauseCalls += 1; item.paused = true; },
+    resume: () => { item.resumeCalls += 1; item.paused = false; item.events.push('resume'); },
+    cancel: () => { item.cancelCalls += 1; item.events.push('cancel'); },
     setSavePath: (p) => { item.savedPath = p; item.setCalls += 1; item.events.push('setSavePath'); },
     on: (ev, cb) => { if (ev === 'updated') item.updatedCb = cb; },
     once: (ev, cb) => { if (ev === 'done') item.doneCb = cb; },
@@ -236,7 +260,89 @@ test('③ 下载完成后回执必须区分完成/失败，并带落盘存在性
   );
   assert.strictEqual(out.downloaded.state, 'completed');
   assert.strictEqual(out.downloaded.exists, true);
+  assert.strictEqual(out.downloaded.verified, true);
   assert.match(out.note, /已自动下载/);
+});
+
+test('③ completed 但文件为 0 字节时不能判定为 verified', async () => {
+  const target = path.join('/fake/Downloads', '言智下载', 'empty.xlsx');
+  const exists = [];
+  const api = loadBlock({
+    exists,
+    sizes: { [target]: 0 },
+    downloadsDir: '/fake/Downloads',
+  });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+
+  const before = api.getSeq();
+  const item = makeItem('empty.xlsx');
+  sess.emit('will-download', {}, item);
+  exists.push(item.savedPath);
+  item.doneCb({}, 'completed');
+
+  const out = await api.attachDownloadToClickResult(
+    { status: 'ok', text: '下载' },
+    before,
+  );
+  assert.strictEqual(out.downloaded.state, 'completed');
+  assert.strictEqual(out.downloaded.exists, true);
+  assert.strictEqual(out.downloaded.verified, false);
+  assert.match(out.note, /空文件|0 字节/);
+  assert.doesNotMatch(out.note, /已自动下载/);
+});
+
+test('③ 下载等待查询按 since 只认本次新增文件，并识别浏览器重名后缀', async () => {
+  const target = path.join('/fake/Downloads', '言智下载', '报表 (3).xlsx');
+  const exists = [];
+  const api = loadBlock({
+    exists,
+    downloadsDir: '/fake/Downloads',
+  });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+
+  const before = api.getSeq();
+  const item = makeItem('报表 (3).xlsx');
+  sess.emit('will-download', {}, item);
+  exists.push(item.savedPath);
+  item.doneCb({}, 'completed');
+
+  assert.strictEqual(typeof api.queryDownloadStatus, 'function');
+  const result = await api.queryDownloadStatus({
+    beforeSeq: before,
+    expectedFileName: '报表.xlsx',
+  });
+  assert.strictEqual(result.status, 'completed');
+  assert.strictEqual(result.download.filename, '报表 (3).xlsx');
+  assert.strictEqual(result.download.verified, true);
+});
+
+test('③ expectedFileName 精确命中优先于去后缀匹配，避免同批重名误判 ambiguous', async () => {
+  const exists = [];
+  const api = loadBlock({ exists, downloadsDir: '/fake/Downloads' });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+
+  const before = api.getSeq();
+  const exact = makeItem('报表.xlsx');
+  const duplicate = makeItem('报表 (1).xlsx');
+  sess.emit('will-download', {}, exact);
+  exists.push(exact.savedPath);
+  exact.doneCb({}, 'completed');
+  sess.emit('will-download', {}, duplicate);
+  exists.push(duplicate.savedPath);
+  duplicate.doneCb({}, 'completed');
+
+  const result = await api.queryDownloadStatus({
+    beforeSeq: before,
+    expectedFileName: '报表.xlsx',
+  });
+  assert.strictEqual(result.status, 'completed');
+  assert.strictEqual(result.download.filename, '报表.xlsx');
 });
 
 test('③ 仍在下载时不能谎报完成，必须给出进度和查询路径', async () => {
@@ -258,6 +364,132 @@ test('③ 仍在下载时不能谎报完成，必须给出进度和查询路径'
   assert.match(out.note, /仍在下载/);
   assert.match(out.note, /不要重复点击/);
   assert.doesNotMatch(out.note, /已自动下载/);
+});
+
+test('④ 大文件进度：已下载/总量/百分比/速度/ETA 必须可计算', () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const rec = {
+    bytes: 0,
+    totalBytes: 1000,
+    startedAt: 0,
+    updatedAt: 0,
+    lastBytes: 0,
+    lastSampleAt: 0,
+    speedBps: 0,
+    etaMs: null,
+    paused: false,
+    canResume: false,
+  };
+  api.updateDownloadProgress(rec, 100, 1000, 1000);
+  assert.strictEqual(rec.percent, 10);
+  assert.strictEqual(rec.speedBps, 100);
+  assert.strictEqual(rec.etaMs, 9000);
+
+  api.updateDownloadProgress(rec, 300, 1000, 2000);
+  assert.strictEqual(rec.percent, 30);
+  assert.ok(rec.speedBps > 0);
+  assert.ok(rec.etaMs > 0);
+});
+
+test('④ 支持暂停/恢复进行中的下载，并暴露 canResume', () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+  const item = makeItem('large.iso', { receivedBytes: 100, totalBytes: 1000, canResume: true });
+  sess.emit('will-download', {}, item);
+
+  const paused = api.controlDownload('pause');
+  assert.strictEqual(paused.download.paused, true);
+  assert.strictEqual(paused.download.canResume, true);
+  assert.strictEqual(item.pauseCalls, 1);
+
+  const resumed = api.controlDownload('resume');
+  assert.strictEqual(resumed.download.paused, false);
+  assert.strictEqual(item.resumeCalls, 1);
+
+  const cancelled = api.controlDownload('cancel');
+  assert.strictEqual(cancelled.status, 'ok');
+  assert.strictEqual(item.cancelCalls, 1);
+});
+
+test('④ 大文件等待超时时返回 nextCheckInMs，避免模型高频空转', async () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+  const item = makeItem('large.iso', { receivedBytes: 100, totalBytes: 10_000_000 });
+  sess.emit('will-download', {}, item);
+
+  const result = await api.waitForDownloadStatus({
+    beforeSeq: 0,
+    timeoutMs: 1,
+  });
+  assert.strictEqual(result.status, 'timeout');
+  assert.ok(result.nextCheckInMs >= 1000);
+  assert.ok(result.nextCheckInMs <= 30000);
+});
+
+test('④ browser_download 触发大文件后应在 downloadId 一出现时就返回，而不是等完成', async () => {
+  const api = loadBlock({ downloadsDir: '/fake/Downloads' });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.markAgentBrowserActivity();
+  const item = makeItem('large.iso', { receivedBytes: 100, totalBytes: 10_000_000 });
+  sess.emit('will-download', {}, item);
+
+  const rec = await api.waitForDownloadStartSince(0, 50);
+  assert.strictEqual(rec.id, 1);
+  assert.strictEqual(rec.state, 'progressing');
+  assert.strictEqual(rec.filename, 'large.iso');
+});
+
+test('④ 浏览器大文件下载自动登记统一后台任务，并在终态回调 finish', async () => {
+  const calls = [];
+  const exists = [];
+  const api = loadBlock({
+    downloadsDir: '/fake/Downloads',
+    exists,
+    backgroundJobPost: async (pathname, body) => {
+      calls.push({ pathname, body });
+      return { data: { jobId: 'job_bg_test_deadbeef' } };
+    },
+  });
+  const sess = new EventEmitter();
+  api.installBrowserDownloadHandler(sess);
+  api.setAgentDownloadContext({
+    conversationId: 'conv-bg',
+    taskId: 'task-bg',
+    toolCallId: 'call-bg',
+    wakePolicy: 'resume',
+  });
+  api.markAgentBrowserActivity();
+
+  const item = makeItem('huge.iso', { receivedBytes: 100, totalBytes: 10_000_000, canResume: true });
+  sess.emit('will-download', {}, item);
+  for (let i = 0; i < 5 && !calls.length; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  for (let i = 0; i < 5 && !api.getRecords()[0].backgroundJobId; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.strictEqual(calls[0].pathname, '/upsert');
+  assert.strictEqual(calls[0].body.kind, 'browser_download');
+  assert.strictEqual(calls[0].body.conversationId, 'conv-bg');
+  assert.strictEqual(calls[0].body.taskId, 'task-bg');
+  assert.strictEqual(calls[0].body.adapterRef, `desktop-download:${api.getRecords()[0].id}`);
+  assert.strictEqual(api.getRecords()[0].backgroundJobId, 'job_bg_test_deadbeef');
+
+  exists.push(item.savedPath);
+  item.doneCb({}, 'completed');
+  for (let i = 0; i < 8 && !calls.some((c) => c.pathname.endsWith('/finish')); i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const finish = calls.find((c) => c.pathname.endsWith('/finish'));
+  assert.ok(finish, '下载终态未回写统一后台任务');
+  assert.strictEqual(finish.body.status, 'completed');
+  assert.deepStrictEqual(finish.body.artifactPaths, [item.savedPath]);
 });
 
 test('③ div/span 图标按钮只靠 aria-label 也要识别下载意图', async () => {
@@ -301,6 +533,7 @@ test('③ 点击后页面没变化但下载尚未开始时，必须提示用 bro
   );
   assert.match(out.note, /browser_download/);
   assert.strictEqual(out.downloadWatch.queryTool, 'browser_download');
+  assert.strictEqual(out.downloadWatch.beforeSeq, 0);
   assert.match(out.downloadWatch.reason, /页面没有变化/);
 });
 
@@ -308,7 +541,7 @@ test('③ 旧映射无参 download 也必须能查询最近下载，而不是报
   const start = mainCjs.indexOf("case 'download': {");
   const end = mainCjs.indexOf("case 'downloads': {", start);
   const body = mainCjs.slice(start, end);
-  assert.match(body, /args\.index == null[\s\S]{0,300}downloadRecords/);
+  assert.match(body, /args\.index == null[\s\S]{0,700}downloadRecords/);
 });
 
 test('③ 误点 div 上传入口时回执要引导改用 browser_upload', async () => {

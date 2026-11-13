@@ -94,9 +94,8 @@ describe('插件选择集与模式清单联动（P5）', () => {
   const pluginModeKeys = (ids: string[]) =>
     ids.map((id) => plugins[id]?.modeKey).filter((k): k is string => typeof k === 'string');
 
-  // 编译期内置模式（无插件承载，见 modes.catalog.json 的 pluginId=null）。
-  // learning 于 2026-11-08 升独立模式；office 虽 pluginId=null 但由 office-core 的 modeKey 覆盖。
-  const BUILTIN_MODES = ['learning'];
+  // 当前所有非 office 模式都由插件贡献；office 由 office-core 的 modeKey 覆盖。
+  const BUILTIN_MODES: string[] = [];
 
   it('插件 modeKey ∪ 内置模式 = modes.catalog 的键（不许漂移）', () => {
     const fromPlugins = Object.values(plugins)

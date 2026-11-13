@@ -25,9 +25,26 @@ describe('Windows 安装器进度页', () => {
     assert.match(INSTALLER, /!macro customHeader[\s\S]*?ShowInstDetails show[\s\S]*?InstProgressFlags smooth/);
   });
 
-  test('安装开始时显示阶段一状态', () => {
+  test('安装页一开始就明确进入最耗时的解压阶段，不能停在“检查环境”', () => {
     assert.match(INSTALLER, /MUI_PAGE_CUSTOMFUNCTION_SHOW yzInstallPageShow/);
-    assert.match(INSTALLER, /\[1\/4\] 正在检查安装环境/);
+    assert.match(
+      INSTALLER,
+      /Function yzInstallPageShow[\s\S]*?Push "\[2\/4\] 正在解压应用文件/,
+      '页面 SHOW 时已经进入文件释放阶段，状态行必须显示 [2/4]，否则会长时间卡在第一步的错觉',
+    );
+    assert.doesNotMatch(
+      INSTALLER,
+      /Function yzInstallPageShow[\s\S]*?Push "\[1\/4\]/,
+      '第一步只应在详情总览中出现，不能作为安装页实时状态',
+    );
+  });
+
+  test('★ 覆盖安装前杀掉旧版主程序与 detached 后端', () => {
+    assert.match(
+      INSTALLER,
+      /!macro customCheckAppRunning[\s\S]*?taskkill \/F \/T \/IM "yan-zhi\.exe"[\s\S]*?Sleep 1200/,
+      '升级前必须结束 yan-zhi.exe，否则旧后端会继续占用 3001',
+    );
   });
 
   test('空白详情区显示安装位置和四阶段说明', () => {

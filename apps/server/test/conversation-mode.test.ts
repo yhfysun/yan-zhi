@@ -59,6 +59,7 @@ async function mkDb() {
   ins.run('c_office', 'guest', '办公会话', 'office', 100);
   ins.run('c_wf', 'guest', '工作流会话', 'wf', 200);
   ins.run('c_dev', 'guest', '开发会话', 'dev', 300);
+  ins.run('c_rpa', 'guest', '自动化会话', 'rpa', 310);
   // ★ 新增模式必须在这里有样本（2026-10-08 教训）：此前只建了 office/wf/dev 三个会话，
   //   下方「全部模式并集 = 全部会话」的断言因此**假通过** —— 漏掉 clip/ops/sec 不会被发现。
   //   判据：并集断言要能发现"某模式没有对应样本"，样本就必须覆盖每个模式

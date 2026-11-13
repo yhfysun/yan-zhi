@@ -104,8 +104,9 @@ describe('Runbook 调度接线', () => {
     expect(tool).toContain('prepareScheduledRunbookBinding');
     expect(tool).toContain('lastRunbookRun');
     expect(tool).toContain('模型工具不能自行授权');
-    expect(toolSchema).toContain("enum: ['chat', 'runbook']");
+    expect(toolSchema).toContain("enum: ['chat', 'runbook', 'rpa_script']");
     expect(toolSchema).toContain('runbookInputs');
+    expect(toolSchema).toContain('rpaScriptId');
     expect(routes).toContain("isRunbookTask");
     expect(routes).toContain('prepareScheduledRunbookBinding');
     expect(routes).toContain('lastRunbookRun');

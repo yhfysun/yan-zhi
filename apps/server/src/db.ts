@@ -12,6 +12,12 @@ import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
 import { builtinPublishAgentDefs } from './builtin-publish-agent.js';
 // 英语学习陪练（学习模式：口语对话陪练 + 词书关卡 + SRS）—— 定义见 ./builtin-learning-agents.ts
 import { builtinLearningAgentDefs } from './builtin-learning-agents.js';
+import {
+  RPA_BUILDER_ID,
+  RPA_DELEGATION_PROMPT,
+  RPA_RUNTIME_TOOLS,
+  builtinAutomationAgentDefs,
+} from './builtin-automation-agent.js';
 // 费用账本的建表/读写 SQL（纯字符串，不 import db，便于单测用真 SQLite 跑一遍）
 import { CONVERSATION_USAGE_SCHEMA, USAGE_EVENT_SCHEMA } from './usage-ledger-sql.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
@@ -1314,6 +1320,8 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 会话自配置：模型可设当前会话的智能体 / 技能 / 工作模式
   // ★ 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」
   'api_conversation_setup',
+  // 自动化脚本：办公助手可直接查找与运行固定流程；创作统一委派 RPA Builder
+  ...RPA_RUNTIME_TOOLS,
   // 任务规划
   'task_plan', 'task_step',
   // 模型配置
@@ -1439,7 +1447,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - list_models 返回里带 ★ 的是**当前智能体/平台/全局候选池内**的模型（按顺序即优先级）：**优先从带 ★ 的模型里挑**；要某类能力优先用池内模型时，传 slot 参数（llm/vision/image/video）可只列该候选池的模型。
 - 长任务不必自己预防限流：主任务在遇到 429/5xx/超时等**可重试**错误时会自动沿候选池切换到下一个模型续跑；业务性报错（参数错误/模型不存在）不会切换，需自行修正参数。
 
-` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK + '\n\n' + DIRECT_OPERATION_PROMPT_BLOCK;
+` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK + '\n\n' + WEB_PAGE_OPERATION_PROMPT_BLOCK + '\n\n' + RPA_DELEGATION_PROMPT + '\n\n' + DIRECT_OPERATION_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（以下为**你实际已挂载**的全部工具，其他浏览器工具不可用。★ 与挂载清单
@@ -1463,14 +1471,16 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_get_api_data: 接口直采——页面自然发生的 XHR/fetch JSON 响应按 URL 模式直取（urlPattern 传 "/api/..." 子串）。列表/搜索/分页取数首选它，比读 DOM 省 token 且拿到的是结构化数据；刚打开的新页先等加载或滚动触发请求后再取，取不到回退 browser_get_page_content
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位
-- browser_upload: 上传本地文件——优先传 clickSelector/clickIndex 走 filechooser 拦截；页面有裸露或隐藏 input[type=file] 时用 index/selector；如果是不标准的拖放组件，用 dropSelector/dropIndex 指定 drop zone。工具会扫描普通 DOM、Shadow DOM 与嵌套文档里的隐藏 input，并在既没 filechooser 也没 input 时尝试把真实文件拖到点击区域。返回 uploaded 只表示投递，verified 才表示页面已接管。
+- browser_list_upload_inputs: 上传前先列当前页面的文件输入清单——返回每个 input[type=file] 的 index/selector/label/accept/multiple/visible/disabled。页面有多个上传口（头像/封面/视频/附件）或必须先确认文件格式时先调它，再用返回的 index/selector 上传；hidden=true 仍可注入，不代表失败。
+- browser_upload: 上传本地文件——优先传 clickSelector/clickIndex 走 filechooser 拦截；页面有裸露或隐藏 input[type=file] 时先用 browser_list_upload_inputs，再用 index/selector；如果是不标准的拖放组件，用 dropSelector/dropIndex 指定 drop zone。工具会扫描普通 DOM、Shadow DOM 与嵌套文档里的隐藏 input，并在既没 filechooser 也没 input 时尝试把真实文件拖到点击区域。返回 uploaded 只表示投递，verified 才表示页面已接管。
 - browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；**登录表单必须同时传 submit:true（或 submit:{selector/index:登录按钮}），填写和点击登录一次完成**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）；返回里带页面判定（成功提示 / 校验提示 / 是否还有表单），据此判断，不要立刻再读一遍页面
 - browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 优先用 get_page_content 回显的高质量选择器（id/testid/aria/name/placeholder）；元素行没带 <selector> 段的用 index——hash class 下一次读取就漂移，不要凭印象猜），selectors 可给备用选择器，下拉优先 label。可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
 - browser_run_page_operation: 已登记站点优先走页面资产。先看可用页面资产引用，再用 assetId + operationId + params 执行；禁止用自由选择器或脚本替代已声明 operation。
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
-- browser_download: 点导出/下载按钮后先看 browser_click 回执的 downloaded 字段。若页面异步生成文件或回执仍为 progressing，调用 browser_download 不传参数查询最近下载；只有 state=completed 且 exists=true 才能判定成功，progressing 是在下载，cancelled/interrupted 是失败。禁止因为看不到系统下载弹窗或不知道路径就重复点击导出。
-- 下载入口点击后 pageChanged=false 或回执没有 downloaded，不等于失败：不要再次点击同一入口；先 browser_download 不传参数查询最近下载。文件可能仍在生成，查到 completed 且 exists=true 后直接进入校验、上传或后续业务步骤。
+- browser_download: 点导出/下载按钮后先看 browser_click 回执的 downloaded 字段。若回执仍为 progressing，或没有 downloaded 但有 downloadWatch，按 browser_download({since: downloadWatch.beforeSeq, waitMs: 10000, expectedFileName?: "..."}) 等待终态；只有 state=completed、exists=true 且 verified=true 才能判定成功。file_empty/file_missing/cancelled/interrupted 是失败，no_download/timeout 表示本次窗口内未完成。禁止因为看不到系统下载弹窗或不知道路径就重复点击导出。
+- 大文件下载：回执里看 bytes/totalBytes/percent/speedBps/etaMs，timeout 时按 nextCheckInMs 再查，禁止高频轮询或重复点击。桌面端需要暂停/恢复时用 browser_download({operation:"pause"|"resume", downloadId?})；只有 canResume=true 才承诺断点续传，Playwright 链路不支持暂停/恢复。
+- 下载入口点击后 pageChanged=false 或回执没有 downloaded，不等于失败：不要再次点击同一入口；带 downloadWatch.beforeSeq 调 browser_download 等待/查询。文件可能仍在生成，拿到 completed + verified=true 后直接进入校验、上传或后续业务步骤。
 - 文件入口不要求是 button/a：div、span、role=button、图标按钮只要绑定了 click 事件都可能是下载或上传。元素标签不影响 will-download/filechooser 的捕获。下载入口直接用 browser_click，再读 downloaded 或查询 browser_download；上传入口不要先 browser_click 打开原生文件框，直接 browser_upload 并传 clickSelector/clickIndex。
 - 文件跨系统流转（高频办公流程）：源系统下载文件后，先用 file_read / office_read / python_exec 验证内容和条数，再 browser_upload 上传到目标系统，提交后回读目标页面的成功提示或更新条数；交付时同时报告源文件 savedPath、目标系统、上传结果和更新数量。
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
@@ -1542,7 +1552,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - 联动字段（省/市/区、分类级联、先选类型再出子项）：先填上游，等下游选项出现再填下游。若 fill_form 返回的字段原因是"选项未找到"，通常说明上游还没填好 —— **先填上游再回头补下游**，不要用同样参数原地重试。
 - fields 每项：index 优先（来自 get_page_content 的编号），selector 次之；下拉优先 label；单选/复选用 true/false。
 - 返回 state 数组 = 各字段当前值（机器回读）：**逐条核对 state**，value 已是新值 = 填写成功，不要重填；failed 非空 = 只按原因换 index/selector 重试失败的那几个字段，已成功的不要重复填。
-- 上传类字段（input[type=file]）不在 fill_form 范围内，用 browser_upload 单独处理。
+- 上传类字段（input[type=file]）不在 fill_form 范围内：先 browser_list_upload_inputs 看 accept/multiple/可见性，再用 browser_upload 单独处理。
 
 【提交与核验（点了保存 ≠ 保存成功）】
 - 填完优先用 browser_submit_form 提交；没有明确提交按钮语义时先 browser_get_page_content 找提交 / 保存 / 下一步类按钮再 browser_click。
@@ -2223,7 +2233,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     is_default: 1,
     builtin_tool_ids: JSON.stringify(DEFAULT_AGENT_BUILTIN_TOOLS),
     // pageAgent（联网/浏览器） + 数据查询分析助手（库内数据只读取数）
-    sub_agent_ids: JSON.stringify(['a_builtin_page_agent', 'a_builtin_data_agent']),
+    sub_agent_ids: JSON.stringify(['a_builtin_page_agent', 'a_builtin_data_agent', RPA_BUILDER_ID]),
     skill_ids: JSON.stringify(DEFAULT_AGENT_SKILL_IDS),
     // 默认智能体默认挂载内置「应用使用说明」知识库（builtin-app-guide）；知识库检索范围随之收敛到该库
     knowledge_base_ids: JSON.stringify(['builtin-app-guide']),
@@ -2453,6 +2463,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
   },
   // 办公岗位专属内置智能体（翻译助手 / 个人生意助手）—— 定义见 ./builtin-office-agents.ts
   ...builtinOfficeAgentDefs,
+  ...builtinAutomationAgentDefs,
   // 任务模式专属内置智能体（小说改写 / 脚本文案 / 有声小说 / 配音）—— 定义见 ./builtin-task-mode-agents.ts
   // 与任务类型注册表（shared/utils/task-types.ts 的 agentId）成对维护：改 id 必须两边同步
   ...builtinTaskModeAgentDefs,
@@ -5493,6 +5504,10 @@ try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_version INTEGER'); 
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_inputs_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_approval_required INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_approval_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN rpa_script_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN rpa_script_name TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN rpa_script_version INTEGER'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN rpa_inputs_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
 // 定时任务分组
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN group_id TEXT'); } catch {}
@@ -5760,6 +5775,63 @@ try { db.exec('ALTER TABLE llm_task ADD COLUMN goal_batch_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE llm_task ADD COLUMN heartbeat_at INTEGER'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_goal ON llm_task(goal_id, goal_batch_id)'); } catch {}
 
+// ===== 统一后台长任务 =====
+// 浏览器下载、Python 后台进程、打包/构建等共用同一状态机、终态事件与唤醒策略。
+// 旧 Python 作业仍可只靠 .yan-zhi/jobs 文件工作；注册到这里后由统一任务面接管
+// 进度、通知、续跑与 UI。idempotency_key 让桌面主进程重复回调不会重复建任务。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS background_job (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE,
+    user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    task_id TEXT,
+    tool_call_id TEXT,
+    parent_goal_id TEXT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    wake_policy TEXT NOT NULL DEFAULT 'resume',
+    title TEXT NOT NULL,
+    progress REAL,
+    bytes_done INTEGER NOT NULL DEFAULT 0,
+    bytes_total INTEGER,
+    speed_bps REAL,
+    eta_ms INTEGER,
+    eta_at INTEGER,
+    artifact_json TEXT NOT NULL DEFAULT '[]',
+    result_json TEXT,
+    error TEXT,
+    checkpoint_json TEXT,
+    spec_json TEXT NOT NULL DEFAULT '{}',
+    adapter_ref TEXT,
+    control_capabilities_json TEXT NOT NULL DEFAULT '{}',
+    heartbeat_at INTEGER,
+    last_progress_at INTEGER,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    terminal_version INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS background_job_event (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE,
+    payload_json TEXT,
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    last_delivery_error TEXT,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_conv ON background_job(conversation_id, updated_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_status ON background_job(status, updated_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_task ON background_job(task_id)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_adapter ON background_job(adapter_ref)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_event_job ON background_job_event(job_id, created_at)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_background_job_event_delivery ON background_job_event(delivered_at, created_at)'); } catch {}
+
 // ===== 目标模式（Goal Run）持久化 =====
 // 目标不是一次性 llm_task，而是跨批次、跨重启、跨人工等待的长期运行对象。
 // llm_task 只承载其中一批执行，goal_* 负责目标状态、检查点和审计。
@@ -6003,6 +6075,94 @@ try { db.exec("ALTER TABLE workflow_run ADD COLUMN delivery_json TEXT"); } catch
 // ★ 必须落库：用户可能刷新页面/关掉应用过一会儿再回答，内存 waiter 一刷新就没了；
 //   落库后前端重连仍能查到"卡在哪个节点的什么问题上"（见 workflow-runner 的 getPendingConfirm）。
 try { db.exec('ALTER TABLE workflow_run ADD COLUMN pending_confirm_json TEXT'); } catch {}
+
+// ===== 自动化脚本（固定步骤 RPA）=====
+// 当前行永远保存最新草稿/版本；automation_script_version 保存不可变快照。
+// published_version 指向用户最后一次确认发布的版本，运行正式任务时只读该快照。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS automation_script (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    current_version INTEGER NOT NULL DEFAULT 1,
+    published_version INTEGER,
+    script_json TEXT NOT NULL,
+    permissions_json TEXT NOT NULL DEFAULT '{}',
+    approval_policy_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_automation_script_user
+    ON automation_script(user_id, updated_at DESC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS automation_script_version (
+    script_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (script_id, version)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS automation_run (
+    id TEXT PRIMARY KEY,
+    script_id TEXT NOT NULL,
+    script_version INTEGER NOT NULL,
+    script_name TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    conversation_id TEXT,
+    trigger_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_json TEXT NOT NULL DEFAULT '{}',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    result_json TEXT,
+    checkpoint_json TEXT,
+    error TEXT,
+    started_at INTEGER,
+    finished_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_automation_run_user
+    ON automation_run(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_automation_run_script
+    ON automation_run(script_id, created_at DESC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS automation_run_event (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, seq)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS automation_recording (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    url TEXT,
+    conversation_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    events_json TEXT NOT NULL DEFAULT '[]',
+    draft_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    stopped_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_automation_recording_user
+    ON automation_recording(user_id, created_at DESC);
+`);
 
 // ===== 多数据源（P1 数据源底座）=====
 // 密码用 utils/crypto.ts 的 AES-256-GCM 加密（password_enc），接口永不回显明文。

@@ -51,7 +51,7 @@ describe('① seedRbac 幂等 + 种子完整性', () => {
   });
   it('权限树含 menu.*（与 MODE_DEFS 模式 key 对齐）与管理权限点', () => {
     const ids = PERMISSION_TREE.map((p) => p.id);
-    for (const k of ['menu.office', 'menu.wf', 'menu.dev', 'menu.clip', 'menu.ops', 'menu.sec', 'menu.shop', 'admin.user.manage', 'share.agent.publish']) {
+    for (const k of ['menu.office', 'menu.wf', 'menu.dev', 'menu.rpa', 'menu.clip', 'menu.ops', 'menu.sec', 'menu.shop', 'admin.user.manage', 'share.agent.publish']) {
       expect(ids, k).toContain(k);
     }
   });

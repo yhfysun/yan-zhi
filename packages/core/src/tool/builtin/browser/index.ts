@@ -63,6 +63,23 @@ export function getBrowserToolWorkspaceDir(): string {
   return currentWorkspaceDir;
 }
 
+/** 当前工具调用的后台任务绑定信息（由执行器在每次工具调用前设置）。 */
+let currentTaskId = '';
+let currentToolCallId = '';
+let currentWakePolicy: 'resume' | 'notify' | 'silent' = 'resume';
+
+export function setBrowserToolJobContext(input: {
+  taskId?: string | null;
+  toolCallId?: string | null;
+  wakePolicy?: 'resume' | 'notify' | 'silent';
+}): void {
+  currentTaskId = input.taskId ? String(input.taskId) : '';
+  currentToolCallId = input.toolCallId ? String(input.toolCallId) : '';
+  currentWakePolicy = input.wakePolicy === 'notify' || input.wakePolicy === 'silent'
+    ? input.wakePolicy
+    : 'resume';
+}
+
 /**
  * 语义定位参数（2026-10-27）：模型说得出「点带某文字的按钮」，却猜不出动态 class 选择器。
  *
@@ -137,8 +154,15 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
     let ipcAction = path === '/navigate' ? 'navigate' : (body as any)?.action;
     let ipcArgs = path === '/navigate' ? (body as any) : (() => { const { action, ...rest } = body as any; return rest; })();
     // 工作目录随动作下发（2026-10-26）：桌面端据此把下载落进 <工作目录>/downloads/
-    if (currentWorkspaceDir && ipcArgs && typeof ipcArgs === 'object') {
-      ipcArgs = { ...ipcArgs, __workspaceDir: currentWorkspaceDir };
+    if (ipcArgs && typeof ipcArgs === 'object') {
+      ipcArgs = {
+        ...ipcArgs,
+        __workspaceDir: currentWorkspaceDir || undefined,
+        __conversationId: currentConversationId || undefined,
+        __taskId: currentTaskId || undefined,
+        __toolCallId: currentToolCallId || undefined,
+        __wakePolicy: currentWakePolicy,
+      };
     }
     const result = await electron.browserView.action(null, ipcAction, ipcArgs);
     if (result?.error) throw new Error(result.error);
@@ -152,6 +176,9 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   //   避免 A 会话导航中、B 会话读取拿到 A 的页面（且静默无报错）。
   //   ★ header 名与 `apps/server/src/routes/browser.ts` 的读取处必须逐字一致。
   if (currentConversationId) headers['x-yz-conversation-id'] = currentConversationId;
+  if (currentTaskId) headers['x-yz-task-id'] = currentTaskId;
+  if (currentToolCallId) headers['x-yz-tool-call-id'] = currentToolCallId;
+  headers['x-yz-wake-policy'] = currentWakePolicy;
   // 后端 Node.js 环境用绝对 URL，前端用相对 URL
   const baseUrl = typeof window !== 'undefined' ? '' : `http://127.0.0.1:${process.env.PORT || 3001}`;
   // 内置工具发起的导航/操作打上 agent 标记：服务端据此把智能体操作沉淀进浏览器记忆文件（区别于用户手动浏览）
@@ -162,8 +189,15 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
     headers,
     body: body !== undefined
       ? JSON.stringify(
-        isAgentAction && currentWorkspaceDir && body && typeof body === 'object'
-          ? { ...(body as Record<string, unknown>), __workspaceDir: currentWorkspaceDir }
+        isAgentAction && body && typeof body === 'object'
+          ? {
+              ...(body as Record<string, unknown>),
+              __workspaceDir: currentWorkspaceDir || undefined,
+              __conversationId: currentConversationId || undefined,
+              __taskId: currentTaskId || undefined,
+              __toolCallId: currentToolCallId || undefined,
+              __wakePolicy: currentWakePolicy,
+            }
           : body,
       )
       : undefined,
@@ -221,6 +255,18 @@ function okWithMeta(text: string, meta: Record<string, unknown>): McpCallResult 
 }
 function err(msg: string): McpCallResult {
   return toolError(msg);
+}
+
+/** 执行面以 200 + data.status/error 返回的动作失败，不能被 core 包装成成功。 */
+function browserActionResultError(data: any): McpCallResult | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const status = String(data.status || '');
+  if (status === 'ambiguous') return null;
+  const failed = data.error
+    || ['not_found', 'stale_index', 'invalid_args', 'rejected', 'failed', 'error'].includes(status)
+    || data.success === false
+    || data.applied === false;
+  return failed ? err(JSON.stringify(data)) : null;
 }
 
 /** 从工具参数中健壮提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
@@ -350,6 +396,8 @@ export class BrowserClickTool implements BuiltInTool {
         return await emptyTargetHint();
       }
       const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y, ...(args.fast === true ? { fast: true } : {}) }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       const text = JSON.stringify(data);
       if (data?.downloaded?.savedPath) {
         return ok(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`);
@@ -398,6 +446,8 @@ export class BrowserTypeTool implements BuiltInTool {
         const hint = await emptyTargetHint();
         return err(`无聚焦元素（需先用 browser_click 聚焦输入框，或直接传 index/selector/target）${(hint.content?.[0]?.text || '').replace(/^未提供定位参数（[^）]*）/, '')}`);
       }
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '输入失败'); }
   }
@@ -419,7 +469,8 @@ export class BrowserPressKeyTool implements BuiltInTool {
     try {
       const key = args.key as string;
       if (!key) return err('key is required');
-      await callBrowserApi('/action', 'POST', { action: 'press', key, ...(args.fast === true ? { fast: true } : {}) });
+      const data = await callBrowserApi('/action', 'POST', { action: 'press', key, ...(args.fast === true ? { fast: true } : {}) }) as any;
+      if (data?.error) return err(data.error);
       return ok(`Pressed key: ${key}`);
     } catch (e: any) { return err(e?.message || '按键失败'); }
   }
@@ -443,7 +494,9 @@ export class BrowserScrollTool implements BuiltInTool {
     try {
       const blocked = semanticGuard(args);
       if (blocked) return blocked;
-      await callBrowserApi('/action', 'POST', withTarget({ action: 'scroll', selector: args.selector, index: args.index, x: args.x, y: args.y }, args));
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'scroll', selector: args.selector, index: args.index, x: args.x, y: args.y }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       const where = args.selector ? `to ${args.selector}`
         : args.index != null ? `to index ${args.index}`
           : usesSemanticTarget(args) ? `to target ${JSON.stringify(args.target)}`
@@ -471,7 +524,9 @@ export class BrowserHoverTool implements BuiltInTool {
     try {
       const blocked = semanticGuard(args);
       if (blocked) return blocked;
-      await callBrowserApi('/action', 'POST', withTarget({ action: 'hover', selector: args.selector, index: args.index, x: args.x, y: args.y }, args));
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'hover', selector: args.selector, index: args.index, x: args.x, y: args.y }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       const where = args.selector ? args.selector
         : args.index != null ? `index ${args.index}`
           : usesSemanticTarget(args) ? `target ${JSON.stringify(args.target)}`
@@ -538,7 +593,8 @@ export class BrowserWaitTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'wait', timeout: args.timeout }) as any;
+      const timeout = Math.min(Math.max(Number(args.timeout) || 1000, 1), 10000);
+      const data = await callBrowserApi('/action', 'POST', { action: 'wait', timeout }) as any;
       return ok(`Waited ${data.waited}ms`);
     } catch (e: any) { return err(e?.message || '等待失败'); }
   }
@@ -772,6 +828,8 @@ export class BrowserSubmitFormTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'submit_form', selector: args.selector }) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       // ★ P2-1 观察内联：提交后附页面判定（成功提示 / 校验提示 / 是否还有表单），模型据此判断，不必再读一次页面
       const v = data?.verdict;
       const vLine = v
@@ -804,6 +862,8 @@ export class BrowserSearchTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'search', query: args.query, input_selector: args.input_selector, submit_selector: args.submit_selector }) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(`Searched "${data.searched}". URL: ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '搜索失败'); }
   }
@@ -817,6 +877,8 @@ export class BrowserNextPageTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'next_page', selector: args.selector }) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(`Paged next. URL: ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '翻页失败'); }
   }
@@ -828,6 +890,8 @@ export class BrowserPrevPageTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'prev_page', selector: args.selector }) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(`Paged prev. URL: ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '翻页失败'); }
   }
@@ -851,7 +915,18 @@ export class BrowserWaitForTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'wait_for', selector: args.selector, url: args.url, text: args.text, timeout: args.timeout }) as any;
+      if (!args.selector && !args.url && !args.text) {
+        return err('browser_wait_for 需要 selector / url / text 至少一项；固定等待请用 browser_wait。');
+      }
+      const timeout = Math.min(Math.max(Number(args.timeout) || 10000, 1), 30000);
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'wait_for',
+        selector: args.selector,
+        url: args.url,
+        text: args.text,
+        timeout,
+      }) as any;
+      if (data?.error) return err(data.error);
       return ok(`Waited for ${data.waited}: ${data.selector || data.url || data.text || data.ms + 'ms'}`);
     } catch (e: any) { return err(e?.message || '等待失败'); }
   }
@@ -1026,6 +1101,8 @@ export class BrowserSelectOptionTool implements BuiltInTool {
         return err('需要 selector / index / target 三者之一来指定下拉控件。');
       }
       const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'select_option', selector: args.selector, index: args.index, value: args.value, label: args.label }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '选择失败'); }
   }
@@ -1051,6 +1128,8 @@ export class BrowserCheckTool implements BuiltInTool {
         return err('需要 selector / index / target 三者之一来指定勾选项。');
       }
       const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'check', selector: args.selector, index: args.index }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '勾选失败'); }
   }
@@ -1074,6 +1153,8 @@ export class BrowserUncheckTool implements BuiltInTool {
         return err('需要 selector / index / target 三者之一来指定勾选项。');
       }
       const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'uncheck', selector: args.selector, index: args.index }, args)) as any;
+      const failed = browserActionResultError(data);
+      if (failed) return failed;
       return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '取消勾选失败'); }
   }
@@ -1149,6 +1230,7 @@ export class BrowserNewTabTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'new_tab', url: args.url, background: args.background === true }) as any;
+      if (data?.error) return err(data.error);
       return ok(`新标签页已打开。tabId=${data.tabId}${args.url ? `, url=${data.url}` : ''}`);
     } catch (e: any) { return err(e?.message || '新开标签页失败'); }
   }
@@ -1165,6 +1247,7 @@ export class BrowserSwitchTabTool implements BuiltInTool {
     try {
       if (args.tabId === undefined || args.tabId === null) return err('tabId 为必填项');
       const data = await callBrowserApi('/action', 'POST', { action: 'switch_tab', tabId: args.tabId }) as any;
+      if (data?.error) return err(data.error);
       return ok(`已切换到标签页 tabId=${data.tabId}, url=${data.url}, title=${data.title}`);
     } catch (e: any) { return err(e?.message || '切换标签页失败'); }
   }
@@ -1227,12 +1310,14 @@ export class BrowserGetTabsTool implements BuiltInTool {
   name = 'browser_get_tabs';
   // 读**当前标签页集合**：agent 自己开/关页就会改变结果
   readsExternalState = true;
-  description = 'List all open browser tabs (id/url/title/active). 列出所有标签页。';
+  description = 'List all open browser tabs (tabId/url/title/active). 列出所有标签页；后续 switch_tab / close_tab / 定向读取都使用返回的 tabId。';
   inputSchema = { type: 'object', properties: {} };
   async execute(): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'get_tabs' }) as any;
-      return ok(`标签页列表（共 ${data.tabs.length} 个）：\n${JSON.stringify(data.tabs, null, 2)}`);
+      if (data?.error) return err(data.error);
+      const list = Array.isArray(data?.tabs) ? data.tabs : [];
+      return ok(`标签页列表（共 ${list.length} 个）：\n${JSON.stringify(list, null, 2)}`);
     } catch (e: any) { return err(e?.message || '获取标签页列表失败'); }
   }
 }
@@ -1255,7 +1340,8 @@ export class BrowserWaitForRequestTool implements BuiltInTool {
     try {
       const urlPattern = args.urlPattern as string;
       if (!urlPattern) return err('urlPattern 为必填项');
-      const data = await callBrowserApi('/action', 'POST', { action: 'wait_for_request', urlPattern, timeout: args.timeout }) as any;
+      const timeout = Math.min(Math.max(Number(args.timeout) || 10000, 1), 30000);
+      const data = await callBrowserApi('/action', 'POST', { action: 'wait_for_request', urlPattern, timeout }) as any;
       if (data?.error) return err(data.error);
       return ok(`等待到匹配请求: ${JSON.stringify(data)}`);
     } catch (e: any) { return err(e?.message || '等待网络请求失败'); }
@@ -1377,9 +1463,40 @@ export class BrowserVisualLocateTool implements BuiltInTool {
 }
 
 // ========== C11 文件上传/下载 ==========
+export class BrowserListUploadInputsTool implements BuiltInTool {
+  name = 'browser_list_upload_inputs';
+  readsExternalState = true;
+  description = 'List every file-upload target on the current page before choosing one: index, selector, label, accept, multiple, disabled and visible. 先列出页面上所有 input[type=file] 再上传。多个上传口（头像/封面/视频/附件）或需要确认文件格式时先用本工具，随后把返回的 index/selector 传给 browser_upload。hidden=true 只表示输入框不可见，不代表不能注入；不要为了看文件框先点击上传按钮。若清单为空，直接改用 browser_upload 的 clickSelector/clickIndex 模式。';
+  inputSchema = {
+    type: 'object',
+    properties: {},
+  };
+  async execute(): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'list_upload_inputs' }) as any;
+      if (data?.error) return err(data.error);
+      const inputs = Array.isArray(data?.inputs) ? data.inputs : [];
+      if (!inputs.length) return ok(data?.note || '当前页面没有 input[type=file]。');
+      const lines = inputs.map((item: any) => {
+        const attrs = [
+          `[index=${item.index}]`,
+          `label="${item.label || '(no label)'}"`,
+          `accept="${item.accept || '(none)'}"`,
+          `multiple=${item.multiple === true}`,
+          `visible=${item.visible === true}`,
+          `disabled=${item.disabled === true}`,
+        ];
+        if (item.selector) attrs.push(`selector="${item.selector}"`);
+        return attrs.join(' ');
+      });
+      return ok(`${data?.note || ''}\nFile inputs: ${inputs.length}\n${lines.join('\n')}`);
+    } catch (e: any) { return err(e?.message || '读取上传目标失败'); }
+  }
+}
+
 export class BrowserUploadTool implements BuiltInTool {
   name = 'browser_upload';
-  description = 'Upload a local file into a web page. 上传本地文件到网页。三种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露或隐藏的 input[type=file]，用 index 或 selector 直接定位（Shadow DOM/嵌套文档也能扫描；多上传口页面必须指定目标）；③【非标准拖放区】页面只接受拖拽上传、没有 file input 时，用 dropSelector/dropIndex 指定 drop zone，工具会用真实本地文件发送 HTML5 dragenter/dragover/drop。★ 只传 clickSelector 时，若既没弹 filechooser 也没找到 input，也会自动尝试把文件拖放到该按钮/区域。★ 结果语义：uploaded=true 只代表 CDP 投递完成；verified=true 才代表页面已接管（出现文件名/进度，或网络层有上传请求）。返回 uploaded=false + code=not_started 表示页面没接收：按 fileInputs（index/accept/near/visible）用 index 精确指定再试，或改用 clickSelector 指向上传按钮；同一文件在同一页连续 2 次这种情况会直接熔断（code=upload_loop），此时应停下来换入口或用 index 指定，不要原样重试。';
+  description = 'Upload a local file into a web page. 上传本地文件到网页。三种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露或隐藏的 input[type=file]，先用 browser_list_upload_inputs 取清单，再用 index 或 selector 直接定位（Shadow DOM/嵌套文档也能扫描；多上传口页面必须指定目标）；③【非标准拖放区】页面只接受拖拽上传、没有 file input 时，用 dropSelector/dropIndex 指定 drop zone，工具会用真实本地文件发送 HTML5 dragenter/dragover/drop。★ 只传 clickSelector 时，若既没弹 filechooser 也没找到 input，也会自动尝试把文件拖放到该按钮/区域。★ 结果语义：uploaded=true 只代表 CDP 投递完成；verified=true 才代表页面已接管（出现文件名/进度，或网络层有上传请求）。返回 uploaded=false + code=not_started 表示页面没接收：按 fileInputs（index/accept/near/visible）用 index 精确指定再试，或改用 clickSelector 指向上传按钮；同一文件在同一页连续 2 次这种情况会直接熔断（code=upload_loop），此时应停下来换入口或用 index 指定，不要原样重试。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1420,8 +1537,9 @@ export class BrowserDownloadTool implements BuiltInTool {
   name = 'browser_download';
   description = '触发下载并等待完成，返回保存路径；不传 url/selector 时列出最近的下载记录。'
     + '★ 点「导出/下载」类按钮时，文件会**自动落盘**（不会弹系统「另存为」框），保存路径已直接写进 browser_click 回执的 downloaded 字段 —— 拿到路径就用文件工具读取，不要重复点导出。'
-    + '本工具的 list 模式用于事后查询（例如下载是页面异步生成、点击时还没开始）。'
-    + '以 state=completed 且 exists=true 作为成功判据；progressing 表示仍在下载，cancelled/interrupted 表示失败。';
+    + '页面异步生成文件时，把 browser_click 回执里的 downloadWatch.beforeSeq 作为 since，并传 waitMs（≤30000）与 expectedFileName 等待终态，避免连续猜查询。'
+    + '大文件会登记为统一后台长任务并返回 jobId；完成时按 wakePolicy 自动通知/续跑，不要持续轮询。需要最新进度或控制时用 job_status/job_control。桌面端支持 pause/resume/cancel，canResume 表示当前是否可续传；Playwright 链路只提供进度，不支持控制。'
+    + '只有 status=completed 且 verified=true 才算成功；file_empty/file_missing/interrupted/cancelled 是失败，no_download/timeout 表示本次窗口内未完成。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1430,21 +1548,77 @@ export class BrowserDownloadTool implements BuiltInTool {
       index: { type: 'number', description: 'Element index from browser_get_page_content to click and trigger download.' },
       savePath: { type: 'string', description: 'Path to save the downloaded file (optional). 相对路径基于工作目录；不传则存到 <工作目录>/downloads/（无工作目录时存到系统下载目录）。' },
       limit: { type: 'number', description: '仅查询模式：返回最近的 N 条下载记录（默认 10，最多 50）。' },
+      since: { type: 'number', description: '仅查询/等待模式：只认 id 大于该值的本次新增下载。直接使用 browser_click 回执的 downloadWatch.beforeSeq。' },
+      waitMs: { type: 'number', description: '仅查询/等待模式：在该窗口内等待下载进入 completed/file_empty/file_missing/interrupted/cancelled 等终态，最大 30000。' },
+      expectedFileName: { type: 'string', description: '仅查询/等待模式：预期文件名；会自动兼容浏览器生成的 "name (1).xlsx" 重名后缀。' },
+      operation: { type: 'string', enum: ['pause', 'resume', 'cancel'], description: '可选：暂停、恢复或取消仍在进行的下载。仅桌面端支持；暂停/恢复还要求下载源支持断点续传。' },
+      downloadId: { type: 'number', description: '可选：要暂停/恢复的下载 id；省略时操作最近一个进行中的下载。' },
+      wakePolicy: { type: 'string', enum: ['resume', 'notify', 'silent'], description: '后台任务结束后的唤醒策略：resume=自动续跑原会话（默认）、notify=只通知、silent=只更新任务卡。' },
+      background: { type: 'boolean', description: 'true=触发后立刻转后台长任务；默认先短等约 4.5 秒，小文件可同步完成' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      if (!args.url && !args.selector && args.index == null) {
-        const data = await callBrowserApi('/action', 'POST', { action: 'downloads', limit: args.limit }) as any;
+      if (args.operation === 'pause' || args.operation === 'resume' || args.operation === 'cancel') {
+        const data = await callBrowserApi('/action', 'POST', {
+          action: 'download_control',
+          operation: args.operation,
+          downloadId: args.downloadId,
+        }) as any;
         if (data?.error) return err(data.error);
+        const d = data?.download || {};
+        return ok(`下载已${args.operation === 'pause' ? '暂停' : args.operation === 'resume' ? '恢复' : '取消'}：${d.filename || '(unknown)'}\n已下载: ${d.bytes || 0}/${d.totalBytes || 0}B\n速度: ${d.speedBps || 0}B/s\n可续传: ${d.canResume === true}\n暂停中: ${d.paused === true}`);
+      }
+      if (!args.url && !args.selector && args.index == null) {
+        const data = await callBrowserApi('/action', 'POST', {
+          action: 'downloads',
+          limit: args.limit,
+          since: args.since,
+          waitMs: args.waitMs,
+          expectedFileName: args.expectedFileName,
+        }) as any;
+        if (data?.error) return err(data.error);
+        if (data?.status) {
+          const artifact = data.download;
+          switch (data.status) {
+            case 'completed':
+              return ok(`✅ 下载完成并通过校验：${artifact?.filename || '(unknown)'}\n保存路径: ${artifact?.savedPath || '(unknown)'}\n大小: ${artifact?.bytes || 0}B\nstate=completed, exists=${artifact?.exists === true}, verified=${artifact?.verified === true}`);
+            case 'progressing':
+              return ok(`⚠️ 下载仍在进行：${artifact?.bytes || 0}/${artifact?.totalBytes || 0}B（${artifact?.percent == null ? '进度未知' : `${artifact.percent}%`}），速度 ${artifact?.speedBps || 0}B/s，预计还需 ${artifact?.etaMs ? Math.ceil(artifact.etaMs / 1000) : '未知'} 秒。不要重复点击下载入口，建议 ${data.nextCheckInMs || 3000}ms 后再次调用 browser_download 等待${data.nextCheckAt ? `（约 ${new Date(data.nextCheckAt).toLocaleTimeString()}）` : ''}。`);
+            case 'no_download':
+              return ok('⚠️ 本次动作之后没有观察到新下载。先重新观察一次页面或确认点击目标，不要直接重复同一导出操作。');
+            case 'timeout':
+              return ok(`⚠️ 等待窗口内下载未进入终态。已下载 ${artifact?.bytes || 0}/${artifact?.totalBytes || 0}B，预计还需 ${artifact?.etaMs ? Math.ceil(artifact.etaMs / 1000) : '未知'} 秒；建议 ${data.nextCheckInMs || 3000}ms 后按同一个 since 再等待${data.nextCheckAt ? `（约 ${new Date(data.nextCheckAt).toLocaleTimeString()}）` : ''}，不要重新点击导出。`);
+            case 'ambiguous':
+              return ok(`❌ 本次动作触发了多个下载，无法唯一判断：${(data.candidates || []).map((x: any) => x.filename).join(', ')}。请传 expectedFileName 缩小范围。`);
+            case 'file_empty':
+              return ok(`❌ 下载事件已完成，但文件是 0 字节：${artifact?.savedPath || '(unknown)'}。不要当作有效导出。`);
+            case 'file_missing':
+              return ok(`❌ 下载事件已完成，但目标文件不存在：${artifact?.savedPath || '(unknown)'}。检查目录权限或页面生成状态。`);
+            default:
+              return ok(`❌ 下载失败：status=${data.status}${artifact?.savedPath ? `，path=${artifact.savedPath}` : ''}。不要自动重复点击。`);
+          }
+        }
         const records = Array.isArray(data?.records) ? data.records : [];
         if (!records.length) return ok(`最近没有下载记录。下载目录: ${data?.dir || '(未知)'}`);
         const lines = records.map((r: any) =>
-          `- ${r.filename}（state=${r.state}，exists=${r.exists === true}${r.bytes ? `，${Math.round(Number(r.bytes) / 1024)}KB` : ''}）\n  ${r.savedPath}`);
+          `- ${r.filename}（state=${r.state}，exists=${r.exists === true}，verified=${r.verified === true}，${r.bytes || 0}/${r.totalBytes || 0}B${r.percent == null ? '' : `，${r.percent}%`}${r.etaMs ? `，ETA ${Math.ceil(r.etaMs / 1000)}s` : ''}${r.canResume ? '，可续传' : ''}）\n  ${r.savedPath}`);
         return ok(`最近下载（目录: ${data?.dir || '(未知)'}）：\n${lines.join('\n')}`);
       }
-      const data = await callBrowserApi('/action', 'POST', { action: 'download', url: args.url, selector: args.selector, index: args.index, savePath: args.savePath }) as any;
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'download',
+        url: args.url,
+        selector: args.selector,
+        index: args.index,
+        savePath: args.savePath,
+        background: args.background === true,
+      }) as any;
       if (data?.error) return err(data.error);
+      if (data?.status === 'progressing') {
+        return ok(`下载已触发（downloadId=${data.id || '?'}${data.jobId ? `，jobId=${data.jobId}` : ''}）：${data.bytes || 0}/${data.totalBytes || 0}B`
+          + (data.percent == null ? '' : `（${data.percent}%` + (data.etaMs ? `，预计还需 ${Math.ceil(data.etaMs / 1000)} 秒` : '') + '）')
+          + `。已接入统一后台任务，完成会自动唤醒；不要重复触发或持续轮询。`);
+      }
       return ok(`下载完成: ${data.filename}\n保存路径: ${data.savedPath}\n状态: ${data.state || 'completed'}\n文件存在: ${data.exists === true}`);
     } catch (e: any) { return err(e?.message || '文件下载失败'); }
   }
@@ -1754,6 +1928,7 @@ export const BrowserToolClasses = [
   // C9 视觉定位闭环
   BrowserVisualLocateTool,
   // C11 文件上传/下载
+  BrowserListUploadInputsTool,
   BrowserUploadTool,
   BrowserDownloadTool,
   // C12 滚动到元素 / 可见性检测
@@ -1794,7 +1969,7 @@ export const BROWSER_TOOL_NAMES = [
   // C9 视觉定位闭环
   'browser_visual_locate',
   // C11 文件上传/下载
-  'browser_upload', 'browser_download',
+  'browser_list_upload_inputs', 'browser_upload', 'browser_download',
   // C12 滚动到元素 / 可见性检测
   'browser_scroll_into_view', 'browser_is_visible',
   // C13 拖拽

@@ -24,6 +24,7 @@ let BrowserPressKeyTool: any;
 let BrowserGetVisibleTextTool: any;
 let BrowserDownloadTool: any;
 let BrowserUploadTool: any;
+let BrowserListUploadInputsTool: any;
 
 beforeAll(async () => {
   const mod = await import('../../../packages/core/src/tool/builtin/browser/index.js');
@@ -35,6 +36,7 @@ beforeAll(async () => {
   BrowserGetVisibleTextTool = mod.BrowserGetVisibleTextTool;
   BrowserDownloadTool = mod.BrowserDownloadTool;
   BrowserUploadTool = mod.BrowserUploadTool;
+  BrowserListUploadInputsTool = mod.BrowserListUploadInputsTool;
 });
 
 // pageAgent 的唯一工具清单来自 shared，不再在测试里手抄。
@@ -253,6 +255,138 @@ describe('pageAgent 浏览器工具参数解析', () => {
     const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(fetchBody.action).toBe('download');
     expect(fetchBody.index).toBe(36);
+  });
+
+  it('browser_download: 触发大文件后立即返回 downloadId，不把 progressing 当失败/完成', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          status: 'progressing',
+          id: 12,
+          filename: 'large.iso',
+          bytes: 300,
+          totalBytes: 1000,
+          percent: 30,
+          etaMs: 7000,
+          nextCheckInMs: 5000,
+          state: 'progressing',
+        },
+      }),
+    });
+    const tool = new BrowserDownloadTool();
+    const result = await tool.execute({ index: 36 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('下载已触发');
+    expect(result.content[0].text).toContain('downloadId=12');
+    expect(result.content[0].text).toContain('30%');
+    expect(result.content[0].text).not.toContain('下载完成');
+  });
+
+  it('browser_download: since + waitMs 走等待查询并只认 verified 完成态', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          status: 'completed',
+          download: {
+            filename: '报表.xlsx',
+            savedPath: 'D:/ws/downloads/报表.xlsx',
+            state: 'completed',
+            exists: true,
+            verified: true,
+            bytes: 2048,
+          },
+        },
+      }),
+    });
+
+    const tool = new BrowserDownloadTool();
+    const result = await tool.execute({
+      since: 7,
+      waitMs: 10000,
+      expectedFileName: '报表.xlsx',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('downloads');
+    expect(fetchBody.since).toBe(7);
+    expect(fetchBody.waitMs).toBe(10000);
+    expect(fetchBody.expectedFileName).toBe('报表.xlsx');
+    expect(result.content[0].text).toContain('verified=true');
+  });
+
+  it('browser_download: 长下载进度返回百分比、速度和下一次唤醒建议', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          status: 'progressing',
+          nextCheckInMs: 12000,
+          download: {
+            filename: 'large.iso',
+            savedPath: 'D:/ws/downloads/large.iso',
+            bytes: 300,
+            totalBytes: 1000,
+            percent: 30,
+            speedBps: 100,
+            etaMs: 7000,
+            state: 'progressing',
+          },
+        },
+      }),
+    });
+    const result = await new BrowserDownloadTool().execute({ since: 3, waitMs: 5000 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('30%');
+    expect(result.content[0].text).toContain('300/1000B');
+    expect(result.content[0].text).toContain('7 秒');
+    expect(result.content[0].text).toContain('12000ms');
+  });
+
+  it('browser_download: operation=pause 走 download_control', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          status: 'ok',
+          download: { filename: 'large.iso', bytes: 300, totalBytes: 1000, canResume: true, paused: true },
+        },
+      }),
+    });
+    const result = await new BrowserDownloadTool().execute({ operation: 'pause' });
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.action).toBe('download_control');
+    expect(body.operation).toBe('pause');
+    expect(result.content[0].text).toContain('可续传: true');
+  });
+
+  it('browser_list_upload_inputs: 返回目标 index/accept/multiple/visible', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          count: 2,
+          inputs: [
+            { index: 4, label: '附件', accept: '.pdf,.docx', multiple: false, visible: true, disabled: false },
+            { index: 9, label: '图片', accept: 'image/*', multiple: true, visible: false, disabled: false, selector: '#cover' },
+          ],
+        },
+      }),
+    });
+
+    const tool = new BrowserListUploadInputsTool();
+    const result = await tool.execute({});
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('list_upload_inputs');
+    expect(result.content[0].text).toContain('[index=4]');
+    expect(result.content[0].text).toContain('accept=".pdf,.docx"');
+    expect(result.content[0].text).toContain('multiple=false');
+    expect(result.content[0].text).toContain('visible=false');
   });
 
   it('browser_upload: dropSelector/dropIndex 走非标准拖放上传', async () => {

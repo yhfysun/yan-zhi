@@ -50,6 +50,7 @@ files:
   - plugin-protocol.cjs
   - desktop-shell.cjs
   - plugin-hotkeys.cjs
+  - dev-taskbar.cjs
   - host-shims/**/*
   - '!**/*.js.map'
   - '!**/*.mjs.map'

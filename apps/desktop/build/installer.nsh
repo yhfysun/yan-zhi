@@ -14,6 +14,14 @@
 !macroend
 
 !ifndef BUILD_UNINSTALLER
+  ; 升级安装前强制结束言智主进程与它拉起的后端进程。
+  ; 后端可能继承 detached 模式继续占用 3001；只覆盖安装而不结束它，新版前端会接到旧后端。
+  !macro customCheckAppRunning
+    DetailPrint "正在关闭旧版言智主程序与后台服务..."
+    nsExec::ExecToLog 'taskkill /F /T /IM "yan-zhi.exe"'
+    Sleep 1200
+  !macroend
+
   ; 详情区只显示日志，不抢顶部状态行。安装区开始后 electron-builder 会再次
   ; 执行 SetDetailsPrint none，因此每次更新阶段时都要重新打开列表输出。
   Function yzWriteInstallOverview
@@ -34,7 +42,9 @@
 
   Function yzInstallPageShow
     Call yzWriteInstallOverview
-    Push "[1/4] 正在检查安装环境，请稍候..."
+    ; 安装页 SHOW 时 NSIS 已进入文件释放 Section。此阶段要解压约 500MB，
+    ; 是全程最耗时的步骤；状态行必须直接显示 [2/4]，不能停在 [1/4]。
+    Push "[2/4] 正在解压应用文件，请稍候..."
     Call yzSetInstallStatus
   FunctionEnd
 

@@ -94,6 +94,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   python_exec: 'python-runtime',
   python_repair: 'python-runtime',
   job_status: 'python-runtime',
+  job_control: 'python-runtime',
   js_exec: 'python-runtime',
   cmd_exec: 'python-runtime',
 
@@ -383,6 +384,16 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   plan_tasks: 'orchestrate',
   get_plan_status: 'orchestrate',
   reassign_task: 'orchestrate',
+  rpa_script_list: 'orchestrate',
+  rpa_script_get: 'orchestrate',
+  rpa_script_create_draft: 'orchestrate',
+  rpa_script_update_draft: 'orchestrate',
+  rpa_script_validate: 'orchestrate',
+  rpa_script_publish: 'orchestrate',
+  rpa_script_test: 'orchestrate',
+  rpa_run_script: 'orchestrate',
+  rpa_get_run: 'orchestrate',
+  rpa_cancel_run: 'orchestrate',
 
   // ═══ 交互 ═══
   ask_user: 'interaction',

@@ -51,6 +51,12 @@ export interface ToolDefinition {
 export interface ToolContext {
   /** 会话 id：产物目录的主键（目录按会话 id 归档，而非标题）。 */
   conversationId?: string;
+  /** 当前 LLM 任务 id（后台长任务绑定与唤醒幂等使用）。 */
+  taskId?: string;
+  /** 当前工具调用 id（后台长任务审计与 UI 归属使用）。 */
+  toolCallId?: string;
+  /** 本次工具启动的后台任务默认唤醒策略；缺省 resume。 */
+  wakePolicy?: 'resume' | 'notify' | 'silent';
   /** 用户 id（数据归属）。 */
   userId?: string;
   /**

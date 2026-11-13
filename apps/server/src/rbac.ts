@@ -82,11 +82,12 @@ export const PERMISSION_TREE: PermissionDef[] = [
   { id: 'admin.audit.read', name: '管理审计', parent: 'admin' },
   { id: 'admin.runtime.manage', name: '工作节点与云工作区', parent: 'admin' },
   { id: 'menu', name: '功能菜单', parent: null },
-  // menu.* 后缀 = 模式 key（MODE_DEFS）：office/wf/dev/clip/ops/sec/shop，
+  // menu.* 后缀 = 模式 key（MODE_DEFS）：office/wf/dev/rpa/clip/ops/sec/shop，
   // 前端据此把权限映射为"模式放行清单"（stores/auth → setPermittedModes）。
   { id: 'menu.office', name: '办公对话', parent: 'menu' },
   { id: 'menu.wf', name: '工作流', parent: 'menu' },
   { id: 'menu.dev', name: '代码开发', parent: 'menu' },
+  { id: 'menu.rpa', name: '自动化', parent: 'menu' },
   { id: 'menu.clip', name: '剪藏', parent: 'menu' },
   { id: 'menu.ops', name: '运维', parent: 'menu' },
   { id: 'menu.sec', name: '安全', parent: 'menu' },

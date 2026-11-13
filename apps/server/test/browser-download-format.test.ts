@@ -17,11 +17,31 @@ describe('formatBridgeResult —— 下载类', () => {
         bytes: 4096,
         state: 'completed',
         exists: true,
+        verified: true,
       },
     });
     expect(text).toContain('已自动下载');
     expect(text).toContain('D:/ws/downloads/作品列表导出.xlsx');
     expect(text).toContain('不要重复点导出');
+  });
+
+  it('click 的 completed 文件未 verified 时不得谎报成功', async () => {
+    const { formatBridgeResult } = await import('../src/browser-bridge.js');
+    const text = formatBridgeResult('click', {
+      success: true,
+      downloaded: {
+        filename: 'empty.xlsx',
+        savedPath: 'D:/ws/downloads/empty.xlsx',
+        bytes: 0,
+        state: 'completed',
+        exists: true,
+        verified: false,
+      },
+      note: '下载事件已完成，但落盘文件是空文件（0 字节）。',
+    });
+    expect(text).toContain('未通过校验');
+    expect(text).toContain('0 字节');
+    expect(text).not.toContain('已自动下载');
   });
 
   it('click 无下载：保留成功语义与 note（遮挡提示等）', async () => {
@@ -50,6 +70,24 @@ describe('formatBridgeResult —— 下载类', () => {
     const text = formatBridgeResult('downloads', { dir: 'D:/ws/downloads', records: [] });
     expect(text).toContain('最近没有下载记录');
     expect(text).toContain('D:/ws/downloads');
+  });
+
+  it('downloads 等待态：completed + verified 才给完成结论', async () => {
+    const { formatBridgeResult } = await import('../src/browser-bridge.js');
+    const text = formatBridgeResult('downloads', {
+      status: 'completed',
+      download: {
+        filename: '报表.xlsx',
+        savedPath: 'D:/ws/downloads/报表.xlsx',
+        state: 'completed',
+        exists: true,
+        verified: true,
+        bytes: 2048,
+      },
+    });
+    expect(text).toContain('下载完成并通过校验');
+    expect(text).toContain('verified=true');
+    expect(text).toContain('D:/ws/downloads/报表.xlsx');
   });
 
   it('download：成功给路径，失败保留错误文案', async () => {

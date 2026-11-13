@@ -6,7 +6,10 @@
  * 而每次调用单看都成功，无从察觉。这是本条链路上最难发现的一类缺陷。
  */
 import { describe, it, expect } from 'vitest';
-import { pickVoiceForRole, describeVoiceCapacity, inferRoleGender, buildSapiScript, buildWinRtScript } from '../src/mcp/tts-sapi';
+import {
+  pickVoiceForRole, describeVoiceCapacity, inferRoleGender,
+  buildSapiScript, buildWinRtScript, pickSystemVoiceByLanguage,
+} from '../src/mcp/tts-sapi';
 
 // 真实本机音色集（WinRT OneCore 枚举结果）：1 男 2 女
 const ZH = [
@@ -203,5 +206,32 @@ describe('脚本 ASCII 红线（PowerShell 编码陷阱）', () => {
     const s = buildWinRtScript();
     expect(s).toContain('if ($Out -ne "")');
     expect(s).toContain('return');
+  });
+
+  it('显式指定的 WinRT 音色不存在时直接失败，不能偷偷回落中文默认音色', () => {
+    const s = buildWinRtScript();
+    expect(s).toContain('requested voice not found');
+    const explicitBlock = s.slice(s.indexOf('if ($Voice -ne "")'), s.indexOf('if (-not $picked) { $picked = $all | Where-Object { $_.Language -like "zh*" }'))
+    expect(explicitBlock).toContain('throw');
+  });
+});
+
+describe('英语系统音色选择', () => {
+  const voices = [
+    { name: 'Microsoft Huihui', culture: 'zh-CN' },
+    { name: 'Microsoft Zira Desktop', culture: 'en-US' },
+    { name: 'Daniel', culture: 'en-GB' },
+  ];
+
+  it('优先精确匹配 en-US，而不是系统默认中文音色', () => {
+    expect(pickSystemVoiceByLanguage(voices, 'en-US')?.name).toBe('Microsoft Zira Desktop');
+  });
+
+  it('没有精确地区时回退到同一语言前缀', () => {
+    expect(pickSystemVoiceByLanguage([voices[0], voices[2]], 'en-US')?.name).toBe('Daniel');
+  });
+
+  it('没有英语音色时返回 undefined，交给上层明确报错', () => {
+    expect(pickSystemVoiceByLanguage([voices[0]], 'en-US')).toBeUndefined();
   });
 });

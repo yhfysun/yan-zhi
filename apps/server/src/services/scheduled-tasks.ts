@@ -10,6 +10,8 @@ import { createLogger } from './logger.js';
 import { resolveFirstModel } from './model-pools.js';
 import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 import { startScheduledRunbookExecution } from '../plugins/ops-shell.js';
+import { getAutomationScript } from './automation.js';
+import { startAutomationRun } from './automation-runner.js';
 const logger = createLogger('scheduled-tasks');
 
 const MINUTE_MS = 60_000;
@@ -348,6 +350,56 @@ async function runRunbookScheduledTask(
   }
 }
 
+async function runRpaScheduledTask(
+  task: any,
+  convId: string,
+  userId: string,
+  now: number,
+): Promise<ScheduledTaskRunResult> {
+  const scriptId = String(task.rpa_script_id || '');
+  const version = Number(task.rpa_script_version || 0);
+  const input = (() => {
+    try {
+      const parsed = JSON.parse(task.rpa_inputs_json || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+  if (!scriptId || !version) {
+    const errorMsg = 'RPA 定时任务缺少脚本或固定版本';
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${errorMsg}`, 0, Date.now());
+    return finishTask(task, convId, now, false, errorMsg);
+  }
+  const script = getAutomationScript(userId, scriptId, { version });
+  if (!script) {
+    const errorMsg = `自动化脚本不存在或版本已删除：${scriptId} v${version}`;
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${errorMsg}`, 0, Date.now());
+    return finishTask(task, convId, now, false, errorMsg);
+  }
+  try {
+    const run = startAutomationRun({
+      userId,
+      scriptId,
+      version,
+      conversationId: convId,
+      triggerType: 'scheduled',
+      input,
+      allowDraft: false,
+    });
+    db.prepare(INSERT_MESSAGE).run(
+      uuid(), convId, userId, 'assistant',
+      `[定时任务] 已启动自动化脚本「${script.name}」v${version}（运行 ${run.id}），结果会写入运行记录。`,
+      0, Date.now(),
+    );
+    return finishTask(task, convId, now, true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${message}`, 0, Date.now());
+    return finishTask(task, convId, now, false, message);
+  }
+}
+
 /** 执行一次定时任务：复用/创建会话 → 创建后端任务走 ReAct 循环 → 更新调度状态 */
 export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResult> {
   const now = Date.now();
@@ -379,6 +431,9 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
   }
   if (task.task_type === 'runbook') {
     return runRunbookScheduledTask(task, convId, userId, now);
+  }
+  if (task.task_type === 'rpa_script') {
+    return runRpaScheduledTask(task, convId, userId, now);
   }
 
   // 2. 确定模型：优先 task 指定，其次 agent 默认，最后任意启用 LLM

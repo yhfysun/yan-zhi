@@ -367,6 +367,7 @@ const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/chat': 'office',
   '/office': 'office',
   '/workflow': 'wf',
+  '/automation': 'rpa',
   '/code': 'dev',
   '/clip': 'clip',
   '/ops': 'ops',

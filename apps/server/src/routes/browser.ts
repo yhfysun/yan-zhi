@@ -12,6 +12,11 @@ import { scriptFuseCheck } from '../services/script-fuse.js';
 import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
 import { browserBridgeAvailable, callBrowserBridgeRaw } from '../browser-bridge.js';
+import {
+  createOrUpdateBackgroundJob,
+  finishBackgroundJob,
+  updateBackgroundJobProgress,
+} from '../services/background-jobs.js';
 const logger = createLogger('browser');
 
 const router = Router();
@@ -84,25 +89,329 @@ let lastActivityAt = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟空闲后关闭
 
 // 下载记录（Playwright download 事件收集，内存中保留最近 50 条）
-interface DownloadRecord { url: string; filename: string; time: number; savedPath?: string; state?: string; bytes?: number; }
+interface DownloadRecord {
+  id: number;
+  url: string;
+  filename: string;
+  time: number;
+  savedPath?: string;
+  state?: string;
+  bytes?: number;
+  totalBytes?: number;
+  percent?: number | null;
+  speedBps?: number;
+  etaMs?: number | null;
+  paused?: boolean;
+  canResume?: boolean;
+  startedAt?: number;
+  updatedAt?: number;
+  lastBytes?: number;
+  lastSampleAt?: number;
+  exists?: boolean;
+  verified?: boolean;
+  jobId?: string;
+  backgroundJobLastReportAt?: number;
+  backgroundJobLastPercentBucket?: number;
+  backgroundJobTerminalReported?: boolean;
+}
 const downloadRecords: DownloadRecord[] = [];
+let downloadSeq = 0;
+const downloadSizeHints = new Map<string, { totalBytes: number; at: number }>();
 /** download action 显式 savePath 的临时覆盖（执行期间有效，与桌面端 main.cjs 同口径） */
 let pendingDownloadSavePath = '';
 /** 最近一次动作下发的工作目录（下载保存基准；listener 拿不到 args，只能靠它） */
 let lastAgentWorkspaceDir = '';
+let lastAgentDownloadContext: {
+  conversationId: string;
+  taskId: string;
+  toolCallId: string;
+  wakePolicy: 'resume' | 'notify' | 'silent';
+} = {
+  conversationId: '',
+  taskId: '',
+  toolCallId: '',
+  wakePolicy: 'resume',
+};
+
+function setPlaywrightDownloadContext(input: {
+  conversationId?: unknown;
+  taskId?: unknown;
+  toolCallId?: unknown;
+  wakePolicy?: unknown;
+}): void {
+  lastAgentDownloadContext = {
+    conversationId: String(input.conversationId || '').trim(),
+    taskId: String(input.taskId || '').trim(),
+    toolCallId: String(input.toolCallId || '').trim(),
+    wakePolicy: input.wakePolicy === 'notify' || input.wakePolicy === 'silent'
+      ? input.wakePolicy
+      : 'resume',
+  };
+}
+
+function registerPlaywrightDownloadJob(rec: DownloadRecord): void {
+  const ctx = lastAgentDownloadContext;
+  if (!ctx.conversationId) return;
+  try {
+    const job = createOrUpdateBackgroundJob({
+      kind: 'browser_download',
+      conversationId: ctx.conversationId,
+      taskId: ctx.taskId || null,
+      toolCallId: ctx.toolCallId || null,
+      wakePolicy: ctx.wakePolicy,
+      title: rec.filename || '浏览器下载',
+      status: 'running',
+      idempotencyKey: `playwright-download:${rec.id}`,
+      adapterRef: `playwright-download:${rec.id}`,
+      progress: {
+        bytesDone: rec.bytes || 0,
+        bytesTotal: rec.totalBytes || null,
+        speedBps: rec.speedBps || 0,
+        etaMs: rec.etaMs == null ? null : rec.etaMs,
+      },
+      controlCapabilities: { pause: false, resume: false, cancel: false },
+      spec: {
+        executor: 'server-playwright',
+        downloadId: rec.id,
+        filename: rec.filename,
+        savedPath: rec.savedPath,
+        url: rec.url,
+      },
+    });
+    rec.jobId = job.id;
+  } catch (error: any) {
+    logger.warn('[browser] 下载登记统一后台任务失败:', error?.message || error);
+  }
+}
+
+function reportPlaywrightDownloadProgress(rec: DownloadRecord): void {
+  if (!rec.jobId || rec.backgroundJobTerminalReported) return;
+  const now = Date.now();
+  const bucket = rec.percent == null ? -1 : Math.floor(rec.percent / 5);
+  if (rec.backgroundJobLastReportAt
+      && now - rec.backgroundJobLastReportAt < 2000
+      && bucket === rec.backgroundJobLastPercentBucket) return;
+  rec.backgroundJobLastReportAt = now;
+  rec.backgroundJobLastPercentBucket = bucket;
+  try {
+    updateBackgroundJobProgress(rec.jobId, {
+      status: 'running',
+      bytesDone: rec.bytes || 0,
+      bytesTotal: rec.totalBytes || null,
+      speedBps: rec.speedBps || 0,
+      etaMs: rec.etaMs == null ? null : rec.etaMs,
+    });
+  } catch (error: any) {
+    logger.warn('[browser] 下载进度回写失败:', error?.message || error);
+  }
+}
+
+function finishPlaywrightDownloadJob(rec: DownloadRecord, status: 'completed' | 'failed' | 'cancelled' | 'stalled'): void {
+  if (!rec.jobId || rec.backgroundJobTerminalReported) return;
+  rec.backgroundJobTerminalReported = true;
+  try {
+    finishBackgroundJob(rec.jobId, {
+      status,
+      progress: {
+        bytesDone: rec.bytes || 0,
+        bytesTotal: rec.totalBytes || null,
+      },
+      artifactPaths: status === 'completed' && rec.savedPath ? [rec.savedPath] : [],
+      result: status === 'completed' ? {
+        verified: rec.verified === true,
+        exists: rec.exists === true,
+        bytes: rec.bytes || 0,
+      } : undefined,
+      error: status === 'completed' ? null : (rec.state === 'failed' ? 'Playwright 下载保存失败' : `下载状态: ${rec.state || status}`),
+    });
+  } catch (error: any) {
+    logger.warn('[browser] 下载终态回写失败:', error?.message || error);
+  }
+}
 
 /** 下载保存基准目录：工作目录优先，兜底进程 cwd 下的 workspace/downloads */
 function downloadBaseDir(): string {
   return lastAgentWorkspaceDir ? path.join(lastAgentWorkspaceDir, 'downloads') : path.resolve('workspace/downloads');
 }
 
-/** 等一条"本次动作之后"完成的下载记录（download action / 事后查询共用） */
-async function waitForDownloadRecord(sinceTime: number, timeoutMs: number): Promise<DownloadRecord | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const rec = downloadRecords.find((r) => r.time >= sinceTime && r.state && r.state !== 'progressing');
+export function recordDownloadProgress(
+  rec: DownloadRecord,
+  receivedBytes: number,
+  totalBytes: number,
+  now = Date.now(),
+) {
+  const bytes = Math.max(0, Number(receivedBytes) || 0);
+  const total = Math.max(0, Number(totalBytes) || 0);
+  const at = Number(now) || Date.now();
+  if (rec.startedAt == null || !Number.isFinite(Number(rec.startedAt))) rec.startedAt = at;
+  const previousBytes = Number(rec.lastBytes) || 0;
+  const previousAt = Number(rec.lastSampleAt) || 0;
+  const baselineAt = previousAt > 0 ? previousAt : Number(rec.startedAt) || 0;
+  const baselineBytes = previousAt > 0 ? previousBytes : 0;
+  if (at > baselineAt && bytes >= baselineBytes) {
+    const instant = (bytes - baselineBytes) * 1000 / (at - baselineAt);
+    if (instant > 0) rec.speedBps = rec.speedBps ? rec.speedBps * 0.65 + instant * 0.35 : instant;
+  }
+  rec.bytes = bytes;
+  rec.totalBytes = total;
+  rec.lastBytes = bytes;
+  rec.lastSampleAt = at;
+  rec.updatedAt = at;
+  rec.percent = total > 0 ? Math.min(100, Math.round(bytes / total * 100)) : null;
+  rec.etaMs = rec.speedBps && total > bytes ? Math.round((total - bytes) / rec.speedBps * 1000) : null;
+  return rec;
+}
+
+function rememberDownloadSizeHint(url: string, totalBytes: number) {
+  if (!url || !(totalBytes > 0)) return;
+  const now = Date.now();
+  downloadSizeHints.set(url, { totalBytes, at: now });
+  if (downloadSizeHints.size > 200) {
+    for (const [key, value] of downloadSizeHints) {
+      if (now - value.at > 10 * 60 * 1000) downloadSizeHints.delete(key);
+    }
+    while (downloadSizeHints.size > 200) {
+      const oldest = downloadSizeHints.keys().next().value as string | undefined;
+      if (!oldest) break;
+      downloadSizeHints.delete(oldest);
+    }
+  }
+}
+
+function suggestedNextCheckMs(status: string, rec: any): number {
+  if (status === 'no_download') return 2000;
+  const eta = Number(rec?.etaMs);
+  if (Number.isFinite(eta) && eta > 0) return Math.min(30000, Math.max(1000, Math.round(eta)));
+  return 3000;
+}
+
+function uniqueDownloadPath(dir: string, filename: string): string {
+  const safe = String(filename || 'download').replace(/[\\/:*?"<>|]/g, '_') || 'download';
+  const ext = path.extname(safe);
+  const stem = ext ? safe.slice(0, -ext.length) : safe;
+  let candidate = path.join(dir, safe);
+  let i = 1;
+  while (fs.existsSync(candidate) && i < 500) {
+    candidate = path.join(dir, `${stem} (${i})${ext}`);
+    i += 1;
+  }
+  return candidate;
+}
+
+function stripBrowserDuplicateSuffix(filename: string): string {
+  const value = String(filename || '').toLowerCase();
+  const ext = path.extname(value);
+  const base = ext ? value.slice(0, -ext.length) : value;
+  return `${base.replace(/\s*[（(]\d+[）)]$/, '')}${ext}`;
+}
+
+function downloadNameMatches(rec: DownloadRecord, expectedFileName: string): boolean {
+  const expected = String(expectedFileName || '').trim().toLowerCase();
+  if (!expected) return true;
+  const actual = String(rec.filename || '').toLowerCase();
+  return actual === expected
+    || stripBrowserDuplicateSuffix(actual) === stripBrowserDuplicateSuffix(expected);
+}
+
+function inspectDownloadRecord(rec?: DownloadRecord | null): any {
+  if (!rec) return { status: 'no_download', verified: false, download: null };
+  let exists = rec.exists === true;
+  let bytes = Number(rec.bytes) || 0;
+  if (rec.state === 'completed' && rec.savedPath) {
+    try {
+      const stat = fs.statSync(rec.savedPath);
+      exists = typeof stat.isFile === 'function' ? stat.isFile() : true;
+      bytes = Number(stat.size) || 0;
+    } catch {
+      exists = false;
+      bytes = 0;
+    }
+  }
+  const verified = rec.state === 'completed' && exists && bytes > 0;
+  const status = rec.state === 'completed'
+    ? (!exists ? 'file_missing' : (bytes <= 0 ? 'file_empty' : 'completed'))
+    : (rec.state || 'failed');
+  return {
+    status,
+    verified,
+    download: {
+      id: rec.id,
+      filename: rec.filename,
+      savedPath: rec.savedPath,
+      url: rec.url,
+      state: rec.state,
+      exists,
+      bytes,
+      totalBytes: Number(rec.totalBytes) || 0,
+      percent: rec.state === 'completed' ? 100 : (rec.percent == null ? null : rec.percent),
+      speedBps: rec.state === 'completed' ? 0 : (Number(rec.speedBps) || 0),
+      etaMs: rec.state === 'completed' ? 0 : (rec.etaMs == null ? null : rec.etaMs),
+      paused: rec.paused === true,
+      canResume: rec.canResume === true,
+      jobId: rec.jobId || '',
+      startedAt: rec.startedAt || rec.time,
+      updatedAt: rec.updatedAt || rec.time,
+      verified,
+      time: rec.time,
+    },
+  };
+}
+
+function queryDownloadStatus(beforeSeq = 0, expectedFileName = '') {
+  const minSeq = Math.max(0, Number(beforeSeq) || 0);
+  const sinceRecords = downloadRecords.filter((rec) => rec.id > minSeq);
+  const expected = String(expectedFileName || '').trim().toLowerCase();
+  const exact = expected
+    ? sinceRecords.filter((rec) => String(rec.filename || '').toLowerCase() === expected)
+    : [];
+  const candidates = exact.length
+    ? exact
+    : sinceRecords.filter((rec) => downloadNameMatches(rec, expectedFileName));
+  if (!candidates.length) return { status: 'no_download', verified: false, download: null, candidates: [] };
+  if (candidates.length > 1) {
+    return {
+      status: 'ambiguous',
+      verified: false,
+      download: null,
+      candidates: candidates.map((rec) => inspectDownloadRecord(rec).download),
+    };
+  }
+  return { ...inspectDownloadRecord(candidates[0]), candidates: [] };
+}
+
+async function waitForDownloadStatus(
+  beforeSeq = 0,
+  timeoutMs = 0,
+  expectedFileName = '',
+): Promise<any> {
+  const startedAt = Date.now();
+  const budget = Math.min(Math.max(Number(timeoutMs) || 0, 0), 30000);
+  let last = queryDownloadStatus(beforeSeq, expectedFileName);
+  while ((last.status === 'no_download' || last.status === 'progressing')
+    && Date.now() - startedAt < budget) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    last = queryDownloadStatus(beforeSeq, expectedFileName);
+  }
+  if (last.status === 'no_download' || last.status === 'progressing') {
+    const nextCheckInMs = suggestedNextCheckMs(last.status, last.download);
+    return {
+      ...last,
+      status: 'timeout',
+      elapsedMs: Date.now() - startedAt,
+      previousStatus: last.status,
+      nextCheckInMs,
+      nextCheckAt: Date.now() + nextCheckInMs,
+    };
+  }
+  return { ...last, elapsedMs: Date.now() - startedAt };
+}
+
+async function waitForDownloadStart(beforeSeq: number, timeoutMs: number): Promise<DownloadRecord | null> {
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() <= deadline) {
+    const rec = downloadRecords.find((item) => item.id > beforeSeq);
     if (rec) return rec;
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return null;
 }
@@ -214,6 +523,96 @@ export function resolveReadPage(
 const tabs = new Map<number, any>();
 let nextTabId = 0;
 let activeTabId = -1;
+const pageTabIds = new WeakMap<object, number>();
+const pageListenersAttached = new WeakSet<object>();
+
+/** 统一标签页 ID：兼容 Web 端 number / numeric string 与桌面端 tab-N。 */
+export function normalizeServerTabId(value: unknown): number | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const m = raw.match(/^tab-(\d+)$/i);
+  const digits = m ? m[1] : (/^\d+$/.test(raw) ? raw : '');
+  if (!digits) return null;
+  const numeric = Number(digits);
+  return Number.isInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
+/** new_tab 默认抢当前视图；只有显式 background=true 才保持原活动页。 */
+export function shouldActivateNewTab(background: unknown): boolean {
+  return background !== true;
+}
+
+/** 所有标签页登记的唯一入口：分配/复用 tabId、挂监听、处理关闭回收。 */
+function registerServerTabPage(page: any, preferredTabId?: number): number {
+  if (!page) throw new Error('registerServerTabPage: page is required');
+  const existing = pageTabIds.get(page);
+  if (existing !== undefined) return existing;
+  let tabId = preferredTabId !== undefined ? Number(preferredTabId) : nextTabId;
+  if (!Number.isInteger(tabId) || tabId < 0) tabId = nextTabId;
+  if (tabId >= nextTabId) nextTabId = tabId + 1;
+  tabs.set(tabId, page);
+  pageTabIds.set(page, tabId);
+  attachPageListeners(page);
+  page.once?.('close', () => {
+    tabs.delete(tabId);
+    noChangeStreaks.forget(String(tabId));
+    if (activeTabId === tabId) {
+      const rest = Array.from(tabs.keys());
+      activeTabId = rest.length ? rest[0] : -1;
+      pageInstance = rest.length ? tabs.get(activeTabId) : null;
+    }
+  });
+  return tabId;
+}
+
+/**
+ * browser_wait_for 的唯一服务端实现。
+ * 关键契约：URL/文本等条件没等到时必须抛超时，不能吞掉异常后假装 waited。
+ */
+export async function waitForPageCondition(
+  page: any,
+  condition: { selector?: string; url?: string; text?: string },
+  timeoutMs: number,
+): Promise<{ waited: string; selector?: string; url?: string; text?: string }> {
+  const timeout = Math.min(Math.max(Number(timeoutMs) || 10000, 1), 30000);
+  if (condition.selector) {
+    const selector = String(condition.selector);
+    try {
+      await page.waitForSelector(selector, { timeout, state: 'visible' });
+      return { waited: 'selector', selector };
+    } catch (e: any) {
+      throw new Error(`等待 selector 超时（${timeout}ms）：${selector}；${e?.message || e}`);
+    }
+  }
+  if (condition.url) {
+    const expected = String(condition.url);
+    try {
+      const regexLiteral = expected.match(/^\/(.+)\/([gimsuy]*)$/);
+      if (regexLiteral) {
+        await page.waitForURL(new RegExp(regexLiteral[1], regexLiteral[2]), { timeout });
+      } else {
+        await page.waitForFunction((needle: string) => location.href.includes(needle), expected, { timeout });
+      }
+      return { waited: 'url', url: page.url() };
+    } catch (e: any) {
+      throw new Error(`等待 URL 超时（${timeout}ms）：${expected}；${e?.message || e}`);
+    }
+  }
+  if (condition.text) {
+    const expected = String(condition.text);
+    try {
+      await page.waitForFunction(
+        (needle: string) => (document.body?.innerText || '').includes(needle),
+        expected,
+        { timeout },
+      );
+      return { waited: 'text', text: expected };
+    } catch (e: any) {
+      throw new Error(`等待文本超时（${timeout}ms）：${expected}；${e?.message || e}`);
+    }
+  }
+  throw new Error('browser_wait_for 需要 selector / url / text 至少一项；固定等待请用 browser_wait。');
+}
 
 // C5 网络请求日志缓冲（最近 100 条，page requestfinished 事件收集）
 interface NetworkLogEntry { url: string; method: string; status: number; responseSize: number; time: number; }
@@ -421,6 +820,18 @@ async function getBrowser() {
 
 /** 给 page 挂载下载与网络请求监听 */
 function attachPageListeners(page: any) {
+  if (!page || pageListenersAttached.has(page)) return;
+  pageListenersAttached.add(page);
+  // target=_blank / window.open：把 popup 登记进同一 tabs 表并复用同一 context。
+  // 不登记的话，模型点击后 get_tabs 看不到新页，后续读取/切换全部失效。
+  page.on('popup', (popup: any) => {
+    try {
+      const tabId = registerServerTabPage(popup);
+      logger.info?.(`[browser] popup 已接管为 tabId=${tabId}: ${popup.url?.() || 'about:blank'}`);
+    } catch (e: any) {
+      logger.warn('[browser] popup 接管失败:', e?.message || e);
+    }
+  });
   // ★ B4（原生弹窗）：Playwright 未注册 dialog handler 时**会自动 dismiss**（与服务端语义对齐，
   //   不在此显式注册 handler 以避免与桌面端实现反向漂移 —— 见 native-dialog.test.ts ④）。
   // 监听下载事件，记录到 downloadRecords
@@ -428,19 +839,94 @@ function attachPageListeners(page: any) {
     const filename = download.suggestedFilename();
     // 保存到 workspace/downloads/（绝对化后再回传，模型可直接用文件工具读取）；
     // download action 显式给了 savePath 时用它的临时覆盖值。
-    const savePath = pendingDownloadSavePath || path.join(downloadBaseDir(), filename);
-    const rec: DownloadRecord = { url: download.url(), filename, time: Date.now(), savedPath: savePath, state: 'progressing' };
+    const savePath = pendingDownloadSavePath || uniqueDownloadPath(downloadBaseDir(), filename);
+    const startedAt = Date.now();
+    const hintedTotal = downloadSizeHints.get(download.url())?.totalBytes || 0;
+    const rec: DownloadRecord = {
+      id: ++downloadSeq,
+      url: download.url(),
+      filename,
+      time: startedAt,
+      savedPath: savePath,
+      state: 'progressing',
+      bytes: 0,
+      totalBytes: hintedTotal,
+      percent: null,
+      speedBps: 0,
+      etaMs: null,
+      paused: false,
+      canResume: false,
+      startedAt,
+      updatedAt: startedAt,
+      lastBytes: 0,
+      lastSampleAt: startedAt,
+      exists: false,
+      verified: false,
+    };
+    recordDownloadProgress(rec, 0, hintedTotal, startedAt);
     downloadRecords.unshift(rec);
     if (downloadRecords.length > 50) downloadRecords.pop();
+    registerPlaywrightDownloadJob(rec);
     try {
       try { await fs.promises.mkdir(path.dirname(savePath), { recursive: true }); } catch {}
-      await download.saveAs(savePath);
+      const stream = typeof download.createReadStream === 'function'
+        ? await download.createReadStream().catch(() => null)
+        : null;
+      if (stream) {
+        const [{ Transform }, { pipeline }] = await Promise.all([
+          import('node:stream'),
+          import('node:stream/promises'),
+        ]);
+        let written = 0;
+        const counter = new Transform({
+          transform(chunk: any, _encoding: any, callback: any) {
+            written += Number(chunk?.length) || 0;
+            recordDownloadProgress(rec, written, rec.totalBytes || 0);
+            reportPlaywrightDownloadProgress(rec);
+            callback(null, chunk);
+          },
+        });
+        await pipeline(stream, counter, fs.createWriteStream(savePath));
+      } else {
+        await download.saveAs(savePath);
+      }
       rec.state = 'completed';
-      try { rec.bytes = (await fs.promises.stat(savePath)).size; } catch {}
+      try {
+        const stat = await fs.promises.stat(savePath);
+        rec.bytes = stat.size;
+        rec.totalBytes = rec.totalBytes || stat.size;
+        rec.exists = stat.isFile();
+      } catch {
+        rec.bytes = 0;
+        rec.exists = false;
+      }
+      rec.verified = rec.exists === true && Number(rec.bytes) > 0;
+      rec.percent = rec.state === 'completed' ? 100 : rec.percent;
+      rec.etaMs = rec.state === 'completed' ? 0 : rec.etaMs;
+      rec.speedBps = rec.state === 'completed' ? 0 : rec.speedBps;
+      rec.updatedAt = Date.now();
+      rec.time = Date.now();
+      finishPlaywrightDownloadJob(rec, rec.verified ? 'completed' : 'failed');
     } catch (e: any) {
       rec.state = 'failed';
+      rec.exists = false;
+      rec.verified = false;
+      rec.paused = false;
+      rec.canResume = false;
+      rec.updatedAt = Date.now();
+      rec.time = Date.now();
+      rec.jobId && logger.warn(`[download] 后台任务 ${rec.jobId} 保存失败`);
+      finishPlaywrightDownloadJob(rec, 'failed');
+      try { await fs.promises.rm(savePath, { force: true }); } catch { /* 保留可诊断状态 */ }
       logger.warn(`[download] 保存失败: ${e?.message || e}`);
     }
+  });
+  // 提前缓存 response 的 content-length；下载事件本身不提供总字节数。
+  page.on('response', (resp: any) => {
+    try {
+      const totalBytes = Number(resp.headers()?.['content-length'] || 0);
+      if (totalBytes > 0) rememberDownloadSizeHint(resp.url(), totalBytes);
+    } catch { /* header 读取失败不影响页面 */ }
   });
   // C5 网络请求完成事件，记录到 networkLog
   page.on('requestfinished', async (req: any) => {
@@ -555,8 +1041,16 @@ export const COLD_START_PANEL_OPEN_TIMEOUT_MS = 45_000;
  *   才能建出真实 webview target。调用方（如 /navigate）手里有目标 URL 时必须传，否则冷启动
  *   （lastKnownUrl 为空）时 ensureWebviewViaShell 无从开口，只能报「没有可用的网页 target」。
  */
-async function createTabPage(url?: string, convId?: string | null, hintUrl?: string): Promise<any> {
+async function createTabPage(
+  url?: string,
+  convId?: string | null,
+  hintUrl?: string,
+  reusePage?: any,
+): Promise<any> {
   const browser = await getBrowser();
+  // 同一浏览器会话里的多标签必须共享 context（Cookie / localStorage / 登录态）。
+  // 旧实现为每个 new_tab 单独 newContext，表现为“新开一页后登录态消失”。
+  const reuseContext = reusePage?.context?.();
   let context: any;
   let page: any;
   if (BROWSER_MODE === 'cdp') {
@@ -583,7 +1077,7 @@ async function createTabPage(url?: string, convId?: string | null, hintUrl?: str
     }
     context = page.context();
   } else {
-    context = await browser.newContext({
+    context = reuseContext || await browser.newContext({
       viewport: { width: 1280, height: 800 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
       locale: 'zh-CN',
@@ -657,8 +1151,7 @@ async function getPage(convId?: string | null, hintUrl?: string) {
   const page = await createTabPage(undefined, convId, hintUrl);
   pageInstance = page;
   activeTabId = 0;
-  tabs.set(0, page);
-  nextTabId = 1;
+  registerServerTabPage(page, 0);
   lastActivityAt = Date.now();
   // ★★★ 恢复任务所在 URL（2026-10-09）。此前这里只重建 page、**不恢复 URL**：
   //   `createTabPage` 在 CDP 模式走 `pickCdpPage`（挑真实网页 target）、launch 模式是全新
@@ -764,8 +1257,17 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
     // tabId 定向：导航到指定标签页（同批多导航/多页并行场景），并切为活动页
     let page: any;
-    const tid = tabId !== undefined && tabId !== null ? Number(tabId) : null;
-    if (tid !== null && tabs.has(tid) && !tabs.get(tid)?.isClosed?.()) {
+    const hasExplicitTab = tabId !== undefined && tabId !== null;
+    const tid = hasExplicitTab ? normalizeServerTabId(tabId) : null;
+    if (hasExplicitTab && tid === null) {
+      res.status(400).json({ error: `无效的 tabId: ${tabId}` });
+      return;
+    }
+    if (tid !== null) {
+      if (!tabs.has(tid) || tabs.get(tid)?.isClosed?.()) {
+        res.status(400).json({ error: `tabId ${tid} 不存在` });
+        return;
+      }
       page = tabs.get(tid);
       pageInstance = page;
       activeTabId = tid;
@@ -790,7 +1292,7 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
     });
     // ★ A4 根治：记录"本会话现在在这个页上"（读路由据此隔离）
     bindConvPage(convIdOf(req), page);
-    res.json({ data: { url: currentUrl, title } });
+    res.json({ data: { tabId: activeTabId, url: currentUrl, title } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
   }
@@ -1252,19 +1754,40 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
     const { action, text, key, x, y, timeout } = args;
     const selector = args.selector ? String(args.selector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")') : args.selector;
     if (!action) { res.status(400).json({ error: 'action 为必填项' }); return; }
-    let page = await withTimeout(getPage(convIdOf(req)), '获取浏览器页面超时（实例可能已假死，将自动重建，请重试）');
     // tabId 定向：在指定标签页上执行动作（不切换活动页），供"按 tabId 读取/操作"场景
-    const reqTabId = args.tabId !== undefined && args.tabId !== null ? Number(args.tabId) : null;
-    if (reqTabId !== null && tabs.has(reqTabId) && !tabs.get(reqTabId)?.isClosed?.()) {
+    const hasExplicitTab = args.tabId !== undefined && args.tabId !== null;
+    const reqTabId = normalizeServerTabId(args.tabId);
+    if (hasExplicitTab && reqTabId === null) {
+      res.json({ data: { status: 'invalid_args', error: `无效的 tabId: ${args.tabId}` } });
+      return;
+    }
+    let page: any;
+    if (reqTabId !== null) {
+      if (!tabs.has(reqTabId) || tabs.get(reqTabId)?.isClosed?.()) {
+        res.json({ data: { status: 'not_found', error: `tabId ${reqTabId} 不存在` } });
+        return;
+      }
       page = tabs.get(reqTabId);
+    } else {
+      page = await withTimeout(getPage(convIdOf(req)), '获取浏览器页面超时（实例可能已假死，将自动重建，请重试）');
     }
     let result: unknown = null;
     let _actionRetried = false;
+    const clickTabSeqBefore = action === 'click' ? nextTabId : null;
     // ★ 工作目录随动作下发（2026-10-26）：下载监听器（attachPageListeners）拿不到 args，
     //   在每次动作入口记一份，供「导出/下载」触发时决定落盘目录（工作目录/downloads）。
     if (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim()) {
       lastAgentWorkspaceDir = args.__workspaceDir.trim();
     }
+    const taskHeader = req.headers['x-yz-task-id'];
+    const toolCallHeader = req.headers['x-yz-tool-call-id'];
+    const wakeHeader = req.headers['x-yz-wake-policy'];
+    setPlaywrightDownloadContext({
+      conversationId: args.__conversationId || convIdOf(req),
+      taskId: args.__taskId || (Array.isArray(taskHeader) ? taskHeader[0] : taskHeader),
+      toolCallId: args.__toolCallId || (Array.isArray(toolCallHeader) ? toolCallHeader[0] : toolCallHeader),
+      wakePolicy: args.__wakePolicy || (Array.isArray(wakeHeader) ? wakeHeader[0] : wakeHeader),
+    });
 
     // ★ 语义定位 target 预解析（2026-10-29，与桌面端 ===SEMANTIC-LOCATOR=== 对齐）：
     //   index/selector 都没给而 target:{text,role,label,exact,near} 给了 → 在页面里跑
@@ -1313,6 +1836,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
 
     // 变化检测：操作前采集页面快照
     let beforeState: any = null;
+    const downloadBeforeSeq = action === 'click' ? downloadSeq : 0;
     if (CHANGE_ACTIONS.has(String(action))) {
       beforeState = await page.evaluate(snapshotFn).catch(() => null);
     }
@@ -1687,7 +2211,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         break;
       }
       case 'wait': {
-        const ms = Math.min(timeout || 1000, 10000);
+        const ms = Math.min(Math.max(Number(timeout) || 1000, 1), 10000);
         await page.waitForTimeout(ms);
         result = { waited: ms };
         break;
@@ -1950,19 +2474,26 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         break;
       }
       case 'wait_for': {
-        const to = Math.min(args.timeout || 10000, 30000);
-        if (selector) {
-          await page.waitForSelector(selector, { timeout: to });
-          result = { waited: 'selector', selector };
-        } else if (args.url) {
-          await page.waitForURL(args.url, { timeout: to }).catch(() => {});
-          result = { waited: 'url', url: page.url() };
-        } else if (args.text) {
-          await page.waitForFunction((t: string) => (document.body?.innerText || '').includes(t), args.text as string, { timeout: to }).catch(() => {});
-          result = { waited: 'text', text: args.text };
-        } else {
-          await page.waitForTimeout(to);
-          result = { waited: 'timeout', ms: to };
+        if (!selector && !args.url && !args.text) {
+          result = {
+            status: 'invalid_args',
+            error: 'browser_wait_for 需要 selector / url / text 至少一项；固定等待请用 browser_wait。',
+          };
+          break;
+        }
+        try {
+          result = await waitForPageCondition(
+            page,
+            { selector: selector as string | undefined, url: args.url, text: args.text },
+            Number(args.timeout) || 10000,
+          );
+        } catch (e: any) {
+          result = {
+            status: 'timeout',
+            timedOut: true,
+            error: e?.message || '等待超时',
+            hint: '条件未在超时窗口内出现。重新观察页面的真实状态；不要用同一个条件原地反复等待，也不要把普通等待超时当成浏览器假死。',
+          };
         }
         break;
       }
@@ -2291,16 +2822,26 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       }
       // ========== C4 多标签页管理 ==========
       case 'new_tab': {
-        const newPage = await createTabPage(args.url);
-        const tabId = nextTabId++;
-        tabs.set(tabId, newPage);
-        pageInstance = newPage;
-        activeTabId = tabId;
-        result = { tabId, url: newPage.url(), title: await newPage.title().catch(() => '') };
+        const currentPage = pageInstance || tabs.get(activeTabId);
+        const newPage = await createTabPage(args.url, null, undefined, currentPage);
+        const tabId = registerServerTabPage(newPage);
+        const active = shouldActivateNewTab(args.background);
+        if (active) {
+          pageInstance = newPage;
+          activeTabId = tabId;
+        }
+        result = {
+          tabId,
+          url: newPage.url(),
+          title: await newPage.title().catch(() => ''),
+          active,
+          background: args.background === true,
+        };
         break;
       }
       case 'switch_tab': {
-        const tid = Number(args.tabId);
+        const tid = normalizeServerTabId(args.tabId);
+        if (tid === null) { result = { error: `无效的 tabId: ${args.tabId}` }; break; }
         if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
         const p = tabs.get(tid);
         if (p.isClosed?.()) { tabs.delete(tid); noChangeStreaks.forget(String(tid)); result = { error: `tabId ${tid} 已关闭` }; break; }
@@ -2310,7 +2851,10 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         break;
       }
       case 'close_tab': {
-        const tid = args.tabId !== undefined && args.tabId !== null ? Number(args.tabId) : activeTabId;
+        const tid = args.tabId !== undefined && args.tabId !== null
+          ? normalizeServerTabId(args.tabId)
+          : activeTabId;
+        if (tid === null) { result = { error: `无效的 tabId: ${args.tabId}` }; break; }
         if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
         const p = tabs.get(tid);
         await p.close().catch(() => {});
@@ -2329,7 +2873,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         const list: any[] = [];
         for (const [tid, p] of tabs) {
           if (p.isClosed?.()) { tabs.delete(tid); continue; }
-          list.push({ id: tid, url: p.url(), title: await p.title().catch(() => ''), active: tid === activeTabId });
+          list.push({ tabId: tid, id: tid, url: p.url(), title: await p.title().catch(() => ''), active: tid === activeTabId });
         }
         result = { tabs: list };
         break;
@@ -2338,7 +2882,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       case 'wait_for_request': {
         const pat = String(args.urlPattern || '');
         if (!pat) { result = { error: 'urlPattern 为必填项' }; break; }
-        const to = Math.min(args.timeout || 10000, 30000);
+        const to = Math.min(Math.max(Number(args.timeout) || 10000, 1), 30000);
         let regex: RegExp;
         try { regex = new RegExp(pat); } catch { regex = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
         const match = (u: string) => u.includes(pat) || regex.test(u);
@@ -2519,6 +3063,59 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         break;
       }
       // ========== C11 文件上传/下载 ==========
+      case 'list_upload_inputs': {
+        await page.evaluate(ensureYzReg);
+        const listed = await page.evaluate(() => {
+          const R = (window as any).__yzReg;
+          const out: any[] = [];
+          const seen = new Set<Element>();
+          const textOf = (el: HTMLInputElement) => {
+            const labelled = el.labels && el.labels.length ? el.labels[0].textContent : '';
+            const label = el.closest('label');
+            const parent = el.parentElement;
+            return String(labelled || (label && label.textContent) || (parent && parent.textContent) || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 80);
+          };
+          const visible = (el: Element) => {
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0
+              && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0;
+          };
+          const collect = (root: Document | ShadowRoot) => {
+            root.querySelectorAll('input[type=file]').forEach((node) => {
+              const el = node as HTMLInputElement;
+              if (seen.has(el)) return;
+              seen.add(el);
+              out.push({
+                index: R.register(el),
+                selector: R.genSelEcho(el),
+                accept: String(el.accept || ''),
+                multiple: !!el.multiple,
+                disabled: !!el.disabled,
+                visible: visible(el),
+                label: textOf(el),
+                name: String(el.name || '').slice(0, 80),
+                id: String(el.id || '').slice(0, 80),
+              });
+            });
+            root.querySelectorAll('*').forEach((node) => {
+              if (node.shadowRoot) collect(node.shadowRoot);
+            });
+          };
+          collect(document);
+          return { count: out.length, inputs: out.slice(0, 100) };
+        });
+        result = {
+          ...listed,
+          note: listed.count
+          ? '按 index 或 selector 选择目标后调用 browser_upload；hidden 只表示 input 不可见，不代表不能注入。多个上传口不要猜，先用 accept/label/邻近文案选对目标。'
+          : '当前页面没有可直接注入的 input[type=file]。若“上传”按钮点击后才出现 input/filechooser，直接用 browser_upload 的 clickSelector/clickIndex 模式，不要先 browser_click 打开系统文件框。',
+        };
+        break;
+      }
       case 'upload': {
         const fp = String(args.filePath || '');
         if (!fp) { result = { error: 'filePath 为必填项' }; break; }
@@ -2638,11 +3235,11 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       case 'download': {
         // 保存统一由 attachPageListeners 的 download 监听完成（唯一实现，避免两处 saveAs 抢同一文件）；
         // 这里只负责触发 + 等记录。显式 savePath 通过 pendingDownloadSavePath 覆盖。
-        const since = Date.now();
         const explicit = args.savePath ? String(args.savePath).trim() : '';
         pendingDownloadSavePath = explicit
           ? (path.isAbsolute(explicit) ? explicit : path.join(downloadBaseDir(), explicit))
           : '';
+        const beforeDownload = downloadSeq;
         try {
           if (args.url) {
             await page.goto(String(args.url), { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
@@ -2659,10 +3256,49 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             result = { error: 'download 需要 url / selector / index 之一（都不传请改用 downloads 查询最近下载）' };
             break;
           }
-          const rec = await waitForDownloadRecord(since, 15000);
-          if (!rec) { result = { error: '未触发下载（超时）' }; break; }
-          if (rec.state === 'failed') { result = { error: '下载保存失败', filename: rec.filename }; break; }
-          result = { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes };
+          const started = await waitForDownloadStart(beforeDownload, 10000);
+          if (!started) {
+            result = { error: '未触发下载（超时）' };
+            break;
+          }
+          if (started.state === 'progressing' && args.background !== true) {
+            await waitForDownloadStatus(beforeDownload, 4500);
+          }
+          const waited = inspectDownloadRecord(started);
+          const d = waited.download || {};
+          if (waited.status === 'progressing') {
+            const nextCheckInMs = suggestedNextCheckMs('progressing', d);
+            result = {
+              status: 'progressing',
+              ...d,
+              nextCheckInMs,
+              nextCheckAt: Date.now() + nextCheckInMs,
+            };
+            break;
+          }
+          if (waited.status !== 'completed') {
+            result = {
+              error: waited.status === 'file_empty'
+                ? '下载事件已完成，但文件为空（0 字节）'
+                : (waited.status === 'file_missing' ? '下载事件已完成，但目标文件不存在' : '下载保存失败'),
+              filename: d.filename,
+              savedPath: d.savedPath,
+              state: d.state,
+              exists: d.exists === true,
+              verified: false,
+            };
+            break;
+          }
+          result = {
+            status: 'completed',
+            filename: d.filename,
+            savedPath: d.savedPath,
+            url: d.url,
+            bytes: d.bytes,
+            state: d.state,
+            exists: d.exists === true,
+            verified: d.verified === true,
+          };
         } finally {
           pendingDownloadSavePath = '';
         }
@@ -2671,15 +3307,25 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       // ========== C11b 最近下载查询 ==========
       case 'downloads': {
         const n = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+        const waited = Number(args.waitMs) > 0
+          ? await waitForDownloadStatus(
+            Number(args.since ?? args.beforeSeq) || 0,
+            Number(args.waitMs),
+            String(args.expectedFileName || ''),
+          )
+          : null;
         result = {
           dir: downloadBaseDir(),
-          records: downloadRecords.slice(0, n).map((r) => ({
-            filename: r.filename,
-            savedPath: r.savedPath,
-            state: r.state || 'completed',
-            bytes: r.bytes,
-            time: r.time,
-          })),
+          ...(waited || {}),
+          records: downloadRecords.slice(0, n).map((r) => inspectDownloadRecord(r).download),
+        };
+        break;
+      }
+      case 'download_control': {
+        result = {
+          status: 'unsupported',
+          canResume: false,
+          error: 'Playwright 下载流不支持暂停/恢复；大文件仅提供进度与 ETA，断点续传请使用桌面端或专用下载器。',
         };
         break;
       }
@@ -2930,6 +3576,42 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         r.urlChanged = urlChanged;
         r.noChangeStreak = st.streak;
         if (st.warning) r.warning = st.warning;
+      }
+    }
+    // 点击类 action 与桌面端同口径：把本次点击触发的下载路径/终态直接带回，
+    // 页面没变化但下载尚未开始时给出 since，让模型等待而不是重复点导出。
+    if (action === 'click' && r && !r.error && !r.ambiguous) {
+      const opened = clickTabSeqBefore === null
+        ? []
+        : Array.from(tabs.entries())
+          .filter(([tabId, tabPage]) => tabId >= clickTabSeqBefore && tabPage !== page)
+          .map(([tabId, tabPage]) => ({
+            tabId,
+            url: tabPage.url?.() || '',
+            title: '',
+          }));
+      const download = queryDownloadStatus(downloadBeforeSeq);
+      if (download.status !== 'no_download') {
+        r.downloaded = download.download;
+        if (download.status === 'completed' && download.verified === true) {
+          r.note = `${r.note ? `${r.note} ` : ''}已自动下载「${download.download.filename}」到 ${download.download.savedPath}。不要重复点击导出。`;
+        } else if (download.status === 'progressing') {
+          r.note = `${r.note ? `${r.note} ` : ''}下载已开始，文件仍在写入；按 since=${downloadBeforeSeq} 调用 browser_download 等待终态。`;
+        } else {
+          r.note = `${r.note ? `${r.note} ` : ''}下载事件未通过校验（status=${download.status}）；不要当作有效导出。`;
+        }
+      } else if (r.pageChanged === false && opened.length === 0) {
+        r.downloadWatch = {
+          queryTool: 'browser_download',
+          beforeSeq: downloadBeforeSeq,
+          reason: '点击后页面没有变化，可能异步触发下载',
+        };
+        r.note = `${r.note ? `${r.note} ` : ''}页面没有变化，若是导出按钮，按 since=${downloadBeforeSeq} 调用 browser_download 等待，不要重复点击。`;
+      }
+      if (opened.length) {
+        r.openedTabs = opened;
+        const first = opened[0];
+        r.note = `${r.note ? `${r.note} ` : ''}点击打开了新标签页 tabId=${first.tabId}（${first.url || 'about:blank'}）；后续用该 tabId 读取或 browser_switch_tab 切换，不要重复点击。`;
       }
     }
     lastActivityAt = Date.now();

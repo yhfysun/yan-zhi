@@ -33,6 +33,12 @@
         </div>
         <ChatTopbar />
         <ChatMessageList />
+        <BackgroundJobsPanel
+          :jobs="currentBackgroundJobs"
+          @control="handleBackgroundJobControl"
+          @continue="handleBackgroundJobContinue"
+          @reveal="revealBackgroundArtifact"
+        />
         <ChatInputArea />
         <!-- 办公模式 AI / 人工：右下角悬浮切换（与开发模式同一形态） -->
         <LeadToggle
@@ -57,6 +63,7 @@
 import { watch, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { Fold, Expand, FolderChecked } from '@element-plus/icons-vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useChat } from '../composables/chat/useChat';
 import { useResizable } from '../composables/useResizable';
 import LeadToggle from '../components/workbench/LeadToggle.vue';
@@ -71,9 +78,54 @@ import ChatPreviewPane from '../components/chat/ChatPreviewPane.vue';
 import ChatMountDialog from '../components/chat/ChatMountDialog.vue';
 import ChatSkillCards from '../components/chat/ChatSkillCards.vue';
 import ChatDialogs from '../components/chat/ChatDialogs.vue';
+import BackgroundJobsPanel from '../components/chat/BackgroundJobsPanel.vue';
+import { useBackgroundJobsStore } from '../stores/background-jobs';
 
 const { convCollapsed, drawerOpen, store, contextSidebarOpen, currentConvArchived, currentConv, archiveConv } = useChat();
 const router = useRouter();
+const backgroundJobs = useBackgroundJobsStore();
+const currentBackgroundJobs = computed(() => {
+  const id = store.currentConvId;
+  return id ? (backgroundJobs.jobsByConv[id] || []) : [];
+});
+
+watch(
+  () => store.currentConvId,
+  (conversationId) => {
+    if (conversationId) void backgroundJobs.load(conversationId);
+  },
+  { immediate: true },
+);
+
+async function handleBackgroundJobControl(jobId: string, operation: 'pause' | 'resume' | 'cancel') {
+  if (operation === 'cancel') {
+    try {
+      await ElMessageBox.confirm('取消后未完成的产物可能不可用，确定取消这个后台任务？', '取消后台任务', {
+        type: 'warning',
+        confirmButtonText: '取消任务',
+        cancelButtonText: '继续运行',
+      });
+    } catch {
+      return;
+    }
+  }
+  const result = await backgroundJobs.control(jobId, operation);
+  if (!result.ok) ElMessage.error(result.error || '后台任务控制失败');
+}
+
+async function handleBackgroundJobContinue(jobId: string) {
+  const result = await backgroundJobs.wake(jobId);
+  if (!result.ok) ElMessage.error(result.error || '无法继续处理该后台任务');
+}
+
+function revealBackgroundArtifact(path: string) {
+  const electron = (window as any).electronAPI;
+  if (electron?.shell?.showItemInFolder) {
+    void electron.shell.showItemInFolder(String(path).replace(/\//g, '\\'));
+    return;
+  }
+  if (electron?.shell?.openPath) void electron.shell.openPath(path);
+}
 
 /** 办公模式：AI（聊天页）↔ 人工（工作台）；工作台的悬浮按钮走反向切换 */
 function onOfficeLead(v: LeadMode) {

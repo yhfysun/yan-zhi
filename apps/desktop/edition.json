@@ -8,6 +8,7 @@
     "ops",
     "sec",
     "wf",
+    "rpa",
     "clip",
     "shop",
     "learning"
@@ -16,6 +17,7 @@
     "office-core",
     "dev-mode",
     "wf-mode",
+    "rpa-mode",
     "learning-mode",
     "clip-mode",
     "ops-shell",

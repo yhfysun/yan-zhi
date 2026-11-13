@@ -51,7 +51,7 @@ router.use(authMiddleware);
 //   否则批量删除、导出、计数这些「扫全量」的逻辑会连带处理用户认为已经被收起来的会话。
 // ★ learning 仍留在基础白名单：历史学习会话必须可读写；页面入口与 Pro 权限
 //   由 learning-mode 插件和授权档位控制，不能用删白名单的方式裁入口。
-const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'rpa', 'clip', 'shop', 'learning']);
 
 /** 合法工作模式 = 内置白名单 ∪ 运行时插件贡献（后装插件的新模式，见 plugins/runtime-modes.ts）。 */
 function isValidMode(mode: string): boolean {

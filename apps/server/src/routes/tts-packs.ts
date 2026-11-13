@@ -37,6 +37,10 @@ router.get('/:id/progress', (req: Request, res: Response) => {
 
 // POST /api/tts-packs/:id/install —— 下载并安装
 router.post('/:id/install', async (req: Request, res: Response) => {
+  if (!resolveSherpaLib().available) {
+    const engine = await installSherpaEngine((msg) => logger.info(`[sherpa] ${msg}`));
+    if (!engine.ok) { res.status(400).json({ error: engine.message }); return; }
+  }
   const r = await installTtsPack(req.params.id, (msg) => logger.info(`[tts-pack] ${req.params.id}: ${msg}`));
   if (!r.ok) { res.status(400).json({ error: r.message }); return; }
   res.json({ ok: true, message: r.message, dir: r.dir });

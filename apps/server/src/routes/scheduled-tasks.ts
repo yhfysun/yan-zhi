@@ -26,7 +26,7 @@ function rowToTask(r: any) {
     spaceId: r.space_id,
     groupId: r.group_id,
     // 任务类型与工作流字段（DB 列早已预留，此前只差这层读写）
-    taskType: r.task_type === 'workflow' ? 'workflow' : r.task_type === 'runbook' ? 'runbook' : 'chat',
+    taskType: r.task_type === 'workflow' ? 'workflow' : r.task_type === 'runbook' ? 'runbook' : r.task_type === 'rpa_script' ? 'rpa_script' : 'chat',
     workflowAgentId: r.workflow_agent_id ?? null,
     workflowBundle: (() => { try { return r.workflow_bundle_json ? JSON.parse(r.workflow_bundle_json) : null; } catch { return null; } })(),
     workflowInputs: (() => { try { return r.workflow_inputs_json ? JSON.parse(r.workflow_inputs_json) : null; } catch { return null; } })(),
@@ -37,6 +37,10 @@ function rowToTask(r: any) {
     runbookApprovalRequired: r.runbook_approval_required === 1,
     runbookApproval: (() => { try { return r.runbook_approval_json ? JSON.parse(r.runbook_approval_json) : null; } catch { return null; } })(),
     lastRunbookRun: r.task_type === 'runbook' ? latestScheduledRunbookRun(r.id) : null,
+    rpaScriptId: r.rpa_script_id ?? null,
+    rpaScriptName: r.rpa_script_name ?? null,
+    rpaScriptVersion: r.rpa_script_version ?? null,
+    rpaInputs: (() => { try { return r.rpa_inputs_json ? JSON.parse(r.rpa_inputs_json) : null; } catch { return null; } })(),
     schedule: parseSchedule(r.schedule_json),
     expireAt: r.expire_at ?? null,
     enabled: !!r.enabled,
@@ -78,22 +82,46 @@ router.post('/', async (req: Request, res: Response) => {
   const {
     taskType, workflowAgentId, workflowBundle, workflowInputs,
     runbookId, runbookVersion, runbookInputs, approveProductionWrite,
+    rpaScriptId, rpaScriptVersion, rpaInputs,
   } = req.body || {};
   if (!name || !String(name).trim()) { res.status(400).json({ error: '任务名称为必填项' }); return; }
   const scheduleError = validateSchedule(intervalMinutes, cronExpr, schedule);
   if (scheduleError) { res.status(400).json({ error: scheduleError }); return; }
 
-  const normalizedTaskType = taskType === 'workflow' ? 'workflow' : taskType === 'runbook' ? 'runbook' : 'chat';
+  const normalizedTaskType = taskType === 'workflow' ? 'workflow' : taskType === 'runbook' ? 'runbook' : taskType === 'rpa_script' ? 'rpa_script' : 'chat';
   // 工作流型任务必须指定工作流（否则调度时才发现跑不了，白等一个周期）
   const isWorkflowTask = normalizedTaskType === 'workflow';
   const isRunbookTask = normalizedTaskType === 'runbook';
+  const isRpaTask = normalizedTaskType === 'rpa_script';
   if (isWorkflowTask && !workflowAgentId && !workflowBundle?.agent?.workflow) {
     res.status(400).json({ error: '工作流任务需要指定 workflowAgentId' });
     return;
   }
-  if (!isWorkflowTask && !isRunbookTask && !prompt) {
+  if (!isWorkflowTask && !isRunbookTask && !isRpaTask && !prompt) {
     res.status(400).json({ error: '对话任务需要填写 prompt' });
     return;
+  }
+  let rpaBinding: { id: string; name: string; version: number; inputs: Record<string, unknown> } | null = null;
+  if (isRpaTask) {
+    if (!rpaScriptId) {
+      res.status(400).json({ error: 'RPA 任务需要指定 rpaScriptId' });
+      return;
+    }
+    if (rpaInputs !== undefined && (!rpaInputs || typeof rpaInputs !== 'object' || Array.isArray(rpaInputs))) {
+      res.status(400).json({ error: 'RPA 参数必须是对象' });
+      return;
+    }
+    const script = (await import('../services/automation.js')).getAutomationScript(userId, String(rpaScriptId));
+    if (!script) {
+      res.status(404).json({ error: '自动化脚本不存在' });
+      return;
+    }
+    const version = rpaScriptVersion == null ? script.publishedVersion : Number(rpaScriptVersion);
+    if (!version || version !== script.publishedVersion) {
+      res.status(400).json({ error: 'RPA 定时任务必须绑定当前已发布版本' });
+      return;
+    }
+    rpaBinding = { id: script.id, name: script.name, version, inputs: rpaInputs || {} };
   }
   let runbookBinding: Awaited<ReturnType<typeof prepareScheduledRunbookBinding>> | null = null;
   if (isRunbookTask) {
@@ -140,7 +168,7 @@ router.post('/', async (req: Request, res: Response) => {
       }
     : null;
   db.prepare(
-    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, rpa_script_id, rpa_script_name, rpa_script_version, rpa_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
   ).run(
     id, userId, String(name).trim(), prompt || null, cronExpr || null, intervalMinutes || null,
     ownConversationId(userId, conversationId), agentId || null, platformId || null, modelId || null, spaceId || null, groupId || null,
@@ -156,6 +184,10 @@ router.post('/', async (req: Request, res: Response) => {
     runbookBinding ? JSON.stringify(runbookBinding.inputParams) : null,
     runbookBinding?.requiresStandingApproval ? 1 : 0,
     runbookApproval ? JSON.stringify(runbookApproval) : null,
+    rpaBinding?.id || null,
+    rpaBinding?.name || null,
+    rpaBinding?.version || null,
+    rpaBinding ? JSON.stringify(rpaBinding.inputs) : null,
     isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr, schedule_json: scheduleJson, expire_at: expireAt || null }, now) : null,
     now, now,
   );
@@ -182,8 +214,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
   const body = req.body || {};
   const nextTaskType = body.taskType !== undefined
-    ? (body.taskType === 'workflow' ? 'workflow' : body.taskType === 'runbook' ? 'runbook' : 'chat')
-    : (existing.task_type === 'workflow' ? 'workflow' : existing.task_type === 'runbook' ? 'runbook' : 'chat');
+    ? (body.taskType === 'workflow' ? 'workflow' : body.taskType === 'runbook' ? 'runbook' : body.taskType === 'rpa_script' ? 'rpa_script' : 'chat')
+    : (existing.task_type === 'workflow' ? 'workflow' : existing.task_type === 'runbook' ? 'runbook' : existing.task_type === 'rpa_script' ? 'rpa_script' : 'chat');
   const nextPrompt = body.prompt !== undefined ? body.prompt : existing.prompt;
   if (nextTaskType === 'chat' && !String(nextPrompt || '').trim()) {
     res.status(400).json({ error: '对话任务需要填写 prompt' });
@@ -205,6 +237,30 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
   const sets: string[] = [];
   const vals: any[] = [];
+  if (nextTaskType === 'rpa_script') {
+    const nextRpaId = body.rpaScriptId !== undefined ? body.rpaScriptId : existing.rpa_script_id;
+    const script = nextRpaId ? (await import('../services/automation.js')).getAutomationScript(userId, String(nextRpaId)) : null;
+    if (!script?.publishedVersion) {
+      res.status(400).json({ error: 'RPA 定时任务必须绑定已发布脚本' });
+      return;
+    }
+    const version = body.rpaScriptVersion !== undefined ? Number(body.rpaScriptVersion) : Number(existing.rpa_script_version || script.publishedVersion);
+    if (version !== script.publishedVersion) {
+      res.status(400).json({ error: 'RPA 定时任务必须绑定当前已发布版本' });
+      return;
+    }
+    const inputs = body.rpaInputs !== undefined ? body.rpaInputs : (() => {
+      try { return JSON.parse(existing.rpa_inputs_json || '{}'); } catch { return {}; }
+    })();
+    if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) {
+      res.status(400).json({ error: 'RPA 参数必须是对象' });
+      return;
+    }
+    sets.push('rpa_script_id = ?', 'rpa_script_name = ?', 'rpa_script_version = ?', 'rpa_inputs_json = ?');
+    vals.push(script.id, script.name, version, JSON.stringify(inputs));
+  } else if (existing.task_type === 'rpa_script') {
+    sets.push('rpa_script_id = NULL', 'rpa_script_name = NULL', 'rpa_script_version = NULL', 'rpa_inputs_json = NULL');
+  }
   if (body.name !== undefined) {
     if (!String(body.name).trim()) { res.status(400).json({ error: '任务名称不能为空' }); return; }
     sets.push('name = ?'); vals.push(String(body.name).trim());

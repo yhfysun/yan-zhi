@@ -33,11 +33,16 @@ const WRITE_TOOLS = new Set([
   'browser_fill_form', 'browser_submit_form', 'browser_select_option',
   'browser_check', 'browser_uncheck', 'browser_drag', 'browser_scroll_into_view',
   'browser_upload', 'browser_download', 'browser_login_saved',
+  // 控制统一后台任务（暂停/恢复/取消）会改变真实进程/下载状态。
+  'job_control',
   // 脚本与确定性循环都能点击/输入/改页面，按写操作授权
   'browser_run_script', 'browser_run_loop',
   // 配方会执行上传/填表/点发布（可能改变远端状态）——按写操作管控
   'browser_run_recipe',
   'browser_run_page_operation',
+  // RPA 脚本会连续执行点击/输入/上传等动作，编辑和发布同样会改变正式资产。
+  'rpa_run_script', 'rpa_script_test', 'rpa_script_create_draft',
+  'rpa_script_update_draft', 'rpa_script_publish', 'rpa_cancel_run',
   // —— Git 写操作（pull/fetch 会改动本地工作区，同样算写）——
   'api_git_add', 'api_git_commit', 'api_git_push', 'api_git_pull', 'api_git_fetch',
   'api_git_stage_hunks',

@@ -39,6 +39,8 @@ const KNOWN_TOOL_NAMES = new Set([
   'image_analyze',
   // 办公三件套（office-docs.ts）
   'office_create', 'office_read', 'office_write', 'office_search',
+  // 固定脚本 RPA 运行工具（builtin-automation-agent.ts）
+  'rpa_script_list', 'rpa_script_get', 'rpa_run_script', 'rpa_get_run', 'rpa_cancel_run',
   // 浏览器
   'browser_navigate', 'browser_get_page_content',
   // api_* 直查工具（不走 ToolRegistry，但必须并入判定集合）
@@ -92,9 +94,12 @@ describe('内置办公岗位智能体 · seed 条目结构', () => {
     expect(JSON.parse(String(def.config_json))).toEqual({ maxReActSteps: steps });
   });
 
-  it('两个助手都挂 pageAgent 作为子智能体（查术语 / 查政策）', () => {
+  it('两个助手都挂 pageAgent 与 RPA Builder 作为子智能体', () => {
     for (const def of builtinOfficeAgentDefs) {
-      expect(JSON.parse(String(def.sub_agent_ids))).toEqual(['a_builtin_page_agent']);
+      expect(JSON.parse(String(def.sub_agent_ids))).toEqual([
+        'a_builtin_page_agent',
+        'a_builtin_rpa_builder',
+      ]);
     }
   });
 

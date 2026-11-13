@@ -279,13 +279,13 @@ onBeforeUnmount(() => {
 .grammar-method span { display: block; margin-top: 6px; color: var(--g-paper-muted); font-size: 13px; line-height: 1.75; }
 .grammar-section-head { display: flex; align-items: center; gap: 6px; color: #245bdb; font-size: 11px; font-weight: 700; }
 .grammar-example,
-.grammar-pair { display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; gap: 12px; align-items: start; padding: 15px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: #fff; }
+.grammar-pair { display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; gap: 12px; align-items: start; padding: 15px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: var(--g-paper); }
 .grammar-example > span,
 .grammar-pair > span { color: #245bdb; font-size: 10px; font-weight: 700; }
 .grammar-example p { margin: 0; font-size: 16px; line-height: 1.7; }
 .grammar-example small { display: block; margin-top: 5px; color: var(--g-paper-muted); font-size: 11px; }
 .grammar-example button,
-.grammar-pair button { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid rgba(24,37,43,.15); border-radius: 6px; background: #fff; color: #245bdb; cursor: pointer; }
+.grammar-pair button { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid rgba(24,37,43,.15); border-radius: 6px; background: var(--g-paper); color: #245bdb; cursor: pointer; }
 .grammar-pair p { margin: 0 0 5px; font-size: 14px; line-height: 1.6; }
 .grammar-pair .wrong { color: #d4380d; }
 .grammar-pair .right { color: #0f8a3d; }

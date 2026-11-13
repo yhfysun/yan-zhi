@@ -62,6 +62,22 @@ export interface DownloadState {
 }
 
 /**
+ * 试听说话人选择。
+ * MeloTTS 只有一个说话人，必须用 sid=0；不能套用 Aishell3 的 0-173 角色映射，
+ * 否则本地模型会收到非法 speakerId，表现为“包已安装但试听/课程朗读无声”。
+ */
+export function resolvePreviewSpeakerId(
+  packId: string,
+  requested: number | undefined,
+  fallback: (roleName: string, used: Set<number>) => number,
+): number {
+  if (typeof requested === 'number') return requested;
+  const pack = TTS_PACKS.find((item) => item.id === packId);
+  if (pack && pack.speakers <= 1) return 0;
+  return fallback('旁白', new Set());
+}
+
+/**
  * 可下载的语音包清单。下载源见 MS_REPOS（ModelScope，首选）与 RELEASE_FILE（GitHub 兜底）。
  *
  * ⚠️ `sizeMb` 是**实测值**（解压后的核心文件），不是网上流传的数字：
@@ -93,12 +109,12 @@ export const TTS_PACKS: TtsPack[] = [
   },
   {
     id: 'vits-melo-tts-zh_en',
-    name: '中英混读（MeloTTS）',
+    name: '英语朗读 / 中英混读（MeloTTS）',
     speakers: 1,
     sizeMb: 163,
     sampleRate: 44100,
     license: 'MIT',
-    desc: '单音色但音质最好（44.1kHz），支持中英文混读。适合旁白/朗读类场景。',
+    desc: '英语课程推荐语音包：支持英文与中英混读，44.1kHz。课程朗读失败时可一键安装，装完可离线使用。',
     genderLabeled: false,
     note: '仅 1 个音色，多角色场景区分度低。',
   },
@@ -608,10 +624,14 @@ export async function previewTtsPack(
   if (!dir) return { ok: false, message: '该语音包尚未安装' };
 
   // 延迟 import：避免 services → mcp 的顶层循环依赖
-  const { localSpeak, pcmToWav, pickSpeakerForRole, resolveSherpaLib, resetSherpaCache } = await import('../mcp/sherpa-tts.js');
-  const speakerId = typeof opts.speakerId === 'number'
-    ? opts.speakerId
-    : pickSpeakerForRole('旁白', new Set());
+  const {
+    localSpeak, pcmToWav, pickSpeakerForRole, resolveSherpaLib, resetSherpaCache, installSherpaEngine,
+  } = await import('../mcp/sherpa-tts.js');
+  if (!resolveSherpaLib().available) {
+    const engine = await installSherpaEngine();
+    if (!engine.ok) throw new Error(engine.message);
+  }
+  const speakerId = resolvePreviewSpeakerId(id, opts.speakerId, pickSpeakerForRole);
   const text = opts.text?.trim() || '这是本地语音试听，用于确认音色效果。';
 
   // 诊断信息随错误一起抛出：服务进程内的失败与裸跑不一致时，要先知道它用的是哪份引擎/模型

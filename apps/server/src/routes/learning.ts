@@ -15,6 +15,8 @@ import {
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { getEnglishPath } from '../learning/english-path.js';
+import { resolveBundledEdgeTts, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
+import { previewTtsPack } from '../services/tts-packs.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
 import { SOFT_MATERIALS, getSoftMaterial } from '../learning/exam-papers-extra.js';
@@ -23,6 +25,7 @@ import { listSecurityPaths, getSecurityPath } from '../learning/security-curricu
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { scorePronunciation } from '../learning/pronunciation.js';
 import type { DrillAnswer } from '../learning/srs.js';
+import { listSystemVoices, pickSystemVoiceByLanguage, systemSpeak } from '../mcp/tts-sapi.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -30,6 +33,18 @@ import path from 'node:path';
 
 const router = Router();
 router.use(authMiddleware);
+
+const learningVoiceCache = new Map<string, { at: number; name: string }>();
+
+async function resolveLearningVoice(language: string): Promise<string | null> {
+  const cached = learningVoiceCache.get(language);
+  if (cached && Date.now() - cached.at < 10 * 60_000) return cached.name;
+  const voices = await listSystemVoices();
+  const voice = pickSystemVoiceByLanguage(voices || [], language);
+  if (!voice) return null;
+  learningVoiceCache.set(language, { at: Date.now(), name: voice.name });
+  return voice.name;
+}
 
 function userIdOf(req: { user?: { userId?: string } }): string {
   const uid = req.user?.userId;
@@ -406,6 +421,88 @@ router.post('/readings/:id/collect', async (req, res) => {
     addWordToBook(uid, book.id, entry);
     res.json({ data: { ok: true, created: false, bookId: book.id, entry } });
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// POST /api/learning/tts —— 英语课程朗读：只接受英文，并强制选择英语系统音色。
+// 不能沿用浏览器默认音色：中文 Windows 上默认会落到 Huihui，把 “cat” 音译着念。
+router.post('/tts', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    if (!text) { res.status(400).json({ error: 'text 必填' }); return; }
+    if (!/[A-Za-z]/.test(text)) { res.status(400).json({ error: '英语朗读只接受英文文本' }); return; }
+    if (/[\u3400-\u9fff/→+æɛɪɑɒʌʃθðŋːˈˌ]/.test(text)) {
+      res.status(400).json({ error: '英语朗读不接受中文、音标或结构符号，请传入实际英文句子' });
+      return;
+    }
+    const language = String(req.body?.language || 'en-US');
+    const { mediaTarget } = await import('../mcp/api-tool-executor.js');
+    const target = mediaTarget({ kind: 'audios' });
+    await fsp.mkdir(target.dir, { recursive: true });
+    const rate = Math.max(-10, Math.min(10, Math.round(Number(req.body?.rate) || -2)));
+
+    let voiceName: string | null = null;
+    try {
+      voiceName = await resolveLearningVoice(language);
+    } catch { /* 系统音色枚举失败仍可走随包 Edge 英文语音 */ }
+    if (voiceName) {
+      const file = path.join(target.dir, `learning-en-${Date.now()}.wav`);
+      try {
+        const synth = await systemSpeak(text, { voice: voiceName, rate, outFile: file });
+        if (synth) {
+          res.json({
+            data: {
+              url: `${target.urlBase}/${path.basename(file)}`,
+              engine: synth.engine,
+              voice: synth.voice || voiceName,
+              language,
+            },
+          });
+          return;
+        }
+      } catch { /* 系统英文音色失败 → 自动回落随包 Edge 英文语音 */ }
+    }
+
+    try {
+      const local = await previewTtsPack('vits-melo-tts-zh_en', { text });
+      if (local.ok && local.url) {
+        res.json({
+          data: {
+            url: local.url,
+            engine: 'local',
+            packId: 'vits-melo-tts-zh_en',
+            voice: 'MeloTTS',
+            language,
+          },
+        });
+        return;
+      }
+    } catch { /* 未安装或本地推理失败 → 继续在线语音 */ }
+
+    const edgeExe = resolveBundledEdgeTts();
+    if (edgeExe) {
+      const file = path.join(target.dir, `learning-en-edge-${Date.now()}.mp3`);
+      const edge = await synthesizeBundledEnglishEdge({ text, outFile: file, exePath: edgeExe });
+      if (edge) {
+        res.json({
+          data: {
+            url: `${target.urlBase}/${path.basename(file)}`,
+            engine: 'edge-python',
+            voice: edge.voice,
+            language,
+          },
+        });
+        return;
+      }
+    }
+
+    res.status(409).json({
+      error: voiceName
+        ? '系统英文语音与在线英文语音均合成失败，请检查网络后重试'
+        : '本机缺少英文系统音色，随包在线英文语音也合成失败，请检查网络后重试',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // POST /api/learning/voice —— 口语跟读识别：{audioBase64, mime, expected?, language?} → whisper 转写

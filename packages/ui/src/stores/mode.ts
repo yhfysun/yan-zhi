@@ -13,7 +13,7 @@ import { BUILD_MODES, BUILD_MODE_DEFS } from '../generated/build-modes';
 import { usePluginStore } from './plugin';
 
 /** 构建期内置模式（type 只用于提示与兜底，运行时允许插件带来新 key） */
-export type BaseMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
+export type BaseMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'rpa' | 'clip' | 'shop' | 'learning';
 /** 模式 key：内置之外，插件可贡献新模式（contributes.mode.key），故不是封闭联合 */
 export type AppMode = BaseMode | (string & {});
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
@@ -175,6 +175,7 @@ const LEAD_DEFAULTS: Partial<Record<BaseMode, LeadMode | null>> = {
   ops: 'human',
   sec: 'human',
   wf: 'human', // 默认运行模式（人工填参执行），调试优先
+  rpa: 'human', // 默认脚本库/时间线居中，Builder 对话在右
   clip: 'human', // 默认时间轴居中（人工剪），要 AI 主导时切到 ai
   shop: 'human', // 默认店铺列表/工作台居中（人工主导），要 AI 主导时切到 ai
 };
@@ -300,6 +301,7 @@ export function chatPlacementOf(m: AppMode, lead: LeadMode): ChatPlacement {
   if (m === 'office') return 'center';
   if (m === 'dev') return lead === 'ai' ? 'center' : 'right';
   if (m === 'wf') return lead === 'ai' ? 'center' : 'right'; // 运行模式：运行台居中 + 对话在右
+  if (m === 'rpa') return lead === 'ai' ? 'center' : 'right';
   if (m === 'clip') return lead === 'ai' ? 'center' : 'right'; // 剪辑模式：时间轴居中 + 对话在右
   const meta = pluginModeMeta(m);
   if (meta?.chatPlacement) return meta.chatPlacement === 'side' ? 'right' : 'center';

@@ -124,6 +124,42 @@ function resolveUserDataDirs(appDataPath, isDev) {
   };
 }
 
+/** 安装包构建标识：内容相同的 asar 在不同机器上保持同一 ID，升级后必然变化。 */
+function makeServerBuildId(version, size, mtimeMs) {
+  return `yan-zhi-server:${String(version || '0.0.0')}:${Number(size) || 0}:${Math.trunc(Number(mtimeMs) || 0)}`;
+}
+
+/**
+ * 已有 3001 后端是否与本安装包来自同一次构建。
+ * 旧版健康接口没有 buildId，必须判为不兼容，不能让新前端静默接旧后端。
+ */
+function isCompatibleServerHealth(health, expectedBuildId) {
+  return !!health
+    && health.ok === true
+    && health.app === 'yan-zhi-server'
+    && !!expectedBuildId
+    && health.buildId === expectedBuildId;
+}
+
+/**
+ * 端口占用进程是否确实是言智后端。
+ * 只允许清理言智安装目录里的 yan-zhi.exe，或本仓 dev 的 node/electron 后端；
+ * 不认识的进程绝不杀，避免误伤用户其它服务。
+ */
+function looksLikeYanzhiServerProcess(info) {
+  const name = String(info && info.name || '').toLowerCase();
+  const cmd = String(info && info.commandLine || '');
+  if (name === 'yan-zhi.exe') {
+    return /resources[\\/]+server[\\/]+dist[\\/]+apps[\\/]+server[\\/]+src[\\/]+index\.js/i.test(cmd)
+      || /yan-zhi/i.test(cmd);
+  }
+  if (name === 'node.exe' || name === 'electron.exe') {
+    return /(?:ai-assistant|yan-zhi)/i.test(cmd)
+      && /(?:(?:^|[\\/\s])src[\\/]index\.ts|resources[\\/]+server[\\/]+dist[\\/]+apps[\\/]+server[\\/]+src[\\/]+index\.js)/i.test(cmd);
+  }
+  return false;
+}
+
 module.exports = {
   DEFAULT_API_PORT,
   DEV_API_PORT,
@@ -134,4 +170,7 @@ module.exports = {
   userDataName,
   sharedDataName,
   resolveUserDataDirs,
+  makeServerBuildId,
+  isCompatibleServerHealth,
+  looksLikeYanzhiServerProcess,
 };

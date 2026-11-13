@@ -6,6 +6,12 @@ export function normalizeBrowserDownloadAction(
 ): string | undefined {
   if (
     fullName === 'browser_download'
+    && (args?.operation === 'pause' || args?.operation === 'resume')
+  ) {
+    return 'download_control';
+  }
+  if (
+    fullName === 'browser_download'
     && action === 'download'
     && !args?.url
     && !args?.selector

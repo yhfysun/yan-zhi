@@ -192,7 +192,9 @@ const PAGE_AGENT_DATA = {
 - file_list / file_grep / file_edit: 列目录 / 全文检索 / 精准改文件
 - python_exec / js_exec / cmd_exec: 在本机执行 Python / JavaScript(Node) / 系统命令
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
-- browser_download: 导出/下载后页面没变化或回执没有 downloaded 时，不要重复点同一入口；调用 browser_download 不传参数查询最近下载，completed 且 exists=true 后再继续校验/上传。
+- browser_list_upload_inputs: 页面有多个上传口或需要确认 accept/multiple 时先列文件输入清单；hidden 仍可注入，不要求先点击上传按钮。
+- browser_download: 导出/下载后页面没变化或回执没有 downloaded 时，不要重复点同一入口；按 downloadWatch.beforeSeq 调 browser_download({since, waitMs, expectedFileName}) 等待，completed 且 verified=true 后再继续校验/上传。
+- 大文件：按 bytes/totalBytes/percent/speedBps/etaMs 和 nextCheckInMs 分段等待；桌面端可 operation=pause/resume，canResume=true 才代表支持断点续传。
 
 【浏览器子任务规划与检查点（强制）】
 1. 收到委派后先 task_plan，把本次浏览器任务拆成 2-6 个可独立验收的子任务；每个子任务只对应一个结果。

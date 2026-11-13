@@ -169,14 +169,15 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('模式定义与 openspec 表格一致（含 wf / clip / shop；douyin 已于 2026-10-16 下线）', async () => {
+  it('模式定义与 openspec 表格一致（含 wf / rpa / clip / shop；douyin 已于 2026-10-16 下线）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'rpa', 'clip', 'shop', 'learning']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');
     expect(m.modeRoute('sec')).toBe('/sec');
     expect(m.modeRoute('wf')).toBe('/workflow');
+    expect(m.modeRoute('rpa')).toBe('/automation');
     // 剪辑模式（第六模式）：P4 起随 clip-mode 插件贡献（键不带 desktopOnly，三端可用）
     expect(m.modeRoute('clip')).toBe('/clip');
     // pluginId 必须与插件 manifest.id 完全一致（运行时已核实：/api/plugins 返回 ops-shell / sec-lab）

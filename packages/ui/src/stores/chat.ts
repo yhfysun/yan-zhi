@@ -27,6 +27,7 @@ import { trimStartIndex, syncPagingAfterTrim } from './history-window';
 // 浏览器动作 → 人话（实况条展示「正在点击「发布」」，而不是干巴巴的"执行中"）
 import { describeBrowserAction } from '../composables/chat/browser-step-label';
 import { normalizeBrowserDownloadAction } from './browser-action';
+import { useBackgroundJobsStore } from './background-jobs';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
 // 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
@@ -448,6 +449,7 @@ export const useChatStore = defineStore('chat', () => {
   // 费用账本（2026-10-17）：SSE 的 task:cost / task:cost_notice 转调它。
   // ★ 只在此 store 内持有一个实例：Pinia 单例，组件侧 useCostStore() 拿到的是同一份。
   const costStore = useCostStore();
+  const backgroundJobsStore = useBackgroundJobsStore();
 
   /**
    * 「显示浏览器页面对话」偏好（2026-10-16）：默认**隐藏**。
@@ -2834,6 +2836,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           // 确定性输入循环（2026-10-29，P1）
           'browser_run_loop': 'run_loop',
           // 文件上传（2026-10-07）：桌面端走 CDP DOM.setFileInputFiles 注入本地文件
+          'browser_list_upload_inputs': 'list_upload_inputs',
           'browser_upload': 'upload',
           // ★★★ B5（2026-10-10）：补齐 11 个**主进程早已实现**但这里漏映射的 action。
           //   ★ 缺口（实测）：主进程 `browserView:action` 实现了 **40 个 action**，而本表只映射 27 个
@@ -2881,7 +2884,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             const loopBudget = action === 'run_loop'
               ? Math.min(Math.max(Number((args as any)?.maxSeconds) || 30, 1), 300) * 1000 + 5000
               : 0;
-            const ipcTimeout = loopBudget || ((action === 'upload' || action === 'screenshot') ? 65000 : 20000);
+            const downloadWaitBudget = action === 'downloads'
+              ? Math.min(Math.max(Number((args as any)?.waitMs) || 0, 0), 30000) + 5000
+              : 0;
+            const ipcTimeout = loopBudget || downloadWaitBudget || ((action === 'upload' || action === 'screenshot') ? 65000 : 20000);
             // ★ 工作目录随动作下发（2026-10-26）：主进程把「导出/下载」触发的文件落到
             //   <工作目录>/downloads/ 并把路径回传，模型才能真正拿到文件。
             //   与服务端 bridge 路径同一口径（见 llm-task-manager 的 argsWithWs）。
@@ -2933,6 +2939,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                 //   模型也失去“同一状态连续两次 = 操作没生效”的明确信号。
                 const pageState = computePageStateSignature(result);
                 text = `URL: ${result.url}\nTitle: ${result.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+              } else if (action === 'list_upload_inputs') {
+                const inputs = Array.isArray(result.inputs) ? result.inputs : [];
+                text = inputs.length
+                  ? `${result.note || ''}\nFile inputs: ${inputs.length}\n${inputs.map((item: any) => `[index=${item.index}] label="${item.label || '(no label)'}" accept="${item.accept || '(none)'}" multiple=${item.multiple === true} visible=${item.visible === true} disabled=${item.disabled === true}${item.selector ? ` selector="${item.selector}"` : ''}`).join('\n')}`
+                  : (result.note || '当前页面没有 input[type=file]。');
               } else if (action === 'upload') {
                 // ★ 2026-10-12（诊断报告 P0-3）：与 server 的 formatBridgeResult 同口径 ——
                 //   带上"页面是否回读到该文件"的核验结论，避免模型因无成功证据而反复重传。
@@ -2978,10 +2989,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'click') {
                 // 导出/下载按钮：文件已自动落盘，路径直接给模型（见 main.cjs attachDownloadToClickResult）
                 const dl = (result as any).downloaded;
-                if (dl && (!dl.state || dl.state === 'completed') && dl.exists !== false) {
+                if (dl && (!dl.state || dl.state === 'completed') && dl.verified === true) {
                   text = `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（状态=completed，exists=true；直接用文件工具读取，不要重复点导出）`;
+                } else if (dl?.state === 'completed') {
+                  text = `下载未通过校验：${(result as any).note
+                    || `exists=${dl.exists === true}，bytes=${dl.bytes || 0}，path=${dl.savedPath || dl.filename || '未知文件'}`}。不要当作有效导出。`;
                 } else if (dl?.state === 'progressing') {
-                  text = `点击成功；下载已开始，文件仍在写入：${dl.savedPath}。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`;
+                  text = `点击成功；下载已开始，文件仍在写入：${dl.savedPath}（${dl.bytes || 0}/${dl.totalBytes || 0}B${dl.percent == null ? '' : `，${dl.percent}%`}${dl.etaMs ? `，预计还需 ${Math.ceil(dl.etaMs / 1000)} 秒` : ''}）。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`;
                 } else if (dl?.state) {
                   text = `点击成功，但下载未完成（状态=${dl.state}）：${dl.savedPath || dl.filename || '未知文件'}。不要重复点击，检查网络或改用 browser_download 查询。`;
                 } else {
@@ -2990,9 +3004,31 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'downloads') {
                 const recs = Array.isArray((result as any).records) ? (result as any).records : [];
                 const dir = (result as any).dir || '-';
-                text = recs.length
-                  ? `最近下载（目录: ${dir}）：\n${recs.map((r: any) => `- ${r.filename}（state=${r.state}，exists=${r.exists === true}，${r.bytes || 0}B）→ ${r.savedPath}`).join('\n')}`
-                  : `最近没有下载记录（目录: ${dir}）`;
+                const status = (result as any).status;
+                const artifact = (result as any).download;
+                if (status === 'completed') {
+                  text = `✅ 下载完成并通过校验：${artifact?.filename || '(unknown)'}\n保存路径: ${artifact?.savedPath || '(unknown)'}\n大小: ${artifact?.bytes || 0}B\nstate=completed, exists=${artifact?.exists === true}, verified=${artifact?.verified === true}`;
+                } else if (status === 'progressing' || status === 'timeout') {
+                  text = `⚠️ 下载尚未进入终态（status=${status}）：${artifact?.bytes || 0}/${artifact?.totalBytes || 0}B${artifact?.percent == null ? '' : `（${artifact.percent}%）`}${artifact?.etaMs ? `，预计还需 ${Math.ceil(artifact.etaMs / 1000)} 秒` : ''}。不要重复点击导出；建议 ${(result as any).nextCheckInMs || 3000}ms 后按同一个 since 继续等待。`;
+                } else if (status === 'no_download') {
+                  text = '⚠️ 本次动作之后没有观察到新下载。先重新观察页面或确认点击目标，不要直接重复同一导出操作。';
+                } else if (status === 'ambiguous') {
+                  const candidates = Array.isArray((result as any).candidates) ? (result as any).candidates : [];
+                  text = `❌ 本次动作触发了多个下载，无法唯一判断：${candidates.map((x: any) => x.filename).join(', ')}。请传 expectedFileName 缩小范围。`;
+                } else if (status === 'file_empty' || status === 'file_missing') {
+                  text = `❌ 下载未通过校验（status=${status}）：${artifact?.savedPath || '(unknown)'}。不要当作有效导出。`;
+                } else if (status) {
+                  text = `❌ 下载失败：status=${status}${artifact?.savedPath ? `，path=${artifact.savedPath}` : ''}。不要自动重复点击。`;
+                } else {
+                  text = recs.length
+                    ? `最近下载（目录: ${dir}）：\n${recs.map((r: any) => `- ${r.filename}（state=${r.state}，exists=${r.exists === true}，verified=${r.verified === true}，${r.bytes || 0}/${r.totalBytes || 0}B${r.percent == null ? '' : `，${r.percent}%`}${r.etaMs ? `，ETA ${Math.ceil(r.etaMs / 1000)}s` : ''}${r.canResume ? '，可续传' : ''}）→ ${r.savedPath}`).join('\n')}`
+                    : `最近没有下载记录（目录: ${dir}）`;
+                }
+              } else if (action === 'download_control') {
+                const d = (result as any).download || {};
+                text = `下载已${result.operation === 'pause' ? '暂停' : '恢复'}：${d.filename || '(unknown)'}，已下载 ${d.bytes || 0}/${d.totalBytes || 0}B，可续传=${d.canResume === true}，暂停中=${d.paused === true}`;
+              } else if (action === 'download' && (result as any).status === 'progressing') {
+                text = `下载已触发：${result.filename || '(unknown)'}（${result.bytes || 0}/${result.totalBytes || 0}B${result.percent == null ? '' : `，${result.percent}%`}${result.etaMs ? `，预计还需 ${Math.ceil(result.etaMs / 1000)} 秒` : ''}）。建议 ${result.nextCheckInMs || 3000}ms 后按 since=${result.id || 0} 查询，不要重复触发。`;
               } else {
                 text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
               }
@@ -4093,6 +4129,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     // 事件处理：与原 SSE 版逐字同义（message:added 补漏 / 标题生成 / 终态清运行态），全幂等。
     const unsubConv = onConvEvent((cid, event) => {
       if (cid !== convId) return;
+      if ((event.type === 'background_job:updated' || event.type === 'background_job:terminal') && event.job?.jobId) {
+        backgroundJobsStore.upsert(convId, event.job);
+        return;
+      }
       // ★ 2026-10-11 消费 `message:added`（服务端 notifyConversation 在任务**已结束**
       //   时把落库消息推到会话总线 —— 典型场景：任务收尾的"完成提示"消息、
       //   注入的追加消息）。收到的就是双通道都没赶上时的漏网消息 ⇒ 直接补进本地

@@ -49,6 +49,24 @@
       "notes": "P4 纯视图插件：只贡献 mode 元数据与 /workflow 路由（workflow 引擎留基座）",
       "frontendBundle": true
     },
+    "rpa-mode": {
+      "kind": "mode",
+      "modeKey": "rpa",
+      "label": "自动化模式",
+      "desc": "固定脚本 RPA：录制、时间线编辑、试跑、发布与运行记录",
+      "icon": "MagicStick",
+      "route": "/automation",
+      "backendEntry": "apps/server/src/plugins/rpa-mode.ts",
+      "manifestExport": "rpaModeManifest",
+      "backendNoop": true,
+      "frontendViews": [
+        "views/AutomationWorkbench.vue",
+        "components/automation/**"
+      ],
+      "defaultEnabled": true,
+      "notes": "固定脚本执行器、工具与 API 留在基座；插件只贡献模式、页面入口与场景种子",
+      "frontendBundle": true
+    },
     "learning-mode": {
       "kind": "mode",
       "modeKey": "learning",
@@ -252,7 +270,8 @@
       "remote-control",
       "android-mirror",
       "dev-mode",
-      "wf-mode"
+      "wf-mode",
+      "rpa-mode"
     ],
     "pro": [
       "office-core",
@@ -263,6 +282,7 @@
       "android-mirror",
       "dev-mode",
       "wf-mode",
+      "rpa-mode",
       "learning-mode",
       "clip-mode",
       "ops-shell",

@@ -6,6 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 import { findPython, runPythonCode, runPythonCodeBackground } from './python-runtime';
 import { resolveToolPath } from './fs-walk';
 import { toolError } from '../result';
+import { registerBackgroundJob } from './background-job-client';
 
 export class PythonExecTool implements BuiltInTool {
   name = 'python_exec';
@@ -17,7 +18,8 @@ export class PythonExecTool implements BuiltInTool {
       code: { type: 'string', description: 'Python code to execute。从 os.environ["YZ_PY_ARGS"] 读取 base64(JSON) 入参，结果 print 到 stdout' },
       cwd: { type: 'string', description: 'Working directory. Defaults to the session workspace. Relative paths are resolved against the workspace.' },
       timeout: { type: 'number', description: 'Timeout in ms (default 30000, max 300000)。background=true 时忽略（后台作业不受工具超时约束）' },
-      background: { type: 'boolean', description: 'true=后台作业：脚本落盘后脱离进程运行，立刻返回 jobId/日志路径，用 job_status 轮询。出片、渲染、下载、批量处理一律用它' },
+      background: { type: 'boolean', description: 'true=后台作业：脚本落盘后脱离进程运行，立刻返回 jobId/日志路径；完成会自动唤醒，出片、渲染、下载、批量处理一律用它' },
+      wakePolicy: { type: 'string', enum: ['resume', 'notify', 'silent'], description: '后台任务结束后的唤醒策略：resume=自动续跑原会话（默认）、notify=只通知、silent=只更新任务卡' },
     },
     required: ['code'],
   };
@@ -48,16 +50,39 @@ export class PythonExecTool implements BuiltInTool {
       });
       if (!bg.ok) return toolError(`Error: ${bg.error}`);
       const j = bg.job;
+      const unified = ctx?.conversationId
+        ? await registerBackgroundJob({
+            kind: 'python_process',
+            conversationId: ctx.conversationId,
+            wakePolicy: (args.wakePolicy === 'notify' || args.wakePolicy === 'silent') ? args.wakePolicy : 'resume',
+            title: `Python 后台任务 ${j.jobId}`,
+            status: 'running',
+            idempotencyKey: `python:${j.jobId}`,
+            adapterRef: `python:${j.jobId}`,
+            spec: {
+              nativeJobId: j.jobId,
+              workspaceDir,
+              jobDir: j.jobDir,
+              statusPath: j.statusPath,
+              logPath: j.logPath,
+              cwd: cwd || '',
+            },
+            controlCapabilities: { pause: false, resume: false, cancel: true },
+          }, ctx)
+        : null;
+      const displayJobId = unified?.jobId || j.jobId;
       return {
         content: [{
           type: 'text',
           text: [
-            `已在后台启动：${j.jobId}`,
+            `已在后台启动：${displayJobId}`,
             `作业目录：${j.jobDir}`,
             `日志：${j.logPath}`,
             '',
-            `轮询：job_status { "jobId": "${j.jobId}" }（可带 waitSeconds 等待，或 tailLines 看更长的日志）`,
-            '后台作业不受工具超时约束，不要再用前台方式重跑；轮询到 completed/failed 再读产物。',
+            unified
+              ? `完成时自动唤醒原会话（wakePolicy=${unified.wakePolicy}）；不要持续轮询。`
+              : `查询：job_status { "jobId": "${j.jobId}" }（可带 waitSeconds 等待，或 tailLines 看更长的日志）`,
+            '后台作业不受工具超时约束，不要再用前台方式重跑；需要最新进度或控制时才查 job_status/job_control。',
           ].join('\n'),
         }],
       };

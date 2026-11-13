@@ -114,6 +114,44 @@ describe('目录解析：状态隔离，大文件缓存共用', () => {
   });
 });
 
+describe('后端构建身份：升级后不得静默复用旧后端', () => {
+  test('构建 ID 包含版本、asar 大小和修改时间', () => {
+    assert.strictEqual(
+      inst.makeServerBuildId('0.1.0', 1234, 5678.9),
+      'yan-zhi-server:0.1.0:1234:5678',
+    );
+  });
+
+  test('★ 旧版健康接口没有 buildId 时必须判为不兼容', () => {
+    assert.strictEqual(inst.isCompatibleServerHealth({ ok: true }, 'new-build'), false);
+    assert.strictEqual(inst.isCompatibleServerHealth({ ok: true, app: 'yan-zhi-server' }, 'new-build'), false);
+  });
+
+  test('只有同一构建的言智后端可复用', () => {
+    assert.strictEqual(inst.isCompatibleServerHealth({
+      ok: true, app: 'yan-zhi-server', buildId: 'new-build',
+    }, 'new-build'), true);
+    assert.strictEqual(inst.isCompatibleServerHealth({
+      ok: true, app: 'yan-zhi-server', buildId: 'old-build',
+    }, 'new-build'), false);
+  });
+
+  test('★ 只把言智安装目录/本仓 dev 后端识别为可清理进程', () => {
+    assert.strictEqual(inst.looksLikeYanzhiServerProcess({
+      name: 'yan-zhi.exe',
+      commandLine: '"C:\\Program Files\\yan-zhi\\yan-zhi.exe" "C:\\Program Files\\yan-zhi\\resources\\server\\dist\\apps\\server\\src\\index.js"',
+    }), true);
+    assert.strictEqual(inst.looksLikeYanzhiServerProcess({
+      name: 'node.exe',
+      commandLine: 'node C:\\work\\ai-assistant\\node_modules\\tsx\\dist\\cli.mjs src/index.ts',
+    }), true);
+    assert.strictEqual(inst.looksLikeYanzhiServerProcess({
+      name: 'node.exe',
+      commandLine: 'node C:\\other-service\\server.js',
+    }), false);
+  });
+});
+
 describe('静态守门：源码里不得再出现「把正式版列入可杀名单」', () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   /** 剥注释 —— 本项目已多次踩「断言命中注释」导致假红/假绿 */
@@ -173,6 +211,21 @@ describe('静态守门：源码里不得再出现「把正式版列入可杀名�
     const src = strip(read('apps/desktop/main.cjs'));
     assert.match(src, /const RENDER_EXTRA_ARGS\s*=\s*\['--yz-api-port='\s*\+\s*API_PORT/, 'RENDER_EXTRA_ARGS 必须包含 --yz-api-port');
     assert.match(src, /additionalArguments:\s*RENDER_EXTRA_ARGS/, 'main 必须通过 additionalArguments 下发 RENDER_EXTRA_ARGS');
+  });
+
+  test('main.cjs 校验后端 buildId，且旧后端清理逻辑有明确守门', () => {
+    const src = strip(read('apps/desktop/main.cjs'));
+    assert.match(src, /const APP_BUILD_ID\s*=/, 'main.cjs 必须计算安装包构建 ID');
+    assert.match(src, /inst\.isCompatibleServerHealth\(existing, APP_BUILD_ID\)/, '复用前必须校验后端构建 ID');
+    assert.match(src, /stopIncompatibleServer\(\)/, '不兼容后端必须停止或明确失败');
+    assert.match(src, /looksLikeYanzhiServerProcess/, '清理端口前必须确认进程属于言智');
+    assert.match(src, /\.\.\.serverIdentityEnv\(\)/, '启动后端时必须下发 buildId');
+  });
+
+  test('后端健康接口回传 app/buildId，供主进程拒绝旧后端', () => {
+    const src = strip(read('apps/server/src/index.ts'));
+    assert.match(src, /app:\s*'yan-zhi-server'/);
+    assert.match(src, /buildId:\s*process\.env\.YZ_APP_BUILD_ID/);
   });
 
   test('dev-desktop.bat 的清理逻辑显式排除安装版进程名', () => {

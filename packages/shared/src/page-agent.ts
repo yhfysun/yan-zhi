@@ -38,6 +38,7 @@ export const PAGE_AGENT_BROWSER_TOOLS = [
   'browser_uncheck',
   'browser_fill_form',
   'browser_submit_form',
+  'browser_list_upload_inputs',
   'browser_upload',
   'browser_download',
   // 页面观察
@@ -108,11 +109,11 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 2. pageAgent 在本次委派内单独 task_plan，把浏览器工作拆成下载、校验、上传、回读等可验收子任务；该计划只属于本次 call_agent，不覆盖外层计划。
 3. browser_navigate 打开目标站点。首次打开预览面板可能较慢；同一 URL 只导航一次。
 4. browser_wait_for 或 browser_get_page_content 等待并读取页面，拿正文、表单状态、可交互元素编号与稳定 selector。
-5. 两点及以上字段优先一次 browser_fill_form；登录表单必须带 submit:true（或 submit 指向登录按钮），填写与点击登录一次完成。
+5. 两点及以上字段优先一次 browser_fill_form；登录表单必须带 submit:true（或 submit 指向登录按钮），填写与点击登录一次完成。需要单独提交已填表单时用 browser_submit_form。
 6. 操作后重新 browser_get_page_content，按 URL、成功提示或表单消失判断结果，不以“按钮已点到”作为成功证据。
-7. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时调用 browser_download 不传参数查询最近记录。以 state=completed 且 exists=true 为成功，progressing 继续等待，cancelled/interrupted 按失败处理。
-   若点击后 pageChanged=false 或回执没有 downloaded，不要重复点同一入口；先查询最近下载，文件可能仍在生成。
-8. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_upload 到目标系统；提交后回读成功提示或更新条数。
+7. 文件下载：点击导出/下载后优先读 browser_click 的 downloaded 回执；异步生成时按 downloadWatch.beforeSeq 调用 browser_download({since, waitMs, expectedFileName}) 等待终态。只有 status=completed 且 verified=true 为成功；file_empty/file_missing/cancelled/interrupted 按失败处理，no_download/timeout 先重新观察页面而不是重复点击。
+   若点击后 pageChanged=false 或回执没有 downloaded，不要重复点同一入口；带 since 继续等待/查询，文件可能仍在生成。
+8. 下载后上传：先用 file_read / office_read / python_exec 校验源文件，再 browser_list_upload_inputs 确认目标；然后 browser_upload 到目标系统，提交后回读成功提示或更新条数。
 9. 每个浏览器子任务完成立即 task_step 并写 URL、成功提示、文件路径或更新条数；到达单次委派步数边界时返回阶段回执，由外层决定下一次续跑。
 10. 周期任务用 scheduled_task（cron + prompt + 绑定日常办公助手）。
 
@@ -120,7 +121,7 @@ export const WEB_TASK_AUTOMATION_BODY = `# 网站自动化任务
 - 元素标签不影响文件事件：div/span/role=button/图标按钮只要绑定 click 也可能是下载或上传入口。
 - 下载入口用 browser_click 后读 downloaded 或查 browser_download；上传入口不要先 browser_click 打开原生文件框，直接 browser_upload 传 clickSelector/clickIndex。
 - 点按钮才弹原生文件框：browser_upload 传 clickSelector 或 clickIndex。
-- 页面有隐藏/多个 input[type=file]：按 fileInputs 的 accept/near 选准 index；Shadow DOM/嵌套文档同样会扫描。
+- 页面有隐藏/多个 input[type=file]：先 browser_list_upload_inputs，按 accept/label/multiple/visible 选准 index/selector；hidden=true 仍可注入，Shadow DOM/嵌套文档同样会扫描。
 - 自定义拖放上传区：传 dropSelector 或 dropIndex，让工具用真实本地文件触发 dragenter/dragover/drop。
 - 只看到“拖文件到这里”而 DOM 里没有 input：优先 dropSelector；不要用 browser_type 或 browser_run_script 伪造 File。
 - 第三方网盘/云文档选择器：先确认 filechooser 是否由 iframe 触发；需要 OAuth 或人工选择时 ask_user，不要反复打开弹窗。

@@ -6,7 +6,7 @@
  *   ② running 但进程已不在 → 报「已中断」，不能让模型无限轮询一个死作业；
  *   ③ jobId 非法（路径穿越）必须拒绝。
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,6 +34,10 @@ beforeEach(() => {
 
 afterEach(() => {
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
+  vi.unstubAllGlobals();
+  delete process.env.PORT;
+  delete process.env.YANZHI_API_PORT;
+  delete process.env.YZ_INTERNAL_TOKEN;
 });
 
 describe('job_status', () => {
@@ -100,5 +104,33 @@ describe('job_status', () => {
     expect(t).toContain('最近的后台作业');
     expect(t).toContain('job_bbb222_deadbeef');
     expect(t).toContain('job_aaa111_deadbeef');
+  });
+
+  it('统一后台 jobId：优先读通用任务表并提示完成后自动唤醒，不要求轮询', async () => {
+    process.env.PORT = '3456';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        jobId: 'job_bg_1_deadbeef',
+        kind: 'browser_download',
+        status: 'running',
+        wakePolicy: 'resume',
+        title: '下载大文件',
+        progress: 42,
+        bytesDone: 420,
+        bytesTotal: 1000,
+        speedBps: 100,
+        etaMs: 5800,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    const t = text(await tool.execute(
+      { jobId: 'job_bg_1_deadbeef' },
+      { workspaceDir: ws, userId: 'u1' },
+    ));
+
+    expect(t).toContain('后台任务');
+    expect(t).toContain('42%');
+    expect(t).toContain('自动唤醒');
+    expect(t).not.toContain('继续轮询');
   });
 });

@@ -37,13 +37,28 @@ export {
   type DataEnvelope,
 } from './data-artifact';
 export { JobStatusTool } from './job-status';
+export { JobControlTool } from './job-control';
+export {
+  registerBackgroundJob,
+  fetchBackgroundJob,
+  controlBackgroundJob,
+  isUnifiedBackgroundJobId,
+  type BackgroundJobView,
+  type RegisterBackgroundJobInput,
+} from './background-job-client';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES, BrowserRunRecipeTool, BrowserRunPageOperationTool, computePageStateSignature } from './browser';
 // ★ A4 根治（2026-10-10）：会话标识透传的入口 —— 执行器在调用 browser_* 前设置，
 //   `callBrowserApi` 把它作为 `x-yz-conversation-id` 带给服务端（读路由据此按会话隔离）。
 //   ★ 本文件是**逐个具名导出**（无 `export *`）→ 漏了这一行则跨包引不到（TS2305）。
-export { setBrowserToolConversationId, getBrowserToolConversationId, setBrowserToolWorkspaceDir, getBrowserToolWorkspaceDir } from './browser';
+export {
+  setBrowserToolConversationId,
+  getBrowserToolConversationId,
+  setBrowserToolWorkspaceDir,
+  getBrowserToolWorkspaceDir,
+  setBrowserToolJobContext,
+} from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
 export { GetSubTaskDetailTool } from './get-sub-task-detail';
@@ -107,6 +122,7 @@ import { DataSaveTool } from './data-save';
 import { BuildChartDslTool } from './build-chart-dsl';
 import { BuildDashboardDslTool } from './build-dashboard-dsl';
 import { JobStatusTool } from './job-status';
+import { JobControlTool } from './job-control';
 import { DoyzTool } from './doyz';
 import { NovelTuiwenTool } from './novel-tuiwen';
 import { BrowserToolClasses } from './browser';
@@ -176,6 +192,7 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new PythonExecTool());
   // 后台作业状态轮询（与 python_exec background=true 配套；只读作业目录）
   registry.register(new JobStatusTool());
+  registry.register(new JobControlTool());
   registry.register(new DoyzTool());
   // 有声小说推文视频生成（章节txt + 背景视频 → 标题/字幕/配音成片）
   registry.register(new NovelTuiwenTool());

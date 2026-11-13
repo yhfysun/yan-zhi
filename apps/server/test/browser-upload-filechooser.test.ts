@@ -135,6 +135,28 @@ describe('browser_upload 工具 schema（core）', () => {
     expect(serverBrowser).toContain("via: 'drop'");
     expect(serverBrowser).toContain('dropSelector');
   });
+
+  it('提供只读的上传目标清单工具，模型可先按 accept/multiple/visible 选目标', () => {
+    expect(coreTool).toContain("name = 'browser_list_upload_inputs'");
+    expect(coreTool).toContain("action: 'list_upload_inputs'");
+    expect(coreTool).toContain('accept');
+    expect(coreTool).toContain('multiple');
+    expect(coreTool).toContain('visible');
+  });
+
+  it('桌面端与 Playwright 执行面都实现 list_upload_inputs', () => {
+    expect(main).toMatch(/case 'list_upload_inputs':\s*\{/);
+    expect(main).toContain("'list_upload_inputs'");
+    expect(serverBrowser).toMatch(/case 'list_upload_inputs':\s*\{/);
+    expect(serverBrowser).toContain('accept');
+    expect(serverBrowser).toContain('multiple');
+  });
+
+  it('Playwright click 也回传本次下载的 downloaded / downloadWatch.since', () => {
+    expect(serverBrowser).toContain('const downloadBeforeSeq = action === \'click\' ? downloadSeq : 0');
+    expect(serverBrowser).toContain('queryDownloadStatus(downloadBeforeSeq)');
+    expect(serverBrowser).toContain('beforeSeq: downloadBeforeSeq');
+  });
 });
 
 const serverBrowser = fs.readFileSync(

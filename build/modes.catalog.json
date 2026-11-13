@@ -58,6 +58,16 @@
       "views": ["views/WorkflowWorkbench.vue"],
       "markers": ["WorkflowWorkbench"]
     },
+    "rpa": {
+      "label": "自动化模式",
+      "icon": "MagicStick",
+      "desc": "录制 · 固定脚本 · 运行记录",
+      "route": "/automation",
+      "entry": "views/AutomationWorkbench.vue",
+      "pluginId": "rpa-mode",
+      "views": ["views/AutomationWorkbench.vue", "components/automation/**"],
+      "markers": ["AutomationWorkbench"]
+    },
     "clip": {
       "label": "剪辑模式",
       "icon": "VideoCamera",
@@ -92,7 +102,7 @@
   },
   "editionPresets": {
     "lite": ["office"],
-    "basic": ["office", "wf", "dev"],
-    "pro": ["office", "wf", "dev", "clip", "ops", "sec", "shop", "learning"]
+    "basic": ["office", "wf", "dev", "rpa"],
+    "pro": ["office", "wf", "dev", "rpa", "clip", "ops", "sec", "shop", "learning"]
   }
 }

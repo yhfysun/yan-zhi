@@ -124,6 +124,13 @@ export async function callBrowserBridgeRaw(
   }
   const url = process.env.YZ_BROWSER_BRIDGE_URL as string;
   const token = process.env.YZ_BROWSER_BRIDGE_TOKEN as string;
+  if (!url || !token) {
+    const err = new Error(
+      '浏览器执行桥未连接：自动化脚本运行需要桌面端在线。请打开言智桌面端后重试，或将本机执行壳连接到当前后端。',
+    );
+    (err as any).bridgeTransport = true;
+    throw err;
+  }
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs > 0 ? timeoutMs : 60000);
@@ -316,12 +323,18 @@ export function formatBridgeResult(action: string, r: any): string {
   if (action === 'click') {
     const dl = r.downloaded;
     if (dl?.savedPath) {
-      if ((!dl.state || dl.state === 'completed') && dl.exists !== false) {
+      if ((!dl.state || dl.state === 'completed') && dl.verified === true) {
         return `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（状态=completed，exists=true；直接用文件工具读取，不要重复点导出）`
           + (r.note ? `\n${r.note}` : '');
       }
+      if (dl.state === 'completed') {
+        return `下载未通过校验：${r.note || `exists=${dl.exists === true}，bytes=${dl.bytes || 0}，path=${dl.savedPath || dl.filename || '未知文件'}`}。不要当作有效导出。`;
+      }
       if (dl.state === 'progressing') {
-        return `点击成功；下载已开始，文件仍在写入：${dl.savedPath}。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`
+        const progress = `${dl.bytes || 0}/${dl.totalBytes || 0}B`
+          + (dl.percent == null ? '' : `（${dl.percent}%）`)
+          + (dl.etaMs ? `，预计还需 ${Math.ceil(dl.etaMs / 1000)} 秒` : '');
+        return `点击成功；下载已开始，文件仍在写入：${dl.savedPath}（${progress}）${dl.jobId ? `，jobId=${dl.jobId}` : ''}。已接入后台长任务，完成会自动唤醒；不要重复点击导出或持续轮询。`
           + (r.note ? `\n${r.note}` : '');
       }
       return `点击成功，但下载未完成（状态=${dl.state || 'unknown'}）：${dl.savedPath}。不要重复点击，改用 browser_download 查询状态。`
@@ -331,11 +344,44 @@ export function formatBridgeResult(action: string, r: any): string {
   }
   if (action === 'downloads') {
     const recs = Array.isArray(r.records) ? r.records : [];
+    if (r.status === 'completed') {
+      const d = r.download || {};
+      return `✅ 下载完成并通过校验：${d.filename || '(unknown)'}\n保存路径: ${d.savedPath || '(unknown)'}\n大小: ${d.bytes || 0}B\nstate=completed, exists=${d.exists === true}, verified=${d.verified === true}`;
+    }
+    if (r.status === 'progressing' || r.status === 'timeout') {
+      const d = r.download || {};
+      return `⚠️ 下载尚未进入终态（status=${r.status}）：${d.bytes || 0}/${d.totalBytes || 0}B`
+        + (d.percent == null ? '' : `（${d.percent}%）`)
+        + (d.speedBps ? `，速度 ${d.speedBps}B/s` : '')
+        + (d.etaMs ? `，预计还需 ${Math.ceil(d.etaMs / 1000)} 秒` : '')
+        + `。不要重复点击导出；建议 ${r.nextCheckInMs || 3000}ms 后按同一个 since 继续等待。`;
+    }
+    if (r.status === 'no_download') {
+      return '⚠️ 本次动作之后没有观察到新下载。先重新观察页面或确认点击目标，不要直接重复同一导出操作。';
+    }
+    if (r.status === 'ambiguous') {
+      const names = (Array.isArray(r.candidates) ? r.candidates : []).map((x: any) => x.filename).join(', ');
+      return `❌ 本次动作触发了多个下载，无法唯一判断：${names}。请传 expectedFileName 缩小范围。`;
+    }
+    if (r.status === 'file_empty' || r.status === 'file_missing') {
+      return `❌ 下载未通过校验（status=${r.status}）：${r.download?.savedPath || '(unknown)'}。不要当作有效导出。`;
+    }
+    if (r.status) {
+      return `❌ 下载失败：status=${r.status}${r.download?.savedPath ? `，path=${r.download.savedPath}` : ''}。不要自动重复点击。`;
+    }
     if (!recs.length) return `最近没有下载记录（目录: ${r.dir || '-'}）`;
-    return `最近下载（目录: ${r.dir || '-'}）：\n${recs.map((x: any) => `- ${x.filename}（state=${x.state}，exists=${x.exists === true}，${x.bytes || 0}B）→ ${x.savedPath}`).join('\n')}`;
+    return `最近下载（目录: ${r.dir || '-'}）：\n${recs.map((x: any) => `- ${x.filename}（state=${x.state}，exists=${x.exists === true}，verified=${x.verified === true}，${x.bytes || 0}/${x.totalBytes || 0}B${x.percent == null ? '' : `，${x.percent}%`}${x.etaMs ? `，ETA ${Math.ceil(x.etaMs / 1000)}s` : ''}${x.canResume ? '，可续传' : ''}）→ ${x.savedPath}`).join('\n')}`;
   }
   if (action === 'download') {
-    return r.error ? String(r.error) : `下载完成: ${r.filename}\n保存路径: ${r.savedPath}\n状态: ${r.state || 'completed'}\n文件存在: ${r.exists === true}`;
+    if (r.status === 'progressing') {
+      return `下载已触发：${r.filename || '(unknown)'}（${r.bytes || 0}/${r.totalBytes || 0}B${r.percent == null ? '' : `，${r.percent}%`}${r.etaMs ? `，预计还需 ${Math.ceil(r.etaMs / 1000)} 秒` : ''}）${r.jobId ? `，jobId=${r.jobId}` : ''}。已接入后台长任务，完成会自动唤醒；不要重复触发或持续轮询。`;
+    }
+    return r.error ? String(r.error) : `下载完成: ${r.filename}\n保存路径: ${r.savedPath}\n状态: ${r.state || 'completed'}\n文件存在: ${r.exists === true}\n校验通过: ${r.verified === true}`;
+  }
+  if (action === 'list_upload_inputs') {
+    const inputs = Array.isArray(r.inputs) ? r.inputs : [];
+    if (!inputs.length) return r.note || '当前页面没有 input[type=file]。';
+    return `${r.note || ''}\nFile inputs: ${inputs.length}\n${inputs.map((item: any) => `[index=${item.index}] label="${item.label || '(no label)'}" accept="${item.accept || '(none)'}" multiple=${item.multiple === true} visible=${item.visible === true} disabled=${item.disabled === true}${item.selector ? ` selector="${item.selector}"` : ''}`).join('\n')}`;
   }
   if (r.success) return `${action} 执行成功`;
   return JSON.stringify(r).slice(0, 500);

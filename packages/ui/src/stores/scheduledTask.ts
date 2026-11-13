@@ -63,7 +63,7 @@ export interface ScheduledTask {
   /** 有效期截止时间戳（ms），过期自动停用 */
   expireAt?: number | null;
   /** 任务类型：chat=对话式（ReAct 循环）；workflow=工作流；runbook=固定版本运维流程 */
-  taskType?: 'chat' | 'workflow' | 'runbook';
+  taskType?: 'chat' | 'workflow' | 'runbook' | 'rpa_script';
   /** 工作流智能体 id（仅 workflow 类型；用于界面展示名称） */
   workflowAgentId?: string | null;
   /** 工作流定义 bundle（仅 workflow 类型；随任务存后端，前端关闭也能跑） */
@@ -79,6 +79,10 @@ export interface ScheduledTask {
   runbookApproval?: ScheduledRunbookApproval | null;
   approveProductionWrite?: boolean;
   lastRunbookRun?: ScheduledRunbookRunSummary | null;
+  rpaScriptId?: string | null;
+  rpaScriptName?: string | null;
+  rpaScriptVersion?: number | null;
+  rpaInputs?: Record<string, unknown> | null;
   enabled: boolean;
   lastRunAt?: number | null;
   nextRunAt?: number | null;
@@ -99,7 +103,7 @@ export interface ScheduledTaskInput {
   groupId?: string | null;
   schedule?: ScheduleConfig | null;
   expireAt?: number | null;
-  taskType?: 'chat' | 'workflow' | 'runbook';
+  taskType?: 'chat' | 'workflow' | 'runbook' | 'rpa_script';
   workflowAgentId?: string | null;
   workflowBundle?: { agent: any; subAgents?: Record<string, any> } | null;
   workflowInputs?: Record<string, unknown> | null;
@@ -109,6 +113,10 @@ export interface ScheduledTaskInput {
   runbookInputs?: Record<string, string> | null;
   runbookApprovalRequired?: boolean;
   runbookApproval?: ScheduledRunbookApproval | null;
+  rpaScriptId?: string | null;
+  rpaScriptName?: string | null;
+  rpaScriptVersion?: number | null;
+  rpaInputs?: Record<string, unknown> | null;
   enabled?: boolean;
 }
 
@@ -136,7 +144,7 @@ function rowToTask(r: any): ScheduledTask {
     groupId: r.group_id ?? r.groupId ?? null,
     schedule: r.schedule_json ? (typeof r.schedule_json === 'string' ? JSON.parse(r.schedule_json) : r.schedule_json) : r.schedule ?? null,
     expireAt: r.expire_at ?? r.expireAt ?? null,
-    taskType: (r.task_type ?? r.taskType ?? 'chat') as 'chat' | 'workflow' | 'runbook',
+    taskType: (r.task_type ?? r.taskType ?? 'chat') as 'chat' | 'workflow' | 'runbook' | 'rpa_script',
     workflowAgentId: r.workflow_agent_id ?? r.workflowAgentId ?? null,
     workflowBundle: r.workflow_bundle_json ? (typeof r.workflow_bundle_json === 'string' ? JSON.parse(r.workflow_bundle_json) : r.workflow_bundle_json) : r.workflowBundle ?? null,
     workflowInputs: r.workflow_inputs_json ? (typeof r.workflow_inputs_json === 'string' ? JSON.parse(r.workflow_inputs_json) : r.workflow_inputs_json) : r.workflowInputs ?? null,
@@ -149,6 +157,12 @@ function rowToTask(r: any): ScheduledTask {
       ? (typeof r.runbook_approval_json === 'string' ? JSON.parse(r.runbook_approval_json) : r.runbook_approval_json)
       : r.runbookApproval ?? null,
     lastRunbookRun: r.last_runbook_run ?? r.lastRunbookRun ?? null,
+    rpaScriptId: r.rpa_script_id ?? r.rpaScriptId ?? null,
+    rpaScriptName: r.rpa_script_name ?? r.rpaScriptName ?? null,
+    rpaScriptVersion: r.rpa_script_version ?? r.rpaScriptVersion ?? null,
+    rpaInputs: r.rpa_inputs_json
+      ? (typeof r.rpa_inputs_json === 'string' ? JSON.parse(r.rpa_inputs_json) : r.rpa_inputs_json)
+      : r.rpaInputs ?? null,
     enabled: !!(r.enabled ?? 1),
     lastRunAt: r.last_run_at ?? r.lastRunAt ?? null,
     nextRunAt: r.next_run_at ?? r.nextRunAt ?? null,
@@ -254,15 +268,16 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
     const id = uid('st_');
     const now = Date.now();
     const enabled = input.enabled !== false;
-    const taskType = input.taskType === 'workflow' ? 'workflow' : input.taskType === 'runbook' ? 'runbook' : 'chat';
+    const taskType = input.taskType === 'workflow' ? 'workflow' : input.taskType === 'runbook' ? 'runbook' : input.taskType === 'rpa_script' ? 'rpa_script' : 'chat';
     await adapter.db.exec(
       `INSERT INTO scheduled_task (
         id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id,
         model_id, space_id, group_id, schedule_json, expire_at, task_type,
         workflow_bundle_json, workflow_inputs_json, workflow_agent_id,
         runbook_id, runbook_name, runbook_version, runbook_inputs_json,
+        rpa_script_id, rpa_script_name, rpa_script_version, rpa_inputs_json,
         enabled, last_run_at, next_run_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, input.name, input.prompt || null, input.cronExpr || null, input.intervalMinutes || null,
         input.conversationId || null, input.agentId || null, input.platformId || null, input.modelId || null, input.spaceId || null, input.groupId || null,
         input.schedule ? JSON.stringify(input.schedule) : null, input.expireAt || null,
@@ -274,6 +289,10 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
         taskType === 'runbook' ? input.runbookName || null : null,
         taskType === 'runbook' ? input.runbookVersion || null : null,
         taskType === 'runbook' ? JSON.stringify(input.runbookInputs || {}) : null,
+        taskType === 'rpa_script' ? input.rpaScriptId || null : null,
+        taskType === 'rpa_script' ? input.rpaScriptName || null : null,
+        taskType === 'rpa_script' ? input.rpaScriptVersion || null : null,
+        taskType === 'rpa_script' ? JSON.stringify(input.rpaInputs || {}) : null,
         enabled ? 1 : 0, null,
         enabled && input.intervalMinutes ? now + input.intervalMinutes * 60000 : null, now, now],
     );
@@ -303,7 +322,7 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
       if (patch.expireAt !== undefined) { sets.push('expire_at = ?'); params.push(patch.expireAt || null); }
       if (patch.taskType !== undefined) {
         sets.push('task_type = ?');
-        params.push(patch.taskType === 'workflow' ? 'workflow' : patch.taskType === 'runbook' ? 'runbook' : 'chat');
+        params.push(patch.taskType === 'workflow' ? 'workflow' : patch.taskType === 'runbook' ? 'runbook' : patch.taskType === 'rpa_script' ? 'rpa_script' : 'chat');
       }
       if (patch.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); params.push(patch.workflowAgentId || null); }
       if (patch.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); params.push(patch.workflowBundle ? JSON.stringify(patch.workflowBundle) : null); }
@@ -312,6 +331,10 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
       if (patch.runbookName !== undefined) { sets.push('runbook_name = ?'); params.push(patch.runbookName || null); }
       if (patch.runbookVersion !== undefined) { sets.push('runbook_version = ?'); params.push(patch.runbookVersion || null); }
       if (patch.runbookInputs !== undefined) { sets.push('runbook_inputs_json = ?'); params.push(patch.runbookInputs ? JSON.stringify(patch.runbookInputs) : null); }
+      if (patch.rpaScriptId !== undefined) { sets.push('rpa_script_id = ?'); params.push(patch.rpaScriptId || null); }
+      if (patch.rpaScriptName !== undefined) { sets.push('rpa_script_name = ?'); params.push(patch.rpaScriptName || null); }
+      if (patch.rpaScriptVersion !== undefined) { sets.push('rpa_script_version = ?'); params.push(patch.rpaScriptVersion || null); }
+      if (patch.rpaInputs !== undefined) { sets.push('rpa_inputs_json = ?'); params.push(patch.rpaInputs ? JSON.stringify(patch.rpaInputs) : null); }
       if (patch.enabled !== undefined) { sets.push('enabled = ?'); params.push(patch.enabled ? 1 : 0); }
       if (sets.length === 0) return;
       sets.push('updated_at = ?'); params.push(Date.now());

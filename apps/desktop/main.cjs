@@ -41,6 +41,7 @@ const {
   createIconSession,
   HELPER_CS: DESKTOP_HELPER_CS,
 } = require('./desktop-shell.cjs');
+const { DEV_APP_USER_MODEL_ID, ensureDevTaskbarShortcut } = require('./dev-taskbar.cjs');
 // 插件窗口全局快捷键：清单规范化和差量（纯函数，有单测）；注册仍走本文件 setGlobalHotkey
 const { normalizePluginHotkeys } = require('./plugin-hotkeys.cjs');
 const { createDesktopCapabilityRelay } = require('./desktop-capability-relay.cjs');
@@ -113,6 +114,25 @@ const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
  */
 const API_PORT = inst.resolveApiPort(process.env);
 const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
+/** 当前安装包构建身份。后端健康接口回传它，主进程只复用完全同构建的 3001 后端。 */
+const APP_BUILD_ID = (() => {
+  try {
+    const stat = fs.statSync(path.join(process.resourcesPath, 'app.asar'));
+    return inst.makeServerBuildId(app.getVersion(), stat.size, stat.mtimeMs);
+  } catch {
+    return inst.makeServerBuildId(app.getVersion(), 0, 0);
+  }
+})();
+const BUNDLED_EDGE_TTS = app.isPackaged
+  ? path.join(process.resourcesPath, 'python', 'Scripts', 'edge-tts.exe')
+  : path.join(__dirname, 'resources', 'python', 'Scripts', 'edge-tts.exe');
+function serverIdentityEnv() {
+  return {
+    YZ_APP_BUILD_ID: APP_BUILD_ID,
+    YZ_APP_VERSION: app.getVersion(),
+    YZ_BUNDLED_EDGE_TTS: BUNDLED_EDGE_TTS,
+  };
+}
 /** dev 壳启动：完整包也能显式模拟“无内置后端”的轻量壳。 */
 const DEV_SHELL_MODE = !app.isPackaged && process.env.YZ_SHELL_DEV === '1';
 
@@ -170,6 +190,22 @@ const BAKED_SERVER_BASE = resolveBakedServerBase();
  * 后端因此读到空库，页面显示“未初始化”，用户名却已在另一套库里存在。
  */
 const BOOT_DATA_DIR = String(process.env.DATA_DIR || '').trim();
+const INTERNAL_TOKEN = (() => {
+  const explicit = String(process.env.YZ_INTERNAL_TOKEN || '').trim();
+  if (explicit) return explicit;
+  try {
+    const tokenPath = path.join(ensureServerDataDir(), '.internal-token');
+    if (fs.existsSync(tokenPath)) {
+      const saved = String(fs.readFileSync(tokenPath, 'utf8') || '').trim();
+      if (saved) return saved;
+    }
+    const generated = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+    return generated;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
+})();
 /**
  * 轻量壳模式（2026-11-02 补）：打包版且未内置后端产物 ⇒ 后端在别的机器上。
  * 判定口径与 startServer 里的跳过分支、resolveBakedServerBase 的守卫保持同一份依据。
@@ -1486,16 +1522,72 @@ function sharedModeEnv() {
 
 /** 探测 127.0.0.1:API_PORT 上是否已有健康后端在跑（上次的 detached 守护进程、或手动起的 dev server）。
  *  命中 ⇒ 本进程复用它且退出时不杀 —— 这是「关掉桌面端、后端继续当服务跑」的复用侧。 */
-async function isServerAlive() {
+async function getServerHealth() {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 1500);
     const res = await fetch(`http://127.0.0.1:${API_PORT}/api/health`, { signal: ctrl.signal });
     clearTimeout(timer);
-    if (!res.ok) return false;
-    const j = await res.json().catch(() => null);
-    return !!j?.ok;
-  } catch { return false; }
+    if (!res.ok) return null;
+    return await res.json().catch(() => null);
+  } catch { return null; }
+}
+
+async function isServerAlive() {
+  return !!(await getServerHealth())?.ok;
+}
+
+async function portOwnerPid() {
+  if (process.platform === 'win32') {
+    const r = await execFileText('netstat', ['-ano', '-p', 'tcp'], 5000);
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 5 || String(cols[0]).toUpperCase() !== 'TCP' || cols[3] !== 'LISTENING') continue;
+      if (!String(cols[1]).endsWith(`:${API_PORT}`)) continue;
+      const pid = Number(cols[4]);
+      return Number.isInteger(pid) && pid > 0 ? pid : null;
+    }
+    return null;
+  }
+  const r = await execFileText('lsof', ['-nP', `-iTCP:${API_PORT}`, '-sTCP:LISTEN', '-t'], 5000);
+  const pid = Number(String(r.stdout || '').trim().split(/\s+/)[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * 端口上是旧版言智后端时，先停掉再启动本次安装包的后端。
+ * 只清理命令行能确认属于言智的进程；陌生进程占用端口则明确失败，不偷偷复用。
+ */
+async function stopIncompatibleServer() {
+  const pid = await portOwnerPid();
+  if (!pid || pid === process.pid) return false;
+  let info = null;
+  if (process.platform === 'win32') {
+    const command = '$p=Get-CimInstance Win32_Process -Filter "ProcessId=' + pid + '" -ErrorAction SilentlyContinue; '
+      + 'if($p){[pscustomobject]@{name=$p.Name;commandLine=$p.CommandLine}|ConvertTo-Json -Compress}';
+    const r = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], 10000);
+    try { info = JSON.parse(String(r.stdout || '').trim()); } catch { info = null; }
+  } else {
+    const r = await execFileText('ps', ['-p', String(pid), '-o', 'comm=,command='], 5000);
+    const text = String(r.stdout || '').trim();
+    const firstSpace = text.search(/\s/);
+    info = { name: firstSpace >= 0 ? text.slice(0, firstSpace) : text, commandLine: text };
+  }
+  if (!inst.looksLikeYanzhiServerProcess(info)) {
+    console.warn(`[后端] ${API_PORT} 端口被非言智进程占用（pid=${pid}），拒绝误杀`);
+    return false;
+  }
+  console.warn(`[后端] 检测到旧版/不同构建的言智后端（pid=${pid}），停止后启动当前包后端`);
+  if (process.platform === 'win32') {
+    await execFileText('taskkill', ['/PID', String(pid), '/T', '/F'], 15000);
+  } else {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* 已退出 */ }
+  }
+  for (let i = 0; i < 20; i += 1) {
+    if (!(await getServerHealth())?.ok) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
 }
 
 /**
@@ -1565,10 +1657,17 @@ async function startServer() {
     ? path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js')
     : null;
   // 复用：端口上已有健康后端（detached 守护进程 / 手动 dev）⇒ 不重复 spawn，退出也不杀
-  if (await isServerAlive()) {
-    console.log(`[后端] 127.0.0.1:${API_PORT} 已有健康后端，本进程复用之（退出不杀）`);
-    serverProcess = null;
-    return;
+  const existing = await getServerHealth();
+  if (existing?.ok) {
+    if (inst.isCompatibleServerHealth(existing, APP_BUILD_ID)) {
+      console.log(`[后端] 127.0.0.1:${API_PORT} 已有同构建后端，本进程复用之（退出不杀）`);
+      serverProcess = null;
+      return;
+    }
+    console.warn('[后端] 检测到不兼容后端：缺少或不同的 buildId，拒绝复用');
+    if (!(await stopIncompatibleServer())) {
+      throw new Error(`端口 ${API_PORT} 被旧版/未知后端占用，无法启动当前安装包后端`);
+    }
   }
   // 守护模式：YZ_DETACH_BACKEND=1 ⇒ 后端脱离本进程运行（detached + unref），桌面端退出后继续当后台服务。
   // 重启后再次进入应用会走上面的复用分支接回同一实例。
@@ -1634,10 +1733,10 @@ async function startServer() {
         //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
         windowsHide: true,
         ...(detached ? { detached: true } : {}),
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -1648,10 +1747,10 @@ async function startServer() {
         shell: true,
         windowsHide: true,
         ...(detached ? { detached: true } : {}),
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+        env: { ...process.env, PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -1681,7 +1780,7 @@ async function startServer() {
       stdio: logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       ...(detached ? { detached: true } : {}),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
     });
     if (logStream) {
       serverProcess.stdout.on('data', (d) => logStream.write(d));
@@ -1727,16 +1826,16 @@ function getAppIconPath() {
   return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.ico');
 }
 
-/** Windows 上显式把品牌图标写到窗口，避免 frame:false / AUMID / DevTools 分组时
- *  任务栏回退到 electron.exe 的默认原子图标。 */
+/** Windows 上显式把品牌图标写到窗口，避免 frame:false / DevTools 分组时
+ *  窗口级图标回退到 electron.exe 的默认原子图标。 */
 function applyWindowIcon(win) {
   if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
   try {
     const iconPath = getAppIconPath();
     if (!fs.existsSync(iconPath)) return;
     win.setIcon(iconPath);
-    // setIcon 只写 WM_GETICON；Win11 任务栏还会走 AppUserModelID/Shell 分组。
-    // 同步下发 appIconPath，才能覆盖 electron.exe 的原子图标。
+    // setIcon 只负责窗口图标。Win11 任务栏还会解析 AppUserModelID 对应的
+    // 开始菜单快捷方式，因此 dev 快捷方式也必须指向同一个品牌 ICO。
     win.setAppDetails({
       appId: WINDOWS_APP_USER_MODEL_ID,
       appIconPath: iconPath,
@@ -4570,7 +4669,7 @@ ipcMain.handle('browser:call', async (event, action, args) => {
       }
 
       case 'wait': {
-        const ms = Math.min(Number(args.ms || args.time || 1000), 10000);
+        const ms = Math.min(Math.max(Number(args.ms || args.time || 1000), 1), 10000);
         await new Promise(r => setTimeout(r, ms));
         return { ok: true };
       }
@@ -5978,13 +6077,13 @@ async function cdpTypeText(wc, target, text, pressEnter) {
  *   （测试 `browser-desktop-action-parity.test.ts` 会比对两者，漏一处即红。）
  */
 const DESKTOP_BROWSER_ACTIONS = [
-  'upload', 'navigate', 'click', 'type', 'press', 'scroll', 'hover', 'screenshot',
+  'list_upload_inputs', 'upload', 'navigate', 'click', 'type', 'press', 'scroll', 'hover', 'screenshot',
   'get_page_info', 'get_visible_text', 'get_page_content', 'fill_form', 'submit_form',
   'search', 'next_page', 'prev_page', 'wait_for', 'select_option', 'check', 'uncheck',
   'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
   'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
   'get_api_data',
-  'extract_list', 'visual_locate', 'download', 'downloads', 'scroll_into_view', 'is_visible', 'drag',
+  'extract_list', 'visual_locate', 'download', 'downloads', 'download_control', 'scroll_into_view', 'is_visible', 'drag',
   'run_script', 'highlight', 'takeover',
   // 批注三动作（面板直连 IPC 调用，不派生 browser_* 工具名；2026-10-28 补进清单修复 parity 守门）
   'annotation_begin', 'annotation_end', 'annotation_drain',
@@ -6290,12 +6389,13 @@ function panelReallyHidden(wc) {
 //   主进程无法把 will-download 与某次点击精确配对；给一个 60s 的活动窗口最稳。
 // ============================================================
 const DOWNLOAD_ACTIVITY_GRACE_MS = 60000;
-const DOWNLOAD_CLICK_WAIT_MS = 10000;
+const DOWNLOAD_CLICK_WAIT_MS = 4500;
 const DOWNLOAD_SILENT_PROBE_MS = 150;
 const DOWNLOAD_RECORDS_MAX = 50;
 const DOWNLOAD_FALLBACK_SUBDIR = '言智下载';
 const downloadRecords = [];      // 最近下载（新→旧），供 downloads action 查询
 const downloadWaiters = new Set(); // download action 的等待者（收到落盘完成即 resolve）
+const activeDownloadItems = new Map(); // downloadId -> Electron DownloadItem（暂停/恢复/实时进度）
 let downloadSeq = 0;
 let agentBrowserActivityUntil = 0;
 let lastAgentWorkspaceDir = '';
@@ -6308,10 +6408,118 @@ let browserDownloadUiPromptSeq = 0;
 const browserDownloadUiPrompts = new Map();
 /** download action 显式 savePath 的临时覆盖（执行期间有效，见 case 'download'） */
 let pendingDownloadSavePath = '';
+const BACKGROUND_JOB_PROGRESS_INTERVAL_MS = 2000;
+let lastAgentDownloadContext = {
+  conversationId: '',
+  taskId: '',
+  toolCallId: '',
+  wakePolicy: 'resume',
+};
 
 /** 标记"智能体正在操作浏览器"（每次 agent 动作续期，见文件级注释） */
 function markAgentBrowserActivity() {
   agentBrowserActivityUntil = Date.now() + DOWNLOAD_ACTIVITY_GRACE_MS;
+}
+
+function setAgentDownloadContext(context = {}) {
+  lastAgentDownloadContext = {
+    conversationId: String(context.conversationId || context.convId || '').trim(),
+    taskId: String(context.taskId || '').trim(),
+    toolCallId: String(context.toolCallId || '').trim(),
+    wakePolicy: context.wakePolicy === 'notify' || context.wakePolicy === 'silent'
+      ? context.wakePolicy
+      : 'resume',
+  };
+  return { ...lastAgentDownloadContext };
+}
+
+function downloadBackgroundPayload(rec, status) {
+  const context = rec.backgroundJobContext || lastAgentDownloadContext;
+  return {
+    kind: 'browser_download',
+    conversationId: context.conversationId,
+    taskId: context.taskId || undefined,
+    toolCallId: context.toolCallId || undefined,
+    wakePolicy: context.wakePolicy,
+    title: rec.filename || '浏览器下载',
+    status,
+    idempotencyKey: `desktop-download:${rec.id}`,
+    adapterRef: `desktop-download:${rec.id}`,
+    progress: {
+      percent: rec.percent == null ? null : rec.percent,
+      bytesDone: Number(rec.bytes) || 0,
+      bytesTotal: Number(rec.totalBytes) || null,
+      speedBps: Number(rec.speedBps) || 0,
+      etaMs: rec.etaMs == null ? null : rec.etaMs,
+    },
+    artifactPaths: status === 'completed' && rec.savedPath ? [rec.savedPath] : [],
+    result: status === 'completed' ? {
+      verified: rec.verified === true,
+      exists: rec.exists === true,
+      bytes: Number(rec.bytes) || 0,
+    } : undefined,
+    error: status === 'failed' || status === 'cancelled' || status === 'stalled'
+      ? String(rec.error || `下载状态: ${rec.state || status}`)
+      : undefined,
+    spec: {
+      executor: 'desktop-electron',
+      downloadId: rec.id,
+      filename: rec.filename,
+      savedPath: rec.savedPath,
+      url: rec.url,
+      canResume: rec.canResume === true,
+    },
+    controlCapabilities: {
+      pause: status === 'running' || status === 'paused',
+      resume: rec.canResume === true,
+      cancel: status === 'running' || status === 'paused',
+    },
+  };
+}
+
+function startDownloadBackgroundJob(rec) {
+  if (!lastAgentDownloadContext.conversationId || typeof backgroundJobPost !== 'function') {
+    return Promise.resolve(null);
+  }
+  rec.backgroundJobContext = { ...lastAgentDownloadContext };
+  rec.backgroundJobPromise = backgroundJobPost('/upsert', downloadBackgroundPayload(rec, 'running'))
+    .then((response) => {
+      const job = response && response.data ? response.data : null;
+      if (job && job.jobId) rec.backgroundJobId = String(job.jobId);
+      return job;
+    })
+    .catch((error) => {
+      rec.backgroundJobError = String((error && error.message) || error);
+      return null;
+    });
+  return rec.backgroundJobPromise;
+}
+
+async function reportDownloadBackgroundJob(rec, status, force = false) {
+  if (!lastAgentDownloadContext.conversationId || typeof backgroundJobPost !== 'function') return null;
+  try {
+    if (rec.backgroundJobPromise) await rec.backgroundJobPromise;
+    if (!rec.backgroundJobId) return null;
+    if (status === 'running' || status === 'paused') {
+      const now = Date.now();
+      const bucket = rec.percent == null ? -1 : Math.floor(rec.percent / 5);
+      if (!force
+          && rec.backgroundJobLastReportAt
+          && now - rec.backgroundJobLastReportAt < BACKGROUND_JOB_PROGRESS_INTERVAL_MS
+          && bucket === rec.backgroundJobLastPercentBucket) {
+        return null;
+      }
+      rec.backgroundJobLastReportAt = now;
+      rec.backgroundJobLastPercentBucket = bucket;
+      return await backgroundJobPost(`/${encodeURIComponent(rec.backgroundJobId)}/progress`, downloadBackgroundPayload(rec, status));
+    }
+    if (rec.backgroundJobTerminalReported) return null;
+    rec.backgroundJobTerminalReported = true;
+    return await backgroundJobPost(`/${encodeURIComponent(rec.backgroundJobId)}/finish`, downloadBackgroundPayload(rec, status));
+  } catch (error) {
+    rec.backgroundJobError = String((error && error.message) || error);
+    return null;
+  }
 }
 
 function loadConfiguredBrowserDownloadDir() {
@@ -6458,6 +6666,188 @@ function uniqueDownloadPath(dir, filename) {
   return candidate;
 }
 
+function updateDownloadProgress(rec, receivedBytes, totalBytes, now = Date.now(), state = {}) {
+  const bytes = Math.max(0, Number(receivedBytes) || 0);
+  const total = Math.max(0, Number(totalBytes) || 0);
+  const at = Number(now) || Date.now();
+  const previousBytes = Number(rec.lastBytes) || 0;
+  const previousAt = Number(rec.lastSampleAt) || 0;
+  if (rec.startedAt == null || !Number.isFinite(Number(rec.startedAt))) rec.startedAt = at;
+  const baselineAt = previousAt > 0 ? previousAt : Number(rec.startedAt) || 0;
+  const baselineBytes = previousAt > 0 ? previousBytes : 0;
+  if (at > baselineAt && bytes >= baselineBytes) {
+    const instant = (bytes - baselineBytes) * 1000 / (at - baselineAt);
+    if (instant > 0) rec.speedBps = rec.speedBps ? rec.speedBps * 0.65 + instant * 0.35 : instant;
+  }
+  rec.bytes = bytes;
+  rec.totalBytes = total;
+  rec.lastBytes = bytes;
+  rec.lastSampleAt = at;
+  rec.updatedAt = at;
+  rec.percent = total > 0 ? Math.min(100, Math.round(bytes / total * 100)) : null;
+  rec.etaMs = rec.speedBps > 0 && total > bytes ? Math.round((total - bytes) / rec.speedBps * 1000) : null;
+  if (state.paused != null) rec.paused = !!state.paused;
+  if (state.canResume != null) rec.canResume = !!state.canResume;
+  if (rec.paused) {
+    rec.speedBps = 0;
+    rec.etaMs = null;
+  }
+  return rec;
+}
+
+function suggestedNextCheckMs(status, rec) {
+  if (status === 'no_download') return 2000;
+  const eta = Number(rec && rec.etaMs);
+  if (Number.isFinite(eta) && eta > 0) return Math.min(30000, Math.max(1000, Math.round(eta)));
+  return 3000;
+}
+
+function controlDownload(operation, downloadId = 0) {
+  const op = String(operation || '').toLowerCase();
+  if (op !== 'pause' && op !== 'resume' && op !== 'cancel') return { error: `不支持的下载操作: ${operation}` };
+  const id = Number(downloadId) || 0;
+  const rec = id > 0
+    ? downloadRecords.find((r) => r.id === id)
+    : downloadRecords.find((r) => r.state === 'progressing');
+  if (!rec) return { status: 'no_download', error: '没有进行中的下载' };
+  const item = activeDownloadItems.get(rec.id);
+  if (!item) return { status: 'not_active', error: '该下载已结束，无法暂停或恢复', download: inspectDownloadRecord(rec).download };
+  try {
+    if (op === 'pause') {
+      item.pause();
+    } else if (op === 'cancel') {
+      if (typeof item.cancel !== 'function') return { status: 'not_supported', error: '当前 Electron 版本不支持取消下载' };
+      item.cancel();
+    } else {
+      if (typeof item.canResume === 'function' && !item.canResume()) {
+        return { status: 'not_resumable', error: '当前下载源不支持断点续传', download: inspectDownloadRecord(rec).download };
+      }
+      item.resume();
+    }
+    updateDownloadProgress(rec, item.getReceivedBytes(), item.getTotalBytes(), Date.now(), {
+      paused: item.isPaused(),
+      canResume: item.canResume(),
+    });
+    return { status: 'ok', operation: op, download: inspectDownloadRecord(rec).download };
+  } catch (e) {
+    return { status: 'failed', error: String((e && e.message) || e), download: inspectDownloadRecord(rec).download };
+  }
+}
+
+function stripBrowserDuplicateSuffix(filename) {
+  const value = String(filename || '').toLowerCase();
+  const ext = path.extname(value);
+  const base = ext ? value.slice(0, -ext.length) : value;
+  return `${base.replace(/\s*[（(]\d+[）)]$/, '')}${ext}`;
+}
+
+function downloadNameMatches(rec, expectedFileName) {
+  const expected = String(expectedFileName || '').trim().toLowerCase();
+  if (!expected) return true;
+  const actual = String((rec && rec.filename) || '').toLowerCase();
+  if (actual === expected) return true;
+  return stripBrowserDuplicateSuffix(actual) === stripBrowserDuplicateSuffix(expected);
+}
+
+/** 终态必须同时满足 completed + 文件存在 + 非空，才允许对模型说 verified。 */
+function inspectDownloadRecord(rec) {
+  if (!rec) return { status: 'no_download', verified: false, download: null };
+  let exists = rec.exists === true;
+  let bytes = Number(rec.bytes) || 0;
+  if (rec.state === 'completed') {
+    try {
+      const stat = fs.statSync(rec.savedPath);
+      exists = typeof stat.isFile === 'function' ? stat.isFile() : true;
+      bytes = Number(stat.size) || 0;
+    } catch {
+      exists = false;
+      bytes = 0;
+    }
+  }
+  const verified = rec.state === 'completed' && exists && bytes > 0;
+  const status = rec.state === 'completed'
+    ? (!exists ? 'file_missing' : (bytes <= 0 ? 'file_empty' : 'completed'))
+    : (rec.state || 'failed');
+  return {
+    status,
+    verified,
+    download: {
+      id: rec.id,
+      filename: rec.filename,
+      savedPath: rec.savedPath,
+      url: rec.url,
+      state: rec.state,
+      exists,
+      bytes,
+      totalBytes: Number(rec.totalBytes) || 0,
+      percent: rec.state === 'completed' ? 100 : (rec.percent == null ? null : rec.percent),
+      speedBps: rec.state === 'completed' ? 0 : (Number(rec.speedBps) || 0),
+      etaMs: rec.state === 'completed' ? 0 : (rec.etaMs == null ? null : rec.etaMs),
+      paused: rec.paused === true,
+      canResume: rec.canResume === true,
+      jobId: rec.backgroundJobId || '',
+      startedAt: rec.startedAt || rec.time,
+      updatedAt: rec.updatedAt || rec.time,
+      verified,
+      time: rec.time,
+    },
+  };
+}
+
+function queryDownloadStatus({ beforeSeq = 0, expectedFileName = '' } = {}) {
+  const minSeq = Math.max(0, Number(beforeSeq) || 0);
+  const sinceRecords = downloadRecords.filter((rec) => Number(rec.id) > minSeq);
+  const expected = String(expectedFileName || '').trim().toLowerCase();
+  const exact = expected
+    ? sinceRecords.filter((rec) => String(rec.filename || '').toLowerCase() === expected)
+    : [];
+  const candidates = exact.length
+    ? exact
+    : sinceRecords.filter((rec) => downloadNameMatches(rec, expectedFileName));
+  if (!candidates.length) return { status: 'no_download', verified: false, download: null, candidates: [] };
+  if (candidates.length > 1) {
+    return {
+      status: 'ambiguous',
+      verified: false,
+      download: null,
+      candidates: candidates.map((rec) => inspectDownloadRecord(rec).download),
+    };
+  }
+  return { ...inspectDownloadRecord(candidates[0]), candidates: [] };
+}
+
+/**
+ * 按 AgentScope 的 wait_for_download 契约收口：只等待本次动作之后的下载，
+ * progressing/no_download 时有限轮询，终态返回机器可判定的 status + verified。
+ */
+async function waitForDownloadStatus({
+  beforeSeq = 0,
+  timeoutMs = 0,
+  expectedFileName = '',
+  pollMs = 150,
+} = {}) {
+  const startedAt = Date.now();
+  const budget = Math.min(Math.max(Number(timeoutMs) || 0, 0), 30000);
+  let last = queryDownloadStatus({ beforeSeq, expectedFileName });
+  while ((last.status === 'no_download' || last.status === 'progressing')
+    && Date.now() - startedAt < budget) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, budget)));
+    last = queryDownloadStatus({ beforeSeq, expectedFileName });
+  }
+  if (last.status === 'no_download' || last.status === 'progressing') {
+    const nextCheckInMs = suggestedNextCheckMs(last.status, last.download);
+    return {
+      ...last,
+      status: 'timeout',
+      elapsedMs: Date.now() - startedAt,
+      previousStatus: last.status,
+      nextCheckInMs,
+      nextCheckAt: Date.now() + nextCheckInMs,
+    };
+  }
+  return { ...last, elapsedMs: Date.now() - startedAt };
+}
+
 /** 下载刚开始就登记，让模型能立即看到目标路径和 progressing 状态。 */
 function registerDownloadRecord(rec) {
   if (!downloadRecords.some((r) => r.id === rec.id)) downloadRecords.unshift(rec);
@@ -6489,6 +6879,17 @@ function awaitDownloadSince(beforeSeq, timeoutMs) {
     const timer = setTimeout(() => finish(null), timeoutMs);
     downloadWaiters.add(waiter);
   });
+}
+
+/** 等“本次动作确实触发了下载”即可返回，不要求文件写完（大文件必须尽快拿到 downloadId）。 */
+async function waitForDownloadStartSince(beforeSeq, timeoutMs) {
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() <= deadline) {
+    const rec = downloadRecords.find((r) => r.id > beforeSeq);
+    if (rec) return rec;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
 }
 
 /** 已安装下载接管的分区 session（Electron 的 Session 对象不保证可挂自定义属性，用 WeakSet） */
@@ -6526,18 +6927,70 @@ function installBrowserDownloadHandler(sess) {
       bytes: 0,
       state: 'progressing',
       exists: false,
+      verified: false,
+      totalBytes: 0,
+      percent: null,
+      speedBps: 0,
+      etaMs: null,
+      paused: false,
+      canResume: false,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      lastBytes: 0,
+      lastSampleAt: Date.now(),
+      backgroundJobId: '',
+      backgroundJobPromise: null,
+      backgroundJobLastReportAt: 0,
+      backgroundJobLastPercentBucket: -1,
+      backgroundJobTerminalReported: false,
+      backgroundJobError: '',
+      error: '',
       time: Date.now(),
     };
+    updateDownloadProgress(rec, item.getReceivedBytes(), item.getTotalBytes(), Date.now(), {
+      paused: item.isPaused(),
+      canResume: item.canResume(),
+    });
+    activeDownloadItems.set(rec.id, item);
     registerDownloadRecord(rec);
-    item.on('updated', () => { rec.bytes = item.getReceivedBytes(); });
+    void startDownloadBackgroundJob(rec);
+    item.on('updated', () => {
+      updateDownloadProgress(rec, item.getReceivedBytes(), item.getTotalBytes(), Date.now(), {
+        paused: item.isPaused(),
+        canResume: item.canResume(),
+      });
+      void reportDownloadBackgroundJob(rec, item.isPaused() ? 'paused' : 'running');
+    });
     item.once('done', (_e, state) => {
+      activeDownloadItems.delete(rec.id);
       rec.state = state; // completed | cancelled | interrupted
-      rec.bytes = item.getReceivedBytes();
+      updateDownloadProgress(rec, item.getReceivedBytes(), item.getTotalBytes(), Date.now(), {
+        paused: false,
+        canResume: item.canResume(),
+      });
       rec.exists = state === 'completed' && fs.existsSync(target);
+      if (rec.exists) {
+        try {
+          const stat = fs.statSync(target);
+          rec.bytes = Number(stat.size) || 0;
+          rec.exists = typeof stat.isFile === 'function' ? stat.isFile() : true;
+        } catch { /* 保留 Electron 回传的 bytes，verified 仍要求 target 存在 */ }
+      }
+      rec.verified = state === 'completed' && rec.exists && Number(rec.bytes) > 0;
+      rec.percent = state === 'completed' ? 100 : rec.percent;
+      rec.etaMs = state === 'completed' ? 0 : rec.etaMs;
+      rec.speedBps = state === 'completed' ? 0 : rec.speedBps;
       rec.time = Date.now();
+      const terminalStatus = state === 'completed'
+        ? (rec.verified ? 'completed' : 'failed')
+        : (state === 'cancelled' ? 'cancelled' : 'failed');
+      rec.error = terminalStatus === 'failed'
+        ? (state === 'completed' ? '下载文件校验失败' : `下载未完成: ${state}`)
+        : '';
       if (rec.state === 'completed') console.log(`[browser-download] ${rec.filename} → ${rec.savedPath} (${rec.bytes}B)`);
       else console.warn(`[browser-download] ${rec.filename} ${rec.state}`);
       pushDownloadRecord(rec);
+      void reportDownloadBackgroundJob(rec, terminalStatus, true);
     });
   });
 }
@@ -6600,25 +7053,57 @@ async function attachDownloadToClickResult(clickResult, beforeSeq, waitMs = DOWN
     }
     return clickResult;
   }
+  if (rec.backgroundJobPromise) {
+    await Promise.race([
+      rec.backgroundJobPromise.catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 1200)),
+    ]);
+  }
   const downloaded = {
+    id: rec.id,
     filename: rec.filename,
     savedPath: rec.savedPath,
     bytes: rec.bytes,
+    totalBytes: Number(rec.totalBytes) || 0,
+    percent: rec.percent == null ? null : rec.percent,
+    speedBps: Number(rec.speedBps) || 0,
+    etaMs: rec.etaMs == null ? null : rec.etaMs,
+    paused: rec.paused === true,
+    canResume: rec.canResume === true,
+    jobId: rec.backgroundJobId || '',
     state: rec.state,
     exists: rec.exists === true,
+    verified: rec.verified === true,
   };
-  if (rec.state === 'completed' && rec.exists === true) {
+  if (rec.state === 'completed' && rec.verified === true) {
     return {
       ...clickResult,
       downloaded,
       note: `${clickResult.note ? clickResult.note + ' ' : ''}已自动下载「${rec.filename}」到 ${rec.savedPath}（状态=completed，exists=true，未弹保存框）。后续直接用文件工具按此路径读取，不要重复点击导出。`,
     };
   }
-  if (rec.state === 'progressing') {
+  if (rec.state === 'completed' && rec.exists === true) {
     return {
       ...clickResult,
       downloaded,
-      note: `${clickResult.note ? clickResult.note + ' ' : ''}下载已开始，但文件仍在下载：${rec.savedPath}（${rec.bytes || 0}B）。不要重复点击导出，稍后调用 browser_download 查询最近下载记录。`,
+      note: `${clickResult.note ? clickResult.note + ' ' : ''}下载事件已完成，但落盘文件是空文件（0 字节）：${rec.savedPath}。不要把它当作有效导出；检查页面是否仍在生成文件，稍后可用 browser_download 再核验。`,
+    };
+  }
+  if (rec.state === 'completed' && rec.exists !== true) {
+    return {
+      ...clickResult,
+      downloaded,
+      note: `${clickResult.note ? clickResult.note + ' ' : ''}下载事件已完成，但目标文件不存在：${rec.savedPath}。不要重复点击导出；先查询下载记录并检查下载目录权限。`,
+    };
+  }
+  if (rec.state === 'progressing') {
+    const progressText = rec.percent == null ? `${rec.bytes || 0}B` : `${rec.percent}%（${rec.bytes || 0}/${rec.totalBytes || 0}B）`;
+    const speedText = rec.speedBps > 0 ? `，约 ${Math.round(rec.speedBps / 1024)}KB/s` : '';
+    const etaText = rec.etaMs > 0 ? `，预计还需 ${Math.ceil(rec.etaMs / 1000)} 秒` : '';
+    return {
+      ...clickResult,
+      downloaded,
+      note: `${clickResult.note ? clickResult.note + ' ' : ''}下载已开始（downloadId=${rec.id}${rec.backgroundJobId ? `，jobId=${rec.backgroundJobId}` : ''}），但文件仍在下载：${rec.savedPath}（${progressText}${speedText}${etaText}）。已接入后台长任务，完成会自动唤醒；不要重复点击导出或持续轮询。桌面端可用 job_control 暂停/恢复。`,
     };
   }
   return {
@@ -7219,6 +7704,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
   // （服务端/前端随动作下发）；download action 自身也必须接管（它就是干这个的）。
   if (convId || args.__workspaceDir || action === 'download') {
     markAgentBrowserActivity();
+    setAgentDownloadContext({
+      conversationId: args.__conversationId || convId,
+      taskId: args.__taskId,
+      toolCallId: args.__toolCallId,
+      wakePolicy: args.__wakePolicy,
+    });
     if (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim()) {
       lastAgentWorkspaceDir = args.__workspaceDir.trim();
     }
@@ -7671,6 +8162,62 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       await endAnnotationOn(wc);
     }
     switch (action) {
+      case 'list_upload_inputs': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        const listed = await wc.executeJavaScript(`(function(){
+          var A=window.__yzAssistant;
+          var out=[];
+          var seen=new Set();
+          function textOf(el){
+            try{
+              if(el.labels&&el.labels.length) return String(el.labels[0].textContent||'').replace(/\\s+/g,' ').trim().slice(0,80);
+              var label=el.closest&&el.closest('label');
+              if(label) return String(label.textContent||'').replace(/\\s+/g,' ').trim().slice(0,80);
+              var p=el.parentElement;
+              return String((p&&p.textContent)||'').replace(/\\s+/g,' ').trim().slice(0,80);
+            }catch(e){return '';}
+          }
+          function isVisible(el){
+            try{
+              var r=el.getBoundingClientRect();
+              var s=getComputedStyle(el);
+              return !!(r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0);
+            }catch(e){return false;}
+          }
+          function collect(root){
+            if(!root||!root.querySelectorAll)return;
+            var inputs=root.querySelectorAll('input[type=file]');
+            for(var i=0;i<inputs.length;i++){
+              var el=inputs[i];
+              if(seen.has(el))continue;
+              seen.add(el);
+              var index=A&&A.register?A.register(el):out.length;
+              out.push({
+                index:index,
+                selector:A&&A.genSel?A.genSel(el):'',
+                accept:String(el.accept||''),
+                multiple:!!el.multiple,
+                disabled:!!el.disabled,
+                visible:isVisible(el),
+                label:textOf(el),
+                name:String(el.name||'').slice(0,80),
+                id:String(el.id||'').slice(0,80)
+              });
+            }
+            var all=root.querySelectorAll('*');
+            for(var j=0;j<all.length;j++){if(all[j].shadowRoot)collect(all[j].shadowRoot);}
+          }
+          collect(document);
+          return {count:out.length,inputs:out.slice(0,100)};
+        })()`).catch((e) => ({ error: String((e && e.message) || e) }));
+        if (listed && listed.error) return { error: `读取上传目标失败: ${listed.error}` };
+        return {
+          ...listed,
+          note: listed && listed.count
+            ? '按 index 或 selector 选择目标后调用 browser_upload；hidden 只表示 input 不可见，不代表不能注入。多个上传口不要猜，先用 accept/label/邻近文案选对目标。'
+            : '当前页面没有可直接注入的 input[type=file]。若“上传”按钮点击后才出现 input/filechooser，直接用 browser_upload 的 clickSelector/clickIndex 模式，不要先 browser_click 打开系统文件框。',
+        };
+      }
       case 'upload': {
         // 桌面端文件上传（2026-10-07，v2 真 filechooser 拦截）：用 CDP 的 DOM.setFileInputFiles 注入本地文件。
         // ★ 为什么必须走 CDP 而不是 executeJavaScript：
@@ -9450,14 +9997,31 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         return { paged: action, clicked: r.clicked, url: wc.getURL(), title: wc.getTitle() };
       }
       case 'wait_for': {
-        var timeout = args.timeout || 10000;
+        if (!args.selector && !args.url && !args.text) {
+          return { error: 'browser_wait_for 需要 selector / url / text 至少一项；固定等待请用 browser_wait。' };
+        }
+        var timeout = Math.min(Math.max(Number(args.timeout) || 10000, 1), 30000);
         var start = Date.now();
         while (Date.now() - start < timeout) {
           var result = await wc.executeJavaScript(`(function(){
             var a=${JSON.stringify(args)};
-            if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(el&&el.offsetParent!==null)return{ready:true};}
-            if(a.text){if(document.body.innerText.includes(a.text))return{ready:true};}
-            if(a.url){if(location.href.includes(a.url))return{ready:true};}
+            function visible(el){
+              try{
+                if(!el||!el.isConnected)return false;
+                var r=el.getBoundingClientRect();
+                if(r.width<2||r.height<2)return false;
+                var s=getComputedStyle(el);
+                return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0;
+              }catch(e){return false;}
+            }
+            if(a.selector){var el=window.__yzAssistant&&window.__yzAssistant.resolve(a.selector);if(visible(el))return{ready:true};}
+            if(a.text){if(document.body&&document.body.innerText.includes(a.text))return{ready:true};}
+            if(a.url){
+              var u=String(a.url),ok=false;
+              var m=u.match(/^\/(.+)\/([gimsuy]*)$/);
+              try{ok=m?new RegExp(m[1],m[2]).test(location.href):location.href.includes(u);}catch(e){ok=location.href.includes(u);}
+              if(ok)return{ready:true};
+            }
             return{ready:false};
           })()`);
           if (result.ready) return { waited: 'ready', selector: args.selector, url: args.url, text: args.text };
@@ -9598,7 +10162,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         })()`);
       }
       case 'wait': {
-        const ms = Math.min(args.timeout || 1000, 10000);
+        const ms = Math.min(Math.max(Number(args.timeout) || 1000, 1), 10000);
         await new Promise(r => setTimeout(r, ms));
         return { waited: ms };
       }
@@ -9803,7 +10367,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       case 'wait_for_request': {
         const pat = String(args.urlPattern || '');
         if (!pat) return { error: 'urlPattern 为必填项' };
-        const to = Math.min(args.timeout || 10000, 30000);
+        const to = Math.min(Math.max(Number(args.timeout) || 10000, 1), 30000);
         const start = Date.now();
         while (Date.now() - start < to) {
           const r = await wc.executeJavaScript(`(function(){
@@ -9974,16 +10538,17 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         // 兼容旧工具映射：历史版本把 browser_download 的无参查询映射成 action=download。
         if (!args.url && !args.selector && args.index == null) {
           const n = Math.min(Math.max(Number(args.limit) || 10, 1), DOWNLOAD_RECORDS_MAX);
+          const waited = Number(args.waitMs) > 0
+            ? await waitForDownloadStatus({
+              beforeSeq: args.since ?? args.beforeSeq,
+              timeoutMs: args.waitMs,
+              expectedFileName: args.expectedFileName,
+            })
+            : null;
           return {
             dir: resolveDownloadDir(lastAgentWorkspaceDir),
-            records: downloadRecords.slice(0, n).map((r) => ({
-              filename: r.filename,
-              savedPath: r.savedPath,
-              state: r.state,
-              exists: r.exists === true,
-              bytes: r.bytes,
-              time: r.time,
-            })),
+            ...(waited || {}),
+            records: downloadRecords.slice(0, n).map((r) => inspectDownloadRecord(r).download),
           };
         }
         const explicitSave = args.savePath ? String(args.savePath).trim() : '';
@@ -9993,7 +10558,6 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             : path.join(lastAgentWorkspaceDir || resolveDownloadDir(''), explicitSave);
         }
         const beforeDownload = downloadSeq;
-        const waitP = awaitDownloadSince(beforeDownload, 20000);
         try {
           if (args.url) {
             wc.downloadURL(String(args.url));
@@ -10006,15 +10570,33 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           } else {
             return { error: 'download 需要 url / selector / index 之一（都不传请改用 downloads 查询最近下载）' };
           }
-          const rec = await waitP;
+          let rec = await waitForDownloadStartSince(beforeDownload, 10000);
           if (!rec) return { error: '未触发下载（超时）' };
-          if (rec.state !== 'completed') {
-            return { error: rec.state === 'cancelled' ? '下载被取消' : '下载中断', filename: rec.filename, savedPath: rec.savedPath };
+          if (rec.state === 'progressing' && args.background !== true) {
+            const shortWait = await awaitDownloadSince(beforeDownload, 4500);
+            if (shortWait && shortWait.id === rec.id) rec = shortWait;
           }
-          if (!rec.exists) {
-            return { error: '下载状态为 completed，但目标文件不存在', filename: rec.filename, savedPath: rec.savedPath, state: rec.state, exists: false };
+          const inspected = inspectDownloadRecord(rec);
+          if (inspected.status === 'progressing') {
+            const nextCheckInMs = suggestedNextCheckMs('progressing', inspected.download);
+            return {
+              status: 'progressing',
+              ...inspected.download,
+              nextCheckInMs,
+              nextCheckAt: Date.now() + nextCheckInMs,
+            };
           }
-          return { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes, state: rec.state, exists: true };
+          if (inspected.status !== 'completed') {
+            const error = inspected.status === 'cancelled'
+              ? '下载被取消'
+              : (inspected.status === 'interrupted'
+                ? '下载中断'
+                : (inspected.status === 'file_empty'
+                  ? '下载事件已完成，但文件为空（0 字节）'
+                  : (inspected.status === 'file_missing' ? '下载事件已完成，但目标文件不存在' : '下载保存失败')));
+            return { ...inspected.download, error, verified: false };
+          }
+          return { status: 'completed', ...inspected.download };
         } finally {
           pendingDownloadSavePath = '';
         }
@@ -10022,17 +10604,21 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       // ========== C11b 最近下载查询 ==========
       case 'downloads': {
         const n = Math.min(Math.max(Number(args.limit) || 10, 1), DOWNLOAD_RECORDS_MAX);
+        const waited = Number(args.waitMs) > 0
+          ? await waitForDownloadStatus({
+            beforeSeq: args.since ?? args.beforeSeq,
+            timeoutMs: args.waitMs,
+            expectedFileName: args.expectedFileName,
+          })
+          : null;
         return {
           dir: resolveDownloadDir(lastAgentWorkspaceDir),
-          records: downloadRecords.slice(0, n).map((r) => ({
-            filename: r.filename,
-            savedPath: r.savedPath,
-            state: r.state,
-            exists: r.exists === true,
-            bytes: r.bytes,
-            time: r.time,
-          })),
+          ...(waited || {}),
+          records: downloadRecords.slice(0, n).map((r) => inspectDownloadRecord(r).download),
         };
+      }
+      case 'download_control': {
+        return controlDownload(args.operation, args.downloadId);
       }
       // ========== C12 滚动到元素 / 可见性检测 ==========
       case 'scroll_into_view': {
@@ -13718,14 +14304,18 @@ ipcMain.handle('clipboard:panel-set-hotkey', (_e, id, accel) => {
  * 结果自然出现在会话里,用户可以接着追问。
  */
 /** 主进程 → 后端的小型 JSON POST(OCR 等) */
-function httpPostJson(url, body, timeoutMs) {
+function httpPostJson(url, body, timeoutMs, extraHeaders = {}) {
   return new Promise((resolve) => {
     try {
       const payload = JSON.stringify(body || {});
       const req = http.request(url, {
         method: 'POST',
         timeout: timeoutMs || 30000,
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}),
+        },
       }, (res) => {
         let buf = '';
         res.on('data', (d) => { buf += d; });
@@ -13741,6 +14331,16 @@ function httpPostJson(url, body, timeoutMs) {
       resolve({ error: String((e && e.message) || e) });
     }
   });
+}
+
+/** 桌面主进程 -> 统一后台任务路由（仅回环 + 内部 token）。 */
+function backgroundJobPost(pathname, body, timeoutMs = 5000) {
+  return httpPostJson(
+    API_ORIGIN + '/api/background-jobs/internal' + pathname,
+    body,
+    timeoutMs,
+    { 'x-yz-internal-token': INTERNAL_TOKEN },
+  );
 }
 
 /** 图片 dataURL → 后端 OCR(POST /api/tools/ocr) */
@@ -13942,16 +14542,12 @@ app.whenReady().then(() => {
 // 应用启动
 // ============================================================
 
-// ★ dev 也必须注册独立的 AppUserModelID（2026-11-11 Win11 实测）：
-//   未注册时 Explorer 按 electron.exe 分组，窗口的 WM_GETICON 虽是言智，
-//   任务栏仍会使用进程默认的原子图标。dev 使用独立 ID 既避开安装版 AUMID，
-//   又让 setAppDetails() 下发的品牌图标真正落到任务栏按钮。
+// ★ 开发版任务栏图标由三部分共同决定：窗口 icon、AppUserModelID、对应快捷方式。
+//   只做前两项时 Windows 仍会回退到 electron.exe 的原子图标；app ready 后先确保
+//   “言智 Dev”快捷方式携带同一个 AUMID 和品牌 icon，再注册应用身份。
 const WINDOWS_APP_USER_MODEL_ID = app.isPackaged
   ? 'com.yanzhi.desktop'
-  : 'com.yanzhi.desktop.dev';
-if (process.platform === 'win32') {
-  app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
-}
+  : DEV_APP_USER_MODEL_ID;
 
 // CDP 统一架构：开启远程调试端口，后端 Playwright 通过 CDP 连接到 Electron BrowserView，
 // 所有 browser_ 工具操作同一个浏览器实例，预览面板就是这个 BrowserView（与豆包 CNGC Browser Use 架构一致）。
@@ -14053,6 +14649,21 @@ app.whenReady().then(async () => {
   //   实测第二个实例照样拉起后端（tsx watch）抢 3001 与同一个库，把先启动的那个实例搅坏。
   //   抢锁失败直接返回，不再做任何启动动作。
   if (!gotTheLock) return;
+  if (process.platform === 'win32') {
+    if (!app.isPackaged) {
+      try {
+        ensureDevTaskbarShortcut({
+          shell,
+          electronPath: process.execPath,
+          appPath: app.getAppPath(),
+          iconPath: getAppIconPath(),
+        });
+      } catch (e) {
+        console.warn('[window-icon] 开发版任务栏快捷方式创建失败:', e && e.message);
+      }
+    }
+    app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+  }
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
   // ── 插件前端包装载协议 yz://（mode-pluginization P0）────────────────
@@ -15572,7 +16183,12 @@ app.whenReady().then(async () => {
   //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
   await browserBridge.start();
   await startLocalCapabilitiesRuntime();
-  startServer();
+  const serverStartupPromise = startServer();
+  serverStartupPromise.catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[后端] 启动失败:', err);
+    dialog.showErrorBox('后端启动失败', `${msg}\n\n请关闭占用 ${API_PORT} 端口的其它言智实例后重试。`);
+  });
 
   // computer-use 急停热键：★ 不可禁用（安全阀不可拆）。启动即按默认键注册
   //（渲染层未就绪也能急停），渲染层读到 settings.panicAccelerator 后会重注册覆盖。

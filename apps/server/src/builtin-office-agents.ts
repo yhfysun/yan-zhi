@@ -14,6 +14,11 @@
 // 复用默认助手会让两类完全不同的任务互相串味。
 
 import { PAGE_AGENT_ID } from '@yan-zhi/shared';
+import {
+  RPA_BUILDER_ID,
+  RPA_DELEGATION_PROMPT,
+  RPA_RUNTIME_TOOLS,
+} from './builtin-automation-agent.js';
 
 /** 翻译助手 id（前端 config/scenes.ts 的 translate 场景卡引用它） */
 export const TRANSLATE_AGENT_ID = 'a_builtin_translate_agent';
@@ -34,6 +39,7 @@ export const TRANSLATE_AGENT_BUILTIN_TOOLS = [
   'python_exec',
   // 委派 pageAgent 查术语与官方译名；list_models 用于长文或小语种选型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
+  ...RPA_RUNTIME_TOOLS,
   // 交互与规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -73,7 +79,9 @@ export const TRANSLATE_AGENT_SYSTEM_PROMPT = `你是「翻译助手」（transla
 - 需要核实官方译名、术语惯例、地区用词差异时委派 pageAgent 联网查，不要凭印象编造。
 - 不确定的地方一律显式标出，不静默猜。
 - 判断原文语种、识别图中文字这类"先看清楚再动手"的步骤必须做，不要拿到文件直接开始输出译文。
-- 输出用中文说明（译文本身用目标语言），结论先行、结构清晰。`;
+- 输出用中文说明（译文本身用目标语言），结论先行、结构清晰。
+
+${RPA_DELEGATION_PROMPT}`;
 
 // ===== 个人生意助手：小微实体生意的经营测算与落地建议 =====
 // 覆盖餐饮/茶饮、电动车（销售·维修·租赁）、棋牌室·桌游、便利店·超市、美业·洗护、教培、宠物、快递驿站等个体与小微业态。
@@ -89,6 +97,7 @@ export const BUSINESS_AGENT_BUILTIN_TOOLS = [
   'image_analyze',
   // 委派 pageAgent 查政策/平台规则/行情；list_models 用于长文或复杂测算选型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
+  ...RPA_RUNTIME_TOOLS,
   // 交互与规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -138,7 +147,9 @@ export const BUSINESS_AGENT_SYSTEM_PROMPT = `你是「个人生意助手」（bu
 - 大任务先用 task_plan/task_step 拆解登记；测算表与方案用 file_write 落盘（category="deliverable"，优先 xlsx 或 md），对话里给结论摘要 + 路径。
 - 用户给的流水/台账/合同：Excel/Word/PDF 先 file_to_markdown 再读；截图（后台数据、菜单、报价单）先 image_analyze 看内容。
 - 视觉物料（海报/菜单设计/短视频）不是你的活：给文案与活动方案，需要成品图片引导用户到「设计创意」场景。
-- 输出用中文，结论先行，结构清晰；金额默认用人民币并保留原始精度。`;
+- 输出用中文，结论先行，结构清晰；金额默认用人民币并保留原始精度。
+
+${RPA_DELEGATION_PROMPT}`;
 
 /**
  * 两个办公岗位专属智能体的 seed 条目（由 db.ts 展开进 seedAgents）。
@@ -158,7 +169,7 @@ export const builtinOfficeAgentDefs: Array<Record<string, unknown>> = [
     builtin_tool_ids: JSON.stringify(TRANSLATE_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(TRANSLATE_AGENT_SKILL_IDS),
     // pageAgent：核实官方译名、术语惯例、地区用词差异
-    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID, RPA_BUILDER_ID]),
     system_prompt: TRANSLATE_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'main',
@@ -176,7 +187,7 @@ export const builtinOfficeAgentDefs: Array<Record<string, unknown>> = [
     builtin_tool_ids: JSON.stringify(BUSINESS_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(BUSINESS_AGENT_SKILL_IDS),
     // pageAgent：联网核实政策、平台规则、行情与补贴
-    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID, RPA_BUILDER_ID]),
     system_prompt: BUSINESS_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'main',

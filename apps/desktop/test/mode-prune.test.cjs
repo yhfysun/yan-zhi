@@ -26,14 +26,14 @@ const catalog = readCatalog();
 
 test('清单包含全部模式且顺序稳定', () => {
   // learning 已插件化，但仍是清单末位的模式
-  assert.deepEqual(allModeKeys(catalog), ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
+  assert.deepEqual(allModeKeys(catalog), ['office', 'dev', 'ops', 'sec', 'wf', 'rpa', 'clip', 'shop', 'learning']);
 });
 
 test('resolveModes：显式模式优先于档位预设', () => {
   assert.deepEqual(resolveModes({ catalog, modes: ['dev', 'office'] }), ['office', 'dev']);
   assert.deepEqual(resolveModes({ catalog, edition: 'lite' }), ['office']);
-  assert.deepEqual(resolveModes({ catalog, edition: 'basic' }), ['office', 'dev', 'wf']);
-  assert.deepEqual(resolveModes({ catalog, edition: 'pro' }), ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
+  assert.deepEqual(resolveModes({ catalog, edition: 'basic' }), ['office', 'dev', 'wf', 'rpa']);
+  assert.deepEqual(resolveModes({ catalog, edition: 'pro' }), ['office', 'dev', 'ops', 'sec', 'wf', 'rpa', 'clip', 'shop', 'learning']);
 });
 
 test('resolveModes：未知模式 / 空集合必须报错（不能静默回落到全量）', () => {
@@ -109,7 +109,7 @@ test('外壳视图（RemoteControlHost / /remote）随插件选择集裁剪', ()
 test('构建清单记录排除项与标记串', () => {
   const manifest = buildManifest({ catalog, modes: ['office', 'dev'], edition: 'basic', now: new Date('2026-10-23T03:00:00Z') });
   assert.deepEqual(manifest.modes, ['office', 'dev']);
-  assert.deepEqual(manifest.excludedModes, ['ops', 'sec', 'wf', 'clip', 'shop', 'learning']);
+  assert.deepEqual(manifest.excludedModes, ['ops', 'sec', 'wf', 'rpa', 'clip', 'shop', 'learning']);
   assert.ok(manifest.markers.includes('OpsConsole'));
   assert.ok(manifest.markers.includes('ClipWorkbench'));
   assert.ok(manifest.markers.includes('Learning')); // learning 是内置模式，排除时带自己的视图标记

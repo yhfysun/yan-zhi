@@ -9,6 +9,13 @@ export type EnglishQuickCheck = {
   explanation: string;
 };
 
+export type EnglishPathSound = {
+  letter: string;
+  ipa: string;
+  word: string;
+  gloss: string;
+};
+
 export type EnglishPathStep = {
   id: string;
   kind: EnglishPathStepKind;
@@ -17,6 +24,8 @@ export type EnglishPathStep = {
   minutes: number;
   explanation: string;
   pattern?: string;
+  patternAudio?: string;
+  sounds?: EnglishPathSound[];
   tip: string;
   examples: Array<{ en: string; zh: string }>;
   wordFamily?: Array<{ word: string; gloss: string; note?: string }>;
@@ -39,59 +48,104 @@ function makeStep(kind: EnglishPathStepKind, id: string, seed: StepSeed): Englis
   return { id, kind, ...rest, quickCheck: check };
 }
 
-const PHONICS_EXTRA: Array<{ id: string; title: string; goal: string; pattern: string; words: string; zh: string; sentence: string; sentenceZh: string; task: string; check: EnglishQuickCheck }> = [
+const PHONICS_EXTRA: Array<{ id: string; title: string; goal: string; pattern: string; sounds?: EnglishPathSound[]; words: string; zh: string; sentence: string; sentenceZh: string; task: string; check: EnglishQuickCheck }> = [
   {
     id: 'sound_magic_e_a', title: 'Magic E：a_e 的长音', goal: '理解词尾 e 不发音，却让前面的 a 发长音',
-    pattern: 'cap → cape；mat → mate；plan → plane', words: 'cap · cape · mat · mate', zh: '帽子 · 披风 · 垫子 · 配对/伙伴',
+    pattern: 'cap → cape；mat → mate；plan → plane',
+    sounds: [
+      { letter: 'a', ipa: '/æ/', word: 'cap', gloss: '帽子' },
+      { letter: 'a_e', ipa: '/eɪ/', word: 'cape', gloss: '披风' },
+    ],
+    words: 'cap · cape · mat · mate', zh: '帽子 · 披风 · 垫子 · 配对/伙伴',
     sentence: 'She put on a cape and left the mat by the door.', sentenceZh: '她披上披风，把垫子留在门边。',
     task: '把 cap、mat、plan 各加一个 e，读出变化后的长音。',
     check: { question: 'Which pair shows the Magic E change?', options: ['cap → cape', 'cat → cut', 'sit → sat', 'bed → bad'], answer: 0, explanation: '词尾 e 让 a 从短音 /æ/ 变成字母音 /eɪ/。' },
   },
   {
     id: 'sound_magic_e_io', title: 'Magic E：i_e / o_e', goal: '识别 bike、home 这类“辅音 + 元音 + 辅音 + e”结构',
-    pattern: 'kit → kite；not → note；hop → hope', words: 'kit · kite · not · note', zh: '工具包 · 风筝 · 不 · 笔记',
+    pattern: 'kit → kite；not → note；hop → hope',
+    sounds: [
+      { letter: 'i', ipa: '/ɪ/', word: 'kit', gloss: '工具包' },
+      { letter: 'i_e', ipa: '/aɪ/', word: 'kite', gloss: '风筝' },
+      { letter: 'o', ipa: '/ɑ/', word: 'not', gloss: '不' },
+      { letter: 'o_e', ipa: '/oʊ/', word: 'note', gloss: '便条' },
+    ],
+    words: 'kit · kite · not · note', zh: '工具包 · 风筝 · 不 · 笔记',
     sentence: 'The note on the kite says “Do not let go.”', sentenceZh: '风筝上的便条写着“别松手”。',
     task: '拆读 kit/kite、not/note、hop/hope，每组说出元音变化。',
     check: { question: 'Which word has the long /aɪ/ sound?', options: ['kit', 'kite', 'sit', 'hit'], answer: 1, explanation: 'kite 里的 i_e 发字母音 /aɪ/。' },
   },
   {
     id: 'sound_ee_ea', title: 'ee / ea 的常见长音', goal: '把 ee、ea 先当作常见 /iː/ 词块',
-    pattern: 'ee /iː/ · ea /iː/；see, green, eat, team', words: 'see · green · eat · team', zh: '看见 · 绿色 · 吃 · 团队',
+    pattern: 'ee /iː/ · ea /iː/；see, green, eat, team',
+    sounds: [
+      { letter: 'ee', ipa: '/iː/', word: 'green', gloss: '绿色' },
+      { letter: 'ea', ipa: '/iː/', word: 'team', gloss: '团队' },
+    ],
+    words: 'see · green · eat · team', zh: '看见 · 绿色 · 吃 · 团队',
     sentence: 'The green team meets to eat before the game.', sentenceZh: '绿队比赛前集合吃饭。',
     task: '从今天遇到的词里找 5 个含 ee 或 ea 的词，按声音归类。',
     check: { question: 'Which word most likely contains /iː/?', options: ['bed', 'team', 'hot', 'cup'], answer: 1, explanation: 'ea 在 team 中通常发 /iː/。' },
   },
   {
     id: 'sound_ai_ay', title: 'ai / ay 的 /eɪ/', goal: '在词中 ai、词尾 ay 中快速识别长音 a',
-    pattern: 'rain, train, wait；day, play, stay', words: 'rain · train · play · stay', zh: '雨 · 火车 · 玩 · 停留',
+    pattern: 'rain, train, wait；day, play, stay',
+    sounds: [
+      { letter: 'ai', ipa: '/eɪ/', word: 'rain', gloss: '雨' },
+      { letter: 'ay', ipa: '/eɪ/', word: 'play', gloss: '玩' },
+    ],
+    words: 'rain · train · play · stay', zh: '雨 · 火车 · 玩 · 停留',
     sentence: 'They wait for the train on a rainy day.', sentenceZh: '下雨天他们等火车。',
     task: '用 rain、play、wait 各造一个短句。',
     check: { question: 'Which spelling usually appears at the end of a word for /eɪ/?', options: ['ai', 'ay', 'ee', 'oo'], answer: 1, explanation: 'ay 常见于词尾，如 day、play、stay。' },
   },
   {
     id: 'sound_oa_ow', title: 'oa / ow 的 /oʊ/', goal: '认识 road、boat、slow、window 里的长音 o',
-    pattern: 'oa 在词中；ow 可在词中或词尾', words: 'road · boat · slow · window', zh: '道路 · 船 · 慢的 · 窗户',
+    pattern: 'oa 在词中；ow 可在词中或词尾',
+    sounds: [
+      { letter: 'oa', ipa: '/oʊ/', word: 'boat', gloss: '船' },
+      { letter: 'ow', ipa: '/oʊ/', word: 'slow', gloss: '慢的' },
+    ],
+    words: 'road · boat · slow · window', zh: '道路 · 船 · 慢的 · 窗户',
     sentence: 'The boat moves slowly down the road? No—on the water.', sentenceZh: '船在水上慢慢前进，不在路上。',
     task: '把 road、boat、slow、window 读三遍，并圈出 oa/ow。',
     check: { question: 'Which word contains /oʊ/?', options: ['shop', 'boat', 'book', 'cat'], answer: 1, explanation: 'oa 在 boat 中通常发 /oʊ/。' },
   },
   {
     id: 'sound_r_vowels', title: 'ar / or 的卷舌与长音', goal: '区分 car、park 与 for、short 的常见元音组合',
-    pattern: 'ar /ɑːr/ · or /ɔːr/（美式读音略有差异）', words: 'car · park · for · short', zh: '汽车 · 公园 · 为了 · 短的',
+    pattern: 'ar /ɑr/ · or /ɔr/（按通用美式标音）',
+    sounds: [
+      { letter: 'ar', ipa: '/ɑr/', word: 'car', gloss: '汽车' },
+      { letter: 'or', ipa: '/ɔr/', word: 'for', gloss: '为了' },
+    ],
+    words: 'car · park · for · short', zh: '汽车 · 公园 · 为了 · 短的',
     sentence: 'The car stops at the park for a short break.', sentenceZh: '汽车在公园停下短暂休息。',
     task: '读 car/park、for/short，注意 r 对前面元音的影响。',
     check: { question: 'Which word contains ar?', options: ['fork', 'park', 'book', 'team'], answer: 1, explanation: 'park 的 ar 是一个固定词块。' },
   },
   {
-    id: 'sound_er_ir_ur', title: 'er / ir / ur 的中央元音', goal: '把 teacher、bird、turn 里的三个拼法连到相近声音',
-    pattern: 'er · ir · ur 都可能发 /ɜːr/ 一类音', words: 'teacher · bird · turn · first', zh: '老师 · 鸟 · 转动 · 第一',
+    id: 'sound_er_ir_ur', title: 'er / ir / ur 的卷舌元音', goal: '区分非重读 teacher 的 /ɚ/ 与重读 bird、turn 的 /ɝ/',
+    pattern: 'teacher /ˈtiːtʃɚ/ · bird /bɝd/ · turn /tɝn/ · first /fɝst/',
+    sounds: [
+      { letter: 'er', ipa: '/ɚ/', word: 'teacher', gloss: '老师' },
+      { letter: 'ir', ipa: '/ɝ/', word: 'bird', gloss: '鸟' },
+      { letter: 'ur', ipa: '/ɝ/', word: 'turn', gloss: '转动' },
+    ],
+    words: 'teacher · bird · turn · first', zh: '老师 · 鸟 · 转动 · 第一',
     sentence: 'The teacher asked the first bird to turn around.', sentenceZh: '老师让第一只鸟转身。',
     task: '把 teacher、bird、turn、first 按 er/ir/ur 分组朗读。',
     check: { question: 'Which word uses ir?', options: ['teacher', 'bird', 'turn', 'short'], answer: 1, explanation: 'bird 中间的 ir 发中央元音。' },
   },
   {
     id: 'sound_blends', title: '常见辅音连缀', goal: '把 bl、cr、st、tr 当作一个起音块，不逐字母拖读',
-    pattern: 'black · cream · stop · train', words: 'black · cream · stop · train', zh: '黑色 · 奶油 · 停止 · 火车',
+    pattern: 'black · cream · stop · train',
+    sounds: [
+      { letter: 'bl', ipa: '/bl/', word: 'black', gloss: '黑色' },
+      { letter: 'cr', ipa: '/kr/', word: 'cream', gloss: '奶油' },
+      { letter: 'st', ipa: '/st/', word: 'stop', gloss: '停止' },
+      { letter: 'tr', ipa: '/tr/', word: 'train', gloss: '火车' },
+    ],
+    words: 'black · cream · stop · train', zh: '黑色 · 奶油 · 停止 · 火车',
     sentence: 'The black train stops near the cream shop.', sentenceZh: '黑色火车停在奶油店附近。',
     task: '选 5 个含辅音连缀的词，先读起音块，再读完整词。',
     check: { question: 'Which word starts with a consonant blend?', options: ['cat', 'stop', 'bed', 'sun'], answer: 1, explanation: 'st 是两个辅音连续出现，要连成一个起音块。' },
@@ -207,9 +261,17 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '五个短元音',
         goal: '先分清 a/e/i/o/u 在闭音节里的基本声音',
         minutes: 8,
-        explanation: '短元音像汉语拼音里的短促音，但嘴形更固定。先读单个音，再把辅音拼上去，不要一上来背整张音标表。',
-        pattern: 'a /æ/ · e /e/ · i /ɪ/ · o /ɒ/ · u /ʌ/',
-        tip: 'cat 里的 a、bed 里的 e、sit 里的 i，先把“辅音 + 元音 + 辅音”读顺。',
+        explanation: '短元音不能按字母名称读。下面标美式 IPA：先听 cat、bed、sit、hot、cup 里的元音，再把首音、元音和尾音连起来。',
+        pattern: 'a /æ/ → cat · e /ɛ/ → bed · i /ɪ/ → sit · o /ɑ/ → hot · u /ʌ/ → cup',
+        patternAudio: 'a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.',
+        sounds: [
+          { letter: 'a', ipa: '/æ/', word: 'cat', gloss: '猫' },
+          { letter: 'e', ipa: '/ɛ/', word: 'bed', gloss: '床' },
+          { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐' },
+          { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热的' },
+          { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子' },
+        ],
+        tip: '先听完整例词，再拆成“辅音 + 短元音 + 辅音”；例如 hot 不是 /hoʊt/。',
         examples: [
           { en: 'cat · bed · sit · hot · cup', zh: '猫 · 床 · 坐 · 热 · 杯子' },
           { en: 'A cat sat on a red mat.', zh: '一只猫坐在红色垫子上。' },
@@ -239,6 +301,13 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         minutes: 10,
         explanation: '字母组合要当成一个声音块记。先记最常见的一组，在单词里反复见，不要孤立背符号。',
         pattern: 'sh /ʃ/ · ch /tʃ/ · th /θ/ · ee /iː/ · oo /uː/',
+        sounds: [
+          { letter: 'sh', ipa: '/ʃ/', word: 'ship', gloss: '船' },
+          { letter: 'ch', ipa: '/tʃ/', word: 'chair', gloss: '椅子' },
+          { letter: 'th', ipa: '/θ/', word: 'think', gloss: '想' },
+          { letter: 'ee', ipa: '/iː/', word: 'green', gloss: '绿色' },
+          { letter: 'oo', ipa: '/uː/', word: 'moon', gloss: '月亮' },
+        ],
         tip: '先用“听—指—读”三步：听到声音，指向词块，再完整读词。',
         examples: [
           { en: 'ship · chair · think · green · moon', zh: '船 · 椅子 · 想 · 绿色 · 月亮' },
@@ -252,6 +321,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         minutes: 10,
         explanation: '自然拼读不是背音标表，而是把常见字母组合当成声音块。先拆块，再把声音连起来。',
         pattern: item.pattern,
+        sounds: item.sounds,
         tip: '先读词块，再读整词；遇到新词先找熟悉的声音，不要逐字母拖读。',
         examples: [
           { en: item.words, zh: item.zh },
@@ -825,10 +895,15 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
 
 const PATH_QUICK_CHECKS: Record<string, EnglishQuickCheck> = {
   sound_short_vowels: {
-    question: 'Which word uses the short /æ/ sound?',
-    options: ['cake', 'cat', 'car', 'city'],
-    answer: 1,
-    explanation: 'cat 是闭音节，a 发短元音 /æ/；cake 里的 a 是长元音。',
+    question: 'Which set contains five short-vowel words?',
+    options: [
+      'cat · bed · sit · hot · cup',
+      'cake · see · bike · home · moon',
+      'car · bird · short · food · team',
+      'city · open · tiger · paper · music',
+    ],
+    answer: 0,
+    explanation: 'cat、bed、sit、hot、cup 分别是 a/e/i/o/u 的短元音例词；其余各组至少包含长元音或非重读元音。',
   },
   sound_blending: {
     question: 'Which split helps you read “sunset” most naturally?',
@@ -928,6 +1003,7 @@ export function getEnglishPath(): EnglishPathStage[] {
     steps: stage.steps.map((step) => ({
       ...step,
       examples: step.examples.map((example) => ({ ...example })),
+      ...(step.sounds ? { sounds: step.sounds.map((sound) => ({ ...sound })) } : {}),
       ...(step.quickCheck ? { quickCheck: { ...step.quickCheck, options: [...step.quickCheck.options] } } : {}),
     })),
   }));

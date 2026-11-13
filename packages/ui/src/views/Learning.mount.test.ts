@@ -66,9 +66,24 @@ const { defaultGet } = vi.hoisted(() => ({
           id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
           steps: [{
             id: 'sound_short_vowels', kind: 'phonics', title: '五个短元音', goal: '分清短元音', minutes: 8,
-            explanation: '先读单个音，再拼辅音。', pattern: 'cat · bed · sit',
+            explanation: '先读单个音，再拼辅音；先听例词。',
+            pattern: 'a /æ/ → cat · e /ɛ/ → bed · i /ɪ/ → sit · o /ɑ/ → hot · u /ʌ/ → cup',
+            patternAudio: 'a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.',
+            sounds: [
+              { letter: 'a', ipa: '/æ/', word: 'cat', gloss: '猫' },
+              { letter: 'e', ipa: '/ɛ/', word: 'bed', gloss: '床' },
+              { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐' },
+              { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热的' },
+              { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子' },
+            ],
             tip: '慢读', examples: [{ en: 'A cat sat on a red mat.', zh: '一只猫坐在红垫子上。' }],
             task: '慢读三遍。',
+            quickCheck: {
+              question: 'Which set contains five short-vowel words?',
+              options: ['cat · bed · sit · hot · cup', 'cake · see · bike · home · moon', 'car · bird · short · food · team'],
+              answer: 0,
+              explanation: '第一组覆盖五个短元音。',
+            },
           }],
         }],
       }
@@ -192,6 +207,335 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(document.body.style.overflow).toBe('')
     expect(el.querySelector('.lp-header')).toBeFalsy()
     expect(el.querySelector('.lp-avatar-stage')).toBeFalsy()
+  })
+
+  it('★ 短元音：音标可展示，点击例词只朗读英文，不把斜杠和 IPA 交给 TTS', async () => {
+    const requested: string[] = []
+    const spokenByBrowser: string[] = []
+    class FakeAudio {
+      src: string
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      constructor(src: string) { this.src = src }
+      play = vi.fn(async () => {})
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn((utterance: { text: string }) => spokenByBrowser.push(utterance.text)),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string, payload?: unknown) => {
+      if (!url.includes('/learning/tts')) return { data: null }
+      const text = String((payload as { text?: string } | undefined)?.text || '')
+      requested.push(text)
+      return { data: { url: `/audio/${requested.length}.wav`, engine: 'sapi', voice: 'Microsoft Zira Desktop' } }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+
+    const soundButtons = [...el.querySelectorAll('.lp-path-sounds button')] as HTMLButtonElement[]
+    expect(soundButtons[0].getAttribute('aria-label')).toContain('cat')
+    soundButtons[0].click()
+    await vi.waitFor(() => expect(requested).toEqual(['cat']))
+    expect(soundButtons[0].className).toContain('playing')
+
+    const allButton = el.querySelector('.lp-path-listen') as HTMLButtonElement
+    expect(allButton.getAttribute('aria-label')).toBe('播放全部发音例词')
+    allButton.click()
+    await vi.waitFor(() => expect(requested[1]).toBe('a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.'))
+    expect(requested.join(' ')).not.toMatch(/[\/æɛɪɑʌ]/)
+    expect(spokenByBrowser).toEqual([])
+  })
+
+  it('服务端英语音频不可用时只回退到 en-* 浏览器音色，绝不落到默认中文音色', async () => {
+    const spoken: Array<{ text: string; lang: string; voice: string }> = []
+    class FakeUtterance {
+      text: string
+      lang = ''
+      rate = 1
+      voice: { name: string } | null = null
+      onend: (() => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(text: string) { this.text = text }
+    }
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => [
+        { name: 'Microsoft Huihui', lang: 'zh-CN', default: true },
+        { name: 'Microsoft Zira', lang: 'en-US', default: false },
+      ]),
+      speak: vi.fn((utterance: FakeUtterance) => {
+        spoken.push({ text: utterance.text, lang: utterance.lang, voice: utterance.voice?.name || '' })
+      }),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockRejectedValue(new Error('offline'))
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(spoken).toEqual([{ text: 'cat', lang: 'en-US', voice: 'Microsoft Zira' }]))
+    expect(spoken[0].voice).not.toContain('Huihui')
+  })
+
+  it('没有英文系统音色且在线合成失败时，弹窗询问是否下载语音包并自动重试', async () => {
+    const calls: string[] = []
+    class FakeAudio {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      constructor(_src: string) {}
+      play = vi.fn(async () => {})
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    let learningAttempts = 0
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      calls.push(url)
+      if (url.includes('/learning/tts')) {
+        learningAttempts += 1
+        if (learningAttempts === 1) throw new Error('no english voice')
+        return { data: { url: '/audio/retry.wav' } }
+      }
+      if (url.includes('/tts-packs/') && url.endsWith('/install')) return { data: { ok: true } }
+      return { data: null }
+    })
+    const getMock = vi.mocked(api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/tts-packs/') && url.endsWith('/progress')) {
+        return { data: { state: 'done', progress: 100, message: '安装完成' } }
+      }
+      return defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
+    expect(el.querySelector('.lp-voice-modal')?.textContent).toContain('需要下载英语语音包')
+    ;(el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(calls.some((url) => url.includes('/tts-packs/vits-melo-tts-zh_en/install'))).toBe(true))
+    await vi.waitFor(() => expect(learningAttempts).toBe(2), { timeout: 3000 })
+  })
+
+  it('语音包安装接口返回错误时保留弹窗并显示失败原因，不把错误响应当成功重试', async () => {
+    const calls: string[] = []
+    let learningAttempts = 0
+    vi.stubGlobal('Audio', class {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+    })
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      calls.push(url)
+      if (url.includes('/learning/tts')) {
+        learningAttempts += 1
+        return { error: 'no english voice', status: 409 }
+      }
+      if (url.includes('/tts-packs/') && url.endsWith('/install')) {
+        return { error: '语音引擎安装失败：网络不可用', status: 400 }
+      }
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
+    ;(el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(el.querySelector('.lp-voice-install-error')?.textContent).toContain('语音引擎安装失败：网络不可用')
+    })
+    expect(learningAttempts).toBe(1)
+    expect(el.querySelector('.lp-voice-modal')).toBeTruthy()
+    expect((el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).disabled).toBe(false)
+    expect(calls.filter((url) => url.endsWith('/install'))).toHaveLength(1)
+  })
+
+  it('语音包已经安装时朗读失败只显示错误，不再弹下载语音包提示', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('Audio', class {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+    })
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      calls.push(url)
+      if (url.includes('/learning/tts')) {
+        return { error: '本地英语模型推理失败', status: 500 }
+      }
+      if (url.endsWith('/install')) return { data: { ok: true } }
+      return { data: null }
+    })
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/tts-packs') {
+        return {
+          data: {
+            items: [{ id: 'vits-melo-tts-zh_en', installed: true }],
+            engine: { available: true },
+          },
+        }
+      }
+      return defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(el.querySelector('.lp-voice-runtime-error')?.textContent).toContain('本地英语模型推理失败')
+    })
+    expect(el.querySelector('.lp-voice-modal')).toBeFalsy()
+    expect(calls.some((url) => url.endsWith('/install'))).toBe(false)
+  })
+
+  it('用户在设置页下载完成后，朗读失败会重新检查安装状态而不是沿用旧缓存', async () => {
+    let packChecks = 0
+    let packInstalled = false
+    vi.stubGlobal('Audio', class {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+    })
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/tts')) return { error: '朗读失败', status: 500 }
+      return { data: null }
+    })
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/tts-packs') {
+        packChecks += 1
+        return {
+          data: {
+            items: [{ id: 'vits-melo-tts-zh_en', installed: packInstalled }],
+            engine: { available: true },
+          },
+        }
+      }
+      return defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
+    ;(el.querySelector('.lp-voice-modal > footer button') as HTMLButtonElement).click()
+    packInstalled = true
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(el.querySelector('.lp-voice-runtime-error')?.textContent).toContain('朗读失败')
+    })
+    expect(packChecks).toBeGreaterThanOrEqual(2)
+    expect(el.querySelector('.lp-voice-modal')).toBeFalsy()
+  })
+
+  it('语音包进度已经完成但安装请求未返回时，也能关闭弹窗并自动重试朗读', async () => {
+    let learningAttempts = 0
+    vi.stubGlobal('Audio', class {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+    })
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/tts')) {
+        learningAttempts += 1
+        if (learningAttempts === 1) return { error: 'no english voice', status: 409 }
+        return { data: { url: '/audio/retry.wav' } }
+      }
+      if (url.endsWith('/install')) return new Promise(() => {})
+      return { data: null }
+    })
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress')) {
+        return { data: { state: 'done', progress: 100, message: '安装完成' } }
+      }
+      return defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
+    ;(el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(learningAttempts).toBe(2), { timeout: 3000 })
+    expect(el.querySelector('.lp-voice-modal')).toBeFalsy()
+  })
+
+  it('拼读课的练习与完成标准按声音训练组织，不套用“替换个人信息”模板', async () => {
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-immersive')).toBeTruthy())
+
+    const practiceNav = [...el.querySelectorAll('.lp-path-immersive-rail button')]
+      .find((button) => button.textContent?.includes('练习')) as HTMLButtonElement
+    practiceNav.click()
+    await nextTick()
+    const practice = el.querySelector('.lp-path-practice-plan')?.textContent || ''
+    expect(practice).toContain('遮住音标')
+    expect(practice).toContain('拼读')
+    expect(practice).not.toContain('替换成与你有关的信息')
+    expect(el.querySelector('.lp-path-practice-action')?.textContent).toContain('去跟读巩固')
+
+    const checkNav = [...el.querySelectorAll('.lp-path-immersive-rail button')]
+      .find((button) => button.textContent?.includes('自测')) as HTMLButtonElement
+    checkNav.click()
+    await nextTick()
+    expect(el.querySelector('.lp-path-choices')?.textContent).toContain('cat · bed · sit · hot · cup')
   })
 
   it('★ 英语主线：寓言课按理解/例句/练习/自测四步沉浸学习，完成后记录进度', async () => {

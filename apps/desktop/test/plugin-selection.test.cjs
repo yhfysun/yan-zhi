@@ -114,7 +114,7 @@ test('learning 是 Pro 档插件模式，基础档不会漏带或误带', () => 
   });
 
   assert.deepEqual(modesFor('lite'), ['office']);
-  assert.deepEqual(modesFor('basic'), ['office', 'dev', 'wf']);
+  assert.deepEqual(modesFor('basic'), ['office', 'dev', 'wf', 'rpa']);
   assert.deepEqual(modesFor('pro'), Object.keys(modesCatalog.modes));
   assert.ok(modesFor('pro').includes('learning'));
   assert.equal(modesCatalog.modes.learning.pluginId, 'learning-mode');
@@ -125,7 +125,7 @@ test('learning 是 Pro 档插件模式，基础档不会漏带或误带', () => 
 test('新增模式默认插件化且仅进 Pro；基础档旧模式必须显式保留', () => {
   const pluginsCatalog = loadCatalog();
   const modesCatalog = loadModesCatalog();
-  const legacyBasicModes = new Set(['dev-mode', 'wf-mode']);
+  const basicPluginWhitelist = new Set(['dev-mode', 'wf-mode', 'rpa-mode']);
   const basic = new Set(pluginsCatalog.editionPresets.basic);
   const lite = new Set(pluginsCatalog.editionPresets.lite);
   const pro = new Set(pluginsCatalog.editionPresets.pro);
@@ -138,7 +138,7 @@ test('新增模式默认插件化且仅进 Pro；基础档旧模式必须显式�
     assert.equal(plugin.kind, 'mode', `${mode.pluginId} 必须声明 kind=mode`);
     assert.equal(plugin.modeKey, modeKey, `${mode.pluginId} 与 ${modeKey} 的 modeKey 不一致`);
     assert.ok(pro.has(mode.pluginId), `${mode.pluginId} 必须默认进入 Pro 档`);
-    if (!legacyBasicModes.has(mode.pluginId)) {
+    if (!basicPluginWhitelist.has(mode.pluginId)) {
       assert.ok(!basic.has(mode.pluginId), `${mode.pluginId} 默认只能进 Pro；要下放基础档必须显式改白名单`);
       assert.ok(!lite.has(mode.pluginId), `${mode.pluginId} 不能默认进入 Lite 档`);
     }

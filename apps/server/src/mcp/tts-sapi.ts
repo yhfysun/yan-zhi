@@ -47,6 +47,7 @@ export function buildWinRtScript(): string {
     'if ($Voice -ne "") {',
     '  $picked = $all | Where-Object { $_.Id -eq $Voice -or $_.DisplayName -eq $Voice } | Select-Object -First 1',
     '  if (-not $picked) { $picked = $all | Where-Object { $_.DisplayName -like ("*" + $Voice + "*") } | Select-Object -First 1 }',
+    '  if (-not $picked) { throw ("requested voice not found: " + $Voice) }',
     '}',
     'if (-not $picked) { $picked = $all | Where-Object { $_.Language -like "zh*" } | Select-Object -First 1 }',
     'if (-not $picked) { $picked = $all | Select-Object -First 1 }',
@@ -197,19 +198,46 @@ export interface SystemTtsResult {
   /** winrt = Windows OneCore（音色全，推荐）；sapi = 经典 SAPI（老系统兜底）；say = macOS */
   engine: 'winrt' | 'sapi' | 'say';
   bytes: number;
+  voice?: string;
+}
+
+/** 从系统音色里按语言挑一个，优先完整地区（如 en-US），再退回语言前缀（如 en）。 */
+export function pickSystemVoiceByLanguage(
+  voices: Array<{ name: string; culture: string }>,
+  language: string,
+): { name: string; culture: string } | undefined {
+  const wanted = String(language || '').trim().toLowerCase();
+  if (!wanted) return undefined;
+  const exact = voices.find((voice) => String(voice.culture || '').toLowerCase() === wanted);
+  if (exact) return exact;
+  const prefix = wanted.split('-')[0];
+  return voices.find((voice) => String(voice.culture || '').toLowerCase().startsWith(prefix));
 }
 
 /**
  * 列出系统语音引擎已安装的音色。
  *
- * Windows：优先 WinRT（能拿到 OneCore 的完整中文音色集，含男女），
- * 失败或为空时回落 SAPI（老系统只有 SAPI）。**两者音色集不同，务必以 WinRT 为准**。
+ * Windows：合并 WinRT 与 SAPI 的音色。两套 API 暴露的音色并不相同：
+ * WinRT 能看到更多 OneCore 中文音色，SAPI 可能保留 WinRT 未注册的英文桌面音色。
+ * 排序上 WinRT 在前，同名音色去重。
  * 返回 null = 当前平台无可用引擎（Linux）；空数组 = 引擎在但没装音色。
  * 音色名含中文 → 结果经 UTF-8 文件回传，脚本保持 ASCII。
  */
 export async function listSystemVoices(): Promise<Array<{ name: string; culture: string; gender: string }> | null> {
   const platform = process.platform;
   if (platform === 'win32') {
+    const collected: Array<{ name: string; culture: string; gender: string }> = [];
+    const seen = new Set<string>();
+    const addVoices = (voices: Array<{ name: string; culture: string; gender: string }>) => {
+      for (const voice of voices) {
+        const key = `${voice.name}\u0000${voice.culture}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        collected.push(voice);
+      }
+    };
+    let winrtError = '';
+    let sapiError = '';
     // 1) WinRT：本机实测能列出 3 个中文音色（SAPI 只有 1 个）
     try {
       const outFile = path.join(tmpdir(), `yz-voices-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
@@ -225,11 +253,12 @@ export async function listSystemVoices(): Promise<Array<{ name: string; culture:
           const parts = (rest || '').split('|').map((s) => s.trim());
           return { name: parts[0] || idPart, id: idPart, culture: parts[1] || '', gender: parts[2] || '' };
         }).filter((v) => v.name);
-        if (voices.length) return voices;
+        addVoices(voices);
       } finally {
         try { await fsp.unlink(outFile); } catch { /* 清理失败无碍 */ }
       }
     } catch (e) {
+      winrtError = e instanceof Error ? e.message : String(e);
       logger.warn('[tts] WinRT 枚举失败，回落 SAPI:', e instanceof Error ? e.message : String(e));
     }
     // 2) SAPI 兜底（老系统 / WinRT 不可用时）
@@ -256,15 +285,17 @@ export async function listSystemVoices(): Promise<Array<{ name: string; culture:
         const raw = await fsp.readFile(outFile, 'utf8');
         const parsed = JSON.parse(raw);
         const arr = Array.isArray(parsed) ? parsed : [parsed];
-        return arr
+        addVoices(arr
           .filter((v: any) => v && v.name)
-          .map((v: any) => ({ name: String(v.name), culture: String(v.culture || ''), gender: String(v.gender || '') }));
+          .map((v: any) => ({ name: String(v.name), culture: String(v.culture || ''), gender: String(v.gender || '') })));
       } finally {
         try { await fsp.unlink(outFile); } catch { /* 清理失败无碍 */ }
       }
     } catch (e) {
-      throw new Error(`WinRT 与 SAPI 枚举均失败：${e instanceof Error ? e.message : String(e)}`);
+      sapiError = e instanceof Error ? e.message : String(e);
     }
+    if (collected.length) return collected;
+    throw new Error(`WinRT 与 SAPI 枚举均失败：${winrtError || '无音色'}；${sapiError || '无音色'}`);
   }
   if (platform === 'darwin') {
     // say -v '?' 输出形如：Ting-Ting            zh_CN    # 您好，我叫Ting-Ting
@@ -306,7 +337,7 @@ export async function systemSpeak(
         '-Voice', opts.voice || '', '-Rate', rate,
       ], 300000);
       const st = await fsp.stat(opts.outFile);
-      if (st.size > 0) return { file: opts.outFile, engine: 'winrt', bytes: st.size };
+      if (st.size > 0) return { file: opts.outFile, engine: 'winrt', bytes: st.size, voice: opts.voice };
       throw new Error('WinRT 产出为空');
     } catch (e) {
       // 不静默：带上原因再回落 SAPI（老系统/OneCore 缺失时就靠这条路）
@@ -329,7 +360,7 @@ export async function systemSpeak(
       try { await fsp.unlink(textFile); } catch { /* 临时文件清理失败不影响结果 */ }
     }
     const st = await fsp.stat(opts.outFile);
-    return { file: opts.outFile, engine: 'sapi', bytes: st.size };
+    return { file: opts.outFile, engine: 'sapi', bytes: st.size, voice: opts.voice };
   }
   if (platform === 'darwin') {
     const args = ['-o', opts.outFile, '--data-format=LEI16@22050'];
