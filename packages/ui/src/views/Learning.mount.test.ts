@@ -137,10 +137,19 @@ const { defaultGet } = vi.hoisted(() => ({
 }))
 
 vi.mock('../api/client', () => ({
+  // ★ withMediaAuthQuery / absoluteMediaSrc（useMediaPreview 真实现）会消费 API_BASE：
+  //   mock 必须给绝对形态的基址（与真实 LOCAL_API_BASE 同口径），否则补全逻辑测不出。
+  API_BASE: 'http://127.0.0.1:3001/api',
+  LOCAL_API_BASE: 'http://127.0.0.1:3001/api',
+  LOCAL_API_PORT: 3001,
   api: {
     get: vi.fn(defaultGet),
     post: vi.fn(async () => ({})),
   },
+  // 直通版（测试不注入鉴权上下文）；真实现口径见 src/api/client.ts
+  withMediaAuthQuery: (url: string) => url,
+  mediaAuthQuery: () => '',
+  buildRequestHeaders: () => ({}),
 }))
 
 async function mountPage(): Promise<HTMLElement> {
@@ -212,12 +221,13 @@ describe('Learning 工作区 · 挂载契约', () => {
   it('★ 短元音：音标可展示，点击例词只朗读英文，不把斜杠和 IPA 交给 TTS', async () => {
     const requested: string[] = []
     const spokenByBrowser: string[] = []
+    const localPlayed: string[] = []
     class FakeAudio {
-      src: string
+      listeners: Record<string, Array<() => void>> = {}
       pause = vi.fn()
-      addEventListener = vi.fn()
-      constructor(src: string) { this.src = src }
-      play = vi.fn(async () => {})
+      play = vi.fn(async () => { setTimeout(() => this.listeners['ended']?.forEach((cb) => cb()), 5) })
+      constructor(src: string) { localPlayed.push(src) }
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
     }
     vi.stubGlobal('Audio', FakeAudio)
     vi.stubGlobal('speechSynthesis', {
@@ -236,20 +246,262 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
 
-    const soundButtons = [...el.querySelectorAll('.lp-path-sounds button')] as HTMLButtonElement[]
-    expect(soundButtons[0].getAttribute('aria-label')).toContain('cat')
-    soundButtons[0].click()
+    // 一次只显示当前音标
+    expect(el.querySelector('.lp-sound-ipa')?.textContent).toContain('/æ/')
+    // 点大音标：放随包本音，不发起 TTS
+    ;(el.querySelector('.lp-sound-ipa') as HTMLElement).click()
+    await vi.waitFor(() => expect(localPlayed.some((src) => decodeURIComponent(src).endsWith('sound_æ.mp3'))).toBe(true))
+    expect(requested).toEqual([])
+    // 点例词：只朗读英文单词，不把斜杠和 IPA 交给 TTS
+    ;(el.querySelector('.lp-sound-word') as HTMLElement).click()
     await vi.waitFor(() => expect(requested).toEqual(['cat']))
-    expect(soundButtons[0].className).toContain('playing')
-
-    const allButton = el.querySelector('.lp-path-listen') as HTMLButtonElement
-    expect(allButton.getAttribute('aria-label')).toBe('播放全部发音例词')
-    allButton.click()
-    await vi.waitFor(() => expect(requested[1]).toBe('a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.'))
     expect(requested.join(' ')).not.toMatch(/[\/æɛɪɑʌ]/)
+    // 逐个学：下一个自动带读本音
+    const next = el.querySelector('.lp-sound-next') as HTMLElement
+    next.click()
+    await vi.waitFor(() => expect(localPlayed.some((src) => decodeURIComponent(src).endsWith('sound_e.mp3'))).toBe(true))
+    for (let i = 0; i < 3; i++) { next.click(); await nextTick() }
+    expect(el.querySelector('.lp-sound-ipa')?.textContent).toContain('/ʌ/')
+    // 学完最后一个 → 拼读演示：逐音素放本音，再连整词
+    next.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-blending')).toBeTruthy())
+    expect(el.querySelectorAll('.lp-blend-part')).toHaveLength(5)
+    ;(el.querySelector('.lp-path-pattern-blend .lp-path-listen') as HTMLElement).click()
+    await vi.waitFor(() => expect(requested).toEqual(['cat', 'bed', 'sit', 'hot', 'cup']), { timeout: 15000 })
     expect(spokenByBrowser).toEqual([])
+  })
+
+  it('★ 零基础层：IPA 下沉为口型提示，拼读块渲染完整例词，人群轨道可切换', async () => {
+    localStorage.removeItem('yz.learning.path.track.v1')
+    class FakeAudio {
+      listeners: Record<string, Array<() => void>> = {}
+      pause = vi.fn()
+      play = vi.fn(async () => { setTimeout(() => this.listeners['ended']?.forEach((cb) => cb()), 5) })
+      constructor(_src: string) {}
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', { cancel: vi.fn(), getVoices: vi.fn(() => []), speak: vi.fn() })
+    const pathPayload = [{
+      id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
+      steps: [{
+        id: 'sound_short_vowels', kind: 'phonics', title: 'a/e/i/o/u 的短音（归纳）', goal: '把短音和已学词对上', minutes: 8,
+        explanation: '前三组学过这些词，本课对比听。',
+        pattern: 'a /æ/ → cat · e /ɛ/ → bed · i /ɪ/ → sit · o /ɑ/ → hot · u /ʌ/ → cup',
+        sounds: [
+          { letter: 'a', ipa: '/æ/', word: 'cat', gloss: '猫', mouth: '嘴张到能塞两指，短促' },
+          { letter: 'e', ipa: '/ɛ/', word: 'bed', gloss: '床', mouth: '嘴半开，齿间一指宽' },
+          { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐', mouth: '下巴放松半开' },
+          { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热', mouth: '嘴自然张大' },
+          { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开' },
+        ],
+        ipaHidden: true,
+        tip: '快问快答', examples: [{ en: 'cat · bed · sit · hot · cup', zh: '猫 · 床 · 坐 · 热 · 杯子' }],
+        task: '慢读三遍。',
+        quickCheck: { question: 'q', options: ['cat · bed · sit · hot · cup', 'x1', 'x2'], answer: 0, explanation: 'e' },
+      }],
+    }]
+    const trackMetaPayload = [
+      { id: 'zero', name: '零基础', audience: '从字母音开始', entryStepId: 'ssp_group1' },
+      { id: 'junior', name: '初中', audience: '补音标', entryStepId: 'junior_ipa_map' },
+      { id: 'senior', name: '高中', audience: '练易错音', entryStepId: 'senior_sound_fix' },
+      { id: 'adult', name: '成人', audience: '速通音标', entryStepId: 'adult_ipa_crash' },
+    ]
+    const requestedUrls: string[] = []
+    const { api } = await import('../api/client')
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      requestedUrls.push(url)
+      if (url.includes('/learning/path/tracks')) return { data: trackMetaPayload }
+      if (url.includes('/learning/path')) return { data: pathPayload }
+      return await defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-tracks')).toBeTruthy())
+    // 4 个人群轨道，默认零基础；主线请求必须带 track 参数
+    const trackButtons = [...el.querySelectorAll('.lp-path-tracks button')]
+    expect(trackButtons.map((b) => b.textContent?.trim())).toEqual(['零基础', '初中', '高中', '成人'])
+    await vi.waitFor(() => expect(requestedUrls.some((u) => u.includes('/learning/path?track=zero'))).toBe(true))
+    // 零基础层：大卡片显示口型提示，不显示 IPA 符号
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    const ipaCard = el.querySelector('.lp-sound-ipa') as HTMLElement
+    expect(ipaCard.textContent).toContain('嘴张到能塞两指')
+    expect(ipaCard.textContent).not.toContain('/æ/')
+    // 学完逐音进入拼读块：例词必须完整渲染（不许截成 ca/be/si/ho）
+    const next = el.querySelector('.lp-sound-next') as HTMLElement
+    for (let i = 0; i < 4; i++) { next.click(); await nextTick() }
+    next.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-blending')).toBeTruthy())
+    const arrows = [...el.querySelectorAll('.lp-blend-arrow')].map((b) => b.textContent?.trim())
+    expect(arrows).toEqual(['→ cat', '→ bed', '→ sit', '→ hot', '→ cup'])
+    // 切换人群轨道：带新 track 参数重新拉主线，选择持久化
+    ;(trackButtons[1] as HTMLElement).click()
+    await vi.waitFor(() => expect(requestedUrls.some((u) => u.includes('/learning/path?track=junior'))).toBe(true))
+    expect(localStorage.getItem('yz.learning.path.track.v1')).toBe('junior')
+    localStorage.removeItem('yz.learning.path.track.v1')
+  })
+
+  it('★ 回译课：源句先可见，参考译文点「对照」才展开，「全部对照」一键切换', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) {
+        return { data: [{
+          id: 'word-building', title: '会造词', subtitle: '词根词缀扩展词汇量', level: '入门',
+          steps: [{
+            id: 'translate_roots', kind: 'translate', method: '回译', title: '回译：用词根把中文翻成英语',
+            goal: '先自己翻，再对照参考译文', minutes: 12, explanation: '回译是主动输出。',
+            tip: '只抓选词与形式。', examples: [], task: '翻完再对照。',
+            translate: [
+              { zh: '这家公司出口机器。', en: 'This company exports machines.', note: 'ex- 向外 → exports；第三人称单数加 -s。' },
+              { zh: '他尊重检查员。', en: 'He respects the inspector.', note: 'spect=看。' },
+              { zh: '这份报告便于携带。', en: 'The report is portable.', note: '-able 表示能被……的。' },
+            ],
+            quickCheck: { question: '对照时优先查什么？', options: ['选词与动词形式', '高级词', '句子长度'], answer: 0, explanation: '先看选词与形式。' },
+          }],
+        }] }
+      }
+      return await defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('回译：用词根把中文翻成英语'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await nextTick(); await nextTick()
+    console.log('DBG immersive:', !!el.querySelector('.lp-path-immersive'))
+    console.log('DBG paper:', el.querySelector('.lp-path-paper')?.textContent?.slice(0, 300))
+    console.log('DBG body-html:', el.querySelector('.lp-path-paper-body')?.innerHTML.replace(/data-v-[a-f0-9]+=""/g, '').slice(0, 900))
+    await vi.waitFor(() => expect(el.querySelector('.lp-translate')).toBeTruthy())
+    // method 教法标签渲染
+    expect(el.querySelector('.lp-path-paper-head')?.textContent).toContain('回译')
+    const translate = el.querySelector('.lp-translate') as HTMLElement
+    // 源句可见，参考译文默认收起
+    expect(translate.textContent).toContain('这家公司出口机器。')
+    expect(translate.textContent).not.toContain('This company exports machines.')
+    // 点第一句对照 → 参考译文 + 差异提示出现；其余句仍收起
+    ;(translate.querySelectorAll('.lp-translate-source button')[0] as HTMLElement).click()
+    await nextTick()
+    expect(translate.textContent).toContain('This company exports machines.')
+    expect(translate.textContent).toContain('ex- 向外 → exports；第三人称单数加 -s。')
+    expect(translate.textContent).not.toContain('He respects the inspector.')
+    // 全部对照 → 三句全开；再点一次收起全部
+    ;(translate.querySelector('.lp-translate header button') as HTMLElement).click()
+    await nextTick()
+    expect(translate.textContent).toContain('He respects the inspector.')
+    expect(translate.textContent).toContain('The report is portable.')
+    ;(translate.querySelector('.lp-translate header button') as HTMLElement).click()
+    await nextTick()
+    expect(translate.textContent).not.toContain('This company exports machines.')
+  })
+
+  it('★ 故事课「对照细读」：切换到范文阅读 Tab 并打开同一篇范文', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) {
+        return { data: [{
+          id: 'story-input', title: '短篇故事', subtitle: '练复述', level: 'A2',
+          steps: [{
+            id: 'path_p_test', kind: 'story', readingPassageId: 'p_test', title: 'The Old Bridge',
+            goal: '抓住情节', minutes: 16, explanation: '先找人物和事件。', pattern: 'c→p→t→e',
+            tip: '一段一句。', task: '用四句复述。',
+            examples: [{ en: 'The old bridge swayed in the wind.', zh: '旧桥在风中摇晃。' }],
+            quickCheck: { question: 'Which title?', options: ['The Old Bridge', 'B', 'C'], answer: 0, explanation: '标题。' },
+          }],
+        }] }
+      }
+      if (url.includes('/learning/readings/p_test')) {
+        return { data: { id: 'p_test', title: 'The Old Bridge', cefr: 'A2', topic: '日常', paras: [{ en: 'The old bridge swayed.', zh: '旧桥摇晃。' }] } }
+      }
+      if (url.includes('/learning/readings')) return { data: [{ id: 'p_test', title: 'The Old Bridge', cefr: 'A2', topic: '日常', paraCount: 1 }] }
+      return await defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('The Old Bridge'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    // 默认停在「理解」阶段，先下一步到「原文与理解」，对照细读入口在这里
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-immersive')).toBeTruthy())
+    ;([...el.querySelectorAll('.lp-path-footer button')].find((b) => b.textContent?.includes('下一步')) as HTMLElement).click()
+    await nextTick()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-reading-link')).toBeTruthy())
+    ;(el.querySelector('.lp-path-reading-link button') as HTMLElement).click()
+    await vi.waitFor(() => {
+      const active = [...el.querySelectorAll('.lp-tab')].find((b) => b.classList.contains('active'))
+      expect(active?.textContent).toContain('范文阅读')
+      expect(el.querySelector('.lp-reader')?.textContent).toContain('The Old Bridge')
+    })
+  })
+
+  it('★ 朗读音频地址必须补成绝对地址（打包版 file:// 页面下相对地址解析成 file:///api/... 必挂）', async () => {
+    const created: string[] = []
+    class FakeAudio {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+      constructor(src: string) { created.push(src) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/tts')) {
+        return { data: { url: '/api/generated/audios/learning-en-1.wav', engine: 'sapi' } }
+      }
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(created.length).toBeGreaterThanOrEqual(1))
+    // 交给 new Audio 的每个地址都必须已是绝对地址（speechCache 命中旧值时同样要被补全）
+    for (const src of created) {
+      expect(src.startsWith('http://127.0.0.1:3001/')).toBe(true)
+    }
+  })
+
+  it('★ 点音标放随包本音（/æ/ 这类符号 TTS 念不了），不发起后端 TTS 请求', async () => {
+    const created: string[] = []
+    class FakeAudio {
+      pause = vi.fn()
+      addEventListener = vi.fn()
+      play = vi.fn(async () => {})
+      constructor(src: string) { created.push(src) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    const posts: string[] = []
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      posts.push(url)
+      return { data: null }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    // 点音标字符（i 元素，@click.stop 阻止冒泡到例词朗读）
+    ;(el.querySelector('.lp-sound-ipa') as HTMLElement).click()
+
+    await vi.waitFor(() => expect(created.some((src) => decodeURIComponent(src).endsWith('/phonics-audio/sound_æ.mp3'))).toBe(true))
+    // 本音播放是纯本地音频，绝不打后端合成接口
+    expect(posts.filter((url) => url.includes('/learning/tts'))).toEqual([])
   })
 
   it('服务端英语音频不可用时只回退到 en-* 浏览器音色，绝不落到默认中文音色', async () => {
@@ -280,8 +532,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => expect(spoken).toEqual([{ text: 'cat', lang: 'en-US', voice: 'Microsoft Zira' }]))
     expect(spoken[0].voice).not.toContain('Huihui')
@@ -324,8 +576,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
     expect(el.querySelector('.lp-voice-modal')?.textContent).toContain('需要下载英语语音包')
@@ -363,8 +615,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
     ;(el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).click()
@@ -414,8 +666,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => {
       expect(el.querySelector('.lp-voice-runtime-error')?.textContent).toContain('本地英语模型推理失败')
@@ -458,13 +710,13 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
     ;(el.querySelector('.lp-voice-modal > footer button') as HTMLButtonElement).click()
     packInstalled = true
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => {
       expect(el.querySelector('.lp-voice-runtime-error')?.textContent).toContain('朗读失败')
@@ -505,8 +757,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('五个短元音'))
     ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelectorAll('.lp-path-sounds button')).toHaveLength(5))
-    ;(el.querySelector('.lp-path-sounds button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
+    ;(el.querySelector('.lp-sound-word') as HTMLButtonElement).click()
 
     await vi.waitFor(() => expect(el.querySelector('.lp-voice-modal')).toBeTruthy())
     ;(el.querySelector('.lp-voice-dialog-primary') as HTMLButtonElement).click()

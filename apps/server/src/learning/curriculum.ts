@@ -276,6 +276,115 @@ export const READING_PASSAGES: ReadingPassage[] = [
       { en: 'He returned home. “Plain food without fear is better than a feast in danger,” he said. Comfort and safety are part of the value of any choice.', zh: '他回到家里说：“没有恐惧的简单食物，胜过危险中的盛宴。”任何选择的价值都包含舒适与安全。' },
     ],
   },
+  // ── 英文经典著作分级改写（原著均为公版；改写控难度 + 中英对照） ──────────────
+  {
+    id: 'rp_classic_alice_a2', title: 'Alice in Wonderland · Down the Rabbit Hole', cefr: 'A2', topic: '经典',
+    paras: [
+      { en: 'Alice was sitting by the river with her sister. She was bored, because the book her sister read had no pictures at all.', zh: '爱丽丝和姐姐坐在河边。她很无聊，因为姐姐读的那本书一幅插图都没有。' },
+      { en: 'Suddenly, a white rabbit ran past her. It took a watch out of its pocket and said, “Oh dear! I am late!”', zh: '突然，一只白兔从她身边跑过。它从口袋里掏出一块表，说：“天哪！我要迟到了！”' },
+      { en: 'A rabbit with a watch! Alice jumped up and followed it into a large rabbit hole. Down, down she fell — into a world where nothing was normal.', zh: '带着表的兔子！爱丽丝跳起来，跟着它钻进一个大兔子洞。她一直往下掉——掉进了一个什么都不正常的世界。' },
+      { en: 'Curiosity takes you to strange places. For Alice, it all started with one question: where does a late rabbit go?', zh: '好奇心会把你带去奇怪的地方。对爱丽丝来说，一切都始于一个问题：一只迟到的兔子要去哪里？' },
+    ],
+  },
+  {
+    id: 'rp_classic_matchgirl_a2', title: 'The Little Match Girl', cefr: 'A2', topic: '经典',
+    paras: [
+      { en: 'On the last night of the year, snow fell over the city. A poor little girl walked barefoot through the streets, carrying boxes of matches.', zh: '一年的最后一夜，大雪覆盖全城。一个贫穷的小女孩光着脚走在街上，手里拿着几盒火柴。' },
+      { en: 'She had lost her slippers in the crowd, and no one had bought a single match all day. She was afraid to go home without any money.', zh: '她的拖鞋在人群中丢了，一整天没人买过一根火柴。她不敢空着手回家。' },
+      { en: 'She sat in a corner and lit one match to warm her fingers. In its light, she saw wonderful pictures — a warm stove, a feast, and at last her dear grandmother.', zh: '她坐在墙角，划亮一根火柴暖手指。在火光里，她看见了美妙的景象——温暖的火炉、丰盛的宴席，最后是她亲爱的奶奶。' },
+      { en: 'People still read this story because it asks a hard question: how many “matches” do we walk past without looking?', zh: '人们至今仍在读这个故事，因为它问了一个沉重的问题：我们每天走过多少“火柴”，却看都不看一眼？' },
+    ],
+  },
+  {
+    id: 'rp_classic_tom_b1', title: 'The Adventures of Tom Sawyer · The Fence', cefr: 'B1', topic: '经典',
+    paras: [
+      { en: 'On Saturday morning, Tom had to paint a long fence. His friends were going swimming, and he had to work. Life felt unfair.', zh: '星期六早上，汤姆得刷一长段栅栏。朋友们都要去游泳，他却要干活。生活对他太不公平了。' },
+      { en: 'Then Tom had an idea. When his friend Ben came by, he painted slowly and carefully, as if the work were a rare pleasure.', zh: '这时汤姆想出一个主意。朋友本路过时，他刷得又慢又认真，好像这份工作是天大的乐事。' },
+      { en: '“You call this work?” Tom said. “Maybe you’d like a chance to paint?” Soon every boy in town was paying Tom for the honor.', zh: '“你把这叫干活？”汤姆说，“要不要也来试试？”很快，镇上的男孩们都掏钱来换取刷墙的机会。' },
+      { en: 'By noon the fence had three coats of paint — and Tom had learned an old truth: work is what you have to do; play is what you don’t have to do.', zh: '到中午，栅栏刷了三遍漆——汤姆也懂得了一个古老的道理：必须做的是工作，不必做的是游戏。' },
+    ],
+  },
+  {
+    id: 'rp_classic_robinson_b1', title: 'Robinson Crusoe · The Island', cefr: 'B1', topic: '经典',
+    paras: [
+      { en: 'Robinson Crusoe was the only person left after the storm destroyed his ship. He swam to a small island with nothing but the clothes on his back.', zh: '风暴摧毁了船之后，鲁滨逊·克鲁索是唯一的幸存者。他游到一座小岛上，除了身上的衣服一无所有。' },
+      { en: 'The next morning, he saw the broken ship lying on the rocks. He built a raft and rowed back, again and again, to bring away tools, food, and guns.', zh: '第二天早上，他看见破船卡在礁石上。他扎了木筏，一趟又一趟划回去，把工具、食物和枪运上岸。' },
+      { en: 'Then he began to build a life: a tent for the night, a fence for safety, a diary to keep his mind from sinking into despair.', zh: '接着他开始建造生活：过夜的帐篷、防备的围栏、还有一本日记——让头脑不至于沉入绝望。' },
+      { en: 'He later wrote that hope is a thing you build, plank by plank, the same way you build shelter.', zh: '他后来写道：希望是一点点建起来的，一块板接着一块板，就像建住处一样。' },
+    ],
+  },
+  {
+    id: 'rp_classic_peterpan_b1', title: 'Peter Pan · The Window', cefr: 'B1', topic: '经典',
+    paras: [
+      { en: 'Peter Pan visited the nursery at night and taught Wendy, John, and Michael to fly. “Think of a wonderful thought,” he said, “and sprinkle on fairy dust.”', zh: '彼得·潘夜里来到儿童房，教温迪、约翰和迈克尔飞。“想一件特别开心的事，”他说，“再撒上仙尘。”' },
+      { en: 'They flew out of the window, over the city, and all the way to Neverland — an island where children never grow up and every day brings an adventure.', zh: '他们飞出窗户，越过城市，一路飞到永无岛——那里的孩子永远不长大的，每天都有新的冒险。' },
+      { en: 'But Mrs. Darling left the nursery window open every night. She believed that if her children ever wanted to come home, the way back must be ready.', zh: '但达林太太每晚都让儿童房的窗子开着。她相信，只要孩子们想回家，回去的路就必须一直都在。' },
+      { en: 'Adventures are wonderful precisely because there is a window left open somewhere. Even Peter, who refused to grow up, kept coming back to look at it.', zh: '冒险之所以美好，恰恰因为某个地方有一扇开着的窗。连拒绝长大的彼得，也总会回来看看它。' },
+    ],
+  },
+  {
+    id: 'rp_classic_garden_b1', title: 'The Secret Garden · The Key', cefr: 'B1', topic: '经典',
+    paras: [
+      { en: 'Mary Lennox came to live at her uncle’s great house on the moor. She was a sour, lonely child who had never liked anyone or anywhere.', zh: '玛丽·伦诺克斯来到舅舅住在荒原上的大宅。她是个别扭又孤独的孩子，从没喜欢过什么人，也没喜欢过什么地方。' },
+      { en: 'A friendly robin led her to an old wall, where a dog had dug away the soil. Under the ivy, Mary’s fingers found a hidden key.', zh: '一只友好的知更鸟把她引到一堵老墙边，那里的土被狗刨开了。常春藤下，玛丽的手指摸到了一把藏起来的钥匙。' },
+      { en: 'The next day, the wind moved the ivy aside, and she saw a small door in the wall. The garden behind it had been locked for ten years.', zh: '第二天，风吹开常春藤，她看见墙里有一扇小门。门后的花园已经锁了十年。' },
+      { en: 'What Mary found inside was not only an overgrown garden. Tending it, season by season, she found that she herself was changing too.', zh: '玛丽在里头发现的不只是一座荒废的花园。一季一季地照料它，她自己也在悄悄改变。' },
+    ],
+  },
+  {
+    id: 'rp_classic_giant_b1', title: 'The Selfish Giant', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'The Giant came back after seven years away and found children playing in his beautiful garden. “This is my garden!” he shouted, and he built a high wall around it.', zh: '巨人离家七年后回来，看见孩子们在他美丽的花园里玩耍。“这是我的花园！”他大喊，并在四周筑起高墙。' },
+      { en: 'Without the children, spring never came. Snow and frost covered the garden while the rest of the world blossomed.', zh: '没有孩子们，春天再也不来。外面的世界花开满园，他的花园却盖满冰雪寒霜。' },
+      { en: 'One morning, the Giant heard a bird singing again. The children had crept in through a hole in the wall, and spring had followed them in.', zh: '一天早上，巨人又听见了鸟鸣。孩子们从墙洞里悄悄钻了进来，春天也跟着他们来了。' },
+      { en: 'He tore the wall down that very day. “It is your garden now, little children,” he said. A garden shared is the only kind that keeps its spring.', zh: '他当天就拆了墙。“孩子们，现在这是你们的花园了。”他说。只有分享出去的花园，才能留住春天。' },
+    ],
+  },
+  {
+    id: 'rp_classic_prince_b1', title: 'The Happy Prince', cefr: 'B1', topic: '寓言',
+    paras: [
+      { en: 'High above the city stood the golden statue of the Happy Prince. He had lived and died in a palace where sorrow was never allowed.', zh: '城市上空立着快乐王子的金像。他生前和死后都住在宫殿里，悲伤从来不被允许靠近。' },
+      { en: 'Now, from his high place, he could see all the misery of the city. A little swallow stopped to rest at his feet, and the Prince asked for its help.', zh: '如今，他从高处看见了全城的苦难。一只小燕子落在他脚边歇脚，王子请它帮忙。' },
+      { en: 'Night after night, the swallow carried the Prince’s gold leaf and jewel eyes to the poor. The statue grew ugly, but the city grew warmer.', zh: '燕子一夜一夜地把王子的金箔和宝石眼睛送给穷人。雕像变得丑陋，城市却变得温暖。' },
+      { en: 'The town leaders later pulled the statue down as useless. But the story ends by saying these were the two most precious things in the city: a kind heart and a loyal friend.', zh: '后来，市长们嫌雕像没用，把它熔掉了。但故事的结尾说，城里最珍贵的两样东西，是一颗善良的心和一位忠实的朋友。' },
+    ],
+  },
+  {
+    id: 'rp_classic_emperor_b1', title: 'The Emperor’s New Clothes', cefr: 'B1', topic: '经典',
+    paras: [
+      { en: 'An emperor loved fine clothes more than anything else. Two swindlers arrived and claimed they could weave cloth that was invisible to anyone stupid or unfit for office.', zh: '一位皇帝最爱华服。两个骗子来了，声称能织出一种布——愚蠢或不称职的人都看不见它。' },
+      { en: 'The ministers looked at the empty looms and praised the “cloth.” None of them dared to say they saw nothing. So the emperor walked in his “new clothes,” and the whole town applauded.', zh: '大臣们看着空织机，纷纷称赞“布料”精美。没人敢说自己什么都没看见。于是皇帝穿着他的“新衣”游行，全城的人都在鼓掌。' },
+      { en: 'Then a child in the crowd said, “But he has nothing on!” The whisper spread, and at last everyone repeated it.', zh: '这时人群里一个孩子说：“可他什么也没穿呀！”低语传开，最后所有人都跟着说了出来。' },
+      { en: 'The emperor kept walking, because he did not want to admit the truth either. Fairy tales are gentle with children and merciless with adults who choose not to see.', zh: '皇帝继续往前走，因为他也不想承认真相。童话对孩子温和，对那些选择视而不见的大人却毫不留情。' },
+    ],
+  },
+  {
+    id: 'rp_classic_magie_b2', title: 'The Gift of the Magi', cefr: 'B2', topic: '经典',
+    paras: [
+      { en: 'Della and Jim were young, poor, and in love. Christmas was coming, and each had one treasure: her beautiful long hair, and his father’s gold watch.', zh: '德拉和吉姆年轻、贫穷，也深爱着彼此。圣诞节快到了，两人各有一件宝贝：她一头漂亮的长发，和他父亲留下的金表。' },
+      { en: 'Della counted her savings — one dollar and eighty-seven cents. So she did the only thing she could think of: she sold her hair to buy Jim a chain for his watch.', zh: '德拉数了数积蓄——一块八毛七。于是她做了唯一想得到的事：卖掉头发，给吉姆买一条配金表的表链。' },
+      { en: 'When Jim came home, he stared at her short hair in surprise. Then he gave her his gift: a set of combs she had admired in a shop window. He had sold the watch to buy them.', zh: '吉姆回到家，愣愣地望着她的短发。然后他递上礼物：她曾在橱窗里羡慕许久的一套发梳。为了买它，他卖掉了金表。' },
+      { en: 'O. Henry closes the story by calling these two foolish children the wisest of gift-givers. Two useless presents proved exactly what each was willing to give up.', zh: '欧·亨利在结尾称这对“傻孩子”是最聪明的送礼人。两件“没用了”的礼物，恰恰证明了各自愿意付出什么。' },
+    ],
+  },
+  {
+    id: 'rp_classic_lastleaf_b2', title: 'The Last Leaf', cefr: 'B2', topic: '经典',
+    paras: [
+      { en: 'In a small New York art colony, a girl named Johnsy fell ill with pneumonia. She lay in bed counting the leaves falling from the vine outside her window.', zh: '在纽约一个小小的艺术家聚居区，一个叫琼西的姑娘得了肺炎。她躺在床上，数着窗外藤蔓上飘落的叶子。' },
+      { en: '“When the last leaf falls, I will die too,” she said quietly. Her friend Sue told this to old Behrman, a painter downstairs who had talked about a masterpiece for forty years and never painted one.', zh: '“最后一片叶子落下时，我也会死。”她轻声说。朋友苏把这话告诉了楼下的老贝尔曼——一位说了四十年要画杰作、却一直没动笔的老画家。' },
+      { en: 'That night came wind and rain. In the morning, one leaf still hung on the wall — dark green against the storm. Johnsy stared at it, and something in her turned back toward life.', zh: '那天夜里风雨交加。清晨，墙上还挂着一片叶子——深绿色，顶着风雨。琼西盯着它看，心里有什么东西转回了生的一侧。' },
+      { en: 'The leaf never moved, because it was painted on the wall. Behrman caught a fever working in the cold that night, and died two days later. His masterpiece had been waiting for a life worth saving.', zh: '那片叶子从未动过，因为它是画在墙上的。贝尔曼那晚在寒风里作画，染上肺炎，两天后去世。他的杰作，一直在等一条值得救的命。' },
+    ],
+  },
+  {
+    id: 'rp_classic_necklace_b2', title: 'The Necklace', cefr: 'B2', topic: '经典',
+    paras: [
+      { en: 'Mathilde Loisel was pretty, and she was poor — a combination she believed was a great injustice. When her husband brought home an invitation to a ball, she wept, because she had nothing to wear.', zh: '玛蒂尔德·卢瓦泽尔很漂亮，也很穷——她认定这是命运极大的不公。丈夫带回一张舞会请柬时，她哭了，因为她没有像样的衣服。' },
+      { en: 'She bought a dress with their savings, but jewelry she dared not touch. So she borrowed a diamond necklace from her rich friend Madame Forestier, and that night she was the most beautiful woman at the ball.', zh: '她用积蓄买了裙子，却不敢买首饰。于是向有钱的朋友福雷斯蒂埃太太借了一条钻石项链。那一晚，她是舞会上最美的女人。' },
+      { en: 'On the way home, the necklace was gone. They borrowed a fortune, bought an identical one to return, and spent the next ten years working to pay the debt — Mathilde’s hands red and rough from housework.', zh: '回家的路上，项链丢了。夫妻俩借了一大笔钱，买了一条一模一样的还回去，然后用整整十年打工还债——玛蒂尔德的双手被家务磨得又红又粗。' },
+      { en: 'One Sunday, she met Madame Forestier again and finally told the truth. “Oh, my poor Mathilde — but mine was fake. It was worth five hundred francs at most.” A single night of vanity had cost ten years, and the truth had been standing there all along.', zh: '一个星期天，她再次遇到福雷斯蒂埃太太，终于说出真相。“哦，我可怜的玛蒂尔德——可我那条是假的，最多值五百法郎。”一夜的虚荣花了十年，而真相一直就站在那里。' },
+    ],
+  },
 ];
 
 // ── 语法点第二批（P1 扩充至 40：覆盖中文母语者中高频痛点） ─────────────────────

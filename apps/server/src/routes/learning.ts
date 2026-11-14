@@ -14,8 +14,8 @@ import {
   checkDrillAnswer, checkReviewAnswer,
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
-import { getEnglishPath } from '../learning/english-path.js';
-import { resolveBundledEdgeTts, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
+import { ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../learning/english-path.js';
+import { normalizeEnglishTtsText, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
 import { previewTtsPack } from '../services/tts-packs.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
@@ -361,8 +361,14 @@ router.get('/scenes', (req, res) => {
 });
 
 // GET /api/learning/path —— 零基础英语主线（拼读 / 词根 / 语法 / 故事 / 输出）
-router.get('/path', (_req, res) => {
-  res.json({ data: getEnglishPath() });
+// ?track=zero|junior|senior|adult —— 按人群轨道返回（默认 zero）；非法值回退 zero
+router.get('/path', (req, res) => {
+  res.json({ data: getEnglishPath(normalizeEnglishTrack(req.query.track)) });
+});
+
+// GET /api/learning/path/tracks —— 轨道元信息（名称 / 适合人群 / 入口课）
+router.get('/path/tracks', (_req, res) => {
+  res.json({ data: ENGLISH_TRACKS });
 });
 
 // GET /api/learning/grammar —— 语法点目录（列表：id/标题/级别/分组/一句话规则）
@@ -427,7 +433,8 @@ router.post('/readings/:id/collect', async (req, res) => {
 // 不能沿用浏览器默认音色：中文 Windows 上默认会落到 Huihui，把 “cat” 音译着念。
 router.post('/tts', async (req, res) => {
   try {
-    const text = String(req.body?.text || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    // 先做朗读规范化（冠词 A/a → uh、词表分隔符 · → 逗号），再截断
+    const text = normalizeEnglishTtsText(String(req.body?.text || '').replace(/\s+/g, ' ').trim()).slice(0, 600);
     if (!text) { res.status(400).json({ error: 'text 必填' }); return; }
     if (!/[A-Za-z]/.test(text)) { res.status(400).json({ error: '英语朗读只接受英文文本' }); return; }
     if (/[\u3400-\u9fff/→+æɛɪɑɒʌʃθðŋːˈˌ]/.test(text)) {
@@ -478,10 +485,13 @@ router.post('/tts', async (req, res) => {
       }
     } catch { /* 未安装或本地推理失败 → 继续在线语音 */ }
 
+    // ★ python -m 优先：Scripts/edge-tts.exe 的 shebang 烧死了构建机 python 绝对路径，
+    //   换机器必挂（2026-11-13 家用电脑实测）。exe 仅作构建机本机兜底。
     const edgeExe = resolveBundledEdgeTts();
-    if (edgeExe) {
+    const edgePy = resolveBundledPython();
+    if (edgeExe || edgePy) {
       const file = path.join(target.dir, `learning-en-edge-${Date.now()}.mp3`);
-      const edge = await synthesizeBundledEnglishEdge({ text, outFile: file, exePath: edgeExe });
+      const edge = await synthesizeBundledEnglishEdge({ text, outFile: file, exePath: edgeExe, pythonPath: edgePy });
       if (edge) {
         res.json({
           data: {

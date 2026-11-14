@@ -7,7 +7,8 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
-import { api } from '../api/client';
+import { api, withMediaAuthQuery } from '../api/client';
+import { absoluteMediaSrc } from '../composables/useMediaPreview';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
 import { setMode, activeMode } from '../stores/mode';
@@ -997,6 +998,11 @@ async function openReading(id: string) {
   const r = await api.get<{ data: ReadingDetail }>(`/learning/readings/${id}`);
   readingActive.value = unwrap<ReadingDetail>(r) || null;
 }
+/** 主线故事/寓言课「对照细读」：切到阅读 Tab 并打开同一篇范文（中英对照 + 划词收词 + 朗读）。 */
+function openPathReading(passageId: string) {
+  switchTab('reading'); // 复用 Tab 切换逻辑（含首次加载范文列表）
+  void openReading(passageId);
+}
 /** 划词收集：选中文本取最后一个词 → AI 查释义 → 收进「阅读生词」词书 */
 async function collectSelection() {
   if (!readingActive.value) return;
@@ -1599,7 +1605,8 @@ async function speak(text: string) {
     if (seq !== ttsRequestSeq) return;
     if (!url) throw new Error('语音合成未返回音频地址');
     ttsPlaying.value?.pause();
-    const audio = new Audio(url);
+    // ★ 打包版页面 file:// 下相对地址会解析成 file:///api/...（必挂），必须补成绝对地址
+    const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
     ttsPlaying.value = audio;
     const finish = () => {
       if (seq !== ttsRequestSeq) return;
@@ -1777,6 +1784,7 @@ watch(softExamDate, (value) => {
           <EnglishPathWorkbench
             @practice="startCoaching"
             @scenes="tab = 'scenes'; ensureSceneCourse()"
+            @read="openPathReading"
             @focus-change="pathFocusing = $event"
           />
         </template>

@@ -7,6 +7,7 @@ import {
   BookmarkCheck,
   BookOpen,
   CheckCircle2,
+  Languages,
   Clock3,
   Download,
   LoaderCircle,
@@ -17,11 +18,15 @@ import {
   Volume2,
   X,
 } from 'lucide-vue-next';
-import { api } from '../../api/client';
+import { api, withMediaAuthQuery } from '../../api/client';
+import { absoluteMediaSrc } from '../../composables/useMediaPreview';
+import { phonicsAudioSrc } from '../../utils/phonics-audio';
 
-type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking';
+type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
-type PathSound = { letter: string; ipa: string; word: string; gloss: string };
+type PathSound = { letter: string; ipa: string; word: string; gloss: string; mouth?: string };
+type PathBlendGroup = { parts: Array<{ text: string; ipa: string }>; word: string };
+type PathTranslateItem = { zh: string; en: string; note: string };
 type PathStep = {
   id: string;
   kind: PathStepKind;
@@ -32,9 +37,19 @@ type PathStep = {
   pattern?: string;
   patternAudio?: string;
   sounds?: PathSound[];
+  /** 零基础层：不显示 IPA 符号，显示 mouth 口型提示（数据由服务端决定）。 */
+  ipaHidden?: boolean;
+  /** 结构化拼读演示数据（服务端提供，前端不再猜辅音音素）。 */
+  blend?: PathBlendGroup[];
+  /** 教学方法标签（服务端数据驱动）。 */
+  method?: string;
   tip: string;
   examples: Array<{ en: string; zh: string }>;
   wordFamily?: Array<{ word: string; gloss: string; note?: string }>;
+  /** 回译课内容：先自己翻，再对照参考译文与差异提示。 */
+  translate?: PathTranslateItem[];
+  /** 关联阅读 Tab 的范文 id（故事/寓言课「对照细读」入口）。 */
+  readingPassageId?: string;
   task: string;
   quickCheck?: QuickCheck;
 };
@@ -45,11 +60,12 @@ type PathStage = {
   level: string;
   steps: PathStep[];
 };
+type TrackMeta = { id: string; name: string; audience: string; entryStepId: string };
 type PhaseKey = 'concept' | 'examples' | 'practice' | 'check';
 type Phase = { key: PhaseKey; label: string; hint: string };
 
-const emit = defineEmits<{ practice: []; scenes: []; 'focus-change': [active: boolean] }>();
-const POSITION_KEY = 'yz.learning.path.position.v2';
+const emit = defineEmits<{ practice: []; scenes: []; 'focus-change': [active: boolean]; read: [passageId: string] }>();
+const TRACK_KEY = 'yz.learning.path.track.v1';
 const COMPLETED_KEY = 'yz.learning.path.completed.v2';
 const SAVED_KEY = 'yz.learning.path.saved.v2';
 const PHASES: Phase[] = [
@@ -63,6 +79,8 @@ const stages = ref<PathStage[]>([]);
 const stageIndex = ref(0);
 const stepIndex = ref(0);
 const phaseIndex = ref(0);
+const track = ref('zero');
+const trackMeta = ref<TrackMeta[]>([]);
 const completedIds = ref<string[]>([]);
 const savedIds = ref<string[]>([]);
 const loading = ref(true);
@@ -125,6 +143,7 @@ const kindLabel: Record<PathStepKind, string> = {
   story: '短篇故事',
   'long-story': '长篇连载',
   speaking: '口语输出',
+  translate: '回译',
 };
 const practicePlan = computed(() => {
   switch (step.value?.kind) {
@@ -160,6 +179,12 @@ const practicePlan = computed(() => {
         '替换真实信息，连续说三十秒。',
         '听一遍自己的表达，再修正一处。',
       ];
+    case 'translate':
+      return [
+        '遮住参考译文，把每句中文先翻成英语。',
+        '逐句点「对照」，标出和你译文不一样的地方。',
+        '只改错处抄一遍，再开口读一遍正确版本。',
+      ];
     default:
       return [
         '先确认本课目标。',
@@ -182,6 +207,8 @@ const finishRule = computed(() => {
       return '能用三句话复述人物、冲突和结果。';
     case 'speaking':
       return '能不看提示，把目标表达连续说出三十秒。';
+    case 'translate':
+      return '5 句里至少 3 句的关键差异（时态/语序/搭配）能自己找出来。';
     default:
       return '能用自己的例子完成一次主动输出。';
   }
@@ -238,13 +265,16 @@ async function englishVoicePackStatus(): Promise<{
   }
 }
 
+/** 学习位置按轨道分开存（同一课的完成/收藏进度跨轨道共享）。 */
+const positionKey = computed(() => `yz.learning.path.position.v2.${track.value}`);
+
 function restoreLocalState() {
   try {
     const savedCompleted = JSON.parse(localStorage.getItem(COMPLETED_KEY) || '[]') as unknown;
     if (Array.isArray(savedCompleted)) completedIds.value = savedCompleted.filter((id): id is string => typeof id === 'string');
     const savedLessons = JSON.parse(localStorage.getItem(SAVED_KEY) || '[]') as unknown;
     if (Array.isArray(savedLessons)) savedIds.value = savedLessons.filter((id): id is string => typeof id === 'string');
-    const savedPosition = JSON.parse(localStorage.getItem(POSITION_KEY) || 'null') as { stage?: string; step?: string } | null;
+    const savedPosition = JSON.parse(localStorage.getItem(positionKey.value) || 'null') as { stage?: string; step?: string } | null;
     if (!savedPosition) return;
     const stageAt = stages.value.findIndex((item) => item.id === savedPosition.stage);
     if (stageAt < 0) return;
@@ -258,7 +288,7 @@ function restoreLocalState() {
 
 function persistLocalState() {
   try {
-    localStorage.setItem(POSITION_KEY, JSON.stringify({ stage: stage.value?.id || '', step: step.value?.id || '' }));
+    localStorage.setItem(positionKey.value, JSON.stringify({ stage: stage.value?.id || '', step: step.value?.id || '' }));
     localStorage.setItem(COMPLETED_KEY, JSON.stringify(completedIds.value));
     localStorage.setItem(SAVED_KEY, JSON.stringify(savedIds.value));
   } catch {
@@ -266,11 +296,32 @@ function persistLocalState() {
   }
 }
 
+function restoreTrack() {
+  try {
+    const saved = localStorage.getItem(TRACK_KEY) || 'zero';
+    if (trackMeta.value.some((item) => item.id === saved)) track.value = saved;
+  } catch {
+    // 无 localStorage 时保持默认轨道
+  }
+}
+
+async function loadTracks() {
+  try {
+    const response = await api.get<{ data: TrackMeta[] }>('/learning/path/tracks');
+    const list = unwrap<TrackMeta[]>(response);
+    // 只收结构完整的轨道元信息，畸形/误命中数据一律丢弃（保持默认轨道）
+    if (Array.isArray(list)) trackMeta.value = list.filter((item) => item
+      && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.audience === 'string');
+  } catch {
+    // 轨道元信息加载失败：不渲染切换器，走默认轨道
+  }
+}
+
 async function loadPath() {
   loading.value = true;
   error.value = '';
   try {
-    const response = await api.get<{ data: PathStage[] }>('/learning/path');
+    const response = await api.get<{ data: PathStage[] }>(`/learning/path?track=${encodeURIComponent(track.value)}`);
     stages.value = unwrap<PathStage[]>(response) || [];
     if (!stages.value.length) error.value = '学习路线暂时为空';
     restoreLocalState();
@@ -291,6 +342,35 @@ function resetLessonState() {
   phaseIndex.value = 0;
   checkChoice.value = null;
   checkSubmitted.value = false;
+  // 逐音学习与拼读演示复位（换课/换步骤都从头带学）
+  soundIdx.value = 0;
+  blendingStage.value = false;
+  blendingActive.value = '';
+  blendingSeq += 1;
+  blendingBusy.value = false;
+  // 回译课：换课即收起全部参考译文，重新自己翻
+  translateRevealed.value = [];
+}
+
+// ── 回译课：先自己翻，再逐句对照参考译文与差异提示 ──
+const translateRevealed = ref<boolean[]>([]);
+
+function toggleTranslate(index: number) {
+  const next = [...translateRevealed.value];
+  next[index] = !next[index];
+  translateRevealed.value = next;
+}
+
+const allTranslateRevealed = computed(() => {
+  const items = step.value?.translate;
+  if (!items?.length) return false;
+  return items.every((_, index) => !!translateRevealed.value[index]);
+});
+
+function revealAllTranslate() {
+  const items = step.value?.translate ?? [];
+  const revealTo = !allTranslateRevealed.value;
+  translateRevealed.value = items.map(() => revealTo);
 }
 
 function selectPhase(index: number) {
@@ -371,6 +451,200 @@ function stopActiveSpeech() {
   speechAudio = null;
 }
 
+/**
+ * 点音标放**本音**（随包 phonics-audio 真实音标音频）。
+ * 零基础教学的硬要求：/æ/ /ɛ/ 这类符号系统 TTS 念不了，必须放真实音标音频。
+ * 查不到音频（如上游缺 s/z）或播放失败 → 回退例词朗读，绝不出错横幅。
+ */
+async function speakIpa(sound: PathSound) {
+  const src = phonicsAudioSrc(sound.ipa);
+  if (!src) { void speak(sound.word, ''); return; }
+  const sequence = ++speechSequence;
+  stopActiveSpeech();
+  speakingKey.value = '';
+  ttsLoadingKey.value = '';
+  try {
+    await playLocalAudio(src, sequence);
+  } catch {
+    if (sequence === speechSequence) void speak(sound.word, '');
+  }
+}
+
+/** 播放随包本地音频（绝对地址），ended/error 时 resolve/reject。 */
+function playLocalAudio(src: string, sequence: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    stopActiveSpeech();
+    // phonicsAudioSrc 已按 document.baseURI 补成绝对地址；这里只追加媒体鉴权 query
+    const audio = new Audio(withMediaAuthQuery(src));
+    speechAudio = audio;
+    const done = (err?: Error) => {
+      if (speechAudio === audio) speechAudio = null;
+      if (err) reject(err); else resolve();
+    };
+    audio.addEventListener('ended', () => done());
+    audio.addEventListener('error', () => done(new Error('audio error')));
+    void audio.play().catch((e: unknown) => done(e instanceof Error ? e : new Error(String(e))));
+  });
+}
+
+// ── 逐音学习（零基础：一次只教一个音标，学会再下一个）──
+const soundIdx = ref(0);
+const blendingStage = ref(false);
+const hasSounds = computed(() => !!step.value?.sounds?.length);
+const currentSound = computed(() => step.value?.sounds?.[soundIdx.value] || null);
+/** 零基础层（ipaHidden）用口型提示替代 IPA 符号展示；音频仍按 ipa 播放。 */
+const currentSoundMouth = computed(() => (step.value?.ipaHidden ? currentSound.value?.mouth || '' : ''));
+const isLastSound = computed(() => soundIdx.value >= (step.value?.sounds?.length ?? 0) - 1);
+
+function soundCardTitle(): string {
+  const sound = currentSound.value;
+  if (!sound) return '';
+  return currentSoundMouth.value ? '再听一遍本音' : `再听一遍本音 ${sound.ipa}`;
+}
+
+function partTitle(part: { text: string; ipa: string | null }): string {
+  if (step.value?.ipaHidden) return `再听一遍 ${part.text} 的本音`;
+  return part.ipa ? `播放 ${part.ipa}` : `播放 ${part.text}`;
+}
+
+function autoPlayCurrentIpa() {
+  const sound = currentSound.value;
+  if (!sound) return;
+  if (phonicsAudioSrc(sound.ipa)) void speakIpa(sound);
+  else void speak(sound.word, `sound:${sound.letter}`);
+}
+
+function nextSound() {
+  if (isLastSound.value) { blendingStage.value = true; return; }
+  soundIdx.value += 1;
+  autoPlayCurrentIpa();
+}
+
+function prevSound() {
+  if (blendingStage.value) { blendingStage.value = false; return; }
+  if (soundIdx.value > 0) { soundIdx.value -= 1; autoPlayCurrentIpa(); }
+}
+
+// ── 拼读演示（blending）：音素逐个放本音，再连成整词 ──
+type BlendGroup = { parts: Array<{ text: string; ipa: string | null }>; word: string };
+
+const blendGroups = computed<BlendGroup[]>(() => {
+  // 服务端结构化数据优先（拼读课）；前端不做"按辅音字母猜音"的教学推断
+  const structured = step.value?.blend;
+  if (structured?.length) {
+    return structured.map((group) => ({
+      parts: group.parts.map((part) => ({ text: part.text, ipa: part.ipa })),
+      word: group.word,
+    }));
+  }
+  // 对比课形态（服务端 pattern 就是这么写的）：`a /æ/ → cat · e /ɛ/ → bed`
+  const pattern = step.value?.pattern || '';
+  return pattern.split('·').map((group) => {
+    const segs = group.split('→').map((s) => s.trim()).filter(Boolean);
+    if (!segs.length) return null;
+    const left = segs[0];
+    const lastSeg = segs.length > 1 ? segs[segs.length - 1] : left;
+    const word = (lastSeg.match(/[A-Za-z][A-Za-z'-]*/) || [''])[0];
+    let parts: Array<{ text: string; ipa: string | null }> = [];
+    const m = /^(\S+)\s*\/(.+)\/$/.exec(left);
+    if (m) parts = [{ text: m[1], ipa: `/${m[2]}/` }];
+    else if (/^[A-Za-z][A-Za-z'-]*$/.test(left)) parts = [{ text: left, ipa: null }];
+    if (!parts.length && !word) return null;
+    return { parts, word };
+  }).filter((g): g is BlendGroup => !!g);
+});
+
+const blendingActive = ref('');
+const blendingBusy = ref(false);
+let blendingSeq = 0;
+const blendWait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function speakPart(part: { text: string; ipa: string | null }, fallbackWord = '') {
+  const src = part.ipa ? phonicsAudioSrc(part.ipa) : null;
+  if (src) void playLocalAudio(src, ++speechSequence).catch(() => {});
+  // 本音音频缺失（如上游 s/z 缺文件）时读整组例词，避免把字母读成字母名
+  else void speak(fallbackWord || part.text, '');
+}
+
+/** 拼读演示专用：读一个词并**等它读完**（TTS 音频 ended；无 TTS 回退系统语音 onend），保证一组一组不重叠。 */
+function speakWordAwait(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    void (async () => {
+      const sequence = ++speechSequence;
+      stopActiveSpeech();
+      speakingKey.value = 'pattern';
+      try {
+        let url = speechCache.get(text) || '';
+        if (!url) {
+          const response = await api.post<{ data?: { url?: string } }>('/learning/tts', {
+            text,
+            language: 'en-US',
+            rate: -2,
+          });
+          if (sequence !== speechSequence) return resolve();
+          const error = responseError(response);
+          if (error) throw new Error(error);
+          url = unwrap<{ url?: string }>(response)?.url || '';
+          if (!url) throw new Error('英语语音未返回音频地址');
+          speechCache.set(text, url);
+        }
+        const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
+        speechAudio = audio;
+        const done = () => {
+          if (speechAudio === audio) speechAudio = null;
+          resolve();
+        };
+        audio.addEventListener('ended', done);
+        audio.addEventListener('error', done);
+        await audio.play();
+      } catch {
+        // 无后端 TTS：系统英语语音兜底（onend 续跑），不弹错误横幅（演示场景）
+        let settled = false;
+        const done = () => { if (!settled) { settled = true; speakingKey.value = ''; resolve(); } };
+        if (!speakWithEnglishBrowserVoice(text, 'pattern', sequence, done)) { speakingKey.value = ''; resolve(); }
+        setTimeout(done, 4000);
+      }
+    })();
+  });
+}
+
+/** 跟着演示拼一遍：逐个音素放本音，最后连成整词。 */
+async function playBlending() {
+  if (blendingBusy.value) return;
+  const seq = ++blendingSeq;
+  blendingBusy.value = true;
+  speakingKey.value = 'pattern';
+  try {
+    stopActiveSpeech();
+    for (const group of blendGroups.value) {
+      if (seq !== blendingSeq) return;
+      for (let i = 0; i < group.parts.length; i++) {
+        if (seq !== blendingSeq) return;
+        const part = group.parts[i];
+        blendingActive.value = `run${seq}:${i}`;
+        const src = part.ipa ? phonicsAudioSrc(part.ipa) : null;
+        if (src) {
+          try { await playLocalAudio(src, seq); } catch { await blendWait(200); }
+        } else {
+          await blendWait(320);
+        }
+        await blendWait(120);
+      }
+      if (seq !== blendingSeq) return;
+      if (group.word && /^[A-Za-z][A-Za-z'-]*$/.test(group.word)) {
+        blendingActive.value = 'word';
+        await speakWordAwait(group.word);
+      }
+    }
+  } finally {
+    if (seq === blendingSeq) {
+      blendingBusy.value = false;
+      blendingActive.value = '';
+      speakingKey.value = '';
+    }
+  }
+}
+
 function clearSpeechState() {
   speechSequence += 1;
   stopActiveSpeech();
@@ -391,7 +665,7 @@ function englishBrowserVoice(): SpeechSynthesisVoice | null {
     || null;
 }
 
-function speakWithEnglishBrowserVoice(text: string, activeKey: string, sequence: number): boolean {
+function speakWithEnglishBrowserVoice(text: string, activeKey: string, sequence: number, onDone?: () => void): boolean {
   const synth = window.speechSynthesis;
   if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return false;
   const voice = englishBrowserVoice();
@@ -405,6 +679,7 @@ function speakWithEnglishBrowserVoice(text: string, activeKey: string, sequence:
     ttsLoadingKey.value = '';
     const finish = () => {
       if (sequence === speechSequence) speakingKey.value = '';
+      onDone?.();
     };
     utterance.onend = finish;
     utterance.onerror = finish;
@@ -553,7 +828,11 @@ async function speak(text: string, activeKey = '') {
       speechCache.set(spokenText, url);
     }
     if (sequence !== speechSequence) return;
-    const audio = new Audio(url);
+    // ★ 服务端返回的是站点根相对地址（/api/generated/...）：打包版页面是 file://，
+    //   直接 new Audio(相对地址) 会解析成 file:///api/... → 媒体加载必挂
+    //   （2026-11-13 实报「Failed to load because no supported source was found」）。
+    //   与全仓媒体一致走 absoluteMediaSrc 补全 + withMediaAuthQuery 鉴权。
+    const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
     speechAudio = audio;
     ttsLoadingKey.value = '';
     const finish = () => {
@@ -628,13 +907,24 @@ watch([stageIndex, stepIndex], () => {
   persistLocalState();
 });
 
+watch(track, () => {
+  try { localStorage.setItem(TRACK_KEY, track.value); } catch { /* 无持久化环境忽略 */ }
+  resetLessonState();
+  stageIndex.value = 0;
+  stepIndex.value = 0;
+  void loadPath();
+});
+
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown);
+  await loadTracks();
+  restoreTrack();
   await loadPath();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown);
+  blendingSeq += 1;
   clearSpeechState();
   if (focusing.value) emit('focus-change', false);
   document.body.style.overflow = previousBodyOverflow;
@@ -660,6 +950,18 @@ onBeforeUnmount(() => {
       <div><i :style="{ width: progress + '%' }"></i></div>
       <b>{{ completedCount }} / {{ totalSteps }} 课</b>
     </div>
+
+    <nav v-if="trackMeta.length > 1" class="lp-path-tracks" aria-label="选择学习人群">
+      <button
+        v-for="item in trackMeta"
+        :key="item.id"
+        type="button"
+        :class="{ active: item.id === track }"
+        :aria-pressed="item.id === track"
+        :title="item.audience"
+        @click="track = item.id"
+      >{{ item.name }}</button>
+    </nav>
 
     <nav class="lp-path-stages" aria-label="英语学习阶段">
       <button
@@ -782,7 +1084,7 @@ onBeforeUnmount(() => {
             <header class="lp-path-paper-head">
               <div class="lp-path-paper-title">
                 <div>
-                  <p>{{ kindLabel[step.kind] }} · {{ phase.label }}</p>
+                  <p>{{ kindLabel[step.kind] }}<template v-if="step.method"> · {{ step.method }}</template> · {{ phase.label }}</p>
                   <h1>{{ step.title }}</h1>
                 </div>
                 <span v-if="currentStepCompleted" class="lp-path-complete-badge"><CheckCircle2 :size="13" /> 已完成</span>
@@ -806,39 +1108,98 @@ onBeforeUnmount(() => {
                   <span>本课目标</span>
                   <p>{{ step.goal }}</p>
                 </div>
-                <div v-if="step.pattern" class="lp-path-pattern">
+                <!-- 逐音学习：一次只教一个音标（零基础），学会再下一个 -->
+                <div v-if="hasSounds && !blendingStage" class="lp-sound-card" aria-live="polite">
+                  <div class="lp-sound-main">
+                    <button
+                      type="button"
+                      class="lp-sound-ipa"
+                      :class="{ 'lp-sound-mouth': !!currentSoundMouth }"
+                      :title="soundCardTitle()"
+                      :aria-label="`播放本音 ${currentSound?.word || ''}`"
+                      @click="currentSound && speakIpa(currentSound)"
+                    >{{ currentSoundMouth || currentSound?.ipa }}</button>
+                    <div class="lp-sound-side">
+                      <b>{{ currentSound?.letter }}</b>
+                      <button
+                        type="button"
+                        class="lp-sound-word"
+                        :class="{ playing: speakingKey === `sound:${currentSound?.letter}` }"
+                        :aria-busy="ttsLoadingKey === `sound:${currentSound?.letter}`"
+                        :aria-label="`播放例词 ${currentSound?.word || ''}`"
+                        @click="currentSound && speak(currentSound.word, `sound:${currentSound?.letter}`)"
+                      >
+                        <LoaderCircle v-if="ttsLoadingKey === `sound:${currentSound?.letter}`" class="lp-path-spin" :size="14" />
+                        <Volume2 v-else :size="14" />
+                        <span>{{ currentSound?.word }}</span>
+                        <small>{{ currentSound?.gloss }}</small>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="lp-sound-nav">
+                    <button type="button" :disabled="soundIdx === 0" @click="prevSound">← 上一个</button>
+                    <small>第 {{ soundIdx + 1 }} / {{ step.sounds?.length ?? 0 }} 个音 · 点大卡片反复听本音</small>
+                    <button type="button" class="lp-sound-next" @click="nextSound">
+                      {{ isLastSound ? '学拼读 →' : '学会了，下一个 →' }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 拼读演示：音素逐个放本音，再连成整词 -->
+                <div v-else-if="blendGroups.length" class="lp-path-pattern lp-path-pattern-blend">
+                  <span>核心结构</span>
+                  <div class="lp-blending">
+                    <template v-for="(group, gi) in blendGroups" :key="gi">
+                      <div class="lp-blend-group">
+                        <button
+                          v-for="(part, pi) in group.parts"
+                          :key="pi"
+                          type="button"
+                          class="lp-blend-part"
+                          :class="{ active: blendingActive === `run${gi}:${pi}` }"
+                          :title="partTitle(part)"
+                          @click="speakPart(part, group.word)"
+                        >{{ part.text }}</button>
+                        <button
+                          type="button"
+                          class="lp-blend-arrow"
+                          :class="{ active: blendingActive === 'word' }"
+                          :disabled="!group.word"
+                          :title="group.word ? `播放 ${group.word}` : ''"
+                          @click="group.word && speak(group.word, 'pattern')"
+                        >→ {{ group.word }}</button>
+                      </div>
+                      <i v-if="gi < blendGroups.length - 1" class="lp-blend-sep">·</i>
+                    </template>
+                  </div>
+                  <button
+                    type="button"
+                    class="lp-path-listen"
+                    :class="{ playing: blendingBusy }"
+                    :disabled="blendingBusy"
+                    aria-label="跟着演示拼一遍"
+                    @click="playBlending"
+                  >
+                    <LoaderCircle v-if="blendingBusy" class="lp-path-spin" :size="16" />
+                    <Volume2 v-else :size="16" />
+                    <small>{{ blendingBusy ? '演示中…' : '跟着演示拼一遍' }}</small>
+                  </button>
+                </div>
+
+                <!-- 无 sounds 的课兜底：读 patternAudio / 首个例句 -->
+                <div v-else-if="patternSpeech" class="lp-path-pattern">
                   <span>核心结构</span>
                   <b>{{ step.pattern }}</b>
                   <button
-                    v-if="patternSpeech"
                     type="button"
                     class="lp-path-listen"
                     :class="{ playing: speakingKey === 'pattern' }"
                     :aria-busy="ttsLoadingKey === 'pattern'"
-                    :aria-label="step.sounds?.length ? '播放全部发音例词' : '播放本课英文示例'"
-                    :title="step.sounds?.length ? '播放全部例词' : '播放本课英文示例'"
+                    aria-label="播放本课英文示例"
                     @click="speak(patternSpeech, 'pattern')"
                   >
                     <LoaderCircle v-if="ttsLoadingKey === 'pattern'" class="lp-path-spin" :size="16" />
                     <Volume2 v-else :size="16" />
-                  </button>
-                </div>
-                <div v-if="step.sounds?.length" class="lp-path-sounds" aria-label="发音例词">
-                  <button
-                    v-for="sound in step.sounds"
-                    :key="sound.letter"
-                    type="button"
-                    :class="{ playing: speakingKey === `sound:${sound.letter}` }"
-                    :aria-busy="ttsLoadingKey === `sound:${sound.letter}`"
-                    :aria-label="`播放 ${sound.word}，听 ${sound.letter} 的发音 ${sound.ipa}`"
-                    :title="`播放 ${sound.word}`"
-                    @click="speak(sound.word, `sound:${sound.letter}`)"
-                  >
-                    <span><b>{{ sound.letter }}</b><i>{{ sound.ipa }}</i></span>
-                    <strong>{{ sound.word }}</strong>
-                    <small>{{ sound.gloss }}</small>
-                    <LoaderCircle v-if="ttsLoadingKey === `sound:${sound.letter}`" class="lp-path-spin" :size="14" />
-                    <Volume2 v-else :size="14" />
                   </button>
                 </div>
                 <div class="lp-path-concept-grid">
@@ -864,6 +1225,43 @@ onBeforeUnmount(() => {
                       <span>{{ finishRule }}</span>
                     </div>
                   </aside>
+                </div>
+                <!-- 回译课：先自己翻，再逐句对照参考译文与差异提示 -->
+                <div v-if="step.translate?.length" class="lp-translate" aria-label="回译练习">
+                  <header>
+                    <div><Languages :size="15" /><span>先自己翻，再对照</span></div>
+                    <button type="button" @click="revealAllTranslate">{{ allTranslateRevealed ? '收起全部' : '全部对照' }}</button>
+                  </header>
+                  <ol>
+                    <li v-for="(item, index) in step.translate" :key="item.zh">
+                      <div class="lp-translate-source">
+                        <span>{{ index + 1 }}</span>
+                        <p>{{ item.zh }}</p>
+                        <button
+                          type="button"
+                          :class="{ active: translateRevealed[index] }"
+                          :aria-expanded="!!translateRevealed[index]"
+                          @click="toggleTranslate(index)"
+                        >{{ translateRevealed[index] ? '收起' : '对照' }}</button>
+                      </div>
+                      <div v-if="translateRevealed[index]" class="lp-translate-answer">
+                        <p>{{ item.en }}</p>
+                        <small>{{ item.note }}</small>
+                        <button
+                          type="button"
+                          class="lp-translate-speak"
+                          aria-label="朗读参考译文"
+                          :class="{ playing: speakingKey === `translate:${index}` }"
+                          :aria-busy="ttsLoadingKey === `translate:${index}`"
+                          @click="speak(item.en, `translate:${index}`)"
+                        >
+                          <LoaderCircle v-if="ttsLoadingKey === `translate:${index}`" class="lp-path-spin" :size="13" />
+                          <Volume2 v-else :size="13" />
+                          <span>听一遍</span>
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
                 </div>
               </section>
 
@@ -892,6 +1290,9 @@ onBeforeUnmount(() => {
                     </button>
                   </div>
                 </section>
+                <div v-if="step.readingPassageId" class="lp-path-reading-link">
+                  <button type="button" @click="emit('read', step.readingPassageId)">对照细读</button>
+                </div>
                 <div class="lp-path-examples">
                   <article v-for="(example, index) in step.examples" :key="example.en">
                     <span>{{ String(index + 1).padStart(2, '0') }}</span>
@@ -1050,6 +1451,11 @@ onBeforeUnmount(() => {
 .lp-path-progress { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; color: var(--color-text-tertiary); font-size: 10px; }
 .lp-path-progress > div { height: 5px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--color-text) 10%, transparent); }
 .lp-path-progress i { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); }
+.lp-path-tracks { display: flex; flex-wrap: wrap; gap: 7px; }
+.lp-path-tracks button { padding: 7px 18px; border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--color-border)); border-radius: 999px; background: var(--path-paper, var(--glass-bg)); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.lp-path-tracks button:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.lp-path-tracks button.active { border-color: var(--color-primary); background: var(--color-primary); color: #fff; }
+.lp-path-tracks button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .lp-path-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 7px; }
 .lp-path-stages button {
   display: grid;
@@ -1228,18 +1634,45 @@ onBeforeUnmount(() => {
 .lp-path-pattern button { grid-column: 2; grid-row: 1 / span 2; align-self: center; display: inline-grid; place-items: center; width: 32px; height: 32px; border: 1px solid rgba(15,118,110,.24); border-radius: 7px; background: var(--path-paper); color: #0f766e; cursor: pointer; }
 .lp-path-pattern button:hover { background: #0f766e; color: #fff; }
 .lp-path-pattern button.playing { background: #0f766e; color: #fff; box-shadow: 0 0 0 3px rgba(15,118,110,.12); }
-.lp-path-sounds { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
-.lp-path-sounds button { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 18px; grid-template-rows: auto auto auto; gap: 1px 6px; align-items: center; padding: 10px; border: 1px solid rgba(15,118,110,.17); border-radius: 7px; background: var(--path-paper); color: var(--path-paper-ink); text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, box-shadow .16s ease; }
-.lp-path-sounds button:hover { border-color: rgba(15,118,110,.45); background: #f7fbfa; }
-.lp-path-sounds button.playing { border-color: #0f766e; background: #eef8f6; box-shadow: 0 0 0 3px rgba(15,118,110,.1); }
-.lp-path-sounds button > span { grid-column: 1; display: flex; align-items: baseline; gap: 5px; min-width: 0; }
-.lp-path-sounds b { color: #0f766e; font-size: 18px; line-height: 1.1; }
-.lp-path-sounds i { color: var(--path-paper-muted); font-size: 10px; font-style: normal; white-space: nowrap; }
-.lp-path-sounds strong { grid-column: 1; overflow-wrap: anywhere; color: var(--path-paper-ink); font-size: 13px; line-height: 1.35; }
-.lp-path-sounds small { grid-column: 1; overflow-wrap: anywhere; color: var(--path-paper-muted); font-size: 9px; line-height: 1.35; }
-.lp-path-sounds svg { grid-column: 2; grid-row: 1 / span 3; color: #0f766e; }
+/* 逐音学习：一次一个音标（零基础），大音标点读本音 */
+.lp-sound-card { display: flex; flex-direction: column; gap: 12px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); padding: 18px 20px; }
+.lp-sound-main { display: flex; align-items: center; gap: 20px; }
+.lp-sound-ipa { min-width: 132px; padding: 14px 18px; border: 1px solid rgba(15,118,110,.3); border-radius: 10px; background: var(--path-paper); color: #0f766e; font-size: 34px; font-weight: 700; line-height: 1.15; cursor: pointer; transition: box-shadow .15s ease, background .15s ease; }
+/* 零基础层：大卡片显示口型提示（替代 IPA 符号），保持可点听本音 */
+.lp-sound-ipa.lp-sound-mouth { display: inline-flex; align-items: center; text-align: left; max-width: 280px; min-height: 88px; font-size: 14px; font-weight: 500; line-height: 1.7; white-space: normal; }
+.lp-sound-ipa:hover { background: #eef8f6; box-shadow: 0 0 0 3px rgba(15,118,110,.12); }
+.lp-sound-side { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.lp-sound-side > b { color: var(--path-paper-ink); font-size: 15px; }
+.lp-sound-word { display: inline-flex; align-items: baseline; gap: 7px; padding: 7px 12px; border: 1px solid rgba(15,118,110,.24); border-radius: 7px; background: var(--path-paper); color: var(--path-paper-ink); cursor: pointer; }
+.lp-sound-word:hover { border-color: #0f766e; background: #f7fbfa; }
+.lp-sound-word.playing { border-color: #0f766e; background: #eef8f6; }
+.lp-sound-word span { color: var(--path-paper-ink); font-size: 16px; font-weight: 600; }
+.lp-sound-word small { color: var(--path-paper-muted); font-size: 11px; }
+.lp-sound-word svg { align-self: center; color: #0f766e; }
+.lp-sound-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lp-sound-nav small { color: var(--path-paper-muted); font-size: 11px; }
+.lp-sound-nav button { padding: 7px 14px; border: 1px solid rgba(15,118,110,.24); border-radius: 7px; background: var(--path-paper); color: #0f766e; font-size: 12px; cursor: pointer; }
+.lp-sound-nav button:hover:not(:disabled) { background: #eef8f6; }
+.lp-sound-nav button:disabled { opacity: .4; cursor: default; }
+.lp-sound-nav button.lp-sound-next { background: #0f766e; color: #fff; border-color: #0f766e; }
+.lp-sound-nav button.lp-sound-next:hover:not(:disabled) { filter: brightness(1.06); }
+/* 拼读演示：音素块逐个高亮，最后连成整词 */
+.lp-path-pattern.lp-path-pattern-blend { grid-template-columns: minmax(0, 1fr); }
+.lp-blending { grid-column: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lp-blend-group { display: inline-flex; align-items: center; gap: 6px; }
+.lp-blend-part, .lp-blend-arrow { padding: 9px 14px; border: 1px solid rgba(15,118,110,.24); border-radius: 8px; background: var(--path-paper); color: var(--path-paper-ink); font-size: 16px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .15s ease, box-shadow .15s ease; }
+.lp-blend-part:hover, .lp-blend-arrow:hover:not(:disabled) { border-color: #0f766e; background: #f7fbfa; }
+.lp-blend-part.active, .lp-blend-arrow.active { border-color: #0f766e; background: #0f766e; color: #fff; box-shadow: 0 0 0 3px rgba(15,118,110,.12); }
+.lp-blend-arrow { color: #0f766e; }
+.lp-blend-arrow:disabled { opacity: .45; cursor: default; }
+.lp-blend-sep { color: var(--path-paper-muted); }
+.lp-path-pattern-blend button.lp-path-listen { grid-column: 1; grid-row: auto; justify-self: start; display: inline-flex; align-items: center; gap: 7px; width: auto; height: auto; margin-top: 4px; padding: 8px 14px; font-size: 12px; }
+.lp-path-pattern-blend button.lp-path-listen:disabled { opacity: .6; cursor: default; }
+.lp-path-pattern-blend button.lp-path-listen small { font-size: 12px; }
 .lp-path-pattern button:focus-visible,
-.lp-path-sounds button:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+.lp-sound-card button:focus-visible,
+.lp-blend-part:focus-visible,
+.lp-blend-arrow:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 .lp-path-spin { animation: lp-path-spin .8s linear infinite; }
 .lp-path-speech-error { margin: 0; padding: 8px 10px; border-left: 3px solid #b42318; background: color-mix(in srgb, #d4380d 7%, var(--path-paper)); color: #b42318; font-size: 11px; line-height: 1.6; }
 @keyframes lp-path-spin { to { transform: rotate(360deg); } }
@@ -1281,6 +1714,25 @@ onBeforeUnmount(() => {
 .lp-path-examples small { display: block; margin-top: 5px; color: var(--path-paper-muted); font-size: 11px; line-height: 1.65; }
 .lp-path-examples button { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid rgba(24,37,43,.15); border-radius: 6px; background: var(--path-paper); color: #0f766e; cursor: pointer; }
 .lp-path-examples button.playing { border-color: #0f766e; background: #0f766e; color: #fff; }
+.lp-translate { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: var(--path-paper); }
+.lp-translate header { display: flex; align-items: center; justify-content: space-between; }
+.lp-translate header div { display: flex; align-items: center; gap: 6px; color: #0f766e; font-size: 12px; font-weight: 700; }
+.lp-translate header button { padding: 5px 12px; border: 1px solid rgba(15,118,110,.3); border-radius: 6px; background: var(--path-paper); color: #0f766e; font-size: 11px; font-weight: 600; cursor: pointer; }
+.lp-translate ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lp-translate li { border: 1px solid rgba(24,37,43,.1); border-radius: 6px; }
+.lp-translate-source { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; }
+.lp-translate-source > span { color: var(--path-paper-muted); font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.lp-translate-source p { margin: 0; color: #1f3036; font-size: 14px; line-height: 1.6; }
+.lp-translate-source button { padding: 4px 10px; border: 1px solid rgba(15,118,110,.3); border-radius: 6px; background: var(--path-paper); color: #0f766e; font-size: 11px; font-weight: 600; cursor: pointer; }
+.lp-translate-source button.active { border-color: #0f766e; background: #0f766e; color: #fff; }
+.lp-translate-answer { margin: 0 12px 10px 44px; padding: 8px 0 0; border-top: 1px dashed rgba(24,37,43,.12); }
+.lp-translate-answer p { margin: 0; color: #0f766e; font-size: 14px; line-height: 1.6; font-weight: 600; }
+.lp-translate-answer small { display: block; margin-top: 4px; color: var(--path-paper-muted); font-size: 11px; line-height: 1.65; }
+.lp-translate-speak { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; padding: 4px 10px; border: 1px solid rgba(15,118,110,.3); border-radius: 6px; background: var(--path-paper); color: #0f766e; font-size: 11px; font-weight: 600; cursor: pointer; }
+.lp-translate-speak.playing { border-color: #0f766e; background: #0f766e; color: #fff; }
+.lp-path-reading-link { display: flex; }
+.lp-path-reading-link button { padding: 6px 14px; border: 1px solid rgba(15,118,110,.3); border-radius: 7px; background: var(--path-paper); color: #0f766e; font-size: 12px; font-weight: 600; cursor: pointer; }
+.lp-path-reading-link button:hover { border-color: #0f766e; }
 .lp-path-task { padding: 17px 19px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); }
 .lp-path-task span { color: #0f766e; font-size: 10px; font-weight: 700; }
 .lp-path-task p { margin: 7px 0 0; color: var(--path-paper-ink); font-size: 15px; line-height: 1.8; }
@@ -1356,7 +1808,8 @@ onBeforeUnmount(() => {
   .lp-path-immersive-rail button small { display: none; }
   .lp-path-immersive-main { padding: 12px; }
   .lp-path-concept-grid { grid-template-columns: 1fr; }
-  .lp-path-sounds { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lp-sound-card { padding: 14px 16px; }
+  .lp-sound-ipa { min-width: 108px; font-size: 28px; }
   .lp-path-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lp-path-paper-head,
   .lp-path-paper-body { padding-left: 19px; padding-right: 19px; }
@@ -1373,7 +1826,7 @@ onBeforeUnmount(() => {
   .lp-path-paper-meta > i { display: none; }
   .lp-path-goal { flex-basis: 100%; }
   .lp-path-notes { padding: 13px; }
-  .lp-path-sounds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lp-sound-main { gap: 12px; }
   .lp-path-word-grid { grid-template-columns: 1fr; }
   .lp-path-lead { grid-template-columns: 1fr; gap: 7px; padding: 14px; }
   .lp-path-examples article { grid-template-columns: 26px minmax(0, 1fr) 28px; gap: 8px; padding: 12px; }
@@ -1384,7 +1837,7 @@ onBeforeUnmount(() => {
   .lp-path-phase-progress small { display: none; }
 }
 @media (max-width: 380px) {
-  .lp-path-sounds { grid-template-columns: 1fr; }
+  .lp-sound-nav { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   .lp-path-spin { animation: none; }

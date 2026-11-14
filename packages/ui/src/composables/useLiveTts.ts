@@ -8,7 +8,8 @@
  * 观众听到的应该是当前最重要的那句（优先级由 live store 的字幕规则决定）。
  */
 import { ref } from 'vue'
-import { api } from '../api/client'
+import { api, withMediaAuthQuery } from '../api/client'
+import { absoluteMediaSrc } from './useMediaPreview'
 import { attachMediaToGraph, resumeAudioGraph } from './live-audio'
 
 export interface VoicePackOption {
@@ -151,7 +152,8 @@ export function useLiveTts() {
       // 接进音频图：一路扬声器、一路给推流（见 live-audio.ts）
       attachMediaToGraph(audio)
       void resumeAudioGraph()
-      audio.src = String(url)
+      // ★ 服务端相对地址在打包版 file:// 页面下必挂，统一补绝对地址 + 媒体鉴权
+      audio.src = withMediaAuthQuery(absoluteMediaSrc(String(url)))
       speaking.value = true
       // 自动播放被拦（没有用户手势）时不报错，只把状态复位
       await audio.play().catch(() => { speaking.value = false })

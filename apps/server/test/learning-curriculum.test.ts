@@ -203,7 +203,27 @@ describe('分级范文', () => {
     expect(READING_PASSAGES.some((r) => /^B2$/.test(r.cefr))).toBe(true);
     expect(READING_PASSAGES.some((r) => r.topic === '日常生活')).toBe(true);
     expect(READING_PASSAGES.filter((r) => r.topic === '寓言').length).toBeGreaterThanOrEqual(3);
+    expect(READING_PASSAGES.filter((r) => r.topic === '经典').length).toBeGreaterThanOrEqual(10);
     expect(READING_PASSAGES.some((r) => r.topic === '长篇连载' && r.paras.length >= 4)).toBe(true);
+  });
+
+  it('经典著作收录：公版原著名篇改写，覆盖 A2~B2 分级', () => {
+    const classics = READING_PASSAGES.filter((r) => r.topic === '经典' || (r.topic === '寓言' && r.id.startsWith('rp_classic_')));
+    expect(classics.length).toBeGreaterThanOrEqual(10);
+    expect(new Set(classics.map((r) => r.title)).size).toBe(classics.length);
+    for (const title of [
+      'Alice in Wonderland · Down the Rabbit Hole',
+      'The Little Match Girl',
+      'The Gift of the Magi',
+      'The Last Leaf',
+      'The Necklace',
+      'The Selfish Giant',
+    ]) {
+      expect(classics.some((r) => r.title === title), title).toBe(true);
+    }
+    for (const cefr of ['A2', 'B1', 'B2']) {
+      expect(classics.some((r) => r.cefr === cefr), `经典改写须覆盖 ${cefr}`).toBe(true);
+    }
   });
 
   it('★ 中英逐段对齐：每段 en/zh 都非空（错位 = 阅读页静默串段）', () => {

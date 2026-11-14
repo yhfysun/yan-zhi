@@ -1,6 +1,19 @@
 import { GRAMMAR_POINTS, READING_PASSAGES, type ReadingPassage } from './curriculum.js';
 
-export type EnglishPathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking';
+export type EnglishPathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
+
+/** 回译条目：先自己翻，再对照参考译文与预写差异提示。 */
+export type EnglishTranslateItem = {
+  /** 中文源句（用户看到的输入）。 */
+  zh: string;
+  /** 参考译文（点「对照」后才展示）。 */
+  en: string;
+  /** 预写差异提示：词序 / 时态 / 冠词等中英差异点。 */
+  note: string;
+};
+
+/** 教学方法标签（每课渲染成 chip；数据驱动，不在前端硬编码）。 */
+export type EnglishMethod = '听辨' | '口型' | '拼读' | '音标分组' | '速通' | '词根' | '对照' | '精读' | '回译' | '操练';
 
 export type EnglishQuickCheck = {
   question: string;
@@ -14,6 +27,14 @@ export type EnglishPathSound = {
   ipa: string;
   word: string;
   gloss: string;
+  /** 口型/发音要领（服务端预写，零基础层用它替代 IPA 符号展示）。 */
+  mouth?: string;
+};
+
+/** 结构化拼读演示：音素逐个放本音，再连成整词（取代前端按辅音字母猜音）。 */
+export type EnglishBlendGroup = {
+  parts: Array<{ text: string; ipa: string }>;
+  word: string;
 };
 
 export type EnglishPathStep = {
@@ -26,9 +47,19 @@ export type EnglishPathStep = {
   pattern?: string;
   patternAudio?: string;
   sounds?: EnglishPathSound[];
+  /** 零基础层不显示 IPA 符号（音频仍按 ipa 播放），改显示 mouth 口型提示。 */
+  ipaHidden?: boolean;
+  /** 结构化拼读数据；有值时前端不再解析 pattern 猜辅音音素。 */
+  blend?: EnglishBlendGroup[];
+  /** 教学方法标签；getEnglishPath 输出保证非空（未写时按 kind 兜底）。 */
+  method?: EnglishMethod;
   tip: string;
   examples: Array<{ en: string; zh: string }>;
   wordFamily?: Array<{ word: string; gloss: string; note?: string }>;
+  /** 回译课内容；kind='translate' 时必有。 */
+  translate?: EnglishTranslateItem[];
+  /** 关联阅读 Tab 的范文 id；有值时故事课显示「对照细读」入口。 */
+  readingPassageId?: string;
   task: string;
   quickCheck?: EnglishQuickCheck;
 };
@@ -47,6 +78,18 @@ function makeStep(kind: EnglishPathStepKind, id: string, seed: StepSeed): Englis
   const { check, ...rest } = seed;
   return { id, kind, ...rest, quickCheck: check };
 }
+
+/** kind → 默认教法标签；个别课在数据里显式覆盖（如听辨、速通）。 */
+const KIND_METHOD: Record<EnglishPathStepKind, EnglishMethod> = {
+  phonics: '拼读',
+  roots: '词根',
+  grammar: '对照',
+  fable: '精读',
+  story: '精读',
+  'long-story': '精读',
+  speaking: '操练',
+  translate: '回译',
+};
 
 const PHONICS_EXTRA: Array<{ id: string; title: string; goal: string; pattern: string; sounds?: EnglishPathSound[]; words: string; zh: string; sentence: string; sentenceZh: string; task: string; check: EnglishQuickCheck }> = [
   {
@@ -187,6 +230,13 @@ const SPEAKING_EXTRA: Array<{ id: string; title: string; goal: string; pattern: 
   { id: 'speak_storyteller', title: '即兴讲一个故事', goal: '用场景、冲突、转折、结局维持故事线', pattern: 'Last week... At first... Then... In the end...', task: '讲一个“一个小失误最后变成好事”的故事。', example: 'Last week I missed my bus. At first I was upset, but then I met an old friend at the station.', zh: '上周我错过公交。起初很烦，但后来在车站遇到老朋友。', check: { question: 'Which connector introduces a turn?', options: ['But then...', 'First of all...', 'Because...', 'For example...'], answer: 0, explanation: 'but then 常用来说明情节发生转折。' } },
 ];
 
+/**
+ * 语法课 = 机器翻译对照法（教学理念：机器翻译帮助语法理解）。
+ *
+ * 每课自带 2 条中英对照翻译：中文源句 → 用户先自己翻 → 对照参考译文，差异处
+ * 就是「中文没有、英文必须变形」的语法点（时态/单复数/冠词/语序）。参考译文
+ * 与差异提示全部由预写的 GRAMMAR_POINTS 数据派生，不走 LLM。
+ */
 function grammarStep(index: number): EnglishPathStep {
   const point = GRAMMAR_POINTS[index];
   const example = point.examples[0];
@@ -198,11 +248,16 @@ function grammarStep(index: number): EnglishPathStep {
     title: point.title,
     goal: `在真实句子里稳定使用「${point.title}」`,
     minutes: 9,
-    explanation: `${point.rule} 先看例句里的形式，再用正误对比确认边界。`,
+    explanation: `${point.rule} 学法是翻译对照：先把中文翻成英语，再对照参考译文——差异的地方，就是中文里没有、英文必须变形的地方。`,
     pattern: point.rule,
-    tip: '先判断时间、主语和句子结构，再决定形式；不要只背名称。',
+    tip: '对照时只问一句：中文说得出来，英语为什么必须这样变形？把原因归到时间、主语或句子结构上。',
     examples: point.examples,
-    task: `用「${point.title}」写两句与你生活有关的句子，并朗读一遍。`,
+    translate: point.examples.map((item) => ({
+      zh: item.zh,
+      en: item.en,
+      note: `本课考的是「${point.title}」：${point.rule} 常见错误：${pair.wrong} → ${pair.right}（${pair.why}）`,
+    })),
+    task: `先翻上面 ${point.examples.length} 句中文并逐句对照，再用「${point.title}」写两句与你生活有关的句子，朗读一遍。`,
     quickCheck: {
       question: `哪一句正确使用了「${point.title}」？`,
       options: [pair.right, pair.wrong, distractor.examples[0]?.en || example.en],
@@ -221,6 +276,7 @@ function passageStep(passage: ReadingPassage, kind: 'fable' | 'story', index: nu
   return {
     id: `path_${passage.id}`,
     kind,
+    readingPassageId: passage.id,
     title: passage.title,
     goal: isFable ? '读出角色对比、结果和寓言道理' : '抓住人物、冲突、转折与结局',
     minutes: passage.paras.length >= 4 ? 24 : 16,
@@ -243,6 +299,442 @@ function passageStep(passage: ReadingPassage, kind: 'fable' | 'story', index: nu
 }
 
 /**
+ * 零基础第 0 课：先分清「字母名称」和「字母声音」。
+ *
+ * 零基础学员早就会背 ABC——那是字母名。读词用的是字母音，两套声音必须先分开，
+ * 否则拼读时会用「诶/衣/西」去套（国内拼读教学最常见的头号误区）。
+ * 有意不设 sounds 字段：这一课做对比认知，不进入逐音教学。
+ */
+const LETTER_NAME_LESSON: EnglishPathStep = {
+  id: 'letter_name_vs_sound',
+  kind: 'phonics',
+  method: '听辨',
+  title: '字母名 ≠ 字母音',
+  goal: '分清「字母怎么念它的名字」和「字母在单词里怎么发音」',
+  minutes: 8,
+  explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的"声音"：a 在 tap 里不发「诶」，发短促的"啊"。先把两套声音分开，后面拼读才不会乱。',
+  pattern: '名称：A「诶」 E「衣」 I「爱」 O「欧」 U「由」 → 声音：a 短"啊" e 短"诶" i 短"衣" o 短"奥" u 短"阿"',
+  tip: '快问快答练法：别人说一个已学词（tap、sit），你只说中间元音的"声音"，不许说字母名。',
+  examples: [
+    { en: 'name: a e i o u — sound: tap bed sit hot cup', zh: '名称是字母的自报家门；声音才是读词用的那套。' },
+  ],
+  task: '把 26 个字母的名称快速念一遍，然后读 tap、bed、sit、hot、cup，注意元音的"声音"和名称不同。',
+  quickCheck: {
+    question: '读 tap 时，a 发的是字母名称「诶」吗？',
+    options: ['是，a 就读「诶」', '不是，a 在里面发短促的"啊"', '是，但读轻一点', '看心情'],
+    answer: 1,
+    explanation: '字母名和字母音是两套系统。tap 里 a 发短"啊"；「诶」是 a 单独报名字时的读音。',
+  },
+};
+
+/**
+ * 零基础发音段的系统拼读分组课（SSP 顺序：Jolly Phonics / Letters and Sounds 公开教学顺序）。
+ *
+ * ★ 教学硬约束（english-path.test.ts 有前置知识闭合校验，改课必须同步满足）：
+ *  1. 一课只教 ≤6 个音，音的顺序 = SSP 分组，不按字母表；
+ *  2. 每课例词只能由「本课 + 之前已教」的字母拼出（sat/pin/tap 只用第 1 组六个字母）；
+ *  3. 零基础层不展示 IPA 符号（ipaHidden），改展示 mouth 口型提示；
+ *  4. IPA 符号、闭音节等术语下沉到初中及以上轨道。
+ */
+const SSP_GROUP1: EnglishPathStep = {
+  id: 'ssp_group1',
+  kind: 'phonics',
+  title: '第一组音：s a t i p n',
+  goal: '把这 6 个音发准：它们能拼出最多的简单词',
+  minutes: 10,
+  ipaHidden: true,
+  explanation: '学发音不按字母表，按"能马上拼出词"的顺序来。这 6 个音学会了，就能读 sat、pin、tap 这样的词。每个音跟读三遍，再点例词听整词。从这一课起，记单词靠拼读：会读的词就能拼写出来，不用死背字母。',
+  pattern: 's /s/ → sip · a /æ/ → tap · t /t/ → tin · i /ɪ/ → sit · p /p/ → pan · n /n/ → nap',
+  sounds: [
+    { letter: 's', ipa: '/s/', word: 'sip', gloss: '小口喝', mouth: '嘴角拉平，牙齿轻合，让气流从齿缝里"嘶——"出来' },
+    { letter: 'a', ipa: '/æ/', word: 'tap', gloss: '轻拍', mouth: '嘴张大能放进两指，短促地"啊"，不要拖长' },
+    { letter: 't', ipa: '/t/', word: 'tin', gloss: '罐头', mouth: '舌尖抵住上齿龈，短促弹开，像轻敲桌面' },
+    { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐', mouth: '下巴放松半开，短促的"衣"，比中文"衣"更松' },
+    { letter: 'p', ipa: '/p/', word: 'pan', gloss: '平底锅', mouth: '双唇先闭紧，再突然张开吐气，像吹灭蜡烛' },
+    { letter: 'n', ipa: '/n/', word: 'nap', gloss: '小睡', mouth: '舌尖抵上齿龈，气流从鼻腔出来，喉咙不振动发声前先闭嘴哼一下' },
+  ],
+  tip: '每学一个音就伸手比划一次动作（s 像蛇、t 像看手表），音和动作绑在一起记。',
+  examples: [
+    { en: 'sit · pin · tap · tin · nap · pan', zh: '坐 · 别针 · 轻拍 · 罐头 · 小睡 · 平底锅' },
+    { en: 'Tap it. Pat it.', zh: '敲敲它，拍拍它。' },
+  ],
+  task: '把 6 个音各读三遍，再用 sit、pin、tap 三个词说出中文意思。',
+  quickCheck: {
+    question: '下面哪个词只用刚学的 6 个音就能拼出来？',
+    options: ['tin', 'dog', 'red'],
+    answer: 0,
+    explanation: 'tin = t + i + n，三个音都学过；dog 里的 o 和 red 里的 r、d 要到后面几组才学。',
+  },
+};
+
+const SSP_GROUP2: EnglishPathStep = {
+  id: 'ssp_group2',
+  kind: 'phonics',
+  title: '第二组音：c e h r m d',
+  goal: '加上这 6 个音，能拼的词立刻翻倍',
+  minutes: 10,
+  ipaHidden: true,
+  explanation: 'c 和 k 发同一个音（cat、kid 开头一样）。把这组 6 个音和第一组混在一起练，能拼的词一下多起来：cat、bed、hat、red……',
+  pattern: 'c /k/ → cat · e /ɛ/ → pen · h /h/ → hat · r /r/ → red · m /m/ → map · d /d/ → dad',
+  sounds: [
+    { letter: 'c', ipa: '/k/', word: 'cat', gloss: '猫', mouth: '舌根抬起来抵住软腭，突然放开吐气，像轻轻咳一下' },
+    { letter: 'e', ipa: '/ɛ/', word: 'pen', gloss: '钢笔', mouth: '嘴半开，上下齿之间留一根食指宽，短促的"哎"' },
+    { letter: 'h', ipa: '/h/', word: 'hat', gloss: '帽子', mouth: '像往镜子上哈气，只有气流，喉咙不用力' },
+    { letter: 'r', ipa: '/r/', word: 'red', gloss: '红色', mouth: '舌尖卷起但不碰上腭，嘴唇略向前拢' },
+    { letter: 'm', ipa: '/m/', word: 'map', gloss: '地图', mouth: '闭着嘴哼，气流从鼻子出来，嘴唇能感到麻' },
+    { letter: 'd', ipa: '/d/', word: 'dad', gloss: '爸爸', mouth: '和 t 舌位一样，但喉咙要振动，手放喉咙能感觉到' },
+  ],
+  tip: 'c 和 k 同音，先只记 c；r 是这一组最容易丢的音，多读 red、rat 几遍。',
+  examples: [
+    { en: 'cat · pen · hat · red · map · dad', zh: '猫 · 钢笔 · 帽子 · 红色 · 地图 · 爸爸' },
+    { en: 'The cat is mad.', zh: '这只猫生气了。' },
+  ],
+  task: '把 6 个音各读三遍，再拼读 cat、pen、hat：先一个音一个音读，再连成整词。',
+  quickCheck: {
+    question: '下面哪个词用前两组的音就能拼出来？',
+    options: ['dad', 'sun', 'moon'],
+    answer: 0,
+    explanation: 'dad = d + a + d，两组都学过；sun 里的 u、moon 里的 oo 还没教。',
+  },
+};
+
+const SSP_GROUP3: EnglishPathStep = {
+  id: 'ssp_group3',
+  kind: 'phonics',
+  title: '第三组音：g o u l f b',
+  goal: '补齐最后 6 个常用音，21 个单字母音全齐',
+  minutes: 10,
+  ipaHidden: true,
+  explanation: '这一组学完，21 个辅音加 a/e/i/o/u 五个元音的短音就全部见过。五个元音字母的短音下一课会放在一起对比。',
+  pattern: 'g /g/ → bag · o /ɑ/ → dog · u /ʌ/ → cup · l /l/ → leg · f /f/ → fan · b /b/ → bug',
+  sounds: [
+    { letter: 'g', ipa: '/g/', word: 'bag', gloss: '包', mouth: '和 k 舌位一样，但喉咙振动，像刚喝完水的"咕"声' },
+    { letter: 'o', ipa: '/ɑ/', word: 'dog', gloss: '狗', mouth: '嘴自然张大，圆一点，短促的"啊"（美式读法）' },
+    { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开，舌身放平，像被轻轻吓一跳的短"啊"' },
+    { letter: 'l', ipa: '/l/', word: 'leg', gloss: '腿', mouth: '舌尖抵上齿龈，气流从舌头两边出来' },
+    { letter: 'f', ipa: '/f/', word: 'fan', gloss: '风扇', mouth: '上齿轻咬下唇，吐气，像漏气的"呋"' },
+    { letter: 'b', ipa: '/b/', word: 'bug', gloss: '虫子', mouth: '和 p 舌位一样，但喉咙振动；手放喉咙能感觉到' },
+  ],
+  tip: 'p/b、t/d、k/g 都是"清浊成对"：口型一样，只差喉咙振不振。手放喉咙试一试。',
+  examples: [
+    { en: 'dog · bag · cup · leg · fan · bug', zh: '狗 · 包 · 杯子 · 腿 · 风扇 · 虫子' },
+    { en: 'The dog is on the log.', zh: '狗趴在木头上。' },
+  ],
+  task: '拼读 dog、bag、cup 各三遍；再用手指着 The dog is on the log. 一个词一个词读。',
+  quickCheck: {
+    question: '下面哪个词用前三组的音就能拼出来？',
+    options: ['leg', 'zip', 'thin'],
+    answer: 0,
+    explanation: 'leg = l + e + g，三组都学过；zip 里的 z、thin 里的 th 后面才学。',
+  },
+};
+
+const SSP_MORE_CONSONANTS: EnglishPathStep = {
+  id: 'ssp_more_consonants',
+  kind: 'phonics',
+  title: '剩下的辅音：j v w x y z',
+  goal: '补齐 26 个字母的字母音，拼读不再卡壳',
+  minutes: 10,
+  ipaHidden: true,
+  explanation: '这 6 个辅音学完，26 个字母的字母音就全齐了（q 总和 u 连在一起，读作"kw"，后面遇到再练）。注意 y 在 yes 开头是辅音。',
+  pattern: 'j /dʒ/ → jam · v /v/ → van · w /w/ → web · x /ks/ → box · y /j/ → yes · z /z/ → zip',
+  sounds: [
+    { letter: 'j', ipa: '/dʒ/', word: 'jam', gloss: '果酱', mouth: '舌尖抵上齿龈再松开，像"知"的气音加"j"合在一起' },
+    { letter: 'v', ipa: '/v/', word: 'van', gloss: '货车', mouth: '上齿轻咬下唇，但喉咙振动；和 f 只差振不振' },
+    { letter: 'w', ipa: '/w/', word: 'web', gloss: '网', mouth: '嘴唇收圆再快速打开，像吹圆泡泡' },
+    { letter: 'x', ipa: '/ks/', word: 'box', gloss: '盒子', mouth: 'x 在词里读 k 和 s 两个音连起来，跟着整词读' },
+    { letter: 'y', ipa: '/j/', word: 'yes', gloss: '是', mouth: '舌面抬高靠近上腭，快速滑向后面的音' },
+    { letter: 'z', ipa: '/z/', word: 'zip', gloss: '拉链', mouth: '和 s 舌位一样，但喉咙振动，像蜜蜂"嗡"' },
+  ],
+  tip: 'v 和 f、z 和 s 都是清浊成对：口型一样，手放喉咙分真假——振动的是 v 和 z。',
+  examples: [
+    { en: 'jam · van · web · box · yes · zip', zh: '果酱 · 货车 · 网 · 盒子 · 是 · 拉链' },
+    { en: 'Yes, the fox is in the box.', zh: '是的，狐狸在盒子里。' },
+  ],
+  task: '把 6 个音各读三遍，再拼读 box、zip、jam：先拆音再连读。',
+  quickCheck: {
+    question: '下面哪个词的读音里没有刚学的 6 个辅音？',
+    options: ['thin', 'zip', 'van'],
+    answer: 0,
+    explanation: 'thin 开头是 th 组合，不属于这 6 个辅音；zip 有 z，van 有 v。',
+  },
+};
+
+/** 分轨入口课：初中 / 高中 / 成人各自的第一课（零基础轨不出现）。 */
+const JUNIOR_IPA_MAP: EnglishPathStep = {
+  id: 'junior_ipa_map',
+  kind: 'phonics',
+  method: '音标分组',
+  title: '音标地图：先元音，后辅音',
+  goal: '知道 48 个音标怎么分组，读准三对最易混的短元音',
+  minutes: 12,
+  explanation: '初中过音标按三批走：先 12 个单元音（它们是词的"骨架"），再 8 个双元音，最后 28 个辅音清浊成对记。这一课先立地图，只精练三对最容易混的短元音，后面的课再逐组练。',
+  pattern: 'sheep /iː/ ↔ ship /ɪ/ · bed /ɛ/ ↔ bad /æ/ · cup /ʌ/ ↔ car /ɑr/',
+  sounds: [
+    { letter: 'iː', ipa: '/iː/', word: 'sheep', gloss: '羊', mouth: '嘴角向耳根咧开，舌面紧贴上腭，音拖两拍' },
+    { letter: 'ɪ', ipa: '/ɪ/', word: 'ship', gloss: '船', mouth: '下巴松半格，短促放松，像被轻吓一跳的"衣"' },
+    { letter: 'ɛ', ipa: '/ɛ/', word: 'bed', gloss: '床', mouth: '上下齿之间留一根食指宽' },
+    { letter: 'æ', ipa: '/æ/', word: 'bad', gloss: '坏的', mouth: '嘴角横向拉开，下巴再落一指，嘴张到能塞两指' },
+    { letter: 'ʌ', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开，舌身放平，短促放松' },
+    { letter: 'ɑr', ipa: '/ɑr/', word: 'car', gloss: '汽车', mouth: '先发长"啊"再卷舌收 r，美式 r 要圆唇' },
+  ],
+  tip: '把这三对词各读十遍，读到能自动切换；分不清就回头看口型提示，不要凭感觉猜。',
+  examples: [
+    { en: 'sheep · ship · bed · bad · cup · car', zh: '羊 · 船 · 床 · 坏的 · 杯子 · 汽车' },
+    { en: 'The sheep is in the ship.', zh: '羊在船上。' },
+  ],
+  task: '对着镜子把三对易混音各读五遍，录音回放和标准音对比一次。',
+  quickCheck: {
+    question: '老师读 ship 的时候，你听到的是哪个音？',
+    options: ['短促放松的 /ɪ/', '拖长的 /iː/', '圆唇的 /ʊ/'],
+    answer: 0,
+    explanation: 'ship 是短促的 /ɪ/；sheep 才是拖长的 /iː/。分不清就回口型提示再看一遍。',
+  },
+};
+
+const SENIOR_SOUND_FIX: EnglishPathStep = {
+  id: 'senior_sound_fix',
+  kind: 'phonics',
+  method: '听辨',
+  title: '易错音辨析：最小对立对',
+  goal: '用成对词把长短线、松紧和 th 咬舌一次分清',
+  minutes: 12,
+  explanation: '高中的发音问题集中在几对音上：长短不分（ship/sheep）、松紧不分（bad/bed）、圆唇不分（full/fool）、咬舌音发成 s。这节课只做听辨和跟读，不做规则讲解。',
+  pattern: 'ship /ɪ/ ↔ sheep /iː/ · bad /æ/ ↔ bed /ɛ/ · full /ʊ/ ↔ fool /uː/ · think /θ/ ↔ sink /s/',
+  sounds: [
+    { letter: 'ɪ', ipa: '/ɪ/', word: 'ship', gloss: '船', mouth: '短促放松，下巴松半格' },
+    { letter: 'iː', ipa: '/iː/', word: 'sheep', gloss: '羊', mouth: '嘴角咧开，舌面紧贴上腭，拖两拍' },
+    { letter: 'æ', ipa: '/æ/', word: 'bad', gloss: '坏的', mouth: '嘴张到最大，嘴角横向拉开' },
+    { letter: 'ɛ', ipa: '/ɛ/', word: 'bed', gloss: '床', mouth: '比 æ 小一号，齿间留一指宽' },
+    { letter: 'ʊ', ipa: '/ʊ/', word: 'full', gloss: '满的', mouth: '嘴唇收小圆孔，短促' },
+    { letter: 'θ', ipa: '/θ/', word: 'think', gloss: '想', mouth: '舌尖伸到上下齿之间，吐气不振动' },
+  ],
+  tip: '每次只练一对：听原音 → 自己读 → 回放对比，一对过关再换下一对。',
+  examples: [
+    { en: 'ship · sheep · bad · bed · full · fool · think · sink', zh: '船 · 羊 · 坏的 · 床 · 满的 · 傻瓜 · 想 · 下沉' },
+    { en: 'I think this full bus is not bad.', zh: '我觉得这辆满员的公交还不错。' },
+  ],
+  task: '四对易错音各录一遍自己的读音，回放和原音对比，标出最不稳的一对。',
+  quickCheck: {
+    question: 'Which pair contrasts only vowel length and tenseness?',
+    options: ['sheep – ship', 'think – sink', 'bad – bed'],
+    answer: 0,
+    explanation: 'sheep–ship 差在 /iː/ 长而紧、/ɪ/ 短而松；think–sink 差在辅音 θ 和 s；bad–bed 差在开口度。',
+  },
+};
+
+const ADULT_IPA_CRASH: EnglishPathStep = {
+  id: 'adult_ipa_crash',
+  kind: 'phonics',
+  method: '速通',
+  title: '音标速通：先元音，后辅音',
+  goal: '一周把 48 个音标的地图立起来，见到生词敢查敢读',
+  minutes: 12,
+  explanation: '成人不用从儿歌学起，但要按顺序：第一批 12 个单元音（定调子），第二批 8 个双元音（滑动要做出来），第三批 28 个辅音清浊成对记（p/b、t/d、k/g、f/v、s/z……）。每个音配 3 个高频词，对着口型读。',
+  pattern: '元音定调：/iː/ /ɪ/ /ɛ/ /æ/ /ɑ/ /ʌ/ /ʊ/ /uː/ /ɔ/ /ə/ /ɜr/ /ɔr/ → 辅音成对：p↔b · t↔d · k↔g · f↔v · s↔z',
+  sounds: [
+    { letter: 'iː', ipa: '/iː/', word: 'see', gloss: '看见', mouth: '嘴角咧开，舌面贴上腭，拖两拍' },
+    { letter: 'æ', ipa: '/æ/', word: 'cat', gloss: '猫', mouth: '嘴张到能塞两指，短促' },
+    { letter: 'ʌ', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开，舌身放平' },
+    { letter: 'θ', ipa: '/θ/', word: 'think', gloss: '想', mouth: '咬舌吐气，喉咙不振动' },
+    { letter: 'ð', ipa: '/ð/', word: 'this', gloss: '这个', mouth: '咬舌吐气，喉咙振动；和 θ 只差振动' },
+    { letter: 'ʃ', ipa: '/ʃ/', word: 'she', gloss: '她', mouth: '嘴唇略前拢，像安静手势"嘘"' },
+  ],
+  tip: '别贪快：一天两批音标，每个音挑 3 个高频词，一周过完全表；中文里没有的音（θ ð v）重点练。',
+  examples: [
+    { en: 'see · cat · cup · think · this · she', zh: '看见 · 猫 · 杯子 · 想 · 这个 · 她' },
+    { en: 'I think this is her cup.', zh: '我觉得这是她的杯子。' },
+  ],
+  task: '今天先过元音批：每个单元音配 3 个高频词，明天再过辅音批。',
+  quickCheck: {
+    question: '音标里清浊成对的辅音，"浊"是什么意思？',
+    options: ['喉咙振动', '声音更大', '拖得更长'],
+    answer: 0,
+    explanation: '浊 = 发音时喉咙振动。手放喉咙对比 p 和 b 一试就知道。',
+  },
+};
+
+/**
+ * 回译课（kind='translate'）：先自己把中文翻成英语，再点「对照」逐句看参考译文和预写差异提示。
+ *
+ * ★ 教学约束（english-path.test.ts 校验）：
+ *  1. 只出现在 junior / senior / adult 轨，零基础轨输出为 0 节（认知负荷）；
+ *  2. 每课 3~5 句，源句 zh、参考译文 en、差异提示 note 三者全预写，不走 LLM；
+ *  3. note 必须点出具体的中英差异（词序/时态/冠词/单复数…），不是"多练习"式空话。
+ */
+const TRANSLATE_ROOTS: EnglishPathStep = {
+  id: 'translate_roots',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：用词根把中文翻成英语',
+  goal: '先自己翻，再对照参考译文，检查词根词是不是真的会用',
+  minutes: 12,
+  explanation: '回译是主动输出：先遮住参考译文，把中文翻成英语，再逐句对照。词根课学的 port、spect 只有在翻译里用出来，才算真的掌握。',
+  tip: '对照时只抓两类差异：选词（是不是用了同根词）和形式（第三人称 -s、-able 词性）。不要逐词对照。',
+  translate: [
+    { zh: '这家公司出口机器，进口咖啡。', en: 'This company exports machines and imports coffee.', note: 'port=搬运：ex- 向外 → exports，im- 向内 → imports；主语第三人称单数，动词加 -s。' },
+    { zh: '那位观众很尊重检查员的工作。', en: 'The spectator respects the inspector’s work.', note: 'spect=看：spectator 是观看的人，inspector 是往里看（检查）的人；respect 是"带着敬意看"。' },
+    { zh: '这份报告便于携带，也方便运输。', en: 'The report is portable and easy to transport.', note: '-able 表示"能被……的"；transport = trans（跨越）+ port。' },
+    { zh: '支持者们把作品集搬进了展览。', en: 'The supporters carried the portfolio into the exhibition.', note: 'support = sup（从下方）+ port；portfolio 是"携带纸张"→ 作品集。这里用一般动词 carried，不必硬凑同根词。' },
+  ],
+  examples: [],
+  task: '先自己翻完 4 句再点对照。把和你译文不一样的句子抄一遍，只改错的地方。',
+  quickCheck: {
+    question: '回译对照时，最应该优先检查什么？',
+    options: ['每个词是不是高级词', '选词对不对、动词形式对不对', '句子长不长', '标点符号'],
+    answer: 1,
+    explanation: '回译的目标是暴露真实输出和标准表达的差距：先看选词，再看 -s、-able 这类形式差异。',
+  },
+};
+
+const TRANSLATE_SKELETON: EnglishPathStep = {
+  id: 'translate_skeleton',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：先搭骨架再填细节',
+  goal: '用"谁做什么"的骨架翻句子，对照时检查语序',
+  minutes: 12,
+  explanation: '中文习惯把时间、地点放句首，英语常先说"谁做什么"，再补时间地点。回译时最容易暴露的就是这个语序差。',
+  tip: '先在纸上写骨架（谁 + 做什么 + 对什么），再填时间地点；对照时看参考译文把时间放到了哪。',
+  translate: [
+    { zh: '我妹妹每周五在图书馆学英语。', en: 'My sister studies English in the library every Friday.', note: '英语先给"谁做什么"（sister studies English），地点和时间放句尾；中文的"每周五在图书馆"被拆开放。' },
+    { zh: '桌上有两杯水和一壶茶。', en: 'There are two glasses of water and a pot of tea on the table.', note: '"某地有某物"用 there be，不用 have；动词跟最近的名词（glasses → are）。' },
+    { zh: '他昨天在会上什么都没说。', en: 'He said nothing at the meeting yesterday.', note: '英语用 nothing 直接否定；时间状语 yesterday 放句尾，不抢句子开头。' },
+    { zh: '这本词典是我爸爸的。', en: 'This dictionary is my father’s.', note: '英语用 -’s 所有格；中文"我爸爸的"后面省掉的名词，英文可以省，但 ’s 不能丢。' },
+  ],
+  examples: [],
+  task: '翻完再对照。挑一句，把语序差异用箭头画出来（中文语序 → 英语语序）。',
+  quickCheck: {
+    question: '「昨天我在家看了一本书」，英语最自然的语序是？',
+    options: ['Yesterday I at home read a book.', 'I read a book at home yesterday.', 'I yesterday read at home a book.', 'At home yesterday I read a book.'],
+    answer: 1,
+    explanation: '骨架 I read a book 放最前，地点 at home、时间 yesterday 依次放句尾。',
+  },
+};
+
+const TRANSLATE_TENSE: EnglishPathStep = {
+  id: 'translate_tense',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：时态和否定疑问',
+  goal: '对照时专查时态形式：中文不变形，英文必须变',
+  minutes: 12,
+  explanation: '中文动词不随时间变形（"昨天去/明天去"都是"去"），英语必须变（went / will go）。回译时把每个动词圈出来，先问"什么时间"，再定形式。',
+  tip: '对照时只盯动词：它的时态形式对吗？否定借 did/have 了吗？疑问句把助动词提前了吗？',
+  translate: [
+    { zh: '她上周没来开会。', en: 'She did not come to the meeting last week.', note: '中文"没来"不变动词；英语否定借 did，come 回原形——不能再写 didn’t came。' },
+    { zh: '你做过这个测试吗？', en: 'Have you done this test before?', note: '"做过（经验/影响现在）"用现在完成时 have done；疑问句把 have 提到主语前。' },
+    { zh: '他们明天几点出发？', en: 'What time do they leave tomorrow?', note: '时刻表类安排常用一般现在时表将来；疑问句借 do 提前，leave 用原形。' },
+    { zh: '我正要出门，电话响了。', en: 'I was about to leave when the phone rang.', note: '"正要……这时"用 be about to + when；背景动作 was about to leave，插入动作 rang 用过去式。' },
+    { zh: '这本书我已经读了三天了。', en: 'I have been reading this book for three days.', note: '"一直读到现在"用现在完成进行时 have been doing；for + 时间段是它的信号。' },
+  ],
+  examples: [],
+  task: '翻完对照后，把 5 句里的动词按"时间 → 形式"列成一张小表。',
+  quickCheck: {
+    question: '「我昨天没去」，为什么不能说 I didn’t went？',
+    options: ['went 拼错了', 'did 已经承担了过去，动词回原形 go', '昨天不用过去时', 'go 比 went 更高级'],
+    answer: 1,
+    explanation: '一个句子里过去时只标记一次：did 承担了，后面的动词用原形 go。',
+  },
+};
+
+const TRANSLATE_FABLE: EnglishPathStep = {
+  id: 'translate_fable',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：把寓言道理翻出来',
+  goal: '翻叙事句和道理句，对照时检查连接词和冠词',
+  minutes: 12,
+  explanation: '寓言复述 = 叙事（过去时）+ 总结（一般现在时）。中文一句话的事，英语常要用连接词分成主从两句。',
+  tip: '对照时注意 because / so / but 有没有用出来；单数可数名词前面有没有 a/the。',
+  translate: [
+    { zh: '兔子跑得快，但是它在半路睡着了。', en: 'The hare ran fast, but it fell asleep halfway.', note: '叙事用过去式 ran / fell；中文"半路"= halfway，but 连接转折。' },
+    { zh: '乌龟虽然慢，却从来没有停。', en: 'Although the tortoise was slow, it never stopped.', note: '"虽然……却"= although（不与 but 连用）；never 已经是否定，不再加 not。' },
+    { zh: '慢而稳的人赢得比赛。', en: 'Slow and steady wins the race.', note: '道理句用一般现在时；形容词短语作主语按单数处理，动词加 -s；race 前有 the。' },
+    { zh: '吃不到葡萄就说葡萄酸，这不对。', en: 'It is wrong to say the grapes are sour just because you cannot reach them.', note: '英语用 it 作形式主语；"just because…"把原因挂到句尾，中文没有这种挂尾结构。' },
+  ],
+  examples: [],
+  task: '翻完对照，再挑一句把你自己的版本和参考译文各读三遍，感受差异在哪。',
+  quickCheck: {
+    question: '「虽然慢，但没停」英语为什么用 Although..., it never stopped 而不加 but？',
+    options: ['but 太口语', 'although 和 but 不能在同一个句子里连用', 'never 后面必须加 but', ' stopped 是过去式的原因'],
+    answer: 1,
+    explanation: 'although 和 but 都标记转折，一个句子里只能出现一个——这是中译英高频错误。',
+  },
+};
+
+const TRANSLATE_STORY: EnglishPathStep = {
+  id: 'translate_story',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：用连接词串故事',
+  goal: '翻情节句，对照时检查时间连接词和代词',
+  minutes: 12,
+  explanation: '中文靠语序表达先后，英语靠 First / Then / After that / Finally 把时间线说破。回译时先把连接词写好，再填句子。',
+  tip: '对照时看两点：连接词位置（句首 + 逗号）和"他/她"有没有一直用 he/she，还是换成了名字。',
+  translate: [
+    { zh: '她错过了末班车，所以只能走路回家。', en: 'She missed the last bus, so she had to walk home.', note: '因果用 so；have to 的过去式是 had to。' },
+    { zh: '起初很冷，后来太阳出来了。', en: 'At first it was cold, but later the sun came out.', note: 'At first 放句首 + 逗号；"太阳出来"是固定说法 the sun came out。' },
+    { zh: '就在那时，有人敲了敲门。', en: 'Just then, someone knocked on the door.', note: 'Just then 是"就在那时"的地道说法；knock on the door 用 on。' },
+    { zh: '最后，大家都笑了，紧张气氛消失了。', en: 'In the end, everyone laughed and the tension was gone.', note: 'In the end 收尾；"气氛消失"英语常说 be gone，不直译 disappear。' },
+  ],
+  examples: [],
+  task: '翻完对照后，用 At first / Then / Just then / In the end 四个连接词复述你自己的一天。',
+  quickCheck: {
+    question: '连接词在英语句子里通常放在哪？',
+    options: ['句子最中间', '句首，后面加逗号', '句尾', '主语后面动词前面'],
+    answer: 1,
+    explanation: 'At first, / Just then, / In the end, 都是"句首 + 逗号"，提示读者时间线拐弯了。',
+  },
+};
+
+const TRANSLATE_SPEAKING: EnglishPathStep = {
+  id: 'translate_speaking',
+  kind: 'translate',
+  method: '回译',
+  title: '回译：把口语句翻地道',
+  goal: '翻日常口语句，对照时看英语的地道搭配',
+  minutes: 10,
+  explanation: '口语句最忌逐字直译。中文"我请客"翻成 I invite you 吃不地道，英语有自己的说法。回译对照就是积累这些搭配。',
+  tip: '对照时把参考译文里"整块"的表达划出来（如 My treat），整块记，不要拆成单词背。',
+  translate: [
+    { zh: '今天我请客。', en: 'It’s my treat. / My treat.', note: '"请客"是整块表达 my treat，不是 I invite you to eat。' },
+    { zh: '这边结账。', en: 'Could we have the bill, please?', note: '英语没有"结账"的直译；餐厅买单用要账单的说法，加 could 礼貌。' },
+    { zh: '你决定就行，我都行。', en: 'It’s up to you. I’m easy.', note: '"都行"口语说 I’m easy；up to you 表示由对方决定。' },
+    { zh: '我马上到，再等我五分钟。', en: 'I’m almost there. Give me five more minutes.', note: '"马上到"对还在路上的人说 almost there，不用 I will arrive soon。' },
+  ],
+  examples: [],
+  task: '翻完对照后，把 4 个整块表达各大声读五遍，明天口语课直接用。',
+  quickCheck: {
+    question: '朋友问吃什么，你说"都行，你决定"，最地道的是？',
+    options: ['I am all decided by you.', 'It’s up to you. I’m easy.', 'You decide for me please.', 'Anything is decided.'],
+    answer: 1,
+    explanation: 'It’s up to you + I’m easy 是英语里"你定，我都行"的固定说法。',
+  },
+};
+
+/** 学习人群轨道：不同起点从不同的第一课进入（用户拍板：零基础 / 初中 / 高中 / 成人）。 */
+export type EnglishTrackId = 'zero' | 'junior' | 'senior' | 'adult';
+
+export type EnglishTrack = {
+  id: EnglishTrackId;
+  name: string;
+  audience: string;
+  entryStepId: string;
+};
+
+export const ENGLISH_TRACKS: EnglishTrack[] = [
+  { id: 'zero', name: '零基础', audience: '从字母音开始，一课一小组音', entryStepId: SSP_GROUP1.id },
+  { id: 'junior', name: '初中', audience: '认识字母，补音标分组和拼读', entryStepId: JUNIOR_IPA_MAP.id },
+  { id: 'senior', name: '高中', audience: '拼读已过关，主攻易错音辨析', entryStepId: SENIOR_SOUND_FIX.id },
+  { id: 'adult', name: '成人', audience: '速通音标，直奔高频词句', entryStepId: ADULT_IPA_CRASH.id },
+];
+
+export function normalizeEnglishTrack(value: unknown): EnglishTrackId {
+  return ENGLISH_TRACKS.some((track) => track.id === value) ? (value as EnglishTrackId) : 'zero';
+}
+
+/**
  * 零基础英语主线。
  *
  * 内容为原创改写，吸收自然拼读、词根词缀、结构语法、可理解输入和情景输出等公开学习方法；
@@ -255,23 +747,29 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
     subtitle: '看到词能拆音，听到词能拼回去',
     level: '零基础',
     steps: [
+      LETTER_NAME_LESSON,
+      SSP_GROUP1,
+      SSP_GROUP2,
+      SSP_GROUP3,
       {
         id: 'sound_short_vowels',
         kind: 'phonics',
-        title: '五个短元音',
-        goal: '先分清 a/e/i/o/u 在闭音节里的基本声音',
+        method: '听辨',
+        title: 'a/e/i/o/u 的短音（归纳）',
+        goal: '把五个元音字母的短音和已学单词对上，听到短音能指对元音字母',
         minutes: 8,
-        explanation: '短元音不能按字母名称读。下面标美式 IPA：先听 cat、bed、sit、hot、cup 里的元音，再把首音、元音和尾音连起来。',
+        ipaHidden: true,
+        explanation: '前三组里，五个元音字母已经在 cat、bed、sit、dog、cup 这些词里出现过。这一课把它们放在一起对比听，把每个字母的短音听熟。英语还有别的元音音（比如 book 里的 u），后面的课会遇到。',
         pattern: 'a /æ/ → cat · e /ɛ/ → bed · i /ɪ/ → sit · o /ɑ/ → hot · u /ʌ/ → cup',
         patternAudio: 'a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.',
         sounds: [
-          { letter: 'a', ipa: '/æ/', word: 'cat', gloss: '猫' },
-          { letter: 'e', ipa: '/ɛ/', word: 'bed', gloss: '床' },
-          { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐' },
-          { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热的' },
-          { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子' },
+          { letter: 'a', ipa: '/æ/', word: 'cat', gloss: '猫', mouth: '嘴张到能塞两指，短促"啊"' },
+          { letter: 'e', ipa: '/ɛ/', word: 'bed', gloss: '床', mouth: '嘴半开，齿间留一指宽' },
+          { letter: 'i', ipa: '/ɪ/', word: 'sit', gloss: '坐', mouth: '下巴放松半开，短促"衣"' },
+          { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热的', mouth: '嘴自然张大，圆一点' },
+          { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开，舌身放平' },
         ],
-        tip: '先听完整例词，再拆成“辅音 + 短元音 + 辅音”；例如 hot 不是 /hoʊt/。',
+        tip: '快问快答：听到一个词，立刻指出中间的元音字母。短音和字母名称不一样，不要用"欸""伊"去套。',
         examples: [
           { en: 'cat · bed · sit · hot · cup', zh: '猫 · 床 · 坐 · 热 · 杯子' },
           { en: 'A cat sat on a red mat.', zh: '一只猫坐在红色垫子上。' },
@@ -282,17 +780,21 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         id: 'sound_blending',
         kind: 'phonics',
         title: '拼读而不是逐字母念',
-        goal: '把 c-a-t 连成 /kæt/，建立字母和声音的映射',
+        goal: '把 c-a-t 三个音连成 cat，建立"看词就能读"的反射',
         minutes: 10,
-        explanation: '自然拼读的关键是“合音”：先读首音，再接元音，最后接尾音。连续做几次后，大脑会直接把词形和声音连起来。',
-        pattern: 'c + a + t → ca → cat',
-        tip: '遇到长词时先切块：sun-set、bed-room、note-book。',
+        explanation: '自然拼读的关键是"合音"：先读第一个音，再接元音，最后接尾音，中间不停顿。连续做几次后，大脑会直接把词形和声音连起来。这就是用拼读记单词：会读就会拼，看到新词先试着读出来，比死背字母顺序牢得多。',
+        pattern: 'c + a + t → cat',
+        blend: [
+          { parts: [{ text: 'c', ipa: '/k/' }, { text: 'a', ipa: '/æ/' }, { text: 't', ipa: '/t/' }], word: 'cat' },
+        ],
+        tip: '遇到长词先切块：sun-set、bed-room、note-book。',
         examples: [
           { en: 'sunset · bedroom · notebook', zh: '日落 · 卧室 · 笔记本' },
           { en: 'Sun + set makes sunset.', zh: 'sun 和 set 合起来就是 sunset。' },
         ],
-        task: '把 sunset、bedroom、notebook 各拆成两个词，再连续读五遍。',
+        task: '把 sunset、bedroom、notebook 各拆成两个词，再连续读五遍；然后合上页面，用拼读把 cat、sun 各默写出来。',
       },
+      SSP_MORE_CONSONANTS,
       {
         id: 'sound_common_pairs',
         kind: 'phonics',
@@ -344,7 +846,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '词根 port：携带、搬运',
         goal: '用一个词根串起 import/export/transport/portable',
         minutes: 10,
-        explanation: 'port 表示“带、运”。先记这个词根，再看前缀方向和后缀词性，比逐个死背四个词更稳。',
+        explanation: 'port 表示“带、运”。先记这个词根，再看前缀方向和后缀词性，比逐个死背四个词更稳。词根记单词的原理：记住一个 port，等于记住一整串词——遇到没见过的词也能猜出方向。',
         pattern: 'im-(向内) + port = import；ex-(向外) + port = export',
         tip: '词根负责核心意思，前缀常常改变方向，后缀常决定词性。',
         examples: [
@@ -372,7 +874,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '词根 spect：看',
         goal: '理解 inspect/respect/spectator 的共同画面',
         minutes: 10,
-        explanation: 'spect 表示“看”。inspect 是往里看、检查；respect 是带着敬意看；spectator 是观看的人。',
+        explanation: 'spect 表示“看”。inspect 是往里看、检查；respect 是带着敬意看；spectator 是观看的人。用词根记单词：把 spect 想成一幅“正在看”的画面，整串词就有了共同锚点。',
         pattern: 'spect = look / see',
         tip: '把词根想成一幅画：有人正在“看”，再叠前后缀改变视角。',
         examples: [
@@ -399,7 +901,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '前后缀的方向感',
         goal: '用 re-/pre-/un-/-able 快速猜新词',
         minutes: 10,
-        explanation: '前缀常给方向和态度，后缀常给词性。猜词不是乱猜，而是先拆出熟悉的部分。',
+        explanation: '前缀常给方向和态度，后缀常给词性。猜词不是乱猜，而是先拆出熟悉的部分——拼读管“怎么读”，词根管“什么意思”，两条路合起来就是记单词的完整方法。',
         pattern: 're- 再/回；pre- 之前；un- 否定；-able 能被……的',
         tip: '看到 rebuild：re + build = 重新建；看到 readable：read + able = 可读的。',
         examples: [
@@ -424,7 +926,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: `词根 ${item.root}：${item.meaning}`,
         goal: `通过 ${item.root} 串起 ${item.words.length} 个常用词`,
         minutes: 10,
-        explanation: `词根 ${item.root} 表示“${item.meaning}”。先记核心画面，再看前缀改变方向、后缀改变词性。`,
+        explanation: `词根 ${item.root} 表示“${item.meaning}”。先记核心画面，再看前缀改变方向、后缀改变词性。用词根记单词：一个词根串起一串词，比逐个死背省力得多。`,
         pattern: `${item.root} = ${item.meaning}`,
         tip: '不要孤立背单词表；把同根词放在一起，用一个画面串起来。',
         examples: [
@@ -435,6 +937,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         task: item.task,
         check: item.check,
       })),
+      TRANSLATE_ROOTS,
     ],
   },
   {
@@ -449,14 +952,18 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '句子先抓骨架',
         goal: '先找“谁做什么”，再加时间、地点和细节',
         minutes: 9,
-        explanation: '英语句子先搭主谓宾骨架。中文习惯把很多信息塞在前面，英语更常先给核心动作，再补时间地点。',
+        explanation: '英语句子先搭主谓宾骨架。中文习惯把很多信息塞在前面，英语更常先给核心动作，再补时间地点。用翻译对照练：先把中文翻出去，再对照参考译文看语序差在哪。',
         pattern: '主语 + 动作 + 对象 + 时间/地点',
-        tip: '写长句前先问自己：谁？做什么？对什么？什么时候/在哪里？',
+        tip: '对照时只看一件事：参考译文把时间、地点放到了哪。中文在前，英语常在句尾。',
         examples: [
           { en: 'I read English stories before bed.', zh: '我睡前读英语故事。' },
           { en: 'She sends the report every Friday.', zh: '她每周五发送报告。' },
         ],
-        task: '用“我 + 动作 + 对象 + 时间”造三句与你今天生活有关的句子。',
+        translate: [
+          { zh: '我睡前读英语故事。', en: 'I read English stories before bed.', note: '骨架 I read English stories 先放稳；中文的“睡前”在英语里放到句尾 before bed。' },
+          { zh: '她每周五发送报告。', en: 'She sends the report every Friday.', note: '先“谁做什么”（she sends the report），时间 every Friday 放句尾；第三人称单数 sends 加 -s。' },
+        ],
+        task: '先翻上面两句并对照语序，再用“我 + 动作 + 对象 + 时间”造三句与你今天生活有关的句子。',
       },
       {
         id: 'grammar_timeline',
@@ -464,14 +971,18 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '时态是一条时间线',
         goal: '用时间线理解 do/did/will do/have done',
         minutes: 12,
-        explanation: '不要孤立背时态名称。先在脑子里画时间线：现在常态、过去某点、将来、过去影响现在，各自有不同形式。',
+        explanation: '不要孤立背时态名称。先在脑子里画时间线：现在常态、过去某点、将来、过去影响现在，各自有不同形式。中文动词不变形（“昨天去/明天去”都是“去”），英语必须变——翻译对照最容易暴露这一点。',
         pattern: 'do/does 现在；did 过去；will do 将来；have/has done 影响现在',
-        tip: '看到 yesterday 优先想过去式；看到 already 常想完成时；看到 every day 常想一般现在时。',
+        tip: '对照时把每个动词圈出来：中文一个“去”，英语为什么是 went / will go？先问时间，再定形式。',
         examples: [
           { en: 'I study every day. / I studied yesterday. / I will study tomorrow.', zh: '每天学；昨天学了；明天会学。' },
           { en: 'I have finished today’s lesson.', zh: '我已经完成今天的课程了。' },
         ],
-        task: '用 study 分别造出现在、过去、将来、完成时四句话。',
+        translate: [
+          { zh: '每天学；昨天学了；明天会学。', en: 'I study every day. I studied yesterday. I will study tomorrow.', note: '同一个“学”，英语按时间线变三形：study / studied / will study——中文的“了/会”就是时间信号。' },
+          { zh: '我已经完成今天的课程了。', en: 'I have finished today’s lesson.', note: '“已经……了”影响现在，用现在完成时 have finished；不是 I finished today’s lesson 的对错问题，而是强调对现在的影响。' },
+        ],
+        task: '先翻上面两句并对照动词形式，再用 study 分别造出现在、过去、将来、完成时四句话。',
       },
       {
         id: 'grammar_questions',
@@ -479,16 +990,22 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: '疑问句的移动规则',
         goal: '把陈述句稳定地变成问句',
         minutes: 10,
-        explanation: '有 be 或情态动词就把它提到前面；没有就把 do/does/did 放前面，后面的动词回到原形。',
+        explanation: '有 be 或情态动词就把它提到前面；没有就把 do/does/did 放前面，后面的动词回到原形。中文靠“吗/呢”和语调，英语靠移动助动词——对照着翻一次就看清了。',
         pattern: '疑问词 + 助动词 + 主语 + 动词原形？',
-        tip: '先找助动词，再移动；没有助动词就借一个。',
+        tip: '对照时看疑问词后面的第一个词：英语必须是助动词（do/does/did/be），中文没有这个位置。',
         examples: [
           { en: 'She works here. → Where does she work?', zh: '她在这里工作。→ 她在哪里工作？' },
           { en: 'They are ready. → Are they ready?', zh: '他们准备好了。→ 他们准备好了吗？' },
         ],
-        task: '把三句陈述句改成问句，并圈出你移动或借来的助动词。',
+        translate: [
+          { zh: '她在哪里工作？', en: 'Where does she work?', note: '中文“在哪里”直接放动词前；英语 Where 后必须先提助动词 does，work 回原形——不能写 Where she works。' },
+          { zh: '他们准备好了吗？', en: 'Are they ready?', note: '中文靠句尾“吗”；英语把 be 动词 are 移到主语前，再加问号和升调。' },
+        ],
+        task: '先翻上面两句并对照疑问词后的第一个词，再把三句陈述句改成问句，圈出你移动或借来的助动词。',
       },
       ...GRAMMAR_POINTS.map((_, index) => grammarStep(index)),
+      TRANSLATE_SKELETON,
+      TRANSLATE_TENSE,
     ],
   },
   {
@@ -588,6 +1105,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
       ...READING_PASSAGES
         .filter((passage) => passage.topic === '寓言' && !['The Tortoise and the Hare', 'The North Wind and the Sun', 'The Fox and the Grapes'].includes(passage.title))
         .map((passage, index) => passageStep(passage, 'fable', index)),
+      TRANSLATE_FABLE,
     ],
   },
   {
@@ -643,6 +1161,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
       ...READING_PASSAGES
         .filter((passage) => passage.topic !== '寓言' && passage.topic !== '长篇连载' && !['A Quiet Morning', 'The Little Café', 'The Lost Umbrella'].includes(passage.title))
         .map((passage, index) => passageStep(passage, 'story', index)),
+      TRANSLATE_STORY,
     ],
   },
   {
@@ -889,6 +1408,7 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         task: item.task,
         check: item.check,
       })),
+      TRANSLATE_SPEAKING,
     ],
   },
 ];
@@ -997,14 +1517,45 @@ for (const stage of ENGLISH_PATH) {
   }
 }
 
-export function getEnglishPath(): EnglishPathStage[] {
-  return ENGLISH_PATH.map((stage) => ({
+function cloneStep(step: EnglishPathStep): EnglishPathStep {
+  return {
+    ...step,
+    method: step.method ?? KIND_METHOD[step.kind],
+    examples: step.examples.map((example) => ({ ...example })),
+    ...(step.sounds ? { sounds: step.sounds.map((sound) => ({ ...sound })) } : {}),
+    ...(step.blend ? { blend: step.blend.map((group) => ({ word: group.word, parts: group.parts.map((part) => ({ ...part })) })) } : {}),
+    ...(step.translate ? { translate: step.translate.map((item) => ({ ...item })) } : {}),
+    ...(step.quickCheck ? { quickCheck: { ...step.quickCheck, options: [...step.quickCheck.options] } } : {}),
+  };
+}
+
+/**
+ * 按人群轨道返回主线（用户拍板：零基础 / 初中 / 高中 / 成人）。
+ *
+ * - zero：从字母名/字母音之辨 + 第一组字母音开始，完整走发音段；回译课不进入（认知负荷）；
+ * - junior：已认识字母，跳过三组字母音启蒙，从「音标地图」进入；
+ * - senior / adult：发音段只保留各自的入口课，直接进词汇与语法阶段。
+ * 同一步骤在不同轨道间共享完成进度（id 一致），切轨不丢进度。
+ */
+export function getEnglishPath(track: EnglishTrackId = 'zero'): EnglishPathStage[] {
+  const stages = ENGLISH_PATH.map((stage) => ({
     ...stage,
-    steps: stage.steps.map((step) => ({
-      ...step,
-      examples: step.examples.map((example) => ({ ...example })),
-      ...(step.sounds ? { sounds: step.sounds.map((sound) => ({ ...sound })) } : {}),
-      ...(step.quickCheck ? { quickCheck: { ...step.quickCheck, options: [...step.quickCheck.options] } } : {}),
-    })),
+    steps: stage.steps
+      .map(cloneStep)
+      .filter((step) => track !== 'zero' || step.kind !== 'translate'),
   }));
+  if (track === 'zero') return stages;
+  const soundsStage = stages.find((stage) => stage.id === 'sounds');
+  if (!soundsStage) return stages;
+  if (track === 'junior') {
+    soundsStage.steps = [
+      cloneStep(JUNIOR_IPA_MAP),
+      ...soundsStage.steps.filter((step) => !['ssp_group1', 'ssp_group2', 'ssp_group3'].includes(step.id)),
+    ];
+  } else if (track === 'senior') {
+    soundsStage.steps = [cloneStep(SENIOR_SOUND_FIX)];
+  } else {
+    soundsStage.steps = [cloneStep(ADULT_IPA_CRASH)];
+  }
+  return stages;
 }
