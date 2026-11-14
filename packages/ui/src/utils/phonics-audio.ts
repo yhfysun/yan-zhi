@@ -10,8 +10,14 @@
  *   - sound_i.mp3     是 /iː/（不是 /ɪ/！）
  *   - sound_long_e.mp3 是 /ɜː/（不是 /iː/！）
  *   - ʃ/ʒ 的文件名是大写 sound_S.mp3 / sound_Z.mp3
- *   - 上游包里 s、z 两个辅音**缺文件**（文档声称有、实际无）→ 查不到返回 null，UI 回退例词朗读
+ *   - 上游包里 s、z 两个辅音**缺文件**（文档声称有、实际无）→ 已从上游真人整词
+ *     sit.mp3 / zoo.mp3 开头裁出擦音段补录为 sound_ipa_s.mp3 / sound_ipa_z.mp3（2026-11-14）。
+ *     ★ 不能叫 sound_s.mp3 / sound_z.mp3：Windows 文件系统大小写不敏感，会静默覆盖
+ *       /ʃ/ 的 sound_S.mp3 与 /ʒ/ 的 sound_Z.mp3（实测写过一次，git status 只显示 M）。
  * 美式 r 色元音（ɑr/ɔr/ɚ/ɝ）上游无对应音频，用最近的单元音近似（标注 APPROX）。
+ *
+ * 第 1 课「字母名 ≠ 字母音」另有 5 条专属慢速拼读示范音频（lesson/ 下）：
+ * 真人音素逐步叠加「音 → 音+音 → 音+音+音」再接整词读音（离线合成，音素不进 TTS）。
  */
 
 /** 归一化 IPA：去斜杠与空白；tʃ/ʧ、dʒ/ʤ 两套写法统一（课程数据与 IPA chart 用字不同）。 */
@@ -47,7 +53,9 @@ const FILES: Record<string, string> = {
   'ɪə': 'sound_ɪə.mp3',
   'eə': 'sound_long_ə.mp3',
   'ʊə': 'sound_ʊə.mp3',
-  // ── 辅音（24 个，s/z 上游缺文件不列）──
+  // ── 辅音（24 个；s/z 由上游真人整词裁出的擦音段补录）──
+  's': 'sound_ipa_s.mp3',
+  'z': 'sound_ipa_z.mp3',
   'p': 'sound_p.mp3',
   'b': 'sound_b.mp3',
   't': 'sound_t.mp3',
@@ -95,6 +103,18 @@ export function phonicsAudioSrc(ipa: string): string | null {
   // 非 DOM 环境（SSR/纯 node 测试）退回相对路径；浏览器/打包页按 document.baseURI 绝对化
   if (typeof document === 'undefined') return `phonics-audio/${file}`;
   return new URL(`phonics-audio/${file}`, document.baseURI).href;
+}
+
+/**
+ * 课程专属拼读示范音频地址（相对 phonics-audio/ 的路径，如 `lesson/letter-name-vs-sound/tap.mp3`）。
+ * 与 phonicsAudioSrc 同一绝对化口径；拒绝路径穿越与非法字符。
+ */
+export function lessonBlendAudioSrc(rel: string): string | null {
+  const file = String(rel || '').trim();
+  if (!/^[A-Za-z0-9/_-]+\.mp3$/.test(file) || file.includes('..')) return null;
+  const url = `phonics-audio/${file}`;
+  if (typeof document === 'undefined') return url;
+  return new URL(url, document.baseURI).href;
 }
 
 /** 供测试核对：全部映射条目（键为归一化 IPA）。 */

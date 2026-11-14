@@ -5,7 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   LEARNING_EDGE_VOICE,
+  LEARNING_TTS_SPEEDS,
   normalizeEnglishTtsText,
+  normalizeLearningTtsSpeed,
   resolveBundledEdgeTts,
   resolveBundledPython,
   synthesizeBundledEnglishEdge,
@@ -182,6 +184,65 @@ describe('synthesizeBundledEnglishEdge 执行顺序（python -m 优先，exe 仅
         run,
       });
       expect(result).toBeNull();
+    });
+  });
+});
+
+describe('朗读语速档位（2026-11-14 用户实测：例句读得太快）', () => {
+  it('normalize：非法值一律回退 normal，slow / fast 透传', () => {
+    expect(normalizeLearningTtsSpeed(undefined)).toBe('normal');
+    expect(normalizeLearningTtsSpeed(null)).toBe('normal');
+    expect(normalizeLearningTtsSpeed('bogus')).toBe('normal');
+    expect(normalizeLearningTtsSpeed(1)).toBe('normal');
+    expect(normalizeLearningTtsSpeed('slow')).toBe('slow');
+    expect(normalizeLearningTtsSpeed('fast')).toBe('fast');
+  });
+
+  it('三档全部 ≤ 原生语速：学习场景不需要比原生快，默认档比原生慢', () => {
+    expect(LEARNING_TTS_SPEEDS.fast.sapi).toBe(0);
+    expect(LEARNING_TTS_SPEEDS.fast.edge).toBe('0%');
+    expect(LEARNING_TTS_SPEEDS.normal.sapi).toBeLessThan(0);
+    expect(LEARNING_TTS_SPEEDS.slow.sapi).toBeLessThan(LEARNING_TTS_SPEEDS.normal.sapi);
+  });
+
+  it('edge-tts 参数随档位变化：默认 -12%，slow -30%，fast 0%', async () => {
+    for (const [speed, expectedRate] of [['slow', '--rate=-30%'], ['normal', '--rate=-12%'], ['fast', '--rate=0%']] as const) {
+      await withTempOutFile(async (outFile) => {
+        const calls: Array<{ exe: string; args: string[] }> = [];
+        const result = await synthesizeBundledEnglishEdge({
+          text: 'cat',
+          outFile,
+          exePath: BUNDLED_EDGE,
+          pythonPath: BUNDLED_PY,
+          speed,
+          run: okRunner(outFile, calls),
+        });
+        expect(result).not.toBeNull();
+        expect(calls[0].args).toContain(expectedRate);
+      });
+    }
+  });
+
+  it('不传 speed 时保持默认档（-12%），两条执行路径参数形态一致', async () => {
+    await withTempOutFile(async (outFile) => {
+      const calls: Array<{ exe: string; args: string[] }> = [];
+      let n = 0;
+      const run: BundledEdgeRunner = async (exe, args) => {
+        calls.push({ exe, args });
+        n += 1;
+        if (n === 1) throw new Error('python -m 失败');
+        await writeFile(outFile, 'fallback-bytes');
+      };
+      const result = await synthesizeBundledEnglishEdge({
+        text: 'cat',
+        outFile,
+        exePath: BUNDLED_EDGE,
+        pythonPath: BUNDLED_PY,
+        run,
+      });
+      expect(result).not.toBeNull();
+      expect(calls[0].args).toContain('--rate=-12%');
+      expect(calls[0].args.slice(2)).toEqual(calls[1].args);
     });
   });
 });

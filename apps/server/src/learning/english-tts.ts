@@ -9,6 +9,23 @@ const execFileAsync = promisify(execFile);
 export const LEARNING_EDGE_VOICE = 'en-US-JennyNeural';
 
 /**
+ * 学习朗读语速档位（唯一映射出口，/learning/tts 消费）。
+ * 用户实测默认语速偏快（Jenny 原生语速本身就偏快），三档全部 ≤ 原生语速：
+ * - slow：逐词跟读；- normal（默认）：比原生慢一档；- fast：原生速度。
+ * sapi 是 Windows SAPI 刻度（-10..10，0 = 原生）；edge 是 edge-tts 百分比刻度。
+ */
+export type LearningTtsSpeed = 'slow' | 'normal' | 'fast';
+export const LEARNING_TTS_SPEEDS: Record<LearningTtsSpeed, { sapi: number; edge: string }> = {
+  slow: { sapi: -5, edge: '-30%' },
+  normal: { sapi: -2, edge: '-12%' },
+  fast: { sapi: 0, edge: '0%' },
+};
+
+export function normalizeLearningTtsSpeed(value: unknown): LearningTtsSpeed {
+  return value === 'slow' || value === 'fast' ? value : 'normal';
+}
+
+/**
  * TTS 朗读前的英文文本规范化（唯一出口，/learning/tts 调用）。
  * ① 词表分隔符 `·` → 逗号：不换就整串连读飞快（用户实测「读的很快」）；
  * ② 独立冠词 A/a → Uh/uh：系统语音会把句首的 "A" 读成**字母名 /eɪ/**，
@@ -69,8 +86,8 @@ export function resolveBundledEdgeTts(
 }
 
 /** edge-tts 命令行参数（exe 与 python -m 两条路径共用同一形态，避免口径漂移）。 */
-function edgeTtsArgs(text: string, outFile: string): string[] {
-  return ['--voice', LEARNING_EDGE_VOICE, '--rate=-8%', '--text', text, '--write-media', outFile];
+function edgeTtsArgs(text: string, outFile: string, rate: string): string[] {
+  return ['--voice', LEARNING_EDGE_VOICE, `--rate=${rate}`, '--text', text, '--write-media', outFile];
 }
 
 async function statOutput(outFile: string): Promise<{ file: string; bytes: number; voice: string } | null> {
@@ -92,15 +109,18 @@ export async function synthesizeBundledEnglishEdge(input: {
   exePath?: string | null;
   /** 显式指定 python 解释器；缺省时自动推导（resolveBundledPython），传 null 强制跳过。 */
   pythonPath?: string | null;
+  /** 语速档位；缺省 normal（见 LEARNING_TTS_SPEEDS）。 */
+  speed?: LearningTtsSpeed;
   /** 注入执行器（测试用），默认 execFile。 */
   run?: BundledEdgeRunner;
 }): Promise<{ file: string; bytes: number; voice: string } | null> {
   const run = input.run || DEFAULT_RUNNER;
   const runOpts = { timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 };
+  const rate = LEARNING_TTS_SPEEDS[normalizeLearningTtsSpeed(input.speed)].edge;
   const python = input.pythonPath !== undefined ? input.pythonPath : resolveBundledPython();
   if (python) {
     try {
-      await run(python, ['-m', 'edge_tts', ...edgeTtsArgs(input.text, input.outFile)], runOpts);
+      await run(python, ['-m', 'edge_tts', ...edgeTtsArgs(input.text, input.outFile, rate)], runOpts);
       const ok = await statOutput(input.outFile);
       if (ok) return ok;
     } catch { /* 模块缺失 / 网络失败 → 回退 exe（构建机本机） */ }
@@ -108,7 +128,7 @@ export async function synthesizeBundledEnglishEdge(input: {
   const exe = input.exePath || resolveBundledEdgeTts();
   if (!exe) return null;
   try {
-    await run(exe, edgeTtsArgs(input.text, input.outFile), runOpts);
+    await run(exe, edgeTtsArgs(input.text, input.outFile, rate), runOpts);
     return await statOutput(input.outFile);
   } catch {
     return null;

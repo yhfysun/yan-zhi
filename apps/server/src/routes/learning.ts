@@ -15,7 +15,8 @@ import {
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../learning/english-path.js';
-import { normalizeEnglishTtsText, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
+import { LEARNING_TTS_SPEEDS, normalizeEnglishTtsText, normalizeLearningTtsSpeed, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
+import { ENGLISH_PHONIC_CHART } from '../learning/phonics-chart.js';
 import { previewTtsPack } from '../services/tts-packs.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
@@ -429,6 +430,11 @@ router.post('/readings/:id/collect', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
+// GET /api/learning/phonics-chart —— 44 音标谱（元音/辅音分组），音标谱工具页数据源
+router.get('/phonics-chart', (_req, res) => {
+  res.json({ data: ENGLISH_PHONIC_CHART });
+});
+
 // POST /api/learning/tts —— 英语课程朗读：只接受英文，并强制选择英语系统音色。
 // 不能沿用浏览器默认音色：中文 Windows 上默认会落到 Huihui，把 “cat” 音译着念。
 router.post('/tts', async (req, res) => {
@@ -442,10 +448,14 @@ router.post('/tts', async (req, res) => {
       return;
     }
     const language = String(req.body?.language || 'en-US');
+    // 语速档位（唯一映射出口 LEARNING_TTS_SPEEDS）；兼容旧调用：没传 speed 时按老口径取数字 rate（默认 -2）
+    const speed = normalizeLearningTtsSpeed(req.body?.speed);
+    const sapiRate = req.body?.speed === undefined
+      ? Math.max(-10, Math.min(10, Math.round(Number(req.body?.rate) || -2)))
+      : LEARNING_TTS_SPEEDS[speed].sapi;
     const { mediaTarget } = await import('../mcp/api-tool-executor.js');
     const target = mediaTarget({ kind: 'audios' });
     await fsp.mkdir(target.dir, { recursive: true });
-    const rate = Math.max(-10, Math.min(10, Math.round(Number(req.body?.rate) || -2)));
 
     let voiceName: string | null = null;
     try {
@@ -454,7 +464,7 @@ router.post('/tts', async (req, res) => {
     if (voiceName) {
       const file = path.join(target.dir, `learning-en-${Date.now()}.wav`);
       try {
-        const synth = await systemSpeak(text, { voice: voiceName, rate, outFile: file });
+        const synth = await systemSpeak(text, { voice: voiceName, rate: sapiRate, outFile: file });
         if (synth) {
           res.json({
             data: {
@@ -491,7 +501,7 @@ router.post('/tts', async (req, res) => {
     const edgePy = resolveBundledPython();
     if (edgeExe || edgePy) {
       const file = path.join(target.dir, `learning-en-edge-${Date.now()}.mp3`);
-      const edge = await synthesizeBundledEnglishEdge({ text, outFile: file, exePath: edgeExe, pythonPath: edgePy });
+      const edge = await synthesizeBundledEnglishEdge({ text, outFile: file, exePath: edgeExe, pythonPath: edgePy, speed });
       if (edge) {
         res.json({
           data: {

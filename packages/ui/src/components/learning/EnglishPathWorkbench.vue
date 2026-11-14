@@ -20,12 +20,25 @@ import {
 } from 'lucide-vue-next';
 import { api, withMediaAuthQuery } from '../../api/client';
 import { absoluteMediaSrc } from '../../composables/useMediaPreview';
-import { phonicsAudioSrc } from '../../utils/phonics-audio';
+import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
 type PathSound = { letter: string; ipa: string; word: string; gloss: string; mouth?: string };
 type PathBlendGroup = { parts: Array<{ text: string; ipa: string }>; word: string };
+/** 对比认知课对照卡：字母名 / 字母音两套读音 + 本课专属慢速拼读音频。 */
+type PathComparePair = {
+  letter: string;
+  name: string;
+  nameIpa?: string;
+  sound: string;
+  word?: string;
+  ipa?: string;
+  nameAudio?: string;
+  parts?: Array<{ text: string; ipa: string }>;
+  blendHint?: string;
+  blendAudio?: string;
+};
 type PathTranslateItem = { zh: string; en: string; note: string };
 type PathStep = {
   id: string;
@@ -37,10 +50,10 @@ type PathStep = {
   pattern?: string;
   patternAudio?: string;
   sounds?: PathSound[];
-  /** 零基础层：不显示 IPA 符号，显示 mouth 口型提示（数据由服务端决定）。 */
-  ipaHidden?: boolean;
   /** 结构化拼读演示数据（服务端提供，前端不再猜辅音音素）。 */
   blend?: PathBlendGroup[];
+  /** 名称 vs 声音对照卡（对比认知课，服务端结构化提供）；这一课显式展示音标。 */
+  compare?: PathComparePair[];
   /** 教学方法标签（服务端数据驱动）。 */
   method?: string;
   tip: string;
@@ -68,6 +81,26 @@ const emit = defineEmits<{ practice: []; scenes: []; 'focus-change': [active: bo
 const TRACK_KEY = 'yz.learning.path.track.v1';
 const COMPLETED_KEY = 'yz.learning.path.completed.v2';
 const SAVED_KEY = 'yz.learning.path.saved.v2';
+/** 朗读语速档位（慢/中/快，持久化；浏览器系统语音兜底的 rate 映射与后端档位对齐）。 */
+type TtsSpeed = 'slow' | 'normal' | 'fast';
+const TTS_SPEED_KEY = 'yz.learning.tts.speed.v1';
+const TTS_SPEEDS: Array<{ key: TtsSpeed; label: string; browser: number }> = [
+  { key: 'slow', label: '慢', browser: 0.7 },
+  { key: 'normal', label: '中', browser: 0.82 },
+  { key: 'fast', label: '快', browser: 1 },
+];
+function readStoredTtsSpeed(): TtsSpeed {
+  try {
+    const value = localStorage.getItem(TTS_SPEED_KEY);
+    return value === 'slow' || value === 'fast' ? value : 'normal';
+  } catch { return 'normal'; }
+}
+const ttsSpeed = ref<TtsSpeed>(readStoredTtsSpeed());
+function setTtsSpeed(speed: TtsSpeed) {
+  if (ttsSpeed.value === speed) return;
+  ttsSpeed.value = speed;
+  try { localStorage.setItem(TTS_SPEED_KEY, speed); } catch { /* 隐私模式等存不了就算了 */ }
+}
 const PHASES: Phase[] = [
   { key: 'concept', label: '理解', hint: '先抓住本课规则' },
   { key: 'examples', label: '例句', hint: '在语境里看懂' },
@@ -129,12 +162,143 @@ const wordChips = computed(() => {
 });
 const patternSpeech = computed(() => {
   const current = step.value;
-  if (!current?.pattern) return '';
+  if (!current) return '';
+  // 喇叭只读「核心结构」自己的音频/例词；不许拿例句冒充（显示中文说明却读英文例句，文不对题）。
+  // 都没有就返回空 ⇒ 兜底分支不渲染喇叭，朗读留在例句页。
   return current.patternAudio?.trim()
     || current.sounds?.map((sound) => sound.word).join(', ')
-    || current.examples[0]?.en.trim()
     || '';
 });
+/** 对照卡的朗读：逐个读例词（tap, bed, sit, hot, cup）——不读字母名，与教学目标、TTS 冠词规则都对齐。 */
+const compareSpeech = computed(() =>
+  (step.value?.compare || []).map((pair) => pair.word).filter(Boolean).join(', '),
+);
+/** 点对照卡名称区：读字母名（nameAudio 是预写的 TTS 文本，A 用 'ay' 绕开冠词规则）。 */
+function speakCompareName(pair: { letter: string; nameAudio?: string }) {
+  if (!pair.nameAudio) return;
+  void speak(pair.nameAudio, `cmp:${pair.letter}`);
+}
+/** 点对照卡声音区：放随包本音音频（IPA 符号 TTS 念不了）；缺音频回退例词朗读。 */
+function speakCompareSound(pair: { letter: string; ipa?: string; word?: string }) {
+  const src = pair.ipa ? phonicsAudioSrc(pair.ipa) : null;
+  if (!src) { if (pair.word) void speak(pair.word, `cmp:${pair.letter}`); return; }
+  const sequence = ++speechSequence;
+  stopActiveSpeech();
+  speakingKey.value = `cmp:${pair.letter}`;
+  ttsLoadingKey.value = '';
+  void playLocalAudio(src, sequence).catch(() => {
+    if (sequence === speechSequence && pair.word) void speak(pair.word, `cmp:${pair.letter}`);
+  });
+}
+
+// ── 对比认知课：本课专属慢速拼读示范（音 → 音+音 → 音+音+音 → 整词）──
+const compareBlendWord = ref('');
+const compareBlendBusy = ref(false);
+let compareBlendSeq = 0;
+const activeCompareHint = computed(() =>
+  step.value?.compare?.find((pair) => pair.word === compareBlendWord.value)?.blendHint || '',
+);
+
+/** 播一条专属示范音频并等它读完；音频缺失才用 parts 逐音素本音 + TTS 整词兜底。
+ *  ★ 音素绝不交给 TTS：字母清单会被念成字母名，独立 a 还会被冠词规则改成 uh。 */
+async function playCompareBlendAudio(pair: PathComparePair, seq: number): Promise<void> {
+  const src = pair.blendAudio ? lessonBlendAudioSrc(pair.blendAudio) : null;
+  if (src) {
+    try { await playLocalAudio(src, ++speechSequence); return; } catch { /* 落到 parts 兜底 */ }
+  }
+  for (const part of pair.parts || []) {
+    if (seq !== compareBlendSeq) return;
+    const partSrc = phonicsAudioSrc(part.ipa);
+    if (partSrc) { try { await playLocalAudio(partSrc, ++speechSequence); } catch { /* 继续下一音素 */ } }
+    await blendWait(120);
+  }
+  if (pair.word && seq === compareBlendSeq) await speakWordAwait(pair.word);
+}
+
+/** 点单个例词：只慢速拼读这一个词。 */
+function playCompareBlend(pair: PathComparePair) {
+  if (!pair.word) return;
+  const seq = ++compareBlendSeq;
+  compareBlendBusy.value = true;
+  compareBlendWord.value = pair.word;
+  speakingKey.value = 'pattern';
+  stopActiveSpeech();
+  void playCompareBlendAudio(pair, seq).finally(() => {
+    if (seq === compareBlendSeq) {
+      compareBlendBusy.value = false;
+      compareBlendWord.value = '';
+      speakingKey.value = '';
+    }
+  });
+}
+
+/** 「慢速拼读例词」：五个词依次播完再进下一个，不再把词表整串交给 TTS 连读。 */
+async function playAllCompareBlends() {
+  const pairs = (step.value?.compare || []).filter((pair) => pair.word);
+  if (!pairs.length) { if (compareSpeech.value) void speak(compareSpeech.value, 'pattern'); return; }
+  const seq = ++compareBlendSeq;
+  compareBlendBusy.value = true;
+  speakingKey.value = 'pattern';
+  try {
+    for (const pair of pairs) {
+      if (seq !== compareBlendSeq) return;
+      compareBlendWord.value = pair.word || '';
+      await playCompareBlendAudio(pair, seq);
+      if (seq !== compareBlendSeq) return;
+      await blendWait(280);
+    }
+  } finally {
+    if (seq === compareBlendSeq) {
+      compareBlendBusy.value = false;
+      compareBlendWord.value = '';
+      speakingKey.value = '';
+    }
+  }
+}
+
+// ── 音标谱工具页（44 音，元音/辅音分组；点格子放随包本音，缺音频回退例词朗读）──
+type ChartItem = { ipa: string; word: string; gloss: string };
+type ChartGroup = { key: string; label: string; items: ChartItem[] };
+const phonicsChartOpen = ref(false);
+const phonicsChart = ref<ChartGroup[]>([]);
+const chartPlayingIpa = ref('');
+let chartPlayTimer = 0;
+/** 音标谱是顶栏锚定的就地浮层：点外部关闭，不遮罩、不打断当前学习步骤。 */
+function onChartPointerDown(event: PointerEvent) {
+  if (!phonicsChartOpen.value) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('[data-chart]')) return;
+  phonicsChartOpen.value = false;
+}
+async function openPhonicsChart() {
+  if (phonicsChartOpen.value) { phonicsChartOpen.value = false; return; }
+  phonicsChartOpen.value = true;
+  if (phonicsChart.value.length) return;
+  try {
+    const response = await api.get<ChartGroup[]>('/learning/phonics-chart');
+    const error = responseError(response);
+    if (error) throw new Error(error);
+    phonicsChart.value = unwrap<ChartGroup[]>(response) || [];
+    if (!phonicsChart.value.length) throw new Error('音标谱数据为空');
+  } catch {
+    phonicsChartOpen.value = false;
+  }
+}
+/** 点音标谱格子：放随包本音音频；缺音频回退例词朗读。本地音频不挂 playing 态（声音即反馈）。 */
+function playChartSound(item: ChartItem) {
+  chartPlayingIpa.value = item.ipa;
+  window.clearTimeout(chartPlayTimer);
+  chartPlayTimer = window.setTimeout(() => { chartPlayingIpa.value = ''; }, 650);
+  const src = phonicsAudioSrc(item.ipa);
+  if (!src) { void speak(item.word, `chart:${item.ipa}`); return; }
+  const sequence = ++speechSequence;
+  stopActiveSpeech();
+  speakingKey.value = '';
+  ttsLoadingKey.value = '';
+  void playLocalAudio(src, sequence).catch(() => {
+    if (sequence === speechSequence) void speak(item.word, `chart:${item.ipa}`);
+  });
+}
 const kindLabel: Record<PathStepKind, string> = {
   phonics: '自然拼读',
   roots: '词根词缀',
@@ -454,7 +618,7 @@ function stopActiveSpeech() {
 /**
  * 点音标放**本音**（随包 phonics-audio 真实音标音频）。
  * 零基础教学的硬要求：/æ/ /ɛ/ 这类符号系统 TTS 念不了，必须放真实音标音频。
- * 查不到音频（如上游缺 s/z）或播放失败 → 回退例词朗读，绝不出错横幅。
+ * 查不到音频或播放失败 → 回退例词朗读，绝不出错横幅。
  */
 async function speakIpa(sound: PathSound) {
   const src = phonicsAudioSrc(sound.ipa);
@@ -492,18 +656,17 @@ const soundIdx = ref(0);
 const blendingStage = ref(false);
 const hasSounds = computed(() => !!step.value?.sounds?.length);
 const currentSound = computed(() => step.value?.sounds?.[soundIdx.value] || null);
-/** 零基础层（ipaHidden）用口型提示替代 IPA 符号展示；音频仍按 ipa 播放。 */
-const currentSoundMouth = computed(() => (step.value?.ipaHidden ? currentSound.value?.mouth || '' : ''));
+/** IPA 一律显示；mouth 口型提示是可选的并列辅助说明（2026-11-14 用户要求逐音卡片也要看到音标）。 */
+const currentSoundMouth = computed(() => currentSound.value?.mouth || '');
 const isLastSound = computed(() => soundIdx.value >= (step.value?.sounds?.length ?? 0) - 1);
 
 function soundCardTitle(): string {
   const sound = currentSound.value;
   if (!sound) return '';
-  return currentSoundMouth.value ? '再听一遍本音' : `再听一遍本音 ${sound.ipa}`;
+  return `再听一遍本音 ${sound.ipa}`;
 }
 
 function partTitle(part: { text: string; ipa: string | null }): string {
-  if (step.value?.ipaHidden) return `再听一遍 ${part.text} 的本音`;
   return part.ipa ? `播放 ${part.ipa}` : `播放 ${part.text}`;
 }
 
@@ -549,7 +712,9 @@ const blendGroups = computed<BlendGroup[]>(() => {
     const m = /^(\S+)\s*\/(.+)\/$/.exec(left);
     if (m) parts = [{ text: m[1], ipa: `/${m[2]}/` }];
     else if (/^[A-Za-z][A-Za-z'-]*$/.test(left)) parts = [{ text: left, ipa: null }];
-    if (!parts.length && !word) return null;
+    // 没有音素就不是「拼读演示」：说明性 pattern（对比课的中文对照、词根公式等）
+    // 不该退化成一个空的「→ 单词」按钮，应交由下面的纯文本分支完整展示。
+    if (!parts.length) return null;
     return { parts, word };
   }).filter((g): g is BlendGroup => !!g);
 });
@@ -562,7 +727,7 @@ const blendWait = (ms: number) => new Promise<void>((resolve) => setTimeout(reso
 function speakPart(part: { text: string; ipa: string | null }, fallbackWord = '') {
   const src = part.ipa ? phonicsAudioSrc(part.ipa) : null;
   if (src) void playLocalAudio(src, ++speechSequence).catch(() => {});
-  // 本音音频缺失（如上游 s/z 缺文件）时读整组例词，避免把字母读成字母名
+  // 本音音频缺失时读整组例词，避免把字母读成字母名
   else void speak(fallbackWord || part.text, '');
 }
 
@@ -574,19 +739,19 @@ function speakWordAwait(text: string): Promise<void> {
       stopActiveSpeech();
       speakingKey.value = 'pattern';
       try {
-        let url = speechCache.get(text) || '';
+        let url = speechCache.get(`${ttsSpeed.value}|${text}`) || '';
         if (!url) {
           const response = await api.post<{ data?: { url?: string } }>('/learning/tts', {
             text,
             language: 'en-US',
-            rate: -2,
+            speed: ttsSpeed.value,
           });
           if (sequence !== speechSequence) return resolve();
           const error = responseError(response);
           if (error) throw new Error(error);
           url = unwrap<{ url?: string }>(response)?.url || '';
           if (!url) throw new Error('英语语音未返回音频地址');
-          speechCache.set(text, url);
+          speechCache.set(`${ttsSpeed.value}|${text}`, url);
         }
         const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
         speechAudio = audio;
@@ -674,7 +839,8 @@ function speakWithEnglishBrowserVoice(text: string, activeKey: string, sequence:
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = voice.lang || 'en-US';
     utterance.voice = voice;
-    utterance.rate = 0.86;
+    // 系统语音兜底也跟档位走（与后端 slow/normal/fast 对齐的浏览器刻度）
+    utterance.rate = TTS_SPEEDS.find((preset) => preset.key === ttsSpeed.value)?.browser ?? 0.82;
     speakingKey.value = activeKey;
     ttsLoadingKey.value = '';
     const finish = () => {
@@ -813,19 +979,21 @@ async function speak(text: string, activeKey = '') {
   speakingKey.value = activeKey;
   ttsLoadingKey.value = activeKey;
   try {
-    let url = speechCache.get(spokenText) || '';
+    // 缓存 key 必须带语速档位：同一文本不同档位是不同音频，不区分会串档
+    const cacheKey = `${ttsSpeed.value}|${spokenText}`;
+    let url = speechCache.get(cacheKey) || '';
     if (!url) {
       const response = await api.post<{ data?: { url?: string } }>('/learning/tts', {
         text: spokenText,
         language: 'en-US',
-        rate: -2,
+        speed: ttsSpeed.value,
       });
       if (sequence !== speechSequence) return;
       const error = responseError(response);
       if (error) throw new Error(error);
       url = unwrap<{ url?: string }>(response)?.url || '';
       if (!url) throw new Error('英语语音未返回音频地址');
-      speechCache.set(spokenText, url);
+      speechCache.set(cacheKey, url);
     }
     if (sequence !== speechSequence) return;
     // ★ 服务端返回的是站点根相对地址（/api/generated/...）：打包版页面是 file://，
@@ -868,6 +1036,11 @@ function handleKeydown(event: KeyboardEvent) {
   if (!focusing.value) return;
   if (voiceDialogOpen.value) {
     if (event.key === 'Escape') closeVoiceDialog();
+    return;
+  }
+  // 音标谱是就地浮层、不是模态：只接 Escape，其余按键照常交给沉浸台
+  if (phonicsChartOpen.value && event.key === 'Escape') {
+    phonicsChartOpen.value = false;
     return;
   }
   if (event.key === 'Escape') {
@@ -917,6 +1090,7 @@ watch(track, () => {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown);
+  window.addEventListener('pointerdown', onChartPointerDown);
   await loadTracks();
   restoreTrack();
   await loadPath();
@@ -924,6 +1098,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown);
+  window.removeEventListener('pointerdown', onChartPointerDown);
+  window.clearTimeout(chartPlayTimer);
   blendingSeq += 1;
   clearSpeechState();
   if (focusing.value) emit('focus-change', false);
@@ -1040,6 +1216,18 @@ onBeforeUnmount(() => {
             <span><i :style="{ width: progress + '%' }"></i></span>
             <small>{{ currentGlobalIndex }} / {{ totalSteps }}</small>
           </div>
+          <div class="lp-tts-speed" role="group" aria-label="朗读语速">
+            <button
+              v-for="preset in TTS_SPEEDS"
+              :key="preset.key"
+              type="button"
+              :class="{ active: ttsSpeed === preset.key }"
+              :aria-pressed="ttsSpeed === preset.key"
+              :title="`${preset.label}速朗读`"
+              @click="setTtsSpeed(preset.key)"
+            >{{ preset.label }}</button>
+          </div>
+          <button type="button" class="lp-chart-btn" data-chart :aria-expanded="phonicsChartOpen" aria-controls="lp-chart-popover" aria-label="音标谱（44 音）" @click="openPhonicsChart">音标谱</button>
           <button
             type="button"
             class="lp-path-save"
@@ -1052,6 +1240,40 @@ onBeforeUnmount(() => {
             <Bookmark v-else :size="15" />
           </button>
           <button type="button" aria-label="关闭当前课程" @click="closeFocus"><X :size="15" /></button>
+          <section
+            v-if="phonicsChartOpen"
+            id="lp-chart-popover"
+            class="lp-chart-panel"
+            role="region"
+            aria-label="英语 44 音标谱"
+            data-chart
+          >
+            <header>
+              <div>
+                <span>音标谱</span>
+                <h3>英语 44 音 · 点任意音标听本音</h3>
+              </div>
+              <button type="button" aria-label="关闭音标谱" @click="phonicsChartOpen = false"><X :size="16" /></button>
+            </header>
+            <div class="lp-chart-body">
+              <section v-for="group in phonicsChart" :key="group.key">
+                <h4>{{ group.label }}</h4>
+                <div class="lp-chart-grid">
+                  <button
+                    v-for="item in group.items"
+                    :key="item.ipa"
+                    type="button"
+                    :class="{ playing: chartPlayingIpa === item.ipa }"
+                    @click="playChartSound(item)"
+                  >
+                    <b>{{ item.ipa }}</b>
+                    <span>{{ item.word }}</span>
+                    <small>{{ item.gloss }}</small>
+                  </button>
+                </div>
+              </section>
+            </div>
+          </section>
         </div>
       </header>
 
@@ -1114,11 +1336,14 @@ onBeforeUnmount(() => {
                     <button
                       type="button"
                       class="lp-sound-ipa"
-                      :class="{ 'lp-sound-mouth': !!currentSoundMouth }"
+                      :class="{ 'lp-sound-with-mouth': !!currentSoundMouth }"
                       :title="soundCardTitle()"
-                      :aria-label="`播放本音 ${currentSound?.word || ''}`"
+                      :aria-label="`播放本音 ${currentSound?.ipa || ''}`"
                       @click="currentSound && speakIpa(currentSound)"
-                    >{{ currentSoundMouth || currentSound?.ipa }}</button>
+                    >
+                      <b class="lp-sound-symbol">{{ currentSound?.ipa }}</b>
+                      <span v-if="currentSoundMouth" class="lp-sound-mouth-tip">{{ currentSoundMouth }}</span>
+                    </button>
                     <div class="lp-sound-side">
                       <b>{{ currentSound?.letter }}</b>
                       <button
@@ -1186,11 +1411,67 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
 
-                <!-- 无 sounds 的课兜底：读 patternAudio / 首个例句 -->
-                <div v-else-if="patternSpeech" class="lp-path-pattern">
+                <!-- 对比认知课：名称 vs 声音对照卡，一卡一组；点例词听专属慢速拼读 -->
+                <div v-else-if="step.compare?.length" class="lp-path-pattern lp-path-compare">
+                  <div class="lp-compare-head">
+                    <span>核心结构</span>
+                    <button
+                      v-if="compareSpeech"
+                      type="button"
+                      class="lp-path-listen"
+                      :class="{ playing: compareBlendBusy }"
+                      :disabled="compareBlendBusy"
+                      aria-label="慢速拼读本课例词"
+                      @click="playAllCompareBlends"
+                    >
+                      <LoaderCircle v-if="compareBlendBusy" class="lp-path-spin" :size="14" />
+                      <Volume2 v-else :size="14" />
+                      <small>{{ compareBlendBusy ? '拼读中…' : '慢速拼读例词' }}</small>
+                    </button>
+                  </div>
+                  <div class="lp-compare-grid">
+                    <div v-for="pair in step.compare" :key="pair.letter" class="lp-compare-pair">
+                      <button
+                        type="button"
+                        class="lp-compare-name"
+                        :class="{ playing: speakingKey === `cmp:${pair.letter}` }"
+                        :aria-label="`读字母 ${pair.letter} 的名称`"
+                        @click="speakCompareName(pair)"
+                      >
+                        <b>{{ pair.letter }}</b>
+                        <span>{{ pair.name }}</span>
+                        <em v-if="pair.nameIpa">{{ pair.nameIpa }}</em>
+                      </button>
+                      <button
+                        type="button"
+                        class="lp-compare-sound"
+                        :class="{ playing: speakingKey === `cmp:${pair.letter}` }"
+                        :aria-label="pair.word ? `读 ${pair.letter} 在 ${pair.word} 里的发音` : `读 ${pair.letter} 的发音`"
+                        @click="speakCompareSound(pair)"
+                      >
+                        <span>{{ pair.sound }}</span>
+                        <em v-if="pair.ipa">{{ pair.ipa }}</em>
+                      </button>
+                      <button
+                        v-if="pair.word"
+                        type="button"
+                        class="lp-compare-word"
+                        :class="{ playing: compareBlendWord === pair.word }"
+                        :aria-label="`慢速拼读 ${pair.word}`"
+                        :title="pair.blendHint || `慢速拼读 ${pair.word}`"
+                        @click="playCompareBlend(pair)"
+                      >{{ pair.word }}</button>
+                    </div>
+                  </div>
+                  <div v-if="compareBlendWord && activeCompareHint" class="lp-compare-hint" aria-live="polite">{{ activeCompareHint }}</div>
+                </div>
+
+                <!-- 说明性 pattern（词根公式、语法规则等）：只展示文字；喇叭仅在有自己的音频/例词时出现 -->
+                <div v-else-if="step.pattern" class="lp-path-pattern">
                   <span>核心结构</span>
                   <b>{{ step.pattern }}</b>
                   <button
+                    v-if="patternSpeech"
                     type="button"
                     class="lp-path-listen"
                     :class="{ playing: speakingKey === 'pattern' }"
@@ -1568,6 +1849,33 @@ onBeforeUnmount(() => {
 .lp-path-head-progress > span { display: block; width: 48px; height: 5px; overflow: hidden; border-radius: 999px; background: rgba(159,179,180,.16); }
 .lp-path-head-progress i { display: block; height: 100%; border-radius: inherit; background: var(--path-focus-accent); }
 .lp-path-head-progress small { color: var(--path-focus-muted); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 朗读语速分段控件（慢/中/快） */
+.lp-tts-speed { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--path-focus-line); border-radius: 999px; background: var(--path-focus-panel); }
+.lp-tts-speed button { width: auto; min-height: 0; padding: 3px 10px; border: 0; border-radius: 999px; background: transparent; color: var(--path-focus-muted); font-size: 11px; }
+.lp-tts-speed button:hover { color: var(--path-focus-ink); }
+.lp-tts-speed button.active { background: color-mix(in srgb, var(--path-focus-accent) 16%, transparent); color: var(--path-focus-accent); }
+/* 音标谱：顶栏锚定的就地浮层（不是模态）——不遮罩、不模糊、不打断学习台 */
+.lp-path-head-meta { position: relative; }
+.lp-path-head-meta .lp-chart-btn { width: auto; padding: 0 10px; }
+.lp-chart-panel { position: absolute; top: calc(100% + 14px); right: 0; z-index: 40; display: flex; flex-direction: column; width: min(720px, calc(100vw - 32px)); max-height: min(70vh, 620px); border: 1px solid rgba(24,37,43,.14); border-radius: 10px; background: #fbfdfc; box-shadow: 0 16px 36px rgba(4,18,22,.18); overflow: hidden; }
+.lp-chart-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 20px; border-bottom: 1px solid rgba(24,37,43,.1); }
+.lp-chart-panel > header span { color: #0f766e; font-size: 10px; font-weight: 700; }
+.lp-chart-panel > header h3 { margin: 2px 0 0; color: #1f3036; font-size: 15px; }
+.lp-chart-panel > header button { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 1px solid rgba(24,37,43,.14); border-radius: 6px; background: #fbfdfc; color: #0f766e; cursor: pointer; }
+.lp-chart-body { overflow-y: auto; padding: 14px 20px 20px; }
+.lp-chart-body section + section { margin-top: 14px; }
+.lp-chart-body h4 { position: sticky; top: 0; z-index: 1; margin: 0 0 8px; padding: 6px 0; background: #fbfdfc; color: var(--path-paper-muted, #6c8085); font-size: 11px; font-weight: 600; }
+.lp-chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 7px; }
+.lp-chart-grid button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 9px 4px 7px; border: 1px solid rgba(15,118,110,.2); border-radius: 8px; background: var(--path-paper, #fbfdfc); cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.lp-chart-grid button:hover { border-color: #0f766e; background: #eef8f6; }
+.lp-chart-grid button.playing,
+.lp-chart-grid button.playing:hover { border-color: #0f766e; background: #0f766e; }
+.lp-chart-grid button.playing b,
+.lp-chart-grid button.playing span,
+.lp-chart-grid button.playing small { color: #fff; }
+.lp-chart-grid button b { color: #0f766e; font-size: 17px; line-height: 1.2; }
+.lp-chart-grid button span { color: #1f3036; font-size: 11px; }
+.lp-chart-grid button small { color: #6c8085; font-size: 10px; }
 .lp-path-crumb { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; }
 .lp-path-crumb span { flex: 0 0 auto; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--path-focus-accent) 24%, transparent); border-radius: 999px; color: var(--path-focus-accent); font-size: 9px; }
 .lp-path-crumb b { overflow: hidden; color: var(--path-focus-ink); text-overflow: ellipsis; white-space: nowrap; }
@@ -1637,9 +1945,11 @@ onBeforeUnmount(() => {
 /* 逐音学习：一次一个音标（零基础），大音标点读本音 */
 .lp-sound-card { display: flex; flex-direction: column; gap: 12px; border-left: 3px solid #0f766e; background: color-mix(in srgb, #0f766e 7%, var(--path-paper)); padding: 18px 20px; }
 .lp-sound-main { display: flex; align-items: center; gap: 20px; }
-.lp-sound-ipa { min-width: 132px; padding: 14px 18px; border: 1px solid rgba(15,118,110,.3); border-radius: 10px; background: var(--path-paper); color: #0f766e; font-size: 34px; font-weight: 700; line-height: 1.15; cursor: pointer; transition: box-shadow .15s ease, background .15s ease; }
-/* 零基础层：大卡片显示口型提示（替代 IPA 符号），保持可点听本音 */
-.lp-sound-ipa.lp-sound-mouth { display: inline-flex; align-items: center; text-align: left; max-width: 280px; min-height: 88px; font-size: 14px; font-weight: 500; line-height: 1.7; white-space: normal; }
+.lp-sound-ipa { display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; min-width: 132px; padding: 14px 18px; border: 1px solid rgba(15,118,110,.3); border-radius: 10px; background: var(--path-paper); color: #0f766e; font-size: 34px; font-weight: 700; line-height: 1.15; text-align: left; cursor: pointer; transition: box-shadow .15s ease, background .15s ease; }
+/* IPA 主视觉 + 口型提示副行：零基础不再用文字替换掉音标 */
+.lp-sound-symbol { font-size: 34px; font-weight: 700; line-height: 1.15; }
+.lp-sound-ipa.lp-sound-with-mouth { max-width: 280px; min-height: 88px; }
+.lp-sound-mouth-tip { color: var(--path-paper-muted); font-size: 12px; font-weight: 400; line-height: 1.6; white-space: normal; }
 .lp-sound-ipa:hover { background: #eef8f6; box-shadow: 0 0 0 3px rgba(15,118,110,.12); }
 .lp-sound-side { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
 .lp-sound-side > b { color: var(--path-paper-ink); font-size: 15px; }
@@ -1658,6 +1968,53 @@ onBeforeUnmount(() => {
 .lp-sound-nav button.lp-sound-next:hover:not(:disabled) { filter: brightness(1.06); }
 /* 拼读演示：音素块逐个高亮，最后连成整词 */
 .lp-path-pattern.lp-path-pattern-blend { grid-template-columns: minmax(0, 1fr); }
+/* 对比认知课：一卡一组，上层「字母名」/ 下层「字母音 + 例词」，不再把 6 个元素挤成一行 */
+.lp-path-pattern.lp-path-compare { grid-template-columns: minmax(0, 1fr); gap: 9px; padding: 12px 14px; }
+.lp-compare-head { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lp-compare-grid { grid-column: 1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 980px) { .lp-compare-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
+.lp-compare-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'name name' 'sound word';
+  align-items: center;
+  gap: 7px 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(15,118,110,.24);
+  border-radius: 10px;
+  background: var(--path-paper);
+}
+/* ★ 显式反声明所有会串进来的 .lp-path-pattern button 规则（32px 尺寸 / grid 落点 / 1px 边框）；
+   负边距会让相邻按钮互相覆盖——playing 态的深绿块实测盖住音标徽标（2026-11-14 用户截图），一律去掉。 */
+.lp-compare-pair button {
+  display: inline-flex; align-items: center; gap: 6px;
+  width: auto; height: auto; min-width: 0;
+  grid-column: auto; grid-row: auto;
+  padding: 3px 5px; margin: 0;
+  border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer;
+}
+.lp-compare-pair button:hover { background: #eef8f6; }
+.lp-compare-pair button.playing { background: #0f766e; box-shadow: none; }
+/* ★ grid-area / 颜色规则必须带 .lp-compare-pair button 前缀：.lp-path-pattern button 是
+   (0,2,1)，单类 .lp-compare-sound 只有 (0,1,0)，grid-column:auto 会盖掉 grid-area ⇒ 三块错位重叠。 */
+.lp-compare-pair button.lp-compare-name { grid-area: name; justify-content: flex-start; padding-bottom: 7px; border-bottom: 1px dashed rgba(15,118,110,.22); }
+.lp-compare-pair button.lp-compare-sound { grid-area: sound; justify-content: flex-start; }
+.lp-compare-pair button.lp-compare-word { grid-area: word; justify-self: end; color: #0f766e; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.lp-compare-pair button b { color: #0f766e; font-size: 18px; line-height: 1.2; }
+.lp-compare-pair button.lp-compare-name span { color: var(--path-paper-muted); font-size: 12px; }
+.lp-compare-pair button.lp-compare-sound span { color: var(--path-paper-ink); font-size: 15px; font-weight: 600; }
+.lp-compare-pair button em { padding: 1px 5px; border-radius: 4px; background: #9fe1cb; color: #04342c; font-size: 11px; font-style: normal; line-height: 1.5; white-space: nowrap; }
+.lp-compare-pair button.lp-compare-name em { background: #f1efe8; color: #444441; }
+.lp-compare-pair button.playing em { background: rgba(255, 255, 255, .24); }
+/* playing 态文字色放在最后，保证压过上面各块自己的颜色；
+   ★ word 是直接文本节点（不是 span），必须单独给按钮本身置白，否则 teal 字落在 teal 底上完全看不见。 */
+.lp-compare-pair button.playing,
+.lp-compare-pair button.lp-compare-word.playing,
+.lp-compare-pair button.playing b,
+.lp-compare-pair button.playing span,
+.lp-compare-pair button.playing small,
+.lp-compare-pair button.playing em { color: #fff; }
+.lp-compare-hint { grid-column: 1; padding: 7px 11px; border-radius: 6px; background: #e1f5ee; color: #04342c; font-size: 12px; }
 .lp-blending { grid-column: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .lp-blend-group { display: inline-flex; align-items: center; gap: 6px; }
 .lp-blend-part, .lp-blend-arrow { padding: 9px 14px; border: 1px solid rgba(15,118,110,.24); border-radius: 8px; background: var(--path-paper); color: var(--path-paper-ink); font-size: 16px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .15s ease, box-shadow .15s ease; }
@@ -1666,9 +2023,15 @@ onBeforeUnmount(() => {
 .lp-blend-arrow { color: #0f766e; }
 .lp-blend-arrow:disabled { opacity: .45; cursor: default; }
 .lp-blend-sep { color: var(--path-paper-muted); }
-.lp-path-pattern-blend button.lp-path-listen { grid-column: 1; grid-row: auto; justify-self: start; display: inline-flex; align-items: center; gap: 7px; width: auto; height: auto; margin-top: 4px; padding: 8px 14px; font-size: 12px; }
-.lp-path-pattern-blend button.lp-path-listen:disabled { opacity: .6; cursor: default; }
-.lp-path-pattern-blend button.lp-path-listen small { font-size: 12px; }
+.lp-path-pattern-blend button.lp-path-listen,
+.lp-path-compare button.lp-path-listen { grid-column: 1; grid-row: auto; justify-self: start; display: inline-flex; align-items: center; gap: 7px; width: auto; height: auto; padding: 7px 13px; font-size: 12px; }
+.lp-path-pattern-blend button.lp-path-listen { margin-top: 4px; }
+/* 对照课的操作按钮收到标题行右侧，不再在卡片下方单独占一行 */
+.lp-path-compare .lp-compare-head button.lp-path-listen { margin: 0; justify-self: auto; flex: 0 0 auto; }
+.lp-path-pattern-blend button.lp-path-listen:disabled,
+.lp-path-compare button.lp-path-listen:disabled { opacity: .6; cursor: default; }
+.lp-path-pattern-blend button.lp-path-listen small,
+.lp-path-compare button.lp-path-listen small { font-size: 12px; }
 .lp-path-pattern button:focus-visible,
 .lp-sound-card button:focus-visible,
 .lp-blend-part:focus-visible,
@@ -1809,7 +2172,8 @@ onBeforeUnmount(() => {
   .lp-path-immersive-main { padding: 12px; }
   .lp-path-concept-grid { grid-template-columns: 1fr; }
   .lp-sound-card { padding: 14px 16px; }
-  .lp-sound-ipa { min-width: 108px; font-size: 28px; }
+  .lp-sound-ipa { min-width: 108px; }
+  .lp-sound-symbol { font-size: 28px; }
   .lp-path-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lp-path-paper-head,
   .lp-path-paper-body { padding-left: 19px; padding-right: 19px; }

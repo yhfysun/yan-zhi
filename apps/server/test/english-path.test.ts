@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ENGLISH_PATH, ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../src/learning/english-path';
+import { ENGLISH_PHONIC_CHART } from '../src/learning/phonics-chart';
+import { normalizeEnglishTtsText } from '../src/learning/english-tts';
 import { READING_PASSAGES } from '../src/learning/curriculum';
+
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+/** 课程专属拼读音频实际随包位置（与前端 phonicsAudioSrc 的 publicDir 对齐）。 */
+const AUDIO_DIR = path.resolve(TEST_DIR, '..', '..', 'web', 'public', 'phonics-audio');
 
 describe('零基础英语学习主线', () => {
   it('按拼读、构词、句型、寓言、短篇、长篇、口语输出排列', () => {
@@ -116,10 +125,13 @@ describe('零基础英语学习主线', () => {
     copy[0].steps[0].title = 'changed';
     copy[0].steps[0].quickCheck!.options[0] = 'changed';
     copy[0].steps[1].sounds![0].word = 'changed';
+    copy[0].steps[0].compare![0].parts![0].text = 'changed';
     expect(ENGLISH_PATH[0].title).toBe('先会读');
     expect(ENGLISH_PATH[0].steps[0].title).toBe('字母名 ≠ 字母音');
     expect(ENGLISH_PATH[0].steps[0].quickCheck!.options[0]).not.toBe('changed');
     expect(ENGLISH_PATH[0].steps[1].sounds![0].word).toBe('sip');
+    // cloneStep 必须深拷 compare[].parts，否则页面改动会污染课程真相源
+    expect(ENGLISH_PATH[0].steps[0].compare![0].parts![0].text).toBe('t');
   });
 
   it('零基础发音段先分清字母名/字母音，再按 SSP 顺序排列', () => {
@@ -136,8 +148,70 @@ describe('零基础英语学习主线', () => {
     ]);
     const letter = ENGLISH_PATH[0].steps[0];
     expect(letter.title).toBe('字母名 ≠ 字母音');
-    expect(letter.pattern).not.toContain('/'); // 对比课不做逐音教学，不给 IPA
+    // 对比课不做逐音学习卡片：无 pattern 字符串，靠 compare 对照卡结构化展示
+    expect(letter.pattern).toBeUndefined();
+    expect(letter.compare?.length).toBe(5);
+    for (const pair of letter.compare ?? []) {
+      // ipa 不展示（零基础层藏符号），只用于点声音区放随包本音；nameAudio 是点名称区的朗读文本
+      expect(pair.ipa, `${pair.letter} 本音 ipa`).toMatch(/^\/.+\/$/);
+      expect(pair.nameAudio, `${pair.letter} 字母名朗读文本`).toBeTruthy();
+      // 拟音/字母/例词里不混入 IPA 符号，音标一律走独立的 nameIpa / ipa 字段
+      expect(`${pair.letter}${pair.name}${pair.sound}${pair.word ?? ''}`, `${pair.letter} 拟音字段不混入 IPA`).not.toContain('/');
+      // 独立的 A 会被冠词规则改成 uh，读不出字母名 /eɪ/ —— 必须用拟音词 ay
+      if (pair.letter === 'A') expect(pair.nameAudio).toBe('ay');
+    }
+    // 理解页喇叭读的是对照卡例词，不读例句
+    expect(letter.compare!.map((pair) => pair.word).join(', ')).toBe('tap, bed, sit, hot, cup');
     expect(letter.quickCheck?.answer).toBe(1);
+  });
+
+  it('★ 对比认知课：音标显式展示，每组例词都有音素拆分与逐步合音提示', () => {
+    const letter = ENGLISH_PATH[0].steps[0];
+    expect(letter.pattern).toBeUndefined();
+    expect(letter.compare?.length).toBe(5);
+    for (const pair of letter.compare ?? []) {
+      expect(pair.nameIpa, `${pair.letter} 字母名音标`).toMatch(/^\/.+\/$/);
+      expect(pair.ipa, `${pair.letter} 本音音标`).toMatch(/^\/.+\/$/);
+      expect(pair.blendHint, `${pair.letter} 逐步合音提示`).toContain(pair.word!);
+      // 音素逐字拼起来必须就是例词：不允许前端再猜辅音
+      expect(pair.parts?.map((part) => part.text).join(''), `${pair.letter} 音素拼起来要等于例词`).toBe(pair.word);
+      for (const part of pair.parts ?? []) {
+        expect(part.ipa, `${pair.letter}:${part.text} 本音音标`).toMatch(/^\/.+\/$/);
+      }
+    }
+    // 音素绝不能进 TTS：字母清单会被念成字母名，独立 a 还会被冠词规则改成 uh
+    expect(normalizeEnglishTtsText('a')).toBe('uh');
+  });
+
+  it('★ 对比认知课：5 条专属慢速拼读示范音频真随包存在，/s/ /z/ 不哑', async () => {
+    const letter = ENGLISH_PATH[0].steps[0];
+    const dir = path.join(AUDIO_DIR, 'lesson', 'letter-name-vs-sound');
+    for (const pair of letter.compare ?? []) {
+      expect(pair.blendAudio, `${pair.letter} 专属音频路径`).toBe(`lesson/letter-name-vs-sound/${pair.word}.mp3`);
+      const st = await stat(path.join(dir, `${pair.word}.mp3`));
+      expect(st.isFile(), `缺文件: ${pair.word}.mp3`).toBe(true);
+      expect(st.size, `文件过小: ${pair.word}.mp3`).toBeGreaterThan(10000);
+    }
+    for (const file of ['sound_ipa_s.mp3', 'sound_ipa_z.mp3']) {
+      const st = await stat(path.join(AUDIO_DIR, file));
+      expect(st.size, `缺本音: ${file}`).toBeGreaterThan(3000);
+    }
+  });
+
+  it('对比认知课的例句是可朗读句子，不把字母清单交给 TTS', () => {
+    const letter = ENGLISH_PATH[0].steps[0];
+    expect(letter.id).toBe('letter_name_vs_sound');
+    expect(letter.examples.length).toBeGreaterThanOrEqual(2);
+    for (const example of letter.examples) {
+      // 例句页喇叭直接把 en 交给 TTS：必须是完整句子，不能是 `name: a e i o u — sound: ...` 标签清单
+      expect(example.en, `${letter.id} 例句必须是完整句子`).toMatch(/[.!?]$/);
+      expect(example.en.split(/\s+/).length, `${letter.id} 例句必须有句子长度`).toBeGreaterThan(6);
+      // 单字母会被念成字母名（e/i/o/u）或冠词 /ə/（a）——两者都与本课教学目标相反
+      expect(example.en, `${letter.id} 例句不得含孤立单字母`).not.toMatch(/(^|[^A-Za-z'])[A-Za-z]([^A-Za-z']|$)/);
+      expect(normalizeEnglishTtsText(example.en), `${letter.id} 例句不该被冠词规则改写`).toBe(example.en);
+      expect(example.zh.length).toBeGreaterThan(8);
+    }
+    expect(letter.examples.map((item) => item.en).join(' ')).not.toContain('name:');
   });
 
   it('一课最多教 6 个音，不搞一课灌一堆', () => {
@@ -183,21 +257,24 @@ describe('零基础英语学习主线', () => {
     }
   });
 
-  it('零基础层不展示 IPA 符号：启蒙课隐藏 IPA 且每个音都有口型提示', () => {
-    const hiddenIds = ['ssp_group1', 'ssp_group2', 'ssp_group3', 'ssp_more_consonants', 'sound_short_vowels'];
-    for (const id of hiddenIds) {
+  it('零基础层：IPA 一律展示，每个音都有并列口型提示，不再有藏符号开关', () => {
+    const zeroIds = ['ssp_group1', 'ssp_group2', 'ssp_group3', 'ssp_more_consonants', 'sound_short_vowels'];
+    for (const id of zeroIds) {
       const step = ENGLISH_PATH[0].steps.find((item) => item.id === id)!;
-      expect(step.ipaHidden, id).toBe(true);
       for (const sound of step.sounds ?? []) {
-        expect((sound.mouth || '').length, `${id}:${sound.letter}`).toBeGreaterThan(4);
+        expect(sound.ipa, `${id}:${sound.letter} 音标`).toMatch(/^\/.+\/$/);
+        expect((sound.mouth || '').length, `${id}:${sound.letter} 口型提示`).toBeGreaterThan(4);
       }
       for (const field of [step.goal, step.explanation, step.tip, step.task]) {
         expect(field.includes('闭音节'), `${id} 文案泄漏「闭音节」术语`).toBe(false);
       }
     }
-    // 进阶课（二合字母及以后）保留 IPA 展示
-    const pairs = ENGLISH_PATH[0].steps.find((item) => item.id === 'sound_common_pairs')!;
-    expect(pairs.ipaHidden ?? false).toBe(false);
+    // 展示与否由组件统一处理，数据层不再留与行为相反的 ipaHidden 开关
+    for (const stage of ENGLISH_PATH) {
+      for (const step of stage.steps) {
+        expect('ipaHidden' in step, `${step.id} 不应再有 ipaHidden`).toBe(false);
+      }
+    }
   });
 
   it('拼读演示数据由服务端结构化提供，不靠前端猜辅音音素', () => {
@@ -332,5 +409,23 @@ describe('零基础英语学习主线', () => {
     for (const step of roots) {
       expect(step.explanation.includes('记单词'), `${step.id} 理念句`).toBe(true);
     }
+  });
+});
+
+describe('44 音标谱（音标谱工具页数据源）', () => {
+  it('六组共 44 音：IPA 无重复、例词纯字母、释义齐备', () => {
+    expect(ENGLISH_PHONIC_CHART.map((group) => group.label)).toEqual([
+      '短元音', '长元音', '双元音', '清浊辅音对', '鼻音', '其他辅音',
+    ]);
+    const items = ENGLISH_PHONIC_CHART.flatMap((group) => group.items);
+    expect(items.length).toBe(44);
+    expect(new Set(items.map((item) => item.ipa)).size).toBe(items.length);
+    for (const item of items) {
+      expect(/^[A-Za-z'-]+$/.test(item.word), `${item.ipa} 例词 "${item.word}" 不是纯字母词`).toBe(true);
+      expect(item.gloss.length, `${item.ipa} 释义`).toBeGreaterThan(0);
+    }
+    // 清浊辅音对：16 音按「清在前、浊在后」成对排布
+    const pairs = ENGLISH_PHONIC_CHART.find((group) => group.key === 'pairs')!.items;
+    expect(pairs.length).toBe(16);
   });
 });

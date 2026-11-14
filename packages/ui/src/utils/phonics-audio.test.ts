@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeIpa, phonicsAudioSrc, phonicsAudioTable } from './phonics-audio';
+import { lessonBlendAudioSrc, normalizeIpa, phonicsAudioSrc, phonicsAudioTable } from './phonics-audio';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 /** 音频实际随包位置：vite publicDir = apps/web/public → dist → 打包版根 */
@@ -39,10 +39,31 @@ describe('音标本音映射（phonics-audio）', () => {
     expect(table['oʊ']).toBe('sound_əʊ.mp3');
   });
 
-  it('上游缺文件的不映射（s/z），交给例词朗读回退', () => {
-    expect(phonicsAudioTable()['s']).toBeUndefined();
-    expect(phonicsAudioTable()['z']).toBeUndefined();
-    expect(phonicsAudioSrc('/s/')).toBeNull();
+  it('★ s/z 已补录真人擦音：sit 拼读第一个音不再哑（2026-11-14）', () => {
+    expect(phonicsAudioTable()['s']).toBe('sound_ipa_s.mp3');
+    expect(phonicsAudioTable()['z']).toBe('sound_ipa_z.mp3');
+    expect(phonicsAudioSrc('/s/')).toMatch(/sound_ipa_s\.mp3$/);
+    expect(phonicsAudioSrc('/z/')).toMatch(/sound_ipa_z\.mp3$/);
+  });
+
+  it('★ Windows 大小写不敏感：补录的 s/z 不得覆盖 ʃ/ʒ 的 sound_S/Z.mp3', () => {
+    const table = phonicsAudioTable();
+    expect(table['s'].toLowerCase()).not.toBe(table['ʃ'].toLowerCase());
+    expect(table['z'].toLowerCase()).not.toBe(table['ʒ'].toLowerCase());
+    expect(table['ʃ']).toBe('sound_S.mp3');
+    expect(table['ʒ']).toBe('sound_Z.mp3');
+  });
+
+  it('★ 第 1 课 5 条专属慢速拼读示范音频全部随包存在', async () => {
+    const dir = path.join(AUDIO_DIR, 'lesson', 'letter-name-vs-sound');
+    for (const word of ['tap', 'bed', 'sit', 'hot', 'cup']) {
+      const src = lessonBlendAudioSrc(`lesson/letter-name-vs-sound/${word}.mp3`);
+      expect(src, `${word} 地址绝对化`).toMatch(/phonics-audio\/lesson\/letter-name-vs-sound\//);
+      const st = await stat(path.join(dir, `${word}.mp3`));
+      expect(st.isFile(), `缺文件: ${word}.mp3`).toBe(true);
+      expect(st.size, `文件过小: ${word}.mp3`).toBeGreaterThan(10000);
+    }
+    expect(lessonBlendAudioSrc('../evil.mp3')).toBeNull();
   });
 
   it('★ 严谨性：映射表里每个文件都必须真实随包存在且是有效 mp3（>3KB）', async () => {

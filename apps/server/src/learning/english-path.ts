@@ -37,6 +37,26 @@ export type EnglishBlendGroup = {
   word: string;
 };
 
+/** 对比认知课的「字母名 vs 字母音」一组对照：一套字形、两套读音。 */
+export type EnglishComparePair = {
+  letter: string;
+  /** 字母名的汉字拟音与音标（如「诶」/eɪ/）。 */
+  name: string;
+  nameIpa?: string;
+  /** 字母在例词里的本音：汉字拟音 + 音标（如「啊」/æ/）。 */
+  sound: string;
+  word?: string;
+  ipa?: string;
+  /** 点名称区时交给 TTS 的文本——A 必须写 'ay'（独立的 A 会被冠词规则改成 uh，读不出字母名 /eɪ/）。 */
+  nameAudio?: string;
+  /** 例词逐音素拆分：字母 + 本音音标，供慢速拼读演示逐块放随包本音。 */
+  parts?: Array<{ text: string; ipa: string }>;
+  /** 逐步合音提示（中文拟音，从首音一路叠到整词）。 */
+  blendHint?: string;
+  /** 本课专属慢速拼读示范音频（相对 phonics-audio/ 目录，含音素→合音→整词真人/慢速读音）。 */
+  blendAudio?: string;
+};
+
 export type EnglishPathStep = {
   id: string;
   kind: EnglishPathStepKind;
@@ -47,10 +67,11 @@ export type EnglishPathStep = {
   pattern?: string;
   patternAudio?: string;
   sounds?: EnglishPathSound[];
-  /** 零基础层不显示 IPA 符号（音频仍按 ipa 播放），改显示 mouth 口型提示。 */
-  ipaHidden?: boolean;
   /** 结构化拼读数据；有值时前端不再解析 pattern 猜辅音音素。 */
   blend?: EnglishBlendGroup[];
+  /** 名称 vs 声音对照卡（对比认知课）：显式展示 nameIpa / ipa 音标。
+   * 所有课的逐音卡片一律显示 IPA；mouth 口型提示只作并列辅助说明，不再有「藏符号」开关。 */
+  compare?: EnglishComparePair[];
   /** 教学方法标签；getEnglishPath 输出保证非空（未写时按 kind 兜底）。 */
   method?: EnglishMethod;
   tip: string;
@@ -303,7 +324,13 @@ function passageStep(passage: ReadingPassage, kind: 'fable' | 'story', index: nu
  *
  * 零基础学员早就会背 ABC——那是字母名。读词用的是字母音，两套声音必须先分开，
  * 否则拼读时会用「诶/衣/西」去套（国内拼读教学最常见的头号误区）。
- * 有意不设 sounds 字段：这一课做对比认知，不进入逐音教学。
+ * 有意不设 sounds 字段：这一课做对比认知，不进入逐音教学；
+ * 也不设 pattern：对照内容用 compare 结构化展示（一卡一组），不再堆一行说明文字。
+ *
+ * ★ 本课的例外（用户 2026-11-14 指定）：对照卡把 nameIpa / ipa 一并显示出来，
+ *   并给每个例词配专属慢速拼读音频（音素逐个放本音 → 逐步合音 → 慢速读整词）。
+ *   逐音卡片一律显示 IPA，mouth 口型提示作为辅助说明并列展示（不再按课隐藏符号）。
+ *   音素绝不交给 TTS：字母清单会被念成字母名，独立 a 还会被冠词规则改成 uh。
  */
 const LETTER_NAME_LESSON: EnglishPathStep = {
   id: 'letter_name_vs_sound',
@@ -312,11 +339,42 @@ const LETTER_NAME_LESSON: EnglishPathStep = {
   title: '字母名 ≠ 字母音',
   goal: '分清「字母怎么念它的名字」和「字母在单词里怎么发音」',
   minutes: 8,
-  explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的"声音"：a 在 tap 里不发「诶」，发短促的"啊"。先把两套声音分开，后面拼读才不会乱。',
-  pattern: '名称：A「诶」 E「衣」 I「爱」 O「欧」 U「由」 → 声音：a 短"啊" e 短"诶" i 短"衣" o 短"奥" u 短"阿"',
+  explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的"声音"：a 在 tap 里不发「诶」，发短促的"啊"。先把两套声音分开，后面拼读才不会乱。卡片上并列了音标；点例词会一个音一个音慢慢读，再连成整个词。',
+  compare: [
+    {
+      letter: 'A', name: '诶', nameIpa: '/eɪ/', sound: '啊', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
+      parts: [{ text: 't', ipa: '/t/' }, { text: 'a', ipa: '/æ/' }, { text: 'p', ipa: '/p/' }],
+      blendHint: '特 → 特啊 → 特啊普 → tap', blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
+    },
+    {
+      letter: 'E', name: '衣', nameIpa: '/iː/', sound: '诶', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
+      parts: [{ text: 'b', ipa: '/b/' }, { text: 'e', ipa: '/ɛ/' }, { text: 'd', ipa: '/d/' }],
+      blendHint: '不 → 不诶 → 不诶得 → bed', blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
+    },
+    {
+      letter: 'I', name: '爱', nameIpa: '/aɪ/', sound: '衣', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
+      parts: [{ text: 's', ipa: '/s/' }, { text: 'i', ipa: '/ɪ/' }, { text: 't', ipa: '/t/' }],
+      blendHint: '丝 → 丝衣 → 丝衣特 → sit', blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
+    },
+    {
+      letter: 'O', name: '欧', nameIpa: '/oʊ/', sound: '奥', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
+      parts: [{ text: 'h', ipa: '/h/' }, { text: 'o', ipa: '/ɑ/' }, { text: 't', ipa: '/t/' }],
+      blendHint: '喝 → 喝奥 → 喝奥特 → hot', blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
+    },
+    {
+      letter: 'U', name: '由', nameIpa: '/juː/', sound: '阿', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
+      parts: [{ text: 'c', ipa: '/k/' }, { text: 'u', ipa: '/ʌ/' }, { text: 'p', ipa: '/p/' }],
+      blendHint: '克 → 克阿 → 克阿普 → cup', blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
+    },
+  ],
   tip: '快问快答练法：别人说一个已学词（tap、sit），你只说中间元音的"声音"，不许说字母名。',
+  // 例句必须是「可朗读的英文句子」：例句页的喇叭会直接把 en 交给 TTS。
+  // 不能塞 `name: a e i o u — sound: ...` 这种标签清单——TTS 会把 a e i o u 逐个念成
+  // 字母名，normalizeEnglishTtsText 还会把独立的 a 规范化成冠词 /ə/（"额"），
+  // 正好和本课「字母名 ≠ 字母音」的教学目标打架。句子里也刻意不出现孤立单字母。
   examples: [
-    { en: 'name: a e i o u — sound: tap bed sit hot cup', zh: '名称是字母的自报家门；声音才是读词用的那套。' },
+    { en: 'We say the letter names when we recite the alphabet, but we use their sounds when we read words.', zh: '背字母表时念的是字母的名称，读单词时用的是字母的声音。' },
+    { en: 'In the word "tap", the vowel is short and the letter name would sound wrong.', zh: '在 tap 里元音发短音；念成字母名就错了。' },
   ],
   task: '把 26 个字母的名称快速念一遍，然后读 tap、bed、sit、hot、cup，注意元音的"声音"和名称不同。',
   quickCheck: {
@@ -333,8 +391,8 @@ const LETTER_NAME_LESSON: EnglishPathStep = {
  * ★ 教学硬约束（english-path.test.ts 有前置知识闭合校验，改课必须同步满足）：
  *  1. 一课只教 ≤6 个音，音的顺序 = SSP 分组，不按字母表；
  *  2. 每课例词只能由「本课 + 之前已教」的字母拼出（sat/pin/tap 只用第 1 组六个字母）；
- *  3. 零基础层不展示 IPA 符号（ipaHidden），改展示 mouth 口型提示；
- *  4. IPA 符号、闭音节等术语下沉到初中及以上轨道。
+ *  3. 零基础层 IPA 与 mouth 口型提示并列展示：音标只是声音的标注，不作符号系统讲解；
+ *  4. 「闭音节」等术语仍下沉到初中及以上轨道，零基础文案不得出现。
  */
 const SSP_GROUP1: EnglishPathStep = {
   id: 'ssp_group1',
@@ -342,7 +400,6 @@ const SSP_GROUP1: EnglishPathStep = {
   title: '第一组音：s a t i p n',
   goal: '把这 6 个音发准：它们能拼出最多的简单词',
   minutes: 10,
-  ipaHidden: true,
   explanation: '学发音不按字母表，按"能马上拼出词"的顺序来。这 6 个音学会了，就能读 sat、pin、tap 这样的词。每个音跟读三遍，再点例词听整词。从这一课起，记单词靠拼读：会读的词就能拼写出来，不用死背字母。',
   pattern: 's /s/ → sip · a /æ/ → tap · t /t/ → tin · i /ɪ/ → sit · p /p/ → pan · n /n/ → nap',
   sounds: [
@@ -373,7 +430,6 @@ const SSP_GROUP2: EnglishPathStep = {
   title: '第二组音：c e h r m d',
   goal: '加上这 6 个音，能拼的词立刻翻倍',
   minutes: 10,
-  ipaHidden: true,
   explanation: 'c 和 k 发同一个音（cat、kid 开头一样）。把这组 6 个音和第一组混在一起练，能拼的词一下多起来：cat、bed、hat、red……',
   pattern: 'c /k/ → cat · e /ɛ/ → pen · h /h/ → hat · r /r/ → red · m /m/ → map · d /d/ → dad',
   sounds: [
@@ -404,7 +460,6 @@ const SSP_GROUP3: EnglishPathStep = {
   title: '第三组音：g o u l f b',
   goal: '补齐最后 6 个常用音，21 个单字母音全齐',
   minutes: 10,
-  ipaHidden: true,
   explanation: '这一组学完，21 个辅音加 a/e/i/o/u 五个元音的短音就全部见过。五个元音字母的短音下一课会放在一起对比。',
   pattern: 'g /g/ → bag · o /ɑ/ → dog · u /ʌ/ → cup · l /l/ → leg · f /f/ → fan · b /b/ → bug',
   sounds: [
@@ -435,7 +490,6 @@ const SSP_MORE_CONSONANTS: EnglishPathStep = {
   title: '剩下的辅音：j v w x y z',
   goal: '补齐 26 个字母的字母音，拼读不再卡壳',
   minutes: 10,
-  ipaHidden: true,
   explanation: '这 6 个辅音学完，26 个字母的字母音就全齐了（q 总和 u 连在一起，读作"kw"，后面遇到再练）。注意 y 在 yes 开头是辅音。',
   pattern: 'j /dʒ/ → jam · v /v/ → van · w /w/ → web · x /ks/ → box · y /j/ → yes · z /z/ → zip',
   sounds: [
@@ -758,7 +812,6 @@ export const ENGLISH_PATH: EnglishPathStage[] = [
         title: 'a/e/i/o/u 的短音（归纳）',
         goal: '把五个元音字母的短音和已学单词对上，听到短音能指对元音字母',
         minutes: 8,
-        ipaHidden: true,
         explanation: '前三组里，五个元音字母已经在 cat、bed、sit、dog、cup 这些词里出现过。这一课把它们放在一起对比听，把每个字母的短音听熟。英语还有别的元音音（比如 book 里的 u），后面的课会遇到。',
         pattern: 'a /æ/ → cat · e /ɛ/ → bed · i /ɪ/ → sit · o /ɑ/ → hot · u /ʌ/ → cup',
         patternAudio: 'a, as in cat. e, as in bed. i, as in sit. o, as in hot. u, as in cup.',
@@ -1524,6 +1577,12 @@ function cloneStep(step: EnglishPathStep): EnglishPathStep {
     examples: step.examples.map((example) => ({ ...example })),
     ...(step.sounds ? { sounds: step.sounds.map((sound) => ({ ...sound })) } : {}),
     ...(step.blend ? { blend: step.blend.map((group) => ({ word: group.word, parts: group.parts.map((part) => ({ ...part })) })) } : {}),
+    ...(step.compare ? {
+      compare: step.compare.map((pair) => ({
+        ...pair,
+        ...(pair.parts ? { parts: pair.parts.map((part) => ({ ...part })) } : {}),
+      })),
+    } : {}),
     ...(step.translate ? { translate: step.translate.map((item) => ({ ...item })) } : {}),
     ...(step.quickCheck ? { quickCheck: { ...step.quickCheck, options: [...step.quickCheck.options] } } : {}),
   };

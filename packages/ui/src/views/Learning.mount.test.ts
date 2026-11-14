@@ -297,7 +297,6 @@ describe('Learning 工作区 · 挂载契约', () => {
           { letter: 'o', ipa: '/ɑ/', word: 'hot', gloss: '热', mouth: '嘴自然张大' },
           { letter: 'u', ipa: '/ʌ/', word: 'cup', gloss: '杯子', mouth: '嘴自然半开' },
         ],
-        ipaHidden: true,
         tip: '快问快答', examples: [{ en: 'cat · bed · sit · hot · cup', zh: '猫 · 床 · 坐 · 热 · 杯子' }],
         task: '慢读三遍。',
         quickCheck: { question: 'q', options: ['cat · bed · sit · hot · cup', 'x1', 'x2'], answer: 0, explanation: 'e' },
@@ -329,7 +328,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(el.querySelector('.lp-sound-card')).toBeTruthy())
     const ipaCard = el.querySelector('.lp-sound-ipa') as HTMLElement
     expect(ipaCard.textContent).toContain('嘴张到能塞两指')
-    expect(ipaCard.textContent).not.toContain('/æ/')
+    // 零基础层不再把 IPA 替换成口型文字：两者并列显示
+    expect(ipaCard.textContent).toContain('/æ/')
     // 学完逐音进入拼读块：例词必须完整渲染（不许截成 ca/be/si/ho）
     const next = el.querySelector('.lp-sound-next') as HTMLElement
     for (let i = 0; i < 4; i++) { next.click(); await nextTick() }
@@ -342,6 +342,294 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(requestedUrls.some((u) => u.includes('/learning/path?track=junior'))).toBe(true))
     expect(localStorage.getItem('yz.learning.path.track.v1')).toBe('junior')
     localStorage.removeItem('yz.learning.path.track.v1')
+  })
+
+  it('★ 对比认知课：说明性 pattern 不退化成空的拼读演示，例句朗读不出现字母清单', async () => {
+    const requested: string[] = []
+    const speeds: string[] = []
+    const localPlayed: string[] = []
+    class FakeAudio {
+      listeners: Record<string, Array<() => void>> = {}
+      pause = vi.fn()
+      play = vi.fn(async () => { setTimeout(() => this.listeners['ended']?.forEach((cb) => cb()), 5) })
+      constructor(src: string) { localPlayed.push(src) }
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    const pathPayload = [{
+      id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
+      steps: [{
+        id: 'letter_name_vs_sound', kind: 'phonics', method: '听辨',
+        title: '字母名 ≠ 字母音', goal: '分清「字母怎么念它的名字」和「字母在单词里怎么发音」', minutes: 8,
+        explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的声音。',
+        compare: [
+          {
+            letter: 'A', name: '诶', nameIpa: '/eɪ/', sound: '啊', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
+            parts: [{ text: 't', ipa: '/t/' }, { text: 'a', ipa: '/æ/' }, { text: 'p', ipa: '/p/' }],
+            blendHint: '特 → 特啊 → 特啊普 → tap', blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
+          },
+          {
+            letter: 'E', name: '衣', nameIpa: '/iː/', sound: '诶', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
+            parts: [{ text: 'b', ipa: '/b/' }, { text: 'e', ipa: '/ɛ/' }, { text: 'd', ipa: '/d/' }],
+            blendHint: '不 → 不诶 → 不诶得 → bed', blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
+          },
+          {
+            letter: 'I', name: '爱', nameIpa: '/aɪ/', sound: '衣', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
+            parts: [{ text: 's', ipa: '/s/' }, { text: 'i', ipa: '/ɪ/' }, { text: 't', ipa: '/t/' }],
+            blendHint: '丝 → 丝衣 → 丝衣特 → sit', blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
+          },
+          {
+            letter: 'O', name: '欧', nameIpa: '/oʊ/', sound: '奥', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
+            parts: [{ text: 'h', ipa: '/h/' }, { text: 'o', ipa: '/ɑ/' }, { text: 't', ipa: '/t/' }],
+            blendHint: '喝 → 喝奥 → 喝奥特 → hot', blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
+          },
+          {
+            letter: 'U', name: '由', nameIpa: '/juː/', sound: '阿', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
+            parts: [{ text: 'c', ipa: '/k/' }, { text: 'u', ipa: '/ʌ/' }, { text: 'p', ipa: '/p/' }],
+            blendHint: '克 → 克阿 → 克阿普 → cup', blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
+          },
+        ],
+        tip: '快问快答练法。',
+        examples: [
+          { en: 'We say the letter names when we recite the alphabet, but we use their sounds when we read words.', zh: '背字母表时念的是字母的名称，读单词时用的是字母的声音。' },
+          { en: 'In the word "tap", the vowel is short and the letter name would sound wrong.', zh: '在 tap 里元音发短音；念成字母名就错了。' },
+        ],
+        task: '把 26 个字母的名称快速念一遍。',
+        quickCheck: {
+          question: '读 tap 时，a 发的是字母名称「诶」吗？',
+          options: ['是', '不是', '是但轻一点', '看心情'], answer: 1, explanation: '两套系统。',
+        },
+      }],
+    }]
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) return { data: pathPayload }
+      return await defaultGet(url)
+    })
+    vi.mocked(api.post).mockImplementation(async (url: string, payload?: unknown) => {
+      if (!url.includes('/learning/tts')) return { data: null }
+      requested.push(String((payload as { text?: string } | undefined)?.text || ''))
+      speeds.push(String((payload as { speed?: string } | undefined)?.speed || ''))
+      return { data: { url: '/audio/tts.wav', engine: 'sapi', voice: 'Microsoft Zira Desktop' } }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('字母名 ≠ 字母音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-compare')).toBeTruthy())
+    // 没有音素 ⇒ 不进拼读演示分支：不许出现孤立的「→ a」和「跟着演示拼一遍」
+    expect(el.querySelector('.lp-path-pattern-blend')).toBeFalsy()
+    expect(el.querySelector('.lp-blend-arrow')).toBeFalsy()
+    // 名称 vs 声音对照卡：5 组，每组 = 字母 + 名称 + 音标 + → + 声音 + 音标 + 例词
+    const pairs = el.querySelectorAll('.lp-compare-pair')
+    expect(pairs).toHaveLength(5)
+    expect(pairs[0].textContent).toContain('诶')
+    expect(pairs[0].textContent).toContain('啊')
+    expect(pairs[0].textContent).toContain('tap')
+    expect(pairs[0].textContent).toContain('/æ/')
+    expect(pairs[0].textContent).toContain('/eɪ/')
+    // 「慢速拼读例词」依次播 5 条专属音频，绝不把词表整串丢给 TTS 连读
+    ;(el.querySelector('.lp-path-compare .lp-path-listen') as HTMLElement).click()
+    await vi.waitFor(
+      () => expect(localPlayed.filter((src) => src.includes('/lesson/letter-name-vs-sound/')).length).toBe(5),
+      { timeout: 5000 },
+    )
+    expect(localPlayed
+      .filter((src) => src.includes('/lesson/letter-name-vs-sound/'))
+      .map((src) => new URL(src).pathname.split('/').pop()))
+      .toEqual(['tap.mp3', 'bed.mp3', 'sit.mp3', 'hot.mp3', 'cup.mp3'])
+    expect(requested).toHaveLength(0)
+    expect(requested.join(' ')).not.toContain('We say')
+    // 点例词：只拼读这一个词，并显示逐步合音说明；同样不发 TTS
+    ;(pairs[0].querySelector('.lp-compare-word') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-compare-hint')?.textContent).toContain('特 → 特啊')
+    expect(requested).toHaveLength(0)
+    // 点对照卡名称区：读字母名（A 用 'ay' 绕开冠词规则，不读成「额」）
+    ;(pairs[0].querySelector('.lp-compare-name') as HTMLElement).click()
+    await vi.waitFor(() => expect(requested.length).toBeGreaterThan(0))
+    expect(requested[0]).toBe('ay')
+    // 点声音区：放随包本音音频（/æ/），不发 TTS 请求
+    ;(pairs[0].querySelector('.lp-compare-sound') as HTMLElement).click()
+    await vi.waitFor(() => expect(localPlayed.some((src) => decodeURIComponent(src).endsWith('sound_æ.mp3'))).toBe(true))
+    expect(requested).toHaveLength(1)
+
+    // 切到例句页：两段是可读句子，喇叭朗读的文本不含字母清单
+    ;(el.querySelector('button[title^="下一步"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-examples')).toBeTruthy())
+    const articles = el.querySelectorAll('.lp-path-examples article')
+    expect(articles).toHaveLength(2)
+    expect(el.querySelector('.lp-path-examples')?.textContent).not.toContain('name: a e i o u')
+    ;(articles[0].querySelector('button') as HTMLElement).click()
+    await vi.waitFor(() => expect(requested.length).toBeGreaterThan(1))
+    expect(requested[1]).toMatch(/^We say the letter names/)
+    expect(speeds[1]).toBe('normal')
+    expect(requested.join(' ')).not.toMatch(/\ba e i o u\b/)
+  })
+
+  it('★ 朗读语速三档：顶栏切换持久化，缓存按档位区分（同文本换档重新合成）', async () => {
+    const requested: Array<{ text: string; speed: string }> = []
+    class FakeAudio {
+      listeners: Record<string, Array<() => void>> = {}
+      pause = vi.fn()
+      play = vi.fn(async () => { setTimeout(() => this.listeners['ended']?.forEach((cb) => cb()), 5) })
+      constructor(_src: string) {}
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', {
+      cancel: vi.fn(),
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+    })
+    const { api } = await import('../api/client')
+    const pathPayload = [{
+      id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
+      steps: [{
+        id: 'speed_demo', kind: 'phonics', title: '语速演示课', goal: '选一个合适的语速', minutes: 5,
+        explanation: '朗读语速分慢 / 中（正常）/ 快三档。',
+        pattern: 'demo pattern',
+        tip: '换档后再点朗读。',
+        examples: [{ en: 'Slow and steady wins the race.', zh: '慢而稳者赢。' }],
+        task: '各档听一遍。',
+        quickCheck: { question: '默认档是哪档？', options: ['慢', '中', '快'], answer: 1, explanation: '默认中速。' },
+      }],
+    }]
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) return { data: pathPayload }
+      return await defaultGet(url)
+    })
+    vi.mocked(api.post).mockImplementation(async (url: string, payload?: unknown) => {
+      if (!url.includes('/learning/tts')) return { data: null }
+      requested.push({
+        text: String((payload as { text?: string } | undefined)?.text || ''),
+        speed: String((payload as { speed?: string } | undefined)?.speed || ''),
+      })
+      return { data: { url: `/audio/${requested.length}.wav`, engine: 'sapi' } }
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('语速演示课'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-immersive')).toBeTruthy())
+    // 默认中速档：分段控件「中」高亮
+    const speedButtons = el.querySelectorAll('.lp-tts-speed button')
+    expect(speedButtons).toHaveLength(3)
+    expect(speedButtons[1].classList.contains('active')).toBe(true)
+    ;(el.querySelector('button[title^="下一步"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-examples')).toBeTruthy())
+    const speakButton = el.querySelector('.lp-path-examples article button') as HTMLElement
+    speakButton.click()
+    await vi.waitFor(() => expect(requested).toHaveLength(1))
+    expect(requested[0].speed).toBe('normal')
+    // 切到慢速：持久化 + 同一文本重新合成（缓存 key 带档位，不串档）
+    ;(speedButtons[0] as HTMLElement).click()
+    await nextTick()
+    expect(localStorage.getItem('yz.learning.tts.speed.v1')).toBe('slow')
+    expect(el.querySelector('.lp-tts-speed button.active')?.textContent?.trim()).toBe('慢')
+    speakButton.click()
+    await vi.waitFor(() => expect(requested).toHaveLength(2))
+    expect(requested[1].speed).toBe('slow')
+    expect(requested[1].text).toBe(requested[0].text)
+    localStorage.removeItem('yz.learning.tts.speed.v1')
+  })
+
+  it('★ 词根/语法课的说明性 pattern 同样不渲染残缺箭头', async () => {
+    // 全课程里 89 课的 pattern 是说明文字（spect = look / see、do/does 现在…），
+    // 旧逻辑会把它解析成「无音素 + 抓一个词」→ 核心结构只剩「→ spect」。
+    const { api } = await import('../api/client')
+    const pathPayload = [{
+      id: 'word-building', title: '会造词', subtitle: '词根', level: '入门',
+      steps: [{
+        id: 'roots_spect', kind: 'roots', title: 'spect = look', goal: '用词根 spect 记住一族词', minutes: 8,
+        explanation: 'spect 表示看，同根词都和「看」有关。',
+        pattern: 'spect = look / see',
+        tip: '看到 spect 就往「看」上想。',
+        examples: [{ en: 'The spectator respects the inspector.', zh: '观众尊重检查员。' }],
+        task: '拆三个同根词。',
+        quickCheck: { question: 'spect 是什么意思？', options: ['看', '听', '写'], answer: 0, explanation: 'spect = look。' },
+      }],
+    }]
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) return { data: pathPayload }
+      return await defaultGet(url)
+    })
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('spect'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-pattern')).toBeTruthy())
+    expect(el.querySelector('.lp-path-pattern-blend')).toBeFalsy()
+    expect(el.querySelector('.lp-blend-arrow')).toBeFalsy()
+    expect(el.querySelector('.lp-path-pattern b')?.textContent).toBe('spect = look / see')
+    // 说明性 pattern 没有自己的音频 ⇒ 不渲染喇叭（朗读收口，不再拿例句冒充）
+    expect(el.querySelector('.lp-path-pattern .lp-path-listen')).toBeFalsy()
+  })
+
+  it('★ 音标谱：顶栏入口打开 44 音分组面板，点格子放随包本音', async () => {
+    const localPlayed: string[] = []
+    class FakeAudio {
+      listeners: Record<string, Array<() => void>> = {}
+      pause = vi.fn()
+      play = vi.fn(async () => { setTimeout(() => this.listeners['ended']?.forEach((cb) => cb()), 5) })
+      constructor(src: string) { localPlayed.push(src) }
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', { cancel: vi.fn(), getVoices: vi.fn(() => []), speak: vi.fn() })
+    const { api } = await import('../api/client')
+    const chartPayload = [
+      { key: 'short', label: '短元音', items: [{ ipa: 'ɪ', word: 'sit', gloss: '坐' }, { ipa: 'æ', word: 'tap', gloss: '轻拍' }] },
+      { key: 'pairs', label: '清浊辅音对', items: [{ ipa: 's', word: 'sip', gloss: '小口喝' }] },
+    ]
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/phonics-chart')) return { data: chartPayload }
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) return { data: [{
+        id: 'sounds', title: '先会读', subtitle: '', level: '零基础',
+        steps: [{
+          id: 'chart_demo', kind: 'phonics', title: '音标谱入口课', goal: 'g', minutes: 5,
+          explanation: 'e', tip: 't', task: 'k', pattern: 'demo',
+          examples: [{ en: 'Slow and steady wins the race.', zh: '慢而稳者赢。' }],
+          quickCheck: { question: 'q', options: ['a', 'b', 'c'], answer: 0, explanation: 'e' },
+        }],
+      }] }
+      return await defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('音标谱入口课'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-immersive')).toBeTruthy())
+    ;(el.querySelector('.lp-chart-btn') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-chart-panel')).toBeTruthy())
+    // ★ 就地浮层：不许再出现全屏遮罩 / 模态语义（点音标谱不该把学习台推到"后面"）
+    expect(el.querySelector('.lp-chart-backdrop')).toBeFalsy()
+    expect(el.querySelector('.lp-chart-panel')?.getAttribute('aria-modal')).toBeNull()
+    expect(el.querySelector('.lp-chart-btn')?.getAttribute('aria-expanded')).toBe('true')
+    // 分组标题 + 格子渲染（mock 数据 3 格）
+    expect([...el.querySelectorAll('.lp-chart-body h4')].map((h) => h.textContent?.trim())).toEqual(['短元音', '清浊辅音对'])
+    const cells = el.querySelectorAll('.lp-chart-grid button')
+    expect(cells).toHaveLength(3)
+    // 点 /ɪ/ 格子：放随包本音 mp3，不发起 TTS
+    ;(cells[0] as HTMLElement).click()
+    await vi.waitFor(() => expect(localPlayed.some((src) => decodeURIComponent(src).endsWith('sound_short_i.mp3'))).toBe(true))
+    // 点 /s/ 格子：2026-11-14 已从真人整词补录擦音本音，44 音现在全部可点读
+    ;(cells[2] as HTMLElement).click()
+    await vi.waitFor(() => expect(localPlayed.some((src) => src.includes('sound_ipa_s.mp3'))).toBe(true))
+    // 点格子要有即时视觉反馈，不再是"点了只出声、界面没反应"
+    await vi.waitFor(() => expect(cells[2].classList.contains('playing')).toBe(true))
+    // 关闭
+    ;(el.querySelector('.lp-chart-panel > header button') as HTMLElement).click()
+    await nextTick()
+    expect(el.querySelector('.lp-chart-panel')).toBeFalsy()
   })
 
   it('★ 回译课：源句先可见，参考译文点「对照」才展开，「全部对照」一键切换', async () => {
