@@ -122,6 +122,23 @@ describe('两栏骨架与列表渲染（左=窄导航，右=记录/查看主区�
     expect(text).toContain('未分类')
   })
 
+  it('★ 沉浸态：点列表行选中后「沉浸」按钮展开整屏层（position fixed），退出还原', async () => {
+    const el = await mountAndTrack()
+    const row = el.querySelector('.np-row') as HTMLElement
+    row.click()
+    await nextTick()
+    const main = el.querySelector('.np-main') as HTMLElement
+    expect(main.classList.contains('immersive')).toBe(false)
+    const btn = [...el.querySelectorAll('.np-detail-ops button')].find((b) => b.textContent === '沉浸') as HTMLElement
+    btn.click()
+    await nextTick()
+    expect(main.classList.contains('immersive')).toBe(true)
+    const exit = [...el.querySelectorAll('.np-detail-ops button')].find((b) => b.textContent === '退出沉浸') as HTMLElement
+    exit.click()
+    await nextTick()
+    expect(main.classList.contains('immersive')).toBe(false)
+  })
+
   it('★ 计划时间 chip 状态色：逾期红 / 今日橙 / 未来灰（class 真落上）', async () => {
     const el = await mountAndTrack()
     expect(el.querySelector('.np-chip-overdue')).toBeTruthy()

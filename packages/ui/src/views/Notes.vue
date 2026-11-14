@@ -45,6 +45,13 @@ const saving = ref(false);
 const newCategoryName = ref('');
 const creatingCategory = ref(false);
 
+// ── 沉浸式记录/阅读（照学习模式沉浸台范式）：整屏只留当前笔记，Esc 或按钮退出 ──
+const immersive = ref(false);
+function toggleImmersive() { immersive.value = !immersive.value; }
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && immersive.value) immersive.value = false;
+}
+
 // ── 栏宽拖拽（照 Learning.vue startColumnResize 范式）：左导航可拖，主区 minmax(0,1fr) 吃满剩余 ──
 const sideWidth = ref(300);
 let stopColumnResize: (() => void) | null = null;
@@ -244,6 +251,7 @@ watch(() => String((route.query as Record<string, unknown>).noteId || ''), (id) 
 });
 
 onMounted(async () => {
+  window.addEventListener('keydown', onGlobalKeydown);
   await refreshAll();
   loading.value = false;
   const noteId = String((route.query as Record<string, unknown>).noteId || '');
@@ -259,7 +267,11 @@ onMounted(async () => {
     });
   }
 });
-onBeforeUnmount(() => { offOpen?.(); stopColumnResize?.(); });
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown);
+  offOpen?.();
+  stopColumnResize?.();
+});
 
 // 未登录（guest 路由防御）：页面仍渲染骨架，接口由 authMiddleware 拦
 const isGuest = computed(() => !auth.isLoggedIn);
@@ -329,8 +341,8 @@ const isGuest = computed(() => !auth.isLoggedIn);
 
     <div class="np-col-resizer" aria-label="拖动调整导航栏宽度" @pointerdown="startColumnResize($event)"></div>
 
-    <!-- 右：当前笔记 · 记录与查看主区（满高） -->
-    <section class="np-main np-card">
+    <!-- 右：当前笔记 · 记录与查看主区（满高；沉浸态整屏只留当前笔记） -->
+    <section class="np-main np-card" :class="{ immersive }">
       <template v-if="draft">
         <div class="np-main-head">
           <input v-if="editing" v-model="draft.title" class="np-title-input" placeholder="标题" />
@@ -345,6 +357,8 @@ const isGuest = computed(() => !auth.isLoggedIn);
               <button class="np-mini" :class="{ on: draft.pinned }" @click="togglePinDraft">{{ draft.pinned ? '已置顶' : '置顶' }}</button>
               <button class="np-mini np-danger" @click="removeDraft">删除</button>
             </template>
+            <button v-if="immersive" class="np-mini" @click="toggleImmersive">退出沉浸</button>
+            <button v-else class="np-mini" @click="toggleImmersive">沉浸</button>
           </div>
         </div>
         <div class="np-main-meta">
@@ -513,6 +527,16 @@ const isGuest = computed(() => !auth.isLoggedIn);
 
 /* ── 右主区：记录与查看 ── */
 .np-main { overflow: hidden; }
+/* 沉浸态（照学习模式沉浸台）：整屏只留当前笔记 */
+.np-main.immersive {
+  position: fixed; inset: 0; z-index: 3000;
+  border-radius: 0; border: none;
+}
+.np-main.immersive .np-main-head { padding: 16px 32px 4px; }
+.np-main.immersive .np-main-meta { padding: 6px 32px; }
+.np-main.immersive .np-main-body { margin: 8px 32px 24px; }
+.np-main.immersive .np-editor { font-size: 15px; }
+.np-main.immersive .np-editor-preview { font-size: 15px; }
 .np-main-head {
   display: flex; align-items: flex-start; gap: 12px;
   padding: 16px 20px 4px; flex-shrink: 0;
