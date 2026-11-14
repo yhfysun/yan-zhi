@@ -109,12 +109,12 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('三栏骨架与列表渲染', () => {
-  it('三栏容器存在，列表行渲染标题与分类 chip', async () => {
+describe('两栏骨架与列表渲染（左=窄导航，右=记录/查看主区）', () => {
+  it('两栏容器存在，列表行渲染标题与分类 chip', async () => {
     const el = await mountAndTrack()
-    expect(el.querySelector('.np-col-left')).toBeTruthy()
-    expect(el.querySelector('.np-col-mid')).toBeTruthy()
-    expect(el.querySelector('.np-col-right')).toBeTruthy()
+    expect(el.querySelector('.np-side')).toBeTruthy()
+    expect(el.querySelector('.np-main')).toBeTruthy()
+    expect(el.querySelector('.np-col-resizer')).toBeTruthy() // 栏宽可拖拽
     const text = el.textContent || ''
     expect(text).toContain('置顶笔记')
     expect(text).toContain('英语')
