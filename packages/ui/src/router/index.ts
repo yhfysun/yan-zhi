@@ -193,6 +193,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '知识库', guest: true },
   },
   {
+    // 笔记（docs/笔记功能方案-2026-11-14.md）：独立功能页（非模式，不参与构建裁剪）
+    // 笔记+计划+收藏三位一体；桌面提醒通知点击带 query.noteId 定位
+    path: '/notes',
+    name: 'notes',
+    component: () => import('../views/Notes.vue'),
+    meta: { title: '笔记' },
+  },
+  {
     path: '/models',
     name: 'models',
     component: () => import('../views/Models.vue'),

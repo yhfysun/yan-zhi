@@ -73,6 +73,8 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 // 学习模式（docs/英语学习模式方案-2026-11-08.md）：档案/词书关卡/闯关/错误本/上下文注入
 import learningRoutes from './routes/learning.js';
+// 笔记（docs/笔记功能方案-2026-11-14.md）：笔记/计划/收藏/到期提醒
+import noteRoutes from './routes/notes.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import goalScheduleRoutes from './routes/goal-schedules.js';
 import goalGovernanceRoutes from './routes/goal-governance.js';
@@ -394,6 +396,7 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/learning', learningRoutes);
+app.use('/api/notes', noteRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/llm/goal-schedules', goalScheduleRoutes);
 app.use('/api/llm/goal-governance', goalGovernanceRoutes);

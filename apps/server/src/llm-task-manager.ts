@@ -53,6 +53,7 @@ import { getLearningContext } from './learning/service.js';
 import { getSceneCard, renderScenePrompt } from './learning/curriculum.js';
 // 学习查询工具的用户态注入（§3.6 第 2 层）+ 错误本自动抽取（对话收尾钩子）
 import { setLearningToolUser } from './learning/tools.js';
+import { setNoteToolUser, NOTE_TOOL_NAMES } from './notes/tools.js';
 import { extractLearningErrorsFromTask } from './learning/extract.js';
 import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
@@ -5979,6 +5980,7 @@ async function executeTool(
       } else {
         setBrowserToolConversationId(task.conversationId);
         setLearningToolUser(task.userId);
+        setNoteToolUser(task.userId);
         setBrowserToolWorkspaceDir(task.workspaceDir || '');
         recipeResult = await new BrowserRunRecipeTool().execute(recipeArgs, {
           conversationId: task.conversationId,
@@ -6491,6 +6493,8 @@ async function executeTool(
     setBrowserToolConversationId(task.conversationId);
     // 学习查询工具的用户态同源透传（§3.6 第 2 层）：三个只读工具靠它知道查谁的数据
     setLearningToolUser(task.userId);
+    // 笔记四件套的用户态同源透传（docs/笔记功能方案-2026-11-14.md §3）：与学习工具同款解法
+    setNoteToolUser(task.userId);
     // 工作目录同源透传（2026-10-26）：Playwright 链路的「导出/下载」据此落进
     // <工作目录>/downloads/，模型才能用文件工具直接读到导出的 Excel。
     setBrowserToolWorkspaceDir(task.workspaceDir);
@@ -8904,6 +8908,16 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         if (t) toolLines.push(`- \`${name}\`: ${t.description}${formatSchemaParams(t.inputSchema)}`);
       }
 
+      // 笔记四件套（docs/笔记功能方案-2026-11-14.md §3）：与 buildToolsForBackend 1.55 段
+      // 同口径 —— 提示词模式模型也要看得到（否则照 db.ts:1198 铁律「提示词推荐了却没挂 =
+      // 白跑一轮」的反面：挂了却没进提示词，文本模式模型看不到 = 白挂）。
+      if (agentId !== PAGE_AGENT_ID) {
+        for (const name of NOTE_TOOL_NAMES) {
+          const t = registry.get(name);
+          if (t) toolLines.push(`- \`${name}\`: ${t.description}${formatSchemaParams(t.inputSchema)}`);
+        }
+      }
+
       // 页面资产维护工具对 prompt-mode 模型同样可见。原生 tools 模型走
       // buildToolsForBackend 的同一组常量；这里只是把同一能力投影成文本。
       for (const name of PAGE_ASSET_ALWAYS_API_TOOLS) {
@@ -9740,6 +9754,23 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
       type: 'function',
       function: { name, description: def.description, parameters: def.inputSchema },
     });
+  }
+
+  // 1.55) 笔记四件套（docs/笔记功能方案-2026-11-14.md §3）：无条件广播给全部聊天智能体。
+  //       与规划三件套同一广播范式 —— 存量智能体的 builtin_tool_ids 改不动，逐个补必然漏。
+  //       pageAgent 除外（浏览器操作助手，不聊天，挂了是纯噪音 —— RPA 广播段同款排除）。
+  //       调用边界由工具 description 自约束：仅用户明确要求记录/查询/修改笔记时使用，
+  //       不做 system prompt 摘要注入（token 零开销）。
+  if (agentId !== PAGE_AGENT_ID) {
+    for (const name of NOTE_TOOL_NAMES) {
+      if (seen.has(name) || !registry.has(name)) continue;
+      const def = registry.get(name)!;
+      seen.add(name);
+      tools.push({
+        type: 'function',
+        function: { name, description: def.description, parameters: def.inputSchema },
+      });
+    }
   }
 
   // 1.6) 后台作业状态轮询（2026-10-24）：只随「能跑代码」的工具一起暴露。

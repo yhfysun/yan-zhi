@@ -335,6 +335,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     currentConv: (convId) => ipcRenderer.send('chat:current-conv', String(convId || '')),
   },
 
+  // 笔记（docs/笔记功能方案-2026-11-14.md §4）：提醒通知点击 → 主窗跳 /notes 并定位
+  notes: {
+    onOpenRequest: (cb) => {
+      const h = (_e, p) => cb(p || {});
+      ipcRenderer.on('notes:open', h);
+      return () => ipcRenderer.removeListener('notes:open', h);
+    },
+  },
+
   screenRecord: {
     // opts: { outPath, target?('task:<convId>'|''=主窗口), fps? } → { ok, recordId, outPath } | { ok:false, error }
     start: (opts) => ipcRenderer.invoke('screen-record:start', opts),

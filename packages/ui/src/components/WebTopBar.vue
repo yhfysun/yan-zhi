@@ -208,7 +208,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, VideoPlay,
+  Search, VideoCamera, SwitchButton, VideoPlay, Notebook,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';
@@ -452,6 +452,7 @@ const moreItems = computed<HoverMenuItem[]>(() => [
     icon: DataLine,
     children: [
       { key: 'knowledge', label: '知识库', icon: Collection, path: '/knowledge', desc: '文档与知识条目' },
+      { key: 'notes', label: '笔记', icon: Notebook, path: '/notes', desc: '笔记 · 计划 · 收藏' },
       { key: 'data-sources', label: '数据源', icon: DataLine, path: '/data-sources', desc: '数据库连接管理' },
       { key: 'ontologies', label: '本体管理', icon: Share, path: '/ontologies', desc: '数据本体建模' },
       { key: 'sql-console', label: 'SQL 控制台', icon: Operation, path: '/sql-console', desc: '查询与探索' },

@@ -20,6 +20,7 @@ import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vu
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
 import GrammarWorkbench from '../components/learning/GrammarWorkbench.vue';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
+import NoteQuickCreateDialog from '../components/notes/NoteQuickCreateDialog.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
 
 /** ★ 与 apps/server/src/builtin-learning-agents.ts 的 LEARNING_AGENT_ID 成对维护（服务端有契约单测） */
@@ -48,6 +49,8 @@ const errors = ref<ErrorRow[]>([]);
 const activeBook = ref<Book | null>(null);
 const levels = ref<Level[]>([]);
 const loading = ref(true);
+// 「记到笔记」弹窗（docs/笔记功能方案-2026-11-14.md §5）
+const noteDialogVisible = ref(false);
 
 // ── 科目（服务端清单驱动：以后加科目只改服务端 curriculum.ts，UI 自动出现）──
 type SubjectDef = { key: string; label: string; ready: boolean };
@@ -1668,8 +1671,16 @@ watch(softExamDate, (value) => {
         <template v-else-if="profile.cefr">等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · {{ profile.goals }}</span></template>
         <template v-else>先和言言聊 3 分钟，自动完成定级</template>
         <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
+        <!-- 记到笔记（docs/笔记功能方案-2026-11-14.md §5）：学习内容沉淀到 /notes，预填科目为标题 -->
+        <button class="lp-mini" @click="noteDialogVisible = true">记到笔记</button>
       </div>
     </div>
+
+    <NoteQuickCreateDialog
+      v-model:visible="noteDialogVisible"
+      :title="`${subject} 学习笔记`"
+      category-name="学习"
+    />
 
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
     <div class="lp-grid" :class="gridClasses" :style="gridStyle">

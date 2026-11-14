@@ -10,6 +10,8 @@ import { getToolsFromDb, mcpShortIdOf } from './client-manager.js';
 import { db } from '../db.js';
 // 学习模式只读查询工具（§3.6 第 2 层）
 import { registerLearningTools } from '../learning/tools.js';
+// 笔记四件套（docs/笔记功能方案-2026-11-14.md §3）：按需读写，仅用户明确要求时使用
+import { registerNotesTools } from '../notes/tools.js';
 
 const router = Router();
 
@@ -54,6 +56,9 @@ export function ensureToolsInitialized(): void {
   registerManagementTools(registry, () => db, collectExtraDiscoverySources);
   // 学习模式只读查询工具（§3.6 第 2 层）：只挂教学智能体（builtin_tool_ids 白名单），全 SELECT
   registerLearningTools(registry);
+  // 笔记四件套（2026-11-14）：registerNotesTools 只负责进 registry；挂到智能体工具面
+  // 由 buildToolsForBackend / buildSystemPromptForBackend 的「笔记四件套无条件广播」段统一放行
+  registerNotesTools(registry);
 }
 
 interface JsonRpcRequest {

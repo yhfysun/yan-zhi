@@ -12833,8 +12833,63 @@ async function pollPluginReminders() {
 
 app.whenReady().then(() => {
   setTimeout(() => { void pollPluginReminders(); }, 6000);
-  setInterval(() => { void pollPluginReminders(); }, REMINDER_POLL_MS);
+  setInterval(() => { void pollPluginReminders(); void pollNoteReminders(); }, REMINDER_POLL_MS);
 });
+
+/* ---------------- 笔记到期提醒（docs/笔记功能方案-2026-11-14.md §4） ---------------- */
+//
+// 照插件提醒轮询同款 drain 范式：POST /api/notes/reminders/drain 取走即标记（服务端单事务，
+// 天然幂等绝不重复）。宠物气泡优先 → 系统通知降级；点击通知打开 /notes 并定位该条。
+function deliverNoteReminder(item) {
+  const text = String((item && item.text) || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const noteId = String((item && item.id) || '');
+  if (!text) return;
+  if (petWindow && !petWindow.isDestroyed()) {
+    try {
+      expandPetForSay(9000);
+      petWindow.webContents.send('pet:say', { text: '⏰ ' + text, ttl: 9000, sound: true });
+      return;
+    } catch { /* 落到系统通知 */ }
+  }
+  try {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title: '笔记提醒', body: text, silent: false });
+    n.on('click', () => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.webContents.send('notes:open', { noteId });
+      } catch {}
+    });
+    n.show();
+  } catch { /* 尽力而为 */ }
+}
+
+let noteReminderPolling = false;
+async function pollNoteReminders() {
+  if (noteReminderPolling) return;
+  noteReminderPolling = true;
+  try {
+    let items = [];
+    try {
+      // 与插件 drain 同款：本机回环 fetch 无 JWT（服务端该端点仅放行 127.0.0.1）
+      const r = await fetch(API_ORIGIN + '/api/notes/reminders/drain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (r.ok) {
+        const j = await r.json();
+        items = (j && j.data && j.data.items) || [];
+      }
+    } catch { /* 服务端未起/旧版本无此端点：静默跳过 */ }
+    for (const it of items) deliverNoteReminder(it);
+  } finally {
+    noteReminderPolling = false;
+  }
+}
 
 ipcMain.on('pet:notify', (_e, payload) => {
   try {

@@ -223,6 +223,8 @@ import { useAgentStore } from './stores/agent';
 import { useCodeStore } from './stores/code';
 
 const route = useRoute();
+// router 提到 setup 顶层取一次（useRouter 内部是 inject，onMounted 回调里再调会拿 undefined）
+const appRouter = useRouter();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
 settingsStore.applyDarkMode(settingsStore.settings.darkMode);
@@ -570,6 +572,16 @@ onMounted(async () => {
     browserDownloadPromptOpen.value = true;
   });
   void browserViewBridge?.markDownloadDirUiReady?.();
+
+  // 笔记提醒通知点击（docs/笔记功能方案-2026-11-14.md §4）：主窗跳 /notes 并定位该条
+  {
+    const bridge = (window as unknown as { electronAPI?: { notes?: { onOpenRequest?: (cb: (p: { noteId?: string }) => void) => () => void } } }).electronAPI?.notes;
+    if (bridge?.onOpenRequest) {
+      bridge.onOpenRequest((p) => {
+        void appRouter.push({ path: '/notes', query: p?.noteId ? { noteId: String(p.noteId) } : undefined });
+      });
+    }
+  }
 
   // 登录/授权初始化可能晚于首屏；定时对指纹，凭据变化时重连能力桥。
   void syncDesktopCapabilityRelay();

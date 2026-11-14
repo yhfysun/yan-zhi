@@ -5469,6 +5469,40 @@ try {
 } catch { /* 迁移失败不阻塞启动 */ }
 
 
+// ===== 笔记（docs/笔记功能方案-2026-11-14.md §1）=====================================
+// 独立功能模块「笔记」：笔记 + 计划同表不同 kind（kind='note'|'plan'），收藏 starred 与
+// 置顶 pinned 分离（重要维度 vs 常用维度），plan_at/remind_at 到期智能提醒（drain 消费）。
+// 业务规则唯一实现在 notes/service.ts —— 这里只放 schema，不写业务。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS note_category (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,                    -- 唯一索引按 (user_id, name)：同名不同用户不冲突
+    sort INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    UNIQUE(user_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS note (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'note',     -- 'note' 笔记 | 'plan' 计划
+    category_id TEXT,                      -- 可空 = 未分类（删分类时笔记自动迁到这里，不丢数据）
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',      -- Markdown
+    source TEXT,                           -- 'manual' | 'learning:...' | 'chat' | ...
+    pinned INTEGER NOT NULL DEFAULT 0,     -- 置顶（常用维度，顶部固定）
+    starred INTEGER NOT NULL DEFAULT 0,    -- 收藏（重要维度，唯一收藏位）
+    plan_at INTEGER,                       -- kind='plan'：计划时间(ms)
+    remind_at INTEGER,                     -- 提醒时间(ms)；到点未处理 → 智能提醒
+    remind_done INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_user ON note(user_id, kind, updated_at DESC);
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_note_remind ON note(remind_at) WHERE remind_done = 0'); } catch {}
+
 // ===== 对话定时任务 =====
 db.exec(`
   CREATE TABLE IF NOT EXISTS scheduled_task (
