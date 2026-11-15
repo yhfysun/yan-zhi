@@ -23,6 +23,16 @@ import { absoluteMediaSrc } from '../../composables/useMediaPreview';
 import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
+
+/** 窄视口判定（沉浸台 Teleport 的 disabled 开关，767px 与移动端全屏 CSS 同断点） */
+const isNarrowViewport = ref(
+  typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqNarrow = window.matchMedia('(max-width: 767px)');
+  const onMqNarrow = (e: MediaQueryListEvent) => { isNarrowViewport.value = e.matches; };
+  try { mqNarrow.addEventListener('change', onMqNarrow); } catch { mqNarrow.addListener(onMqNarrow); }
+}
 type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
 type PathSound = { letter: string; ipa: string; word: string; gloss: string; mouth?: string };
 type PathBlendGroup = { parts: Array<{ text: string; ipa: string }>; word: string };
@@ -1232,15 +1242,21 @@ onBeforeUnmount(() => {
       每个知识点按“理解 → 例句 → 练习 → 自测”展开；故事课程使用原创改写和公版寓言，不复制付费课程原文。
     </p>
 
-    <section
-      v-if="focusing && stage && step"
-      ref="dialogRef"
-      class="lp-path-immersive"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="`${stage.title} · ${step.title}`"
-      tabindex="-1"
-    >
+    <!-- ★ Teleport 到 body（仅窄视口生效，2026-11-15 真机实报）：沉浸台 fixed z3000 在
+         .main-content（z-index:1 的层叠上下文）内对外整体只有 z=1 ⇒ 被顶栏(50)/
+         TabBar(100) 盖住——头部与顶栏重叠、底部前进按钮被 TabBar 截断（用户截图实锤）；
+         祖先 transform 还会劫持 fixed 包含块。Teleport 直挂 body 双问题一次解决；
+         桌面 disabled 保持原 DOM 位置，布局逐字不变。 -->
+    <Teleport to="body" :disabled="!isNarrowViewport">
+      <section
+        v-if="focusing && stage && step"
+        ref="dialogRef"
+        class="lp-path-immersive"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`${stage.title} · ${step.title}`"
+        tabindex="-1"
+      >
       <header class="lp-path-immersive-head">
         <button type="button" class="lp-path-back" @click="closeFocus"><ArrowLeft :size="15" /><span>返回路线</span></button>
         <div class="lp-path-crumb">
@@ -1706,6 +1722,7 @@ onBeforeUnmount(() => {
         </main>
       </div>
     </section>
+    </Teleport>
 
     <div v-if="voiceDialogOpen" class="lp-voice-modal-backdrop" @click.self="closeVoiceDialog">
       <section class="lp-voice-modal" role="dialog" aria-modal="true" aria-labelledby="lp-voice-dialog-title" aria-describedby="lp-voice-dialog-desc">
@@ -2237,6 +2254,39 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 380px) {
   .lp-sound-nav { flex-wrap: wrap; }
+}
+/* ── 移动端沉浸台布局（设计准则 §4：移动端步骤导航改横向滚动，底部前进按钮保持可见；
+      Teleport 后层级已正确，这里解决 230px 侧栏在窄屏挤占内容区的问题）── */
+@media (max-width: 767px), (max-height: 560px) {
+  .lp-path-immersive-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .lp-path-immersive-rail {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 9px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--path-focus-line);
+    -webkit-overflow-scrolling: touch;
+  }
+  .lp-path-rail-course { margin: 0 4px 0 0; padding: 0 10px 0 0; border-bottom: none; border-right: 1px solid var(--path-focus-line); flex: 0 0 auto; max-width: 150px; }
+  .lp-path-immersive-rail button { min-width: 118px; width: auto; min-height: 48px; }
+  .lp-path-immersive-rail button:hover { transform: none; }
+  .lp-path-rail-status { display: none; }
+  .lp-path-immersive-main { padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px)); }
+  .lp-path-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    width: 100%;
+    margin: 10px 0 0;
+    padding: 9px 12px calc(9px + env(safe-area-inset-bottom, 0px));
+    background: color-mix(in srgb, var(--path-focus-bg) 92%, transparent);
+    backdrop-filter: blur(6px);
+    border-top: 1px solid var(--path-focus-line);
+  }
+  .lp-path-immersive-head { padding: 0 14px; gap: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .lp-path-spin { animation: none; }

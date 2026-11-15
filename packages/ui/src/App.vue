@@ -1224,7 +1224,13 @@ body {
       与 .mobile-topbar / .tab-bar 自身的 height 同源 —— 三处写死高度是此前
       「改一处漏两处、留白对不上」的根因。 */
 .platform-mobile .app-shell { flex-direction: column; }
+/* ★ 移动端解除 main-content 的层叠上下文（2026-11-15 真机实报）：桌面的
+   z-index:1 让内部 fixed 沉浸台（学习各科目/闯关层 z3000）对外整体压到 z=1，
+   被顶栏(50)/TabBar(100) 盖住 —— 沉浸台头部与顶栏重叠、底部前进按钮被
+   TabBar 截断（用户截图实锤）。移动端 SideNav 已是底部 TabBar，z-index:1
+   无存在必要 → 置 auto，放行内部 fixed 层正常覆盖全局导航（沉浸台语义）。 */
 .platform-mobile .main-content {
+  z-index: auto;
   margin-left: 0 !important;
   padding: 0 !important;
   padding-top: calc(var(--mobile-topbar-h, 44px) + env(safe-area-inset-top, 0px)) !important;

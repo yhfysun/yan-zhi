@@ -602,6 +602,17 @@ function exitDrillLive() {
   });
 }
 
+/** 窄视口判定（Teleport 的 disabled 开关）：与移动端全屏 CSS 的 767px 断点同口径。
+ *  响应式监听（旋转/分屏宽度变化时切换 Teleport 目标）。 */
+const isNarrowViewport = ref(
+  typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mq = window.matchMedia('(max-width: 767px)');
+  const onMq = (e: MediaQueryListEvent) => { isNarrowViewport.value = e.matches; };
+  try { mq.addEventListener('change', onMq); } catch { mq.addListener(onMq); }
+}
+
 function openCourse(c: CourseView) {  if (c.kind === 'exam') {
     softExamSpecialty.value = c.examSpecialty || '全部';
     tab.value = 'exam';
@@ -1823,6 +1834,11 @@ onMounted(() => {
   void loadSoftExamRegions();
   window.addEventListener('mousedown', dismissNoteMenu);
   readZhouyiProgress(); // 首次进入同步周易左栏完成态（默认科目切换前兜底）
+  // ★ 老 WebView 滚动兜底（2026-11-15 Redmi 9 实报「页面滑不动，相册正常」）：
+  //   窄屏单列滚动此前靠 `:has()` 选择器命中 main-content —— :has() 需要
+  //   Chromium 105+，老 WebView 整条规则静默失效 ⇒ overflow:hidden ⇒ 触摸滚动死。
+  //   挂载/卸载时给 main-content 加/摘 has-learning 类，CSS 不再依赖 :has()。
+  document.querySelector('.main-content')?.classList.add('has-learning');
   // 恢复上次会话的科目与 Tab（loadSubjects 完成后再切，ready 校验在 switchSubject 内）
   const savedSession = readLearningSession();
   if (savedSession.subject && savedSession.subject !== subject.value) {
@@ -1842,6 +1858,7 @@ onBeforeUnmount(() => {
   stopCoachSpeak();
   stopWordSpeech();
   window.removeEventListener('mousedown', dismissNoteMenu);
+  document.querySelector('.main-content')?.classList.remove('has-learning');
 });
 
 // ── 选中文本右键 → 记到笔记（docs/笔记功能方案-2026-11-14.md §5 改版：
@@ -2248,18 +2265,23 @@ watch(softExamDate, (value) => {
         <!-- 单词闯关 -->
         <template v-else-if="tab === 'drill'">
           <!-- 单题聚焦模式：一次只答一题（此前 10 题平铺成一条长列表，又密又乱） -->
-          <div v-if="(drillLevel != null || reviewMode) && currentQ" class="lp-drill-live">
-            <!-- ★ 移动端全屏沉浸层的退出出口（桌面隐藏：中栏本来可见） -->
-            <div class="lp-drill-live-head">
-              <button class="lp-drill-exit" type="button" @click="exitDrillLive">✕ 退出本关</button>
-            </div>
-            <p class="lp-drill-title">
-              {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
-            </p>
-            <div class="lp-drill-meter">
-              <div class="lp-drill-bar"><span :style="{ width: (completedCount / Math.max(1, activeQuestions.length)) * 100 + '%' }"></span></div>
-              <span class="lp-drill-count">已完成 {{ completedCount }}/{{ activeQuestions.length }}</span>
-              <span class="lp-score-live">得分 {{ liveScore }} / 100</span>
+          <!-- ★ Teleport 到 body（仅移动视口生效，2026-11-15 真机实报）：lp-col-mid 祖先链上
+               的 transform/filter 会把 position:fixed 的包含块从视口改成该祖先 ⇒ 全屏层
+               没真全屏，「退出本关」跑到顶栏与头像重叠（用户截图实锤）。Teleport 直挂
+               body 彻底绕开祖先影响；桌面 disabled 保持原 DOM 位置，布局逐字不变。 -->
+          <Teleport to="body" :disabled="!isNarrowViewport">
+            <div v-if="(drillLevel != null || reviewMode) && currentQ" class="lp-drill-live">
+              <!-- ★ 移动端全屏沉浸层的退出出口（桌面隐藏：中栏本来可见） -->
+              <div class="lp-drill-live-head">
+                <button class="lp-drill-exit" type="button" @click="exitDrillLive">✕ 退出本关</button>
+              </div>
+              <p class="lp-drill-title">
+                {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
+              </p>
+              <div class="lp-drill-meter">
+                <div class="lp-drill-bar"><span :style="{ width: (completedCount / Math.max(1, activeQuestions.length)) * 100 + '%' }"></span></div>
+                <span class="lp-drill-count">已完成 {{ completedCount }}/{{ activeQuestions.length }}</span>
+                <span class="lp-score-live">得分 {{ liveScore }} / 100</span>
             </div>
             <div class="lp-focus">
               <p class="lp-focus-kind"><b>第 {{ qIndex + 1 }} 题</b><span class="lp-kind">{{ KIND_LABELS[currentQ.kind] }}</span></p>
@@ -2372,8 +2394,7 @@ watch(softExamDate, (value) => {
               </button>
             </div>
           </div>
-          <template v-else-if="result">
-            <div class="lp-result" :class="{ pass: result.passed }">
+          <div v-else-if="result" class="lp-result" :class="{ pass: result.passed }">
               <p class="lp-result-stars">{{ starText(result.stars) }} <b>{{ result.pct }} 分</b></p>
               <p>答对 {{ result.correct }} / {{ result.total }} · {{ result.passed ? '过关！✅' : '没过，再练一轮 —— 错的词已回复习盒' }}</p>
               <ul>
@@ -2383,9 +2404,10 @@ watch(softExamDate, (value) => {
                 </li>
               </ul>
               <button class="lp-mini" style="margin-top:10px;" @click="result = null">← 返回关卡</button>
-            </div>
-          </template>
-          <template v-else-if="activeBook">
+          </div>
+          </Teleport>
+          <!-- ★ 与 Teleport 内的闯关/结果层互斥（原 v-else-if 链被 Teleport 分隔后改为显式条件） -->
+          <template v-if="!result && drillLevel == null && !reviewMode && activeBook">
             <h3 class="lp-levels-title">{{ activeBook.name }} · 选一关开始（共 {{ levels.length }} 关）</h3>
             <div class="lp-level-grid">
               <button
@@ -3358,6 +3380,11 @@ watch(softExamDate, (value) => {
 .lp-scene-action:hover { background: #2861d9; }
 .lp-scene-action:disabled { opacity: .65; cursor: default; }
 @media (max-width: 900px) {
+  /* ★ 双口径（2026-11-15 Redmi 9 实报）：旧 WebView 不支持 :has()（Chromium 105+），
+     原 `:has(.learning-page)` 整条规则静默失效 ⇒ main-content overflow:hidden ⇒
+     触摸滚动死、页面滑不动（相册正常 = 触摸硬件没问题）。类名由 Learning.vue
+     挂载/卸载时加/摘，任何 WebView 都能命中。:has() 行保留供新引擎双保险。 */
+  :global(.main-content.has-learning),
   :global(.main-content:has(.learning-page)) { overflow-y: auto; overscroll-behavior: contain; }
   .learning-page { padding: 12px; min-height: 0; height: auto; flex: none; }
   .lp-topbar { align-items: flex-start; flex-direction: column; gap: 5px; }
@@ -3478,7 +3505,7 @@ watch(softExamDate, (value) => {
 .lp-drill-live-head { display: none; } /* 桌面/宽窗口：无移动专属退出头（默认隐藏） */
 @media (max-width: 767px) {
   .lp-drill-live,
-  .lp-col-mid .lp-result {
+  .lp-result {
     position: fixed;
     inset: 0;
     z-index: 3000;
@@ -3503,7 +3530,7 @@ watch(softExamDate, (value) => {
 }
 /* 平台=移动（Capacitor 横屏视口 800px+ 时媒体查询会漏，见 MOBILE-NOTES 坑 1） */
 .platform-mobile .lp-drill-live,
-.platform-mobile .lp-col-mid .lp-result {
+.platform-mobile .lp-result {
   position: fixed;
   inset: 0;
   z-index: 3000;
