@@ -264,3 +264,21 @@ function flushAllInstances(): void {
 export function flushSqliteInstances(): void {
   flushAllInstances();
 }
+
+/**
+ * FTS5 能力探测（2026-11-15 移动端实报）：better-sqlite3（原生）带 FTS5；
+ * sql.js（WASM）官方构建不带 ⇒ db.ts 里 `CREATE VIRTUAL TABLE ... USING fts5`
+ * 在移动端启动即抛 `no such module: fts5`，后端整体起不来。
+ * ★ 判据：驱动级能力差异必须在驱动层探测，调用方（db.ts DDL / canon-store 查询）
+ *   按探测结果降级 —— 无守卫的 DDL 是「桌面绿、移动端死」的隐形分叉。
+ * 用 temp 虚表探测：不落主 schema、无残留（成功即 drop，失败本来就没建出来）。
+ */
+export function detectFts5(db: YzSqliteDb): boolean {
+  try {
+    db.exec('CREATE VIRTUAL TABLE IF NOT EXISTS temp.yz_fts5_probe USING fts5(a)');
+    db.exec('DROP TABLE IF EXISTS temp.yz_fts5_probe');
+    return true;
+  } catch {
+    return false;
+  }
+}

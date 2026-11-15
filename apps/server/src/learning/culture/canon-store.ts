@@ -3,7 +3,7 @@
 // ★ 精读层（TS 内容包）注解不入库；canon_gloss 只装文库层缓存，
 //   origin='assisted' 永不覆盖 'verified'（硬约束，测试钉死）。
 
-import { db } from '../../db.js';
+import { db, FTS5_ENABLED } from '../../db.js';
 import { CANON_SEED_WORKS } from './canon-data.js';
 import type { CanonWork } from './types.js';
 
@@ -60,8 +60,16 @@ export function searchCanonWorks(query: CanonQuery): { total: number; page: numb
     // FTS5 unicode61：整段无标点中文是一个 token，短语查询即可做名句反查（等值命中）。
     // ★ 用 rowid 关联（canon_fts 的 content_rowid 对应 canon_work 的隐式 rowid），
     //   不能 id IN (SELECT rowid ...) —— TEXT id 对 INTEGER rowid 恒 false，检索静默空。
-    where.push(`rowid IN (SELECT rowid FROM canon_fts WHERE canon_fts MATCH ?)`);
-    params.push(ftsPhrase(query.q.trim()));
+    // ★ 驱动无 FTS5（移动端 sql.js WASM）⇒ 降级 LIKE 子串：语义从「短语等值」放宽为
+    //   「包含」，名句反查仍然可用；LIKE 通配符转义防用户输入当语法。
+    if (FTS5_ENABLED) {
+      where.push(`rowid IN (SELECT rowid FROM canon_fts WHERE canon_fts MATCH ?)`);
+      params.push(ftsPhrase(query.q.trim()));
+    } else {
+      where.push(`(title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\')`);
+      const like = `%${query.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      params.push(like, like, like);
+    }
   }
   const cond = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = (db.prepare(`SELECT COUNT(*) AS c FROM canon_work ${cond}`).get(...params) as { c: number }).c;

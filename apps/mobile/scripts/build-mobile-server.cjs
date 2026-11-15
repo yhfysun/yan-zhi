@@ -175,6 +175,73 @@ if (process.env.YZ_SKIP_MOBILE_NPM === '1' && fs.existsSync(path.join(NODEJS_DIR
   log('依赖安装完成');
 }
 
+// ── 步骤 3.6：裸包导入硬闸（防依赖漂移静默进包）──
+// ★ 2026-11-15 实报：pinyin-pro 只在 packages/shared 的 package.json 里，nodejs/package.json
+//   没跟着补 ⇒ 内嵌后端 import index.js 直接 ERR_MODULE_NOT_FOUND ⇒ 手机上后端整体起不来
+//   （WebView 降级壳：数据全空 + 插件快照拿不到 + 模式全部「未启用」），且构建期零报错。
+//   同族事故：同日桌面版 splash 卡死（缺同一个包）。⇒ 判据：package.json 有依赖 ≠ 实物有，
+//   构建期必须扫 dist 裸包 specifier 逐个核对 node_modules 实物，缺一个 fail-fast。
+log('=== 步骤 3.6: 裸包导入核对（硬闸） ===');
+{
+  // 受控可选依赖：全部是动态 import + try/catch 降级路径（缺失只降级该功能，不影响启动）
+  const OPTIONAL = new Set([
+    'playwright',       // 浏览器自动化：移动端 DISABLE_PLAYWRIGHT，可用性探测失败即降级
+    'better-sqlite3',   // 原生模块：nodejs-mobile ABI 装不到，sqlite-driver 回退 sql.js
+    'tesseract.js',     // OCR 兜底：RapidOCR 优先，失败才 import
+    'mongodb',          // 文档连接器：try/catch 动态 import
+    'xlsx',             // 表格预览：调用方降级「暂不支持预览」
+    'mammoth',          // Word 预览：同上
+    'unpdf',            // PDF 预览：同上
+    'jszip',            // 压缩包预览：同上
+    '@larksuiteoapi/node-sdk', // 飞书长连接：loadLarkSdk try/catch，未装仅 warn
+    'openclaw',         // 仅存在于模板字符串（openclaw-manager 生成桥接代码用），非运行时 import
+  ]);
+  const nodeBuiltins = new Set(require('node:module').builtinModules);
+  // 合法 npm 包名/子路径字符集（scope/版本子路径）：含 ${ 插值、< > 占位、空白的必然是
+  // 解析器/生成器源码里的字符串模板，不是真实 import（首版误报实锤：code-outline 的
+  // `require('${im[1]}')`、code-symbols 的 `from('<path>')`）。
+  const SPEC_RE = /^@?[a-zA-Z0-9][a-zA-Z0-9@/._-]*$/;
+  const isBare = (s) =>
+    s && SPEC_RE.test(s) && !s.startsWith('.') && !s.startsWith('/') && !s.startsWith('node:')
+    && !s.startsWith('@yan-zhi/') && !/^[A-Za-z]:[\\/]/.test(s) && !s.startsWith('file:');
+  const rootOf = (s) => (s.startsWith('@') ? s.split('/').slice(0, 2).join('/') : s.split('/')[0]);
+  const found = new Map(); // pkg -> 首个引用文件（报错定位用）
+  const scanDirs = ['apps', 'packages', 'plugins'].map((d) => path.join(NODEJS_DIST, d));
+  const scanOne = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      if (st.isDirectory()) { scanOne(full); continue; }
+      if (!name.endsWith('.js') || name.endsWith('.map')) continue;
+      const code = fs.readFileSync(full, 'utf8');
+      // ★ 形态收窄（首版误报实锤）：① lookbehind 要求 from/import/require 前是非标识符
+      //   字符（排除 playFrom / myImport( 这类子串与 .from 属性链）；② specifier 不含
+      //   空白 —— 真包名永远无空格，源码字符串/正则字面量里 `from '...'` 大段内容
+      //   （含换行的生成代码模板）全部排除。
+      const re = /(?<![A-Za-z0-9_.$])(?:from|import\s*\(|require\s*\()\s*['"]([^'"\s]+)['"]/g;
+      let m;
+      while ((m = re.exec(code))) {
+        const spec = m[1];
+        if (!isBare(spec)) continue;
+        const pkg = rootOf(spec);
+        if (nodeBuiltins.has(pkg) || nodeBuiltins.has(spec) || OPTIONAL.has(pkg)) continue;
+        if (!found.has(pkg)) found.set(pkg, path.relative(NODEJS_DIST, full));
+      }
+    }
+  };
+  scanDirs.forEach(scanOne);
+  const missing = [...found.keys()].filter((pkg) => !fs.existsSync(path.join(NODEJS_DIR, 'node_modules', pkg)));
+  if (missing.length) {
+    for (const pkg of missing) {
+      error('内嵌后端引用了未随包的依赖: ' + pkg + '  (首见于 ' + found.get(pkg) + ')');
+    }
+    error('请在 apps/mobile/nodejs/package.json 的 dependencies 补齐上述包后重跑（若是受控可选依赖，加入本脚本 OPTIONAL 清单并确认其 import 有 try/catch 降级）');
+    process.exit(1);
+  }
+  log('裸包核对通过: ' + found.size + ' 个静态依赖全部在 node_modules 实物中');
+}
+
 // ── 步骤 4：生成启动入口 ──
 log('=== 步骤 4: 生成启动入口 ===');
 const indexJs = [

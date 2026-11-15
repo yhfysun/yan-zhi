@@ -42,7 +42,7 @@ import {
   type TaskTypeSpec,
 } from '@yan-zhi/shared';
 import { createRequire } from 'node:module';
-import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
+import { openSqlite, detectFts5, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
 import { BROWSER_NAV_STREAK_LIMIT, DEFAULT_AGENT_PARAMS } from './constants.js';
 // 剪映剪辑 skill 的参考文件（由 scripts/sync-jianying-skill-seed.cjs 从 .claude/skills 生成）
@@ -5488,7 +5488,16 @@ db.exec(`
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (work_id, term)
   );
+`);
 
+// ★ FTS5 能力守卫（2026-11-15 移动端实报）：sql.js（WASM）官方构建不带 FTS5，
+//   无守卫的 `CREATE VIRTUAL TABLE ... USING fts5` 在内嵌后端启动即抛
+//   `no such module: fts5` ⇒ 整个后端起不来（数据空 + 模式全「未启用」）。
+//   桌面 better-sqlite3 原生带 FTS5 不受影响；WASM 下名句反查降级为 LIKE 子串
+//   （canon-store.ts 按本标记分派），表与触发器整体跳过。
+export const FTS5_ENABLED = detectFts5(db);
+if (FTS5_ENABLED) {
+  db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS canon_fts USING fts5(
     title, author, text, content='canon_work', content_rowid='rowid'
   );
@@ -5503,7 +5512,10 @@ db.exec(`
     INSERT INTO canon_fts(canon_fts, rowid, title, author, text) VALUES ('delete', old.rowid, old.title, old.author, old.text);
     INSERT INTO canon_fts(rowid, title, author, text) VALUES (new.rowid, new.title, new.author, new.text);
   END;
-`);
+  `);
+} else {
+  logger.warn('[db] SQLite 驱动无 FTS5（sql.js WASM），canon_fts 名句反查降级为 LIKE 子串检索');
+}
 
 // ===== 学习课时进度入库（docs/传统文化与音乐学习模式方案-2026-11-14.md §4.6 P1）====
 // 跨端备份用：英语/传统文化/音乐等科目扩展共用一张表，subject 列区分；
