@@ -207,6 +207,9 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+      pinyin-pro:
+        specifier: 3.29.5
+        version: 3.29.5
       playwright:
         specifier: ^1.65.0
         version: 1.65.0
