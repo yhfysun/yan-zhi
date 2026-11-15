@@ -153,6 +153,63 @@ describe('两栏骨架与列表渲染（左=窄导航，右=记录/查看主区�
   })
 })
 
+describe('主区形态三态（编辑 / 双栏 / 查看，2026-11-15 用户定调）', () => {
+  async function selectFirstRow(el: HTMLElement) {
+    const row = el.querySelector('.np-row') as HTMLElement
+    row.click()
+    await nextTick()
+  }
+
+  it('★ 三个切换按钮存在；默认查看态（单栏预览、无 textarea）', async () => {
+    const el = await mountAndTrack()
+    await selectFirstRow(el)
+    const labels = [...el.querySelectorAll('.np-mode-btn')].map((b) => b.textContent)
+    expect(labels).toEqual(['编辑', '双栏', '查看'])
+    const body = el.querySelector('.np-main-body') as HTMLElement
+    expect(body.classList.contains('mode-view')).toBe(true)
+    expect(body.querySelector('.np-editor')).toBeNull()
+    expect(body.querySelector('.np-editor-preview')).toBeTruthy()
+  })
+
+  it('★ 切「编辑」：满宽 textarea（mode-edit）；切「双栏」：分屏（mode-split）', async () => {
+    const el = await mountAndTrack()
+    await selectFirstRow(el)
+    const body = el.querySelector('.np-main-body') as HTMLElement
+    const modeBtn = (label: string) => [...el.querySelectorAll('.np-mode-btn')].find((b) => b.textContent === label) as HTMLElement
+    modeBtn('编辑').click()
+    await nextTick()
+    expect(body.classList.contains('mode-edit')).toBe(true)
+    expect(body.querySelector('.np-editor')).toBeTruthy()
+    expect(body.querySelector('.np-editor-preview')).toBeNull()
+    modeBtn('双栏').click()
+    await nextTick()
+    expect(body.classList.contains('mode-split')).toBe(true)
+    expect(body.querySelector('.np-editor')).toBeTruthy()
+    expect(body.querySelector('.np-editor-preview')).toBeTruthy()
+  })
+
+  it('★ 编辑后切「查看」：自动保存（PATCH 真发出，且带改动后的内容）', async () => {
+    const el = await mountAndTrack()
+    await selectFirstRow(el)
+    const modeBtn = (label: string) => [...el.querySelectorAll('.np-mode-btn')].find((b) => b.textContent === label) as HTMLElement
+    modeBtn('编辑').click()
+    await nextTick()
+    const editor = el.querySelector('.np-editor') as HTMLTextAreaElement
+    editor.value = '改动后的正文内容'
+    editor.dispatchEvent(new Event('input'))
+    await nextTick()
+    state.patchCalls.length = 0
+    modeBtn('查看').click()
+    // 自动保存是 async（PATCH → 回写 → 切形态），等最终态到位再断言
+    await vi.waitFor(() => {
+      expect((el.querySelector('.np-main-body') as HTMLElement).classList.contains('mode-view')).toBe(true)
+    })
+    const call = state.patchCalls.find((c) => c.url.includes('/notes/notes/'))
+    expect(call).toBeTruthy()
+    expect((call!.body as { content: string }).content).toBe('改动后的正文内容')
+  })
+})
+
 describe('交互参数', () => {
   it('新建计划：POST /notes/notes 带 kind=plan', async () => {
     const el = await mountAndTrack()

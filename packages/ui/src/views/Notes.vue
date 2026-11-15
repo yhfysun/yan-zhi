@@ -40,6 +40,9 @@ const sort = ref<'updated' | 'created' | 'plan'>('updated');
 
 // 主区编辑副本（保存时才落库）
 const draft = ref<NoteItem | null>(null);
+// ★ 主区形态三态（2026-11-15 用户定调）：编辑（满宽写）/ 双栏（左写右预览）/ 查看（满宽读）
+const viewMode = ref<'edit' | 'split' | 'view'>('view');
+// editing 仅表示「有未落库的编辑会话」；形态由 viewMode 决定
 const editing = ref(false);
 const saving = ref(false);
 const newCategoryName = ref('');
@@ -146,6 +149,7 @@ async function removeCategory(c: CategoryItem) {
 // ── 列表 ──
 async function selectNote(n: NoteItem) {
   editing.value = false;
+  viewMode.value = 'view';
   draft.value = { ...n };
 }
 
@@ -166,7 +170,43 @@ async function createNew(kind: 'note' | 'plan') {
   if (!created) return;
   await loadNotes();
   await selectNote(created);
+  // 新建直接进双栏记录形态（写 + 实时预览）
   editing.value = true;
+  viewMode.value = 'split';
+}
+
+// ── 主区形态三态切换 ──
+/** 有未落库改动才真写库（切查看态自动保存时避免无谓 PATCH） */
+function hasDraftChanges(): boolean {
+  if (!draft.value) return false;
+  const origin = notes.value.find((n) => n.id === draft.value!.id);
+  if (!origin) return true;
+  return origin.title !== draft.value.title
+    || origin.content !== draft.value.content
+    || (origin.categoryName || '') !== (draft.value.categoryName || '')
+    || (origin.planAt ?? null) !== (draft.value.planAt ?? null)
+    || (origin.remindAt ?? null) !== (draft.value.remindAt ?? null);
+}
+
+async function setViewMode(mode: 'edit' | 'split' | 'view') {
+  if (!draft.value || mode === viewMode.value) return;
+  if (mode === 'view') {
+    // 切查看：未落库改动自动保存（记录不打断，也不丢字）
+    if (editing.value && hasDraftChanges()) await saveDraft();
+    editing.value = false;
+  } else {
+    editing.value = true;
+  }
+  viewMode.value = mode;
+}
+
+/** 取消编辑：丢弃未保存改动，回到该笔记已落库内容 */
+function cancelEdit() {
+  if (!draft.value) return;
+  const origin = notes.value.find((n) => n.id === draft.value!.id);
+  if (origin) draft.value = { ...origin };
+  editing.value = false;
+  viewMode.value = 'view';
 }
 
 function rowClass(n: NoteItem): string {
@@ -193,7 +233,7 @@ const categoryInput = computed({
 });
 
 async function saveDraft() {
-  if (!draft.value || !editing.value) return;
+  if (!draft.value) return;
   saving.value = true;
   try {
     const saved = unwrap<NoteItem>(await api.patch(`/notes/notes/${draft.value.id}`, {
@@ -210,6 +250,7 @@ async function saveDraft() {
     }
     await loadCategories();
     editing.value = false;
+    viewMode.value = 'view';
   } finally {
     saving.value = false;
   }
@@ -345,15 +386,19 @@ const isGuest = computed(() => !auth.isLoggedIn);
     <section class="np-main np-card" :class="{ immersive }">
       <template v-if="draft">
         <div class="np-main-head">
-          <input v-if="editing" v-model="draft.title" class="np-title-input" placeholder="标题" />
+          <input v-if="viewMode !== 'view'" v-model="draft.title" class="np-title-input" placeholder="标题" />
           <h1 v-else class="np-title-view">{{ draft.title }}</h1>
           <div class="np-detail-ops">
-            <template v-if="editing">
+            <div class="np-mode-switch">
+              <button class="np-mode-btn" :class="{ on: viewMode === 'edit' }" @click="setViewMode('edit')">编辑</button>
+              <button class="np-mode-btn" :class="{ on: viewMode === 'split' }" @click="setViewMode('split')">双栏</button>
+              <button class="np-mode-btn" :class="{ on: viewMode === 'view' }" @click="setViewMode('view')">查看</button>
+            </div>
+            <template v-if="viewMode !== 'view'">
               <button class="np-primary" :disabled="saving" @click="saveDraft">{{ saving ? '保存中…' : '保存' }}</button>
-              <button class="np-mini" @click="editing = false">取消</button>
+              <button class="np-mini" @click="cancelEdit">取消</button>
             </template>
             <template v-else>
-              <button class="np-mini" @click="editing = true">编辑</button>
               <button class="np-mini" :class="{ on: draft.pinned }" @click="togglePinDraft">{{ draft.pinned ? '已置顶' : '置顶' }}</button>
               <button class="np-mini np-danger" @click="removeDraft">删除</button>
             </template>
@@ -380,12 +425,9 @@ const isGuest = computed(() => !auth.isLoggedIn);
           </template>
           <span v-if="draft.source && draft.source !== 'manual'" class="np-chip np-chip-src">来自 {{ draft.source.startsWith('learning') ? '学习' : draft.source === 'chat' ? '对话' : draft.source }}</span>
         </div>
-        <div class="np-main-body" :class="{ editing }">
-          <template v-if="editing">
-            <textarea v-model="draft.content" class="np-editor" placeholder="Markdown…（左侧编辑，右侧实时预览）"></textarea>
-            <MarkdownPreview :content="draft.content" class="np-editor-preview" />
-          </template>
-          <MarkdownPreview v-else :content="draft.content || '（无正文）'" class="np-editor-preview solo" />
+        <div class="np-main-body" :class="'mode-' + viewMode">
+          <textarea v-if="viewMode !== 'view'" v-model="draft.content" class="np-editor" :placeholder="viewMode === 'split' ? 'Markdown…（左侧编辑，右侧实时预览）' : 'Markdown…'"></textarea>
+          <MarkdownPreview v-if="viewMode !== 'edit'" :content="draft.content" class="np-editor-preview" />
         </div>
       </template>
       <div v-else class="np-empty-main">
@@ -550,7 +592,20 @@ const isGuest = computed(() => !auth.isLoggedIn);
   flex: 1; min-width: 0; font-size: 22px; margin: 0; overflow-wrap: anywhere;
   line-height: 1.3;
 }
-.np-detail-ops { display: flex; gap: 6px; flex-shrink: 0; padding-top: 2px; }
+.np-detail-ops { display: flex; gap: 6px; flex-shrink: 0; padding-top: 2px; align-items: center; }
+/* 形态三态切换器（编辑 / 双栏 / 查看） */
+.np-mode-switch {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--color-border, #e5e7eb); border-radius: 7px; overflow: hidden;
+  margin-right: 4px;
+}
+.np-mode-btn {
+  padding: 5px 12px; font-size: 12px; cursor: pointer;
+  border: none; background: transparent; color: var(--color-text-secondary, #6b7280);
+}
+.np-mode-btn + .np-mode-btn { border-left: 1px solid var(--color-border, #e5e7eb); }
+.np-mode-btn.on { background: var(--el-color-primary, #2563eb); color: #fff; }
+.np-mode-btn:not(.on):hover { background: var(--color-surface-hover, #f3f4f6); }
 .np-danger:hover { color: #b91c1c; border-color: #b91c1c; }
 .np-main-meta {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -564,12 +619,17 @@ const isGuest = computed(() => !auth.isLoggedIn);
 }
 .np-remind { font-size: 12px; color: var(--color-text-secondary, #6b7280); display: inline-flex; align-items: center; gap: 4px; }
 .np-main-body {
-  flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  flex: 1; min-height: 0; display: grid; gap: 0;
+  /* ★ 行高必须钉 minmax(0,1fr)：默认 auto 行会让子元素 height:100% 失效（编辑区塌成内容高） */
+  grid-template-rows: minmax(0, 1fr);
   border-top: 1px solid var(--color-border, #e5e7eb); margin: 8px 20px 14px;
   border-radius: 8px; overflow: hidden;
   border: 1px solid var(--color-border, #e5e7eb);
 }
-.np-main-body:not(.editing) { grid-template-columns: 1fr; }
+/* 三态：编辑=满宽写 / 双栏=左写右预览 / 查看=满宽读 */
+.np-main-body.mode-edit { grid-template-columns: minmax(0, 1fr); }
+.np-main-body.mode-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.np-main-body.mode-view { grid-template-columns: minmax(0, 1fr); }
 .np-editor {
   display: block; width: 100%; height: 100%;
   border: none; resize: none; outline: none; padding: 14px 16px;
@@ -577,7 +637,6 @@ const isGuest = computed(() => !auth.isLoggedIn);
   background: transparent; color: inherit; border-right: 1px solid var(--color-border, #e5e7eb);
 }
 .np-editor-preview { height: 100%; min-height: 0; overflow: auto; }
-.np-editor-preview.solo { grid-column: 1 / -1; }
 
 /* 主区空态 */
 .np-empty-main {
