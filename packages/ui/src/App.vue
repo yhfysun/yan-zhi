@@ -48,6 +48,8 @@
           </button>
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
+            <!-- ★ 移动端模式切换（2026-11-15 用户实报缺失）：办公/学习白名单内的唯一入口 -->
+            <MobileModeSwitch />
             <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom" :disabled="isTouchLike">
               <button class="mobile-icon-btn" type="button" aria-label="切换主题" @click="toggleTheme">
                 <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
@@ -198,6 +200,7 @@ import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import MobileNavDrawer from './components/MobileNavDrawer.vue';
+import MobileModeSwitch from './components/MobileModeSwitch.vue';
 import { SHELL_VIEW_LOADERS } from './generated/build-modes';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';

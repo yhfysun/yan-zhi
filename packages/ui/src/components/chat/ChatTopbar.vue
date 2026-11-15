@@ -71,6 +71,9 @@
     </el-tooltip>
     <div class="chat-topbar-actions">
       <!-- 模式切换已统一收进主顶栏模式下拉（WebTopBar ModeSwitcher），此处不再重复入口 -->
+      <!-- ★ 例外（2026-11-15 用户实报）：移动端没有侧栏 ModeSwitcher，mobile-topbar 又不渲染
+           对话页（ChatTopbar 自带会话抽屉入口）⇒ 手机上对话页没有模式切换入口 —— 补挂。 -->
+      <MobileModeSwitch v-if="isMobile" />
 
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
@@ -91,10 +94,12 @@
             <el-dropdown-item v-if="supportsBrowser" @click="store.openTab({ kind: 'browser', name: '浏览器', url: '' })">
               <el-icon><Monitor /></el-icon><span>浏览器预览</span>
             </el-dropdown-item>
-            <el-dropdown-item @click="openGitTab" :disabled="!hasWorkspaceDir">
+            <!-- ★ 移动端隐藏（2026-11-15 用户实报）：Git 文件/控制台依赖桌面工作区与右侧栏
+                 面板形态，手机上没有这些能力 —— 入口存在但点了没用（或点出空壳），直接不渲染。 -->
+            <el-dropdown-item v-if="!isMobile" @click="openGitTab" :disabled="!hasWorkspaceDir">
               <el-icon><FolderOpened /></el-icon><span>Git 文件</span>
             </el-dropdown-item>
-            <el-dropdown-item @click="openConsoleTab">
+            <el-dropdown-item v-if="!isMobile" @click="openConsoleTab">
               <!-- 原为 Cpu：与 TabBar「模型」项同图标，下拉展开时同屏撞脸（2026-09-21 实测）。
                    控制台 = 服务端/平台控制台，用 Platform 更贴语义。 -->
               <el-icon><Platform /></el-icon><span>控制台</span>
@@ -140,6 +145,7 @@ import { useSettingsStore } from '../../stores/settings';
 import { useSpaceStore } from '../../stores/space';
 import { isLocalClient } from '../../api/client';
 import ChatFilePanel from './ChatFilePanel.vue';
+import MobileModeSwitch from '../MobileModeSwitch.vue';
 
 const {
   drawerOpen, currentConv, store, isMobile, authStore,

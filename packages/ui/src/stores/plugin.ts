@@ -126,7 +126,32 @@ export const usePluginStore = defineStore('plugin', () => {
     //     所以放在这里对"运行期再刷新"没有任何代价，可安全地每次调用。
     await waitForBackend();
     const res = await api.get<PluginInfo[]>('/plugins');
-    if ('error' in res) return res.error;
+    if ('error' in res) {
+      // ★★★ 启动竞态自愈（2026-11-15 真机实报）：移动端 install 后首启，前端可能在
+      //   内嵌 node 冷启动（import 数千模块，低端机可达 30s+）完成前就拉完快照 ——
+      //   waitForBackend 30s 门超时返回 false 但**不阻断**，api.get 拿到网络层错误 →
+      //   快照空 ⇒ 模式下拉/皮肤库把"快照空"渲染成「对应插件未启用」**永久置灰**
+      //   （真机复现：学习模式切不过去、皮肤全不可用，杀掉 App 重开才恢复）。
+      //   此前这里直接 return，而调用方只在 onMounted 拉一次 ⇒ 空态永不自愈。
+      //   收口：仅对「从未拿到过快照」的空态在 store 内自愈（3s 间隔重试，上限 2 分钟）；
+      //   运行期刷新失败（loaded=true）仍快速返回，不影响 enable/disable 的操作反馈。
+      if (loaded.value) return res.error;
+      let lastErr = res.error;
+      for (let i = 0; i < 40 && !loaded.value; i += 1) {
+        await new Promise((r) => setTimeout(r, 3000));
+        await waitForBackend();
+        const retry = await api.get<PluginInfo[]>('/plugins');
+        if (!('error' in retry)) {
+          plugins.value = retry.data;
+          const raw = (retry as unknown as { modeDefs?: unknown }).modeDefs;
+          if (Array.isArray(raw)) modeDefs.value = raw as PluginModeDef[];
+          loaded.value = true;
+          return undefined;
+        }
+        lastErr = retry.error;
+      }
+      return lastErr;
+    }
     plugins.value = res.data;
     // ★ 模式运行时化（P3）：快照随带的 modeDefs（enabled 插件 contributes.mode 聚合）。
     //   消费方见 mode.ts 的 pluginModeMeta —— 模式元数据/fallbackAgent 的单一真相源。

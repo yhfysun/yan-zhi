@@ -109,6 +109,21 @@ if (!okCore || !okShared) {
   }
 }
 
+// ── 步骤 2.6：内置插件静态资源（皮肤壁纸/预览图）──
+// routes/plugins.ts 的 resolveBuiltinAssetsDir 从 routes/ 逐级向上找首个 assets/plugin-assets
+// —— 桌面由 electron-builder extraResources 拷到 resources/server/assets/plugin-assets，
+// 移动端此前没人拷 ⇒ 真机 404「资源不存在」⇒ 皮肤缩略图全裂、壁纸应用后空白（2026-11-15 实报）。
+// 拷到 nodejs/dist/assets/plugin-assets：routes → src → server → apps → dist 向上第 4 级命中。
+{
+  const assetsSrc = path.join(SERVER_DIR, 'assets', 'plugin-assets');
+  if (fs.existsSync(assetsSrc)) {
+    copyRecursive(assetsSrc, path.join(NODEJS_DIST, 'assets', 'plugin-assets'));
+    log('已复制 插件静态资源(皮肤) -> ' + path.relative(ROOT, path.join(NODEJS_DIST, 'assets', 'plugin-assets')));
+  } else {
+    log('提示: ' + assetsSrc + ' 不存在，皮肤壁纸/预览图将 404（先跑构建或检查仓库完整性）');
+  }
+}
+
 // ── 步骤 3：为 workspace 包生成 node_modules stub ──
 // 编译产物中的 import '@yan-zhi/core' 需要在 node_modules 下可解析
 log('=== 步骤 3: 生成 workspace stub ===');
