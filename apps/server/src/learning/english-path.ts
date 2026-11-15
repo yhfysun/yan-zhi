@@ -40,20 +40,17 @@ export type EnglishBlendGroup = {
 /** 对比认知课的「字母名 vs 字母音」一组对照：一套字形、两套读音。 */
 export type EnglishComparePair = {
   letter: string;
-  /** 字母名的汉字拟音与音标（如「诶」/eɪ/）。 */
-  name: string;
+  /** 字母名音标（如 /eɪ/）；一律用 IPA，不用汉字拟音。 */
   nameIpa?: string;
-  /** 字母在例词里的本音：汉字拟音 + 音标（如「啊」/æ/）。 */
-  sound: string;
+  /** 字母在例词里的本音音标（如 /æ/）。 */
   word?: string;
   ipa?: string;
   /** 点名称区时交给 TTS 的文本——A 必须写 'ay'（独立的 A 会被冠词规则改成 uh，读不出字母名 /eɪ/）。 */
   nameAudio?: string;
   /** 例词逐音素拆分：字母 + 本音音标，供慢速拼读演示逐块放随包本音。 */
   parts?: Array<{ text: string; ipa: string }>;
-  /** 逐步合音提示（中文拟音，从首音一路叠到整词）。 */
-  blendHint?: string;
-  /** 本课专属慢速拼读示范音频（相对 phonics-audio/ 目录，含音素→合音→整词真人/慢速读音）。 */
+  /** 本课专属拼读示范音频：随包真人音标本音逐个读 + 本地 SAPI TTS 整词读音。
+   *  逐步合音说明由前端从 parts 的 IPA 派生，服务端不再存任何汉字拟音文案。 */
   blendAudio?: string;
 };
 
@@ -323,14 +320,14 @@ function passageStep(passage: ReadingPassage, kind: 'fable' | 'story', index: nu
  * 零基础第 0 课：先分清「字母名称」和「字母声音」。
  *
  * 零基础学员早就会背 ABC——那是字母名。读词用的是字母音，两套声音必须先分开，
- * 否则拼读时会用「诶/衣/西」去套（国内拼读教学最常见的头号误区）。
+ * 否则拼读时会把字母名 /eɪ/ 直接套进单词（国内拼读教学最常见的头号误区）。
  * 有意不设 sounds 字段：这一课做对比认知，不进入逐音教学；
  * 也不设 pattern：对照内容用 compare 结构化展示（一卡一组），不再堆一行说明文字。
  *
- * ★ 本课的例外（用户 2026-11-14 指定）：对照卡把 nameIpa / ipa 一并显示出来，
- *   并给每个例词配专属慢速拼读音频（音素逐个放本音 → 逐步合音 → 慢速读整词）。
+ * ★ 本课（2026-11-15 修订）：对照卡只用 IPA（nameIpa / ipa）展示读音，禁止汉字拟音；
+ *   拼读示范音频 = 随包真人音标本音逐个读 + 本地 SAPI TTS 整词读音（音素绝不交给 TTS：
+ *   字母清单会被念成字母名，独立 a 还会被冠词规则改成 uh）；逐步合音说明由前端从 parts 派生。
  *   逐音卡片一律显示 IPA，mouth 口型提示作为辅助说明并列展示（不再按课隐藏符号）。
- *   音素绝不交给 TTS：字母清单会被念成字母名，独立 a 还会被冠词规则改成 uh。
  */
 const LETTER_NAME_LESSON: EnglishPathStep = {
   id: 'letter_name_vs_sound',
@@ -339,32 +336,32 @@ const LETTER_NAME_LESSON: EnglishPathStep = {
   title: '字母名 ≠ 字母音',
   goal: '分清「字母怎么念它的名字」和「字母在单词里怎么发音」',
   minutes: 8,
-  explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的"声音"：a 在 tap 里不发「诶」，发短促的"啊"。先把两套声音分开，后面拼读才不会乱。卡片上并列了音标；点例词会一个音一个音慢慢读，再连成整个词。',
+  explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母在词里的音：a 在 tap 里不读 /eɪ/，读 /æ/。先把两套音分开，后面拼读才不会乱。卡片上给出音标；点例词会跟着音标逐个听本音，再听整词读音。',
   compare: [
     {
-      letter: 'A', name: '诶', nameIpa: '/eɪ/', sound: '啊', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
+      letter: 'A', nameIpa: '/eɪ/', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
       parts: [{ text: 't', ipa: '/t/' }, { text: 'a', ipa: '/æ/' }, { text: 'p', ipa: '/p/' }],
-      blendHint: '特 → 特啊 → 特啊普 → tap', blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
+      blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
     },
     {
-      letter: 'E', name: '衣', nameIpa: '/iː/', sound: '诶', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
+      letter: 'E', nameIpa: '/iː/', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
       parts: [{ text: 'b', ipa: '/b/' }, { text: 'e', ipa: '/ɛ/' }, { text: 'd', ipa: '/d/' }],
-      blendHint: '不 → 不诶 → 不诶得 → bed', blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
+      blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
     },
     {
-      letter: 'I', name: '爱', nameIpa: '/aɪ/', sound: '衣', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
+      letter: 'I', nameIpa: '/aɪ/', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
       parts: [{ text: 's', ipa: '/s/' }, { text: 'i', ipa: '/ɪ/' }, { text: 't', ipa: '/t/' }],
-      blendHint: '丝 → 丝衣 → 丝衣特 → sit', blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
+      blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
     },
     {
-      letter: 'O', name: '欧', nameIpa: '/oʊ/', sound: '奥', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
+      letter: 'O', nameIpa: '/oʊ/', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
       parts: [{ text: 'h', ipa: '/h/' }, { text: 'o', ipa: '/ɑ/' }, { text: 't', ipa: '/t/' }],
-      blendHint: '喝 → 喝奥 → 喝奥特 → hot', blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
+      blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
     },
     {
-      letter: 'U', name: '由', nameIpa: '/juː/', sound: '阿', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
+      letter: 'U', nameIpa: '/juː/', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
       parts: [{ text: 'c', ipa: '/k/' }, { text: 'u', ipa: '/ʌ/' }, { text: 'p', ipa: '/p/' }],
-      blendHint: '克 → 克阿 → 克阿普 → cup', blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
+      blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
     },
   ],
   tip: '快问快答练法：别人说一个已学词（tap、sit），你只说中间元音的"声音"，不许说字母名。',
@@ -378,10 +375,10 @@ const LETTER_NAME_LESSON: EnglishPathStep = {
   ],
   task: '把 26 个字母的名称快速念一遍，然后读 tap、bed、sit、hot、cup，注意元音的"声音"和名称不同。',
   quickCheck: {
-    question: '读 tap 时，a 发的是字母名称「诶」吗？',
-    options: ['是，a 就读「诶」', '不是，a 在里面发短促的"啊"', '是，但读轻一点', '看心情'],
+    question: '读 tap 时，a 发的是字母名称 /eɪ/ 吗？',
+    options: ['是，a 就读 /eɪ/', '不是，a 在里面读 /æ/', '是，但读轻一点', '看心情'],
     answer: 1,
-    explanation: '字母名和字母音是两套系统。tap 里 a 发短"啊"；「诶」是 a 单独报名字时的读音。',
+    explanation: '字母名和字母音是两套系统。tap 里 a 读 /æ/；/eɪ/ 是 a 单独报名字时的读音。',
   },
 };
 

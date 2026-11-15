@@ -32,12 +32,20 @@ describe('P3-① 暗色硬编码', () => {
     expect(bad).toEqual([]);
   });
 
-  it('background:#fff 只剩白名单（网页内容 / 二维码对比度）', () => {
+  it('background:#fff 只剩白名单（网页内容 / 二维码对比度 / 学习沉浸台浅色纸面）', () => {
     const allowed = new Set([
       '/components/BrowserPanel.vue', // 内嵌网页视口必须白底
       '/components/FilePreview.vue',  // HTML 预览 iframe 必须白底
       '/views/RemoteControl.vue',     // 主机二维码留白
       '/views/Settings.vue',          // 连接二维码留白
+      // 学习模式沉浸台（docs/学习模式设计准则.md §4：深色外层 + 独立浅色阅读纸面，学习页 light-first）
+      '/components/learning/culture/AnnotationDrawer.vue',
+      '/components/learning/culture/CoupletBoard.vue',
+      '/components/learning/CultureWorkbench.vue',
+      '/components/learning/MusicWorkbench.vue',
+      '/components/learning/zhouyi/AnnotationPanel.vue',
+      '/components/learning/zhouyi/DivinationWorkbench.vue',
+      '/components/learning/zhouyi/ZhouyiWorkbench.vue',
     ]);
     const offenders = FILES
       .filter((f) => /background(-color)?:\s*#fff(?:fff)?\b/.test(f.src))

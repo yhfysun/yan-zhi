@@ -370,29 +370,29 @@ describe('Learning 工作区 · 挂载契约', () => {
         explanation: '你早就会背 A B C——那是字母的名称。但读单词用的是字母的声音。',
         compare: [
           {
-            letter: 'A', name: '诶', nameIpa: '/eɪ/', sound: '啊', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
+            letter: 'A', nameIpa: '/eɪ/', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
             parts: [{ text: 't', ipa: '/t/' }, { text: 'a', ipa: '/æ/' }, { text: 'p', ipa: '/p/' }],
-            blendHint: '特 → 特啊 → 特啊普 → tap', blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
+            blendAudio: 'lesson/letter-name-vs-sound/tap.mp3',
           },
           {
-            letter: 'E', name: '衣', nameIpa: '/iː/', sound: '诶', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
+            letter: 'E', nameIpa: '/iː/', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
             parts: [{ text: 'b', ipa: '/b/' }, { text: 'e', ipa: '/ɛ/' }, { text: 'd', ipa: '/d/' }],
-            blendHint: '不 → 不诶 → 不诶得 → bed', blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
+            blendAudio: 'lesson/letter-name-vs-sound/bed.mp3',
           },
           {
-            letter: 'I', name: '爱', nameIpa: '/aɪ/', sound: '衣', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
+            letter: 'I', nameIpa: '/aɪ/', word: 'sit', ipa: '/ɪ/', nameAudio: 'I',
             parts: [{ text: 's', ipa: '/s/' }, { text: 'i', ipa: '/ɪ/' }, { text: 't', ipa: '/t/' }],
-            blendHint: '丝 → 丝衣 → 丝衣特 → sit', blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
+            blendAudio: 'lesson/letter-name-vs-sound/sit.mp3',
           },
           {
-            letter: 'O', name: '欧', nameIpa: '/oʊ/', sound: '奥', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
+            letter: 'O', nameIpa: '/oʊ/', word: 'hot', ipa: '/ɑ/', nameAudio: 'O',
             parts: [{ text: 'h', ipa: '/h/' }, { text: 'o', ipa: '/ɑ/' }, { text: 't', ipa: '/t/' }],
-            blendHint: '喝 → 喝奥 → 喝奥特 → hot', blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
+            blendAudio: 'lesson/letter-name-vs-sound/hot.mp3',
           },
           {
-            letter: 'U', name: '由', nameIpa: '/juː/', sound: '阿', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
+            letter: 'U', nameIpa: '/juː/', word: 'cup', ipa: '/ʌ/', nameAudio: 'U',
             parts: [{ text: 'c', ipa: '/k/' }, { text: 'u', ipa: '/ʌ/' }, { text: 'p', ipa: '/p/' }],
-            blendHint: '克 → 克阿 → 克阿普 → cup', blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
+            blendAudio: 'lesson/letter-name-vs-sound/cup.mp3',
           },
         ],
         tip: '快问快答练法。',
@@ -429,9 +429,12 @@ describe('Learning 工作区 · 挂载契约', () => {
     // 名称 vs 声音对照卡：5 组，每组 = 字母 + 名称 + 音标 + → + 声音 + 音标 + 例词
     const pairs = el.querySelectorAll('.lp-compare-pair')
     expect(pairs).toHaveLength(5)
-    expect(pairs[0].textContent).toContain('诶')
-    expect(pairs[0].textContent).toContain('啊')
+    // 只用 IPA 展示两套读音，汉字拟音一个都不许出现（2026-11-15 用户实报）
+    expect(pairs[0].textContent).toContain('/eɪ/')
+    expect(pairs[0].textContent).toContain('/æ/')
     expect(pairs[0].textContent).toContain('tap')
+    expect(pairs[0].textContent).not.toContain('诶')
+    expect(pairs[0].textContent).not.toContain('啊')
     expect(pairs[0].textContent).toContain('/æ/')
     expect(pairs[0].textContent).toContain('/eɪ/')
     // 「慢速拼读例词」依次播 5 条专属音频，绝不把词表整串丢给 TTS 连读
@@ -449,7 +452,7 @@ describe('Learning 工作区 · 挂载契约', () => {
     // 点例词：只拼读这一个词，并显示逐步合音说明；同样不发 TTS
     ;(pairs[0].querySelector('.lp-compare-word') as HTMLElement).click()
     await nextTick()
-    expect(el.querySelector('.lp-compare-hint')?.textContent).toContain('特 → 特啊')
+    expect(el.querySelector('.lp-compare-hint')?.textContent).toContain('/t/ · /æ/ · /p/ → /tæp/')
     expect(requested).toHaveLength(0)
     // 点对照卡名称区：读字母名（A 用 'ay' 绕开冠词规则，不读成「额」）
     ;(pairs[0].querySelector('.lp-compare-name') as HTMLElement).click()
@@ -471,6 +474,79 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(requested[1]).toMatch(/^We say the letter names/)
     expect(speeds[1]).toBe('normal')
     expect(requested.join(' ')).not.toMatch(/\ba e i o u\b/)
+  })
+
+  it('★ 对照卡并发收口：新点读掐断旧拼读，只留一条在播音频且 busy 会复位', async () => {
+    const played: Array<{ src: string; paused: boolean; listeners: Record<string, Array<() => void>> }> = []
+    class FakeAudio {
+      paused = false
+      listeners: Record<string, Array<() => void>> = {}
+      pause = vi.fn(() => { this.paused = true })
+      // 不自动 ended：模拟仍在播放，才能验「打断」而不是「播完」
+      play = vi.fn(async () => {})
+      constructor(public src: string) { played.push(this) }
+      addEventListener(type: string, cb: () => void) { (this.listeners[type] ||= []).push(cb) }
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('speechSynthesis', { cancel: vi.fn(), getVoices: vi.fn(() => []), speak: vi.fn() })
+    const comparePath = [{
+      id: 'sounds', title: '先会读', subtitle: '看到词能拆音', level: '零基础',
+      steps: [{
+        id: 'letter_name_vs_sound', kind: 'phonics', method: '听辨',
+        title: '字母名 ≠ 字母音', goal: '分清名称与声音', minutes: 8,
+        explanation: '字母名与字母音。',
+        compare: [
+          { letter: 'A', nameIpa: '/eɪ/', word: 'tap', ipa: '/æ/', nameAudio: 'ay',
+            parts: [{ text: 't', ipa: '/t/' }, { text: 'a', ipa: '/æ/' }, { text: 'p', ipa: '/p/' }],
+            blendAudio: 'lesson/letter-name-vs-sound/tap.mp3' },
+          { letter: 'E', nameIpa: '/iː/', word: 'bed', ipa: '/ɛ/', nameAudio: 'E',
+            parts: [{ text: 'b', ipa: '/b/' }, { text: 'e', ipa: '/ɛ/' }, { text: 'd', ipa: '/d/' }],
+            blendAudio: 'lesson/letter-name-vs-sound/bed.mp3' },
+        ],
+        tip: '快问快答。', examples: [{ en: 'We read words.', zh: '我们读单词。' }], task: '读两遍。',
+      }],
+    }]
+    const { api } = await import('../api/client')
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/path/tracks')) return { data: [] }
+      if (url.includes('/learning/path')) return { data: comparePath }
+      return await defaultGet(url)
+    })
+
+    const el = await mountPage()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path')?.textContent).toContain('字母名 ≠ 字母音'))
+    ;(el.querySelector('.lp-path-step-list button') as HTMLElement).click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-path-compare')).toBeTruthy())
+
+    const listen = el.querySelector('.lp-path-compare .lp-path-listen') as HTMLElement
+    // ① 全量拼读开播（tap.mp3）
+    listen.click()
+    await vi.waitFor(() => expect(played.length).toBe(1))
+    expect(played[0].src).toContain('tap.mp3')
+    expect(listen.textContent).toContain('拼读中')
+
+    // ② 中途点 /æ/ 徽标：旧拼读必须停掉，只留本音一条
+    ;(el.querySelector('.lp-compare-pair .lp-compare-sound') as HTMLElement).click()
+    await vi.waitFor(() => expect(played.length).toBe(2))
+    expect(decodeURIComponent(played[1].src)).toContain('sound_æ.mp3')
+    expect(played[0].paused).toBe(true)
+    // 点读本音同样要掐断全量拼读：busy / hint 立即复位（旧实现会一直卡在「拼读中…」）
+    expect(listen.textContent).toContain('慢速拼读例词')
+    expect(el.querySelector('.lp-compare-hint')).toBeFalsy()
+
+    // ③ 再点单卡 tap：本音也被停掉，始终只留一条在播
+    ;(el.querySelector('.lp-compare-pair .lp-compare-word') as HTMLElement).click()
+    await vi.waitFor(() => expect(played.length).toBe(3))
+    expect(played[2].src).toContain('tap.mp3')
+    expect(played[1].paused).toBe(true)
+    expect(played.filter((item) => !item.paused)).toHaveLength(1)
+
+    // ④ 被打断的 Promise 必须已结算：新播完即复位 busy / hint，旧全量循环不许续播 bed.mp3
+    played[2].listeners['ended']?.forEach((cb) => cb())
+    await vi.waitFor(() => expect(listen.textContent).toContain('慢速拼读例词'))
+    expect(el.querySelector('.lp-compare-hint')).toBeFalsy()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(played.filter((item) => item.src.includes('bed.mp3'))).toHaveLength(0)
   })
 
   it('★ 朗读语速三档：顶栏切换持久化，缓存按档位区分（同文本换档重新合成）', async () => {
@@ -1890,6 +1966,42 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(loadMessages).toHaveBeenCalledWith('c_test_1')
   })
 
+  it('★ 传统文化：陪练对话 Tab 按科目分派智能体（a_builtin_culture_coach）并写科目元数据', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [{ key: '英语', label: '英语', ready: true }, { key: '传统文化', label: '传统文化', ready: true }] }
+      }
+      if (url.includes('/learning/courses')) {
+        let decoded = url
+        try { decoded = decodeURIComponent(url) } catch { /* ignore */ }
+        if (decoded.includes('subject=传统文化')) {
+          return { data: [{ stage: '蒙学·对韵', courses: [
+            { id: 'culture_starter', name: '蒙学 · 对韵起步', stage: '蒙学·对韵', bookId: '', bookName: '传统文化', wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0, kind: 'culture' },
+          ] }] }
+        }
+      }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    await chooseSubject(el, '传统文化')
+    // 扩展表 tabDefs：文化科目中栏出现自己的四个 Tab（含最后的「陪练对话」）
+    const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
+    expect(tabs).toEqual(['零基础主线', '创作实践', '典籍文库', '陪练对话'])
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.trim() === '陪练对话')!.click()
+    await vi.waitFor(() => expect(createConversation).toHaveBeenCalled())
+    const [title, opts] = createConversation.mock.calls[0] as unknown as [
+      string,
+      { agentId?: string; source?: string; sourceMeta?: { learningKind?: string; learningSubject?: string } },
+    ]
+    expect(title).toBe('传统文化陪练')
+    expect(opts.agentId).toBe('a_builtin_culture_coach')
+    expect(opts.source).toBe('learning')
+    expect(opts.sourceMeta?.learningKind).toBe('free')
+    expect(opts.sourceMeta?.learningSubject).toBe('传统文化')
+    await vi.waitFor(() => expect(loadMessages).toHaveBeenCalledWith('c_test_1'))
+  })
+
   it('陪练对话 Tab：宠物说当前一句，完整记录默认收起且可展开', async () => {
     // 消息仓是普通对象：必须在 ensureCoachConv 写入 coachConvId（触发 computed 重算）之前注入
     messagesByConv['c_test_1'] = [
@@ -1944,5 +2056,38 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(el.querySelector('.lp-col-right .lp-review input.lp-input')).toBeTruthy()
     // 三栏骨架仍在
     expect(el.querySelector('.lp-grid')).toBeTruthy()
+  })
+
+  it('★ 陪练面板按科目隔离：切到周易后不再出现英语空态、英文角色和「换场景」', async () => {
+    const getMock = vi.mocked((await import('../api/client')).api.get)
+    getMock.mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [
+          { key: '英语', label: '英语', ready: true },
+          { key: '周易', label: '周易', ready: true },
+        ] }
+      }
+      if (url.includes('/learning/courses')) return { data: [] }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    await chooseSubject(el, '周易')
+    const tabs = [...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())
+    expect(tabs).toEqual(['课程主线', '测算实践', '陪练对话'])
+    ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[])
+      .find((b) => b.textContent?.trim() === '陪练对话')!.click()
+    await vi.waitFor(() => expect(el.querySelector('.lp-pet-speech')).toBeTruthy())
+    const speech = el.querySelector('.lp-pet-speech')?.textContent ?? ''
+    expect(speech).toContain('今天想读哪一段')
+    expect(speech).not.toContain("Hi, I'm ready")
+    expect(speech).not.toContain('What would you like to practice')
+    expect(speech).toContain('周易陪练')
+    expect(speech).toContain('请先生先开讲')
+    // 场景卡是英语学科专用，其它科目不得出现跨科目入口
+    expect([...el.querySelectorAll('button')].some((b) => b.textContent?.trim() === '换场景')).toBe(false)
+    // 会话身份仍按科目分派（面板呈现与 agentId 必须一致）
+    await vi.waitFor(() => expect(createConversation).toHaveBeenCalled())
+    const [, opts] = createConversation.mock.calls[0] as unknown as [string, { agentId?: string }]
+    expect(opts.agentId).toBe('a_builtin_zhouyi_coach')
   })
 })

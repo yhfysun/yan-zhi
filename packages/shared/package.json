@@ -13,5 +13,8 @@
   "devDependencies": {
     "typescript": "^5.6.0",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "pinyin-pro": "^3.29.5"
   }
 }

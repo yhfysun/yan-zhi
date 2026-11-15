@@ -13,7 +13,7 @@ export const learningModeManifest: PluginManifest = {
   name: '学习模式',
   version: '0.1.0',
   category: '学习',
-  description: '英语闯关、词汇复习、AI 陪练、软考与网络安全课程。仅 Pro 档默认包含。',
+  description: '英语闯关、词汇复习、AI 陪练、软考、网络安全、传统文化、音乐与周易课程。仅 Pro 档默认包含。',
   contributes: {
     mode: {
       key: 'learning',

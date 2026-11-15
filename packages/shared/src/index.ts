@@ -15,3 +15,6 @@ export * from './model-pricing-presets';
 
 // 内置模型厂商目录（纯数据，与价格表同层；页面宫格与服务端 from-preset 共用）
 export * from './model-providers';
+
+// 周易测算纯函数库（纯函数、离线、seed 伪随机；断语只查白名单规则表）
+export * from './zhouyi/index';

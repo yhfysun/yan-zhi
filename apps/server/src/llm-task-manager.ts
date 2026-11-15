@@ -48,11 +48,11 @@ import {
 // 安全经验库的注入闸门：只把**人工已批准**的条目拼进安全智能体的提示词（2026-10-17）
 import { isSecExperienceAgent, buildSecExperiencePromptSection } from './services/sec-experience-gate.js';
 // 学习模式上下文注入（§3.6 第 1 层）：教学智能体会话开场追加学习档案摘要
-import { LEARNING_AGENT_ID } from './builtin-learning-agents.js';
+import { LEARNING_AGENT_ID, learningSubjectOfAgentId } from './builtin-learning-agents.js';
 import { getLearningContext } from './learning/service.js';
 import { getSceneCard, renderScenePrompt } from './learning/curriculum.js';
 // 学习查询工具的用户态注入（§3.6 第 2 层）+ 错误本自动抽取（对话收尾钩子）
-import { setLearningToolUser } from './learning/tools.js';
+import { setLearningToolUser, setLearningToolSubject } from './learning/tools.js';
 import { setNoteToolUser, NOTE_TOOL_NAMES } from './notes/tools.js';
 import { extractLearningErrorsFromTask } from './learning/extract.js';
 import { loadBrowserFieldContext } from './services/browser-field.js';
@@ -5980,6 +5980,7 @@ async function executeTool(
       } else {
         setBrowserToolConversationId(task.conversationId);
         setLearningToolUser(task.userId);
+        setLearningToolSubject(learningSubjectOfAgentId(task.agentId));
         setNoteToolUser(task.userId);
         setBrowserToolWorkspaceDir(task.workspaceDir || '');
         recipeResult = await new BrowserRunRecipeTool().execute(recipeArgs, {
@@ -6493,6 +6494,8 @@ async function executeTool(
     setBrowserToolConversationId(task.conversationId);
     // 学习查询工具的用户态同源透传（§3.6 第 2 层）：三个只读工具靠它知道查谁的数据
     setLearningToolUser(task.userId);
+    // 科目同源透传（§4.6 P1）：传统文化/音乐会话的词本工具走科目分支，防英语语境串味
+    setLearningToolSubject(learningSubjectOfAgentId(task.agentId));
     // 笔记四件套的用户态同源透传（docs/笔记功能方案-2026-11-14.md §3）：与学习工具同款解法
     setNoteToolUser(task.userId);
     // 工作目录同源透传（2026-10-26）：Playwright 链路的「导出/下载」据此落进
@@ -8829,9 +8832,11 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     // 学习模式上下文注入（docs/英语学习模式方案-2026-11-08.md §3.6 第 1 层）：
     // 教学智能体的会话在合成基座提示词后追加学习档案摘要（CEFR/最近关卡/到期词/薄弱点/自定义词单）。
     // 注入点选在服务端合成处而非前端快照 —— 所有入口（学习页/聊天页/桌宠菜单）都能拿到，且不被快照遮蔽。
-    if (agentId === LEARNING_AGENT_ID) {
+    // ★ §4.6 P1 按科目分块：传统文化/音乐陪练按 agentId 推断科目走各自注入块；英语陪练语义不变。
+    const learningSubject = learningSubjectOfAgentId(agentId);
+    if (agentId === LEARNING_AGENT_ID || learningSubject) {
       try {
-        const learningCtx = getLearningContext(userId);
+        const learningCtx = getLearningContext(userId, learningSubject);
         if (learningCtx) basePrompt += (basePrompt ? '\n\n' : '') + learningCtx;
       } catch { /* 学习表未就绪/查询失败不阻塞主链路 */ }
       // 场景卡注入（§2.2 场景任务卡）：会话 source_meta_json.learningScene 指定场景

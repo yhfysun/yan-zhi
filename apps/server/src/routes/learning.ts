@@ -12,6 +12,7 @@ import {
   listBookWords, deleteCustomBook,
   getLearningContext, getCourses, getSubjects,
   checkDrillAnswer, checkReviewAnswer,
+  listLessonProgress, updateLessonProgress,
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../learning/english-path.js';
@@ -68,8 +69,12 @@ router.put('/profile', (req, res) => {
 });
 
 // GET /api/learning/context —— 学习上下文摘要（前端创建学习会话时拼进 system_prompt 快照）
+// ?subject= 可选：传统文化/音乐按科目分块注入（缺省走英语语义，向后兼容）
 router.get('/context', (req, res) => {
-  try { res.json({ data: getLearningContext(userIdOf(req)) }); }
+  try {
+    const subject = typeof req.query.subject === 'string' && req.query.subject.trim() ? req.query.subject.trim() : undefined;
+    res.json({ data: getLearningContext(userIdOf(req), subject) });
+  }
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
@@ -562,6 +567,30 @@ router.post('/voice', async (req, res) => {
   finally {
     if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch { /* 临时文件清理失败不阻塞 */ } }
   }
+});
+
+// ── 课时进度入库（§4.6 P1：跨端备份；P0 的 localStorage 仍是主记录，本表只备份不读回） ──
+
+// GET /api/learning/lesson-progress?subject= —— 某科目的已完成课时 id 清单（按完成时间升序）
+router.get('/lesson-progress', (req, res) => {
+  try {
+    const subject = String(req.query.subject || '').trim();
+    if (!subject) { res.status(400).json({ error: 'subject 必填' }); return; }
+    res.json({ data: { lessonIds: listLessonProgress(userIdOf(req), subject) } });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// POST /api/learning/lesson-progress —— 课时完成上报 { subject, lessonIds: string[] }（幂等 upsert）
+router.post('/lesson-progress', (req, res) => {
+  try {
+    const body = req.body as { subject?: string; lessonIds?: unknown };
+    const subject = String(body.subject || '').trim();
+    if (!subject) { res.status(400).json({ error: 'subject 必填' }); return; }
+    if (!Array.isArray(body.lessonIds)) { res.status(400).json({ error: 'lessonIds 必须是数组' }); return; }
+    const lessonIds = (body.lessonIds as unknown[]).map((x) => String(x).trim()).filter(Boolean);
+    if (lessonIds.length > 2000) { res.status(400).json({ error: 'lessonIds 最多 2000 条' }); return; }
+    res.json({ data: updateLessonProgress(userIdOf(req), subject, lessonIds) });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 export default router;

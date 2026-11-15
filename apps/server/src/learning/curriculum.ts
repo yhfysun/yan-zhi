@@ -414,13 +414,18 @@ GRAMMAR_POINTS.push(
 // 排序即建议学程；跨课程不做硬锁（硬锁留在书内关卡），进度条引导按序进阶。
 
 export type CourseStage = '启蒙' | '必背专题' | '初中' | '高中' | '大学' | '出国';
-export type LearningCourseStage = CourseStage | '软考' | '网络安全';
+// 传统文化按科目一个学段值（科目内分阶走内容包自己的 level 字段，不往全局学段塞）。
+// 周易为独立学科（docs/周易课程方案-2026-11-15.md §3.0），同样一个学段值；科目内路径走 zhouyiTrack。
+export type LearningCourseStage = CourseStage | '软考' | '网络安全' | '传统文化' | '音乐' | '周易';
 
 /** 科目清单（扩展点）：以后加日语/数学/物理 = 往这里加一项 + 往 COURSE_CATALOG 加对应 subject 的课程 */
 export const LEARNING_SUBJECTS = [
   { key: '英语', label: '英语', ready: true },
   { key: '软考', label: '软考', ready: true },
   { key: '网络安全', label: '网络安全', ready: true },
+  { key: '传统文化', label: '传统文化', ready: true },
+  { key: '音乐', label: '音乐', ready: true },
+  { key: '周易', label: '周易', ready: true },
   { key: '日语', label: '日语', ready: false },
   { key: '数学', label: '数学', ready: false },
   { key: '物理', label: '物理', ready: false },
@@ -430,13 +435,19 @@ export type CourseDef = {
   id: string;
   name: string;
   stage: LearningCourseStage;
-  /** 科目归属（按科目过滤课程地图；当前全部英语） */
+  /** 科目归属（按科目过滤课程地图） */
   subject: string;
-  kind?: 'vocab' | 'exam' | 'security';
+  kind?: 'vocab' | 'exam' | 'security' | 'culture' | 'music' | 'zhouyi';
   bookId?: string;
   examLevel?: '中级' | '高级';
   examSpecialty?: string;
   securityPathId?: string;
+  /** 传统文化路线 id（对应 learning/culture/curriculum.ts 的阶） */
+  cultureLevel?: '蒙学·对韵' | '诗词歌赋' | '四书' | '五经';
+  /** 音乐方向（docs/音乐双方向重构方案-2026-11-15.md）：western = 现代通用乐理 / traditional = 中国传统音乐 */
+  musicTrack?: 'western' | 'traditional';
+  /** 周易路径（docs/周易课程方案-2026-11-15.md §3.2）：T0..T7，对应 learning/zhouyi/curriculum.ts 的 track */
+  zhouyiTrack?: 'T0' | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7';
 };
 
 export const COURSE_CATALOG: CourseDef[] = [
@@ -476,6 +487,65 @@ export const COURSE_CATALOG: CourseDef[] = [
   { id: 'course_sec_defense', name: '攻击防御与蓝队运营', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_defense' },
   { id: 'course_sec_ai', name: 'AI 与 LLM 安全', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_ai' },
   { id: 'course_sec_devsecops', name: '安全开发与 DevSecOps', subject: '网络安全', stage: '网络安全', kind: 'security', securityPathId: 'sec_devsecops' },
+  // 传统文化（docs/传统文化与音乐学习模式方案 §2.2）：无词书课程，内容在 learning/culture/ 内容包
+  { id: 'course_cul_mengxue', name: '蒙学 · 对韵起步', subject: '传统文化', stage: '传统文化', kind: 'culture', cultureLevel: '蒙学·对韵' },
+  { id: 'course_cul_shici', name: '诗词歌赋入门', subject: '传统文化', stage: '传统文化', kind: 'culture', cultureLevel: '诗词歌赋' },
+  { id: 'course_cul_sishu', name: '四书章句', subject: '传统文化', stage: '传统文化', kind: 'culture', cultureLevel: '四书' },
+  { id: 'course_cul_wujing', name: '五经选读', subject: '传统文化', stage: '传统文化', kind: 'culture', cultureLevel: '五经' },
+  // 音乐（docs/音乐双方向重构方案-2026-11-15.md §二）：一个科目两条方向，各一个总览入口；
+  // 方向内分阶走 learning/music/curriculum.ts 的 level 字段（修 v1 只注册 3 阶、两阶无入口的静默丢课）
+  { id: 'course_mus_western', name: '现代通用乐理', subject: '音乐', stage: '音乐', kind: 'music', musicTrack: 'western' },
+  { id: 'course_mus_traditional', name: '中国传统音乐', subject: '音乐', stage: '音乐', kind: 'music', musicTrack: 'traditional' },
+  // 周易（docs/周易课程方案-2026-11-15.md §3.0/§3.2）：独立学科，48 门全量注册（P0 14 门有完整内容，其余内容包内标 ready:false 建设中）；
+  // 无词书课程，内容在 learning/zhouyi/ 内容包；点任意课卡进入 ZhouyiWorkbench 并展开对应路径
+  { id: 'course_zy_z01', name: '易学导论', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z02', name: '三易与成书', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z03', name: '经传结构', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z04', name: '底本与版本', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z05', name: '五层阅读法', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z06', name: '易学术语总表', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T0' },
+  { id: 'course_zy_z07', name: '乾卦精读', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z08', name: '坤卦与文言', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z09', name: '卦序与序卦', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z10', name: '系辞上精读', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z11', name: '系辞下与说卦', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z12', name: '彖象读法', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T1' },
+  { id: 'course_zy_z13', name: '阴阳爻位', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z14', name: '八卦基础', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z15', name: '六十四卦', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z16', name: '五行', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z17', name: '干支甲子', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z18', name: '大衍筮法', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T2' },
+  { id: 'course_zy_z19', name: '两派六宗', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z20', name: '汉易', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z21', name: '王弼与玄学易', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z22', name: '唐代注疏', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z23', name: '宋易', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z24', name: '清与近现代易学', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T3' },
+  { id: 'course_zy_z25', name: '河图洛书', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z26', name: '太极图说', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z27', name: '先后天图', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z28', name: '卦气纳甲消息', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z29', name: '易图辨伪', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z30', name: '历代易图', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T4' },
+  { id: 'course_zy_z31', name: '梅花易数源流', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z32', name: '梅花起卦', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z33', name: '梅花体用', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z34', name: '六爻纳甲', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z35', name: '三式', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z36', name: '杂占', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T5' },
+  { id: 'course_zy_z37', name: '风水总论', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z38', name: '形势派', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z39', name: '理气派（上）', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z40', name: '八宅与玄空', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z41', name: '阳宅营造', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z42', name: '命理相法择日', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T6' },
+  { id: 'course_zy_z43', name: '易与中医', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
+  { id: 'course_zy_z44', name: '易与丹道历法', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
+  { id: 'course_zy_z45', name: '易与数学', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
+  { id: 'course_zy_z46', name: '易与文艺传播', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
+  { id: 'course_zy_z47', name: '出土易文献', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
+  { id: 'course_zy_z48', name: '研究方法与引用', subject: '周易', stage: '周易', kind: 'zhouyi', zhouyiTrack: 'T7' },
 ];
 
-export const COURSE_STAGES: LearningCourseStage[] = ['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全'];
+export const COURSE_STAGES: LearningCourseStage[] = ['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全', '传统文化', '音乐', '周易'];

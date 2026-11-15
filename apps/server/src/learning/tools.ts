@@ -21,6 +21,18 @@ export function setLearningToolUser(userId: string): void {
   currentUserId = userId || '';
 }
 
+// 会话归属科目（§4.6 P1 陪练）：与 currentUserId 同一注入手法 —— registry.execute 唯一出口旁
+// 由 llm-task-manager 按 task.agentId 设置；空 = 英语/缺省语义（词本工具照常）。
+let currentSubject = '';
+export function setLearningToolSubject(subject?: string): void {
+  currentSubject = subject || '';
+}
+
+/** 当前会话是否非英语科目（传统文化/音乐/周易不使用词本，词本查询直接给口径答复防英语串味） */
+function isNonEnglishSubject(): boolean {
+  return currentSubject === '传统文化' || currentSubject === '音乐' || currentSubject === '周易';
+}
+
 /** 词本行（脱掉内部字段，只给模型可读摘要） */
 type WordRowLite = { book: string; word: string; phonetic: string | null; gloss: string; box: number; dueAt: number | null };
 
@@ -69,6 +81,8 @@ class LearningQueryWordsTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>) {
     if (!currentUserId) return toolError('当前会话没有用户态（非登录环境）');
+    // 科目分支（§4.6 P1）：传统文化/音乐会话不查英语词书，返回口径答复防串味
+    if (isNonEnglishSubject()) return toolOk('该科目暂无词本数据');
     try {
       const rows = queryWords(currentUserId, {
         bookId: typeof args.bookId === 'string' && args.bookId ? args.bookId : undefined,
@@ -96,7 +110,7 @@ class LearningGetHistoryTool implements BuiltInTool {
       const rows = db.prepare(
         'SELECT mode, scene_id, score, started_at FROM learning_session WHERE user_id = ? ORDER BY started_at DESC LIMIT ?',
       ).all(currentUserId, limit) as Array<{ mode: string; scene_id: string | null; score: number | null; started_at: number }>;
-      return toolOk(JSON.stringify({ recent: rows, context: getLearningContext(currentUserId) }));
+      return toolOk(JSON.stringify({ recent: rows, context: getLearningContext(currentUserId, currentSubject || undefined) }));
     } catch (e) { return toolError(e instanceof Error ? e.message : String(e)); }
   }
 }

@@ -42,3 +42,43 @@ export function buildLearningContextSummary(input: LearningContextInput, streak:
   }
   return lines.join('\n');
 }
+
+// ── 非英语科目的注入块（传统文化与音乐学习模式方案 §4.6 P1：按科目分块） ────────
+
+export type SubjectLearningContextInput = {
+  subject: '传统文化' | '音乐' | '周易';
+  /** 最近完成的课时 id（最近在前，最多 5 条，调用方截断） */
+  recentLessons: string[];
+  /** 传统文化：错误本 top（对句/自测的薄弱点引用，最多 3 条） */
+  topErrors: Array<{ wrong: string; right: string }>;
+};
+
+/**
+ * 传统文化/音乐/周易科目的注入块：[学习档案-科目]（最近完成课时）+（音乐）[方向分域]
+ * +（文化）[对句薄弱点]。
+ * ★ 无数据（没课时也没薄弱点）返回空串 —— 调用方拿到空串就不注入，不给模型塞空块。
+ * ★ 音乐方向分域（音乐双方向重构方案 2026-11-15 §3.4）：从课时 id 前缀（mus_w_/mus_t_）
+ *   推断方向占比注入，陪练据此分域讲解、术语不串味。
+ */
+export function buildSubjectLearningContextSummary(input: SubjectLearningContextInput): string {
+  const lessons = input.recentLessons.filter(Boolean);
+  const errors = input.subject === '传统文化' ? input.topErrors : [];
+  if (!lessons.length && !errors.length) return '';
+  const lines: string[] = [];
+  lines.push('【学习档案 · 系统注入】（以下是用户在本科目的学习状态摘要，供你个性化教学，不要原样照读）');
+  if (lessons.length) lines.push(`[学习档案-${input.subject}] 最近完成课时：${lessons.join('、')}`);
+  if (input.subject === '音乐') {
+    const wCount = lessons.filter((l) => l.startsWith('mus_w_')).length;
+    const tCount = lessons.filter((l) => l.startsWith('mus_t_')).length;
+    if (wCount || tCount) {
+      const parts: string[] = [];
+      if (wCount) parts.push(`现代通用乐理（western）×${wCount}`);
+      if (tCount) parts.push(`中国传统音乐（traditional）×${tCount}`);
+      lines.push(`[学习档案-音乐·方向] ${parts.join('；')}——按所在方向分域讲解，两套体系术语不串味`);
+    }
+  }
+  if (errors.length) {
+    lines.push(`[对句薄弱点] 错误本记录（可引用）：${errors.map((e) => `「${e.wrong}」→「${e.right}」`).join('；')}`);
+  }
+  return lines.join('\n');
+}

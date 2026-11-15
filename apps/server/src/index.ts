@@ -73,6 +73,11 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 // 学习模式（docs/英语学习模式方案-2026-11-08.md）：档案/词书关卡/闯关/错误本/上下文注入
 import learningRoutes from './routes/learning.js';
+// 传统文化（docs/传统文化与音乐学习模式方案-2026-11-14.md）：精读台/对句台/典籍文库
+import learningCultureRoutes from './routes/learning-culture.js';
+// 音乐（同方案 §4.3）：谱面工作台/四记法/编曲格子
+import learningMusicRoutes from './routes/learning-music.js';
+import learningZhouyiRoutes from './routes/learning-zhouyi.js';
 // 笔记（docs/笔记功能方案-2026-11-14.md）：笔记/计划/收藏/到期提醒
 import noteRoutes from './routes/notes.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
@@ -396,6 +401,9 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/learning', learningRoutes);
+app.use('/api/learning/culture', learningCultureRoutes);
+app.use('/api/learning/music', learningMusicRoutes);
+app.use('/api/learning/zhouyi', learningZhouyiRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/llm/goal-schedules', goalScheduleRoutes);

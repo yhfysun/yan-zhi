@@ -7,7 +7,7 @@ import {
   createCustomBook, listWordBooks, getLevels, getDrill, submitDrill,
   countDueWords, getReviewDrill, submitReviewDrill,
   addError, listErrors, getLearningContext, getCourses, listBookWords, deleteCustomBook,
-  checkDrillAnswer,
+  checkDrillAnswer, listLessonProgress, updateLessonProgress,
 } from '../src/learning/service';
 import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import type { DrillQuestion } from '../src/learning/srs';
@@ -317,5 +317,53 @@ describe('错误本与上下文注入', () => {
     expect(ctx).toContain('测试词单');
     expect(ctx).toContain('[薄弱点]');
     expect(ctx).toContain('I saw him yesterday');
+  });
+});
+
+describe('课时进度入库（§4.6 P1 跨端备份）', () => {
+  const uidA = `progress-a-${Date.now()}`;
+  const uidB = `progress-b-${Date.now()}`;
+
+  it('★ 幂等 upsert：同一课时重复上报不重复入库，saved 只算新增', () => {
+    const first = updateLessonProgress(uidA, '传统文化', ['cul_l1', 'cul_l2']);
+    expect(first.saved).toBe(2);
+    const again = updateLessonProgress(uidA, '传统文化', ['cul_l1', 'cul_l2', 'cul_l3']);
+    expect(again.saved).toBe(1);
+    const ids = listLessonProgress(uidA, '传统文化');
+    expect(ids).toEqual(['cul_l1', 'cul_l2', 'cul_l3']);
+  });
+
+  it('★ 用户隔离：A 写的进度 B 查不到；科目之间互不串', () => {
+    updateLessonProgress(uidA, '传统文化', ['cul_l1']);
+    expect(listLessonProgress(uidB, '传统文化')).toEqual([]);
+    updateLessonProgress(uidA, '音乐', ['mus_l1']);
+    expect(listLessonProgress(uidA, '音乐')).toEqual(['mus_l1']);
+    expect(listLessonProgress(uidA, '传统文化')).not.toContain('mus_l1');
+  });
+});
+
+describe('上下文注入按科目分块（§4.6 P1）', () => {
+  it('★ subject=传统文化：注入课时与对句薄弱点，不含英语词书语义', () => {
+    const uidC = `ctx-culture-${Date.now()}`;
+    updateLessonProgress(uidC, '传统文化', ['cul_s1_l1', 'cul_s1_l2']);
+    addError(uidC, { wrong: '平仄不对', right: '第四字应仄', reason: '仄起平收' });
+    const ctx = getLearningContext(uidC, '传统文化');
+    expect(ctx).toContain('【学习档案 · 系统注入】');
+    expect(ctx).toContain('[学习档案-传统文化]');
+    expect(ctx).toContain('cul_s1_l2');
+    expect(ctx).toContain('[对句薄弱点]');
+    expect(ctx).not.toContain('CEFR');
+    expect(ctx).not.toContain('[到期复习]');
+    expect(ctx).not.toContain('[自定义词单]');
+  });
+
+  it('★ 无数据输出空块不注入；subject 缺省走英语语义（含词书关键词）', () => {
+    const uidD = `ctx-empty-${Date.now()}`;
+    expect(getLearningContext(uidD, '传统文化')).toBe('');
+    expect(getLearningContext(uidD, '音乐')).toBe('');
+    // 缺省（英语）：沿用现有注入语义 —— 有词书数据时含自定义词单段
+    createCustomBook(uidD, '分块回归词单', [{ word: 'apple', gloss: 'n. 苹果' }]);
+    expect(getLearningContext(uidD)).toContain('[自定义词单]');
+    expect(getLearningContext(uidD)).not.toContain('[学习档案-传统文化]');
   });
 });

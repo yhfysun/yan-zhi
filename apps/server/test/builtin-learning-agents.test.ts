@@ -7,10 +7,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   LEARNING_AGENT_ID,
+  CULTURE_COACH_AGENT_ID,
+  MUSIC_COACH_AGENT_ID,
   LEARNING_AGENT_BUILTIN_TOOLS,
   LEARNING_AGENT_SYSTEM_PROMPT,
+  CULTURE_COACH_SYSTEM_PROMPT,
+  MUSIC_COACH_SYSTEM_PROMPT,
   LEARNING_PROMPT_CONTEXT_MARK,
   builtinLearningAgentDefs,
+  learningSubjectOfAgentId,
 } from '../src/builtin-learning-agents';
 
 describe('英语学习陪练 · id 与 seed 结构', () => {
@@ -18,10 +23,12 @@ describe('英语学习陪练 · id 与 seed 结构', () => {
     expect(LEARNING_AGENT_ID).toBe('a_builtin_learning_coach');
   });
 
-  it('恰好一个条目，且不与既有内置 id 冲突', () => {
-    expect(builtinLearningAgentDefs.map((d) => d.id)).toEqual([LEARNING_AGENT_ID]);
+  it('三个条目（英语/传统文化/音乐），id 互不冲突且不占既有内置 id', () => {
+    const ids = builtinLearningAgentDefs.map((d) => d.id);
+    expect(ids).toContain(LEARNING_AGENT_ID);
+    expect(new Set(ids).size).toBe(ids.length);
     const taken = ['a_default_assistant', 'a_builtin_page_agent', 'a_builtin_douyin_agent', 'a_builtin_data_agent'];
-    for (const t of taken) expect(LEARNING_AGENT_ID).not.toBe(t);
+    for (const id of ids) expect(taken).not.toContain(id);
   });
 
   it('type=harness / is_builtin=1 / agent_kind=main / category=学习', () => {
@@ -95,5 +102,43 @@ describe('英语学习陪练 · 教学宪法红线', () => {
   it('不惩罚错误、新词限量', () => {
     expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('不嘲笑、不惩罚');
     expect(LEARNING_AGENT_SYSTEM_PROMPT).toContain('新词一次 ≤ 5 个');
+  });
+});
+
+describe('传统文化/音乐陪练 · 契约（§4.6 P1）', () => {
+  it('★ id 注册存在（扩展表/场景卡按它绑定，改一字 = 静默失联）', () => {
+    expect(CULTURE_COACH_AGENT_ID).toBe('a_builtin_culture_coach');
+    expect(MUSIC_COACH_AGENT_ID).toBe('a_builtin_music_coach');
+    const ids = builtinLearningAgentDefs.map((d) => d.id);
+    expect(ids).toContain(CULTURE_COACH_AGENT_ID);
+    expect(ids).toContain(MUSIC_COACH_AGENT_ID);
+  });
+
+  it('★ 教学宪法红线写死在提示词（不虚构典籍原文 / 不打分 / 三项口径 / 分域口径）', () => {
+    expect(CULTURE_COACH_SYSTEM_PROMPT).toContain('不虚构典籍原文');
+    expect(CULTURE_COACH_SYSTEM_PROMPT).toContain('此篇暂无人工注解');
+    expect(CULTURE_COACH_SYSTEM_PROMPT).toContain('字数、词性、平仄');
+    expect(MUSIC_COACH_SYSTEM_PROMPT).toContain('不打分');
+    expect(MUSIC_COACH_SYSTEM_PROMPT).toContain('宫=1=上=C');
+    // 分域硬闸（音乐双方向重构方案 2026-11-15 §七）：两方向术语不串味 + 工具≠体系
+    expect(MUSIC_COACH_SYSTEM_PROMPT).toContain('分域口径');
+    expect(MUSIC_COACH_SYSTEM_PROMPT).toContain('不把《小星星》这类西方大调儿歌说成宫调式');
+  });
+
+  it('挂载与英语陪练相同的 3 个只读工具 + force_sync + 注入标记成对', () => {
+    const cultureDef = builtinLearningAgentDefs.find((d) => d.id === CULTURE_COACH_AGENT_ID)!;
+    const musicDef = builtinLearningAgentDefs.find((d) => d.id === MUSIC_COACH_AGENT_ID)!;
+    for (const def of [cultureDef, musicDef]) {
+      expect(JSON.parse(String(def.builtin_tool_ids))).toEqual(LEARNING_AGENT_BUILTIN_TOOLS);
+      expect(def.force_sync).toBe(true);
+      expect(String(def.system_prompt)).toContain(LEARNING_PROMPT_CONTEXT_MARK);
+    }
+  });
+
+  it('科目推断：陪练 id → 科目，其余（含英语陪练/空）回 undefined 走缺省语义', () => {
+    expect(learningSubjectOfAgentId(CULTURE_COACH_AGENT_ID)).toBe('传统文化');
+    expect(learningSubjectOfAgentId(MUSIC_COACH_AGENT_ID)).toBe('音乐');
+    expect(learningSubjectOfAgentId(LEARNING_AGENT_ID)).toBeUndefined();
+    expect(learningSubjectOfAgentId(null)).toBeUndefined();
   });
 });

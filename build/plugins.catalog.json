@@ -71,7 +71,7 @@
       "kind": "mode",
       "modeKey": "learning",
       "label": "学习模式",
-      "desc": "英语闯关陪练 · 课程进度",
+      "desc": "多学科学习陪练 · 英语/软考/网安/传统文化/音乐/周易 · 课程进度",
       "icon": "Reading",
       "route": "/learning",
       "backendEntry": "apps/server/src/plugins/learning-mode.ts",

@@ -198,3 +198,9 @@ export * from './cost-notice';
 //   「同一条记录两端单位不一致」（坑 #20，金额时大时小 1000 倍且极难复现）。
 //   ×1000 的语义不在这里重写，复用 `model-cost.ts` 的 `normalizePricing`。
 export * from './pricing-migration';
+
+// 对句（对对子）判卷 —— server 内容包与 ui 对句台共用的唯一实现（两端各写一份平仄/词性口径必然漂移）。
+export * from './couplet';
+
+// 格律评分（自拟对句/写诗绝句）—— 两端共用唯一实现，pinyin-pro 取声调/韵母。
+export * from './scansion';

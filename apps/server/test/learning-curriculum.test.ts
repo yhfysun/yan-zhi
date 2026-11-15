@@ -12,25 +12,36 @@ import { BUILTIN_WORDBOOKS } from '../src/learning/data/wordbooks';
 import { LEARNING_AGENT_ID } from '../src/builtin-learning-agents';
 
 describe('课程学段目录', () => {
-  it('36 门课且 id 唯一；词书、软考和安全路线边界清晰', () => {
-    expect(COURSE_CATALOG.length).toBe(36);
+  it('★ 课程目录：id 唯一；词书、软考、安全、传统文化和音乐的边界清晰（总数用下界断言，防并行科目扩展干扰）', () => {
+    expect(COURSE_CATALOG.length).toBeGreaterThanOrEqual(42);
     expect(new Set(COURSE_CATALOG.map((c) => c.id)).size).toBe(COURSE_CATALOG.length);
     const vocab = COURSE_CATALOG.filter((c) => !c.kind || c.kind === 'vocab');
     expect(new Set(vocab.map((c) => c.bookId)).size).toBe(vocab.length);
     expect(COURSE_CATALOG.filter((c) => c.kind === 'exam')).toHaveLength(4);
     expect(COURSE_CATALOG.filter((c) => c.kind === 'security')).toHaveLength(12);
+    expect(COURSE_CATALOG.filter((c) => c.kind === 'culture')).toHaveLength(4);
+    // 音乐 = 一个科目两条方向各一个入口（音乐双方向重构方案 2026-11-15）
+    expect(COURSE_CATALOG.filter((c) => c.kind === 'music')).toHaveLength(2);
+    expect(COURSE_CATALOG.filter((c) => c.musicTrack === 'western')).toHaveLength(1);
+    expect(COURSE_CATALOG.filter((c) => c.musicTrack === 'traditional')).toHaveLength(1);
+    // 周易 = 独立学科 48 门全量注册（周易课程方案 2026-11-15 §3.2），每门带 zhouyiTrack
+    const zhouyi = COURSE_CATALOG.filter((c) => c.kind === 'zhouyi');
+    expect(zhouyi).toHaveLength(48);
+    expect(zhouyi.every((c) => c.subject === '周易' && !!c.zhouyiTrack)).toBe(true);
   });
 
   it('★ 每门课的 bookId 都有真实内容包（指空 = 选课拿不到词）', () => {
     const bookIds = new Set(BUILTIN_WORDBOOKS.map((b) => b.id));
     for (const c of COURSE_CATALOG) {
-      if (c.kind === 'exam' || c.kind === 'security') continue;
+      if (c.kind === 'exam' || c.kind === 'security' || c.kind === 'culture' || c.kind === 'music' || c.kind === 'zhouyi') continue;
       expect(bookIds.has(c.bookId), `${c.id} 的 ${c.bookId} 不存在`).toBe(true);
     }
   });
 
-  it('学段覆盖用户拍板的全部学段，目录顺序 = 建议学程', () => {
-    expect(COURSE_STAGES).toEqual(['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全']);
+  it('★ 学段包含既有十个学段（新增学段由并行科目扩展追加，不在此锁死总数）', () => {
+    for (const s of ['启蒙', '必背专题', '初中', '高中', '大学', '出国', '软考', '网络安全', '传统文化', '音乐']) {
+      expect(COURSE_STAGES).toContain(s);
+    }
     const names = COURSE_CATALOG.map((c) => c.name);
     expect(names[0]).toBe('字母与音标');
     expect(names).toContain('动词全本');
@@ -66,21 +77,30 @@ describe('课程学段目录', () => {
     expect(firstIdx).toBeLessThan(lastIdx);
   });
 
-  it('★ 科目架构：清单含英语（ready）+ 预留日语/数学/物理（未就绪）；课程都有 subject', () => {
+  it('★ 科目架构：清单含英语/软考/网络安全/传统文化/音乐（ready）+ 预留日语/数学/物理（未就绪）；课程都有 subject', () => {
     expect(LEARNING_SUBJECTS.find((s) => s.key === '英语')?.ready).toBe(true);
     expect(LEARNING_SUBJECTS.find((s) => s.key === '软考')?.ready).toBe(true);
     expect(LEARNING_SUBJECTS.find((s) => s.key === '网络安全')?.ready).toBe(true);
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '传统文化')?.ready).toBe(true);
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '音乐')?.ready).toBe(true);
     for (const k of ['日语', '数学', '物理']) {
       expect(LEARNING_SUBJECTS.find((s) => s.key === k)?.ready).toBe(false);
     }
     expect(COURSE_CATALOG.filter((c) => c.subject === '英语').length).toBe(20);
     expect(COURSE_CATALOG.filter((c) => c.subject === '软考').length).toBe(4);
     expect(COURSE_CATALOG.filter((c) => c.subject === '网络安全').length).toBe(12);
+    expect(COURSE_CATALOG.filter((c) => c.subject === '传统文化').length).toBe(4);
+    expect(COURSE_CATALOG.filter((c) => c.subject === '音乐').length).toBe(2); // 两方向各一入口（2026-11-15 重构）
+    expect(COURSE_CATALOG.filter((c) => c.subject === '周易').length).toBe(48); // 独立学科 48 门（周易课程方案 §3.2）
+    expect(LEARNING_SUBJECTS.find((s) => s.key === '周易')?.ready).toBe(true);
+    expect(COURSE_STAGES).toContain('传统文化');
+    expect(COURSE_STAGES).toContain('音乐');
+    expect(COURSE_STAGES).toContain('周易');
   });
 
-  it('★ 全量词书：常规课程 >= 200 词，必背专题 >= 80 词，词条无空值、无重复', () => {
+  it('★ 全量词书：常规课程 >= 200 词，必背专题 >= 80 词，词条无空值、无重复（culture/music 无词书课程跳过）', () => {
     for (const c of COURSE_CATALOG) {
-      if (c.kind === 'exam' || c.kind === 'security') continue;
+      if (c.kind === 'exam' || c.kind === 'security' || c.kind === 'culture' || c.kind === 'music' || c.kind === 'zhouyi') continue;
       const b = BUILTIN_WORDBOOKS.find((x) => x.id === c.bookId)!;
       const minWords = c.stage === '必背专题' ? 80 : 200;
       expect(b.words.length, c.id).toBeGreaterThanOrEqual(minWords);

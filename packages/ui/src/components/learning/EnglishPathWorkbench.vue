@@ -26,17 +26,14 @@ type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-
 type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
 type PathSound = { letter: string; ipa: string; word: string; gloss: string; mouth?: string };
 type PathBlendGroup = { parts: Array<{ text: string; ipa: string }>; word: string };
-/** 对比认知课对照卡：字母名 / 字母音两套读音 + 本课专属慢速拼读音频。 */
+/** 对比认知课对照卡：只用 IPA 展示两套读音，禁止汉字拟音（2026-11-15 用户实报）。 */
 type PathComparePair = {
   letter: string;
-  name: string;
   nameIpa?: string;
-  sound: string;
   word?: string;
   ipa?: string;
   nameAudio?: string;
   parts?: Array<{ text: string; ipa: string }>;
-  blendHint?: string;
   blendAudio?: string;
 };
 type PathTranslateItem = { zh: string; en: string; note: string };
@@ -136,8 +133,21 @@ let pendingVoiceRequest: { text: string; key: string } | null = null;
 let previousBodyOverflow = '';
 let lastFocusTrigger: HTMLElement | null = null;
 let speechSequence = 0;
-let speechAudio: HTMLAudioElement | null = null;
 const speechCache = new Map<string, string>();
+
+/**
+ * 在播音频登记表 —— 播放生命周期的**唯一出口**。
+ * ★ 以前只用一个 `speechAudio` 引用：新播放会把旧引用覆盖掉，那个 Audio 就再也停不掉；
+ *   更糟的是 `pause()` 不触发 ended/error ⇒ 它的 Promise 永不结算 ⇒ 全量拼读循环卡死、
+ *   busy 常亮「拼读中…」，新旧播放还可能叠在一起。
+ *   现在停止时一律 pause 全部 + 按「正常结束」结算，调用方靠各自 seq 守卫退出循环。
+ */
+type Playback = {
+  audio: HTMLAudioElement;
+  settle: (failed: boolean) => void;
+  onSettled?: (failed: boolean) => void;
+};
+const activePlaybacks = new Set<Playback>();
 
 const stage = computed(() => stages.value[stageIndex.value] || null);
 const step = computed(() => stage.value?.steps[stepIndex.value] || null);
@@ -183,7 +193,7 @@ function speakCompareSound(pair: { letter: string; ipa?: string; word?: string }
   const src = pair.ipa ? phonicsAudioSrc(pair.ipa) : null;
   if (!src) { if (pair.word) void speak(pair.word, `cmp:${pair.letter}`); return; }
   const sequence = ++speechSequence;
-  stopActiveSpeech();
+  interruptPlayback();
   speakingKey.value = `cmp:${pair.letter}`;
   ttsLoadingKey.value = '';
   void playLocalAudio(src, sequence).catch(() => {
@@ -195,8 +205,14 @@ function speakCompareSound(pair: { letter: string; ipa?: string; word?: string }
 const compareBlendWord = ref('');
 const compareBlendBusy = ref(false);
 let compareBlendSeq = 0;
+/** 逐步合音说明：只从结构化 IPA 派生（/t/ · /æ/ · /p/ → /tæp/），绝不读中文拟音文案。 */
+function compareHintOf(pair?: PathComparePair): string {
+  const ipas = (pair?.parts || []).map((part) => part.ipa).filter((ipa): ipa is string => !!ipa);
+  if (!ipas.length) return '';
+  return `${ipas.join(' · ')} → /${ipas.map((ipa) => ipa.replace(/\//g, '')).join('')}/`;
+}
 const activeCompareHint = computed(() =>
-  step.value?.compare?.find((pair) => pair.word === compareBlendWord.value)?.blendHint || '',
+  compareHintOf(step.value?.compare?.find((pair) => pair.word === compareBlendWord.value)),
 );
 
 /** 播一条专属示范音频并等它读完；音频缺失才用 parts 逐音素本音 + TTS 整词兜底。
@@ -215,14 +231,35 @@ async function playCompareBlendAudio(pair: PathComparePair, seq: number): Promis
   if (pair.word && seq === compareBlendSeq) await speakWordAwait(pair.word);
 }
 
+/**
+ * 用户主动点读的**统一播放令牌**：掐断两条拼读循环（对照卡 / 逐音演示）+ 停掉全部在播音频
+ * + 复位它们的 busy / hint 态。★ 只准由点击入口调用，绝不能放进 playLocalAudio /
+ * playTrackedAudio —— 循环自己的每一步都会经过那里，会把演示误掐断。
+ */
+function interruptPlayback() {
+  compareBlendSeq += 1;
+  blendingSeq += 1;
+  stopActiveSpeech();
+  compareBlendBusy.value = false;
+  compareBlendWord.value = '';
+  blendingBusy.value = false;
+  blendingActive.value = '';
+  speakingKey.value = '';
+}
+
+/** 拼读任务（单卡 / 全量）启动前的收口，返回本次任务序号。 */
+function beginCompareBlend(): number {
+  interruptPlayback();
+  return ++compareBlendSeq;
+}
+
 /** 点单个例词：只慢速拼读这一个词。 */
 function playCompareBlend(pair: PathComparePair) {
   if (!pair.word) return;
-  const seq = ++compareBlendSeq;
+  const seq = beginCompareBlend();
   compareBlendBusy.value = true;
   compareBlendWord.value = pair.word;
   speakingKey.value = 'pattern';
-  stopActiveSpeech();
   void playCompareBlendAudio(pair, seq).finally(() => {
     if (seq === compareBlendSeq) {
       compareBlendBusy.value = false;
@@ -236,7 +273,7 @@ function playCompareBlend(pair: PathComparePair) {
 async function playAllCompareBlends() {
   const pairs = (step.value?.compare || []).filter((pair) => pair.word);
   if (!pairs.length) { if (compareSpeech.value) void speak(compareSpeech.value, 'pattern'); return; }
-  const seq = ++compareBlendSeq;
+  const seq = beginCompareBlend();
   compareBlendBusy.value = true;
   speakingKey.value = 'pattern';
   try {
@@ -292,7 +329,7 @@ function playChartSound(item: ChartItem) {
   const src = phonicsAudioSrc(item.ipa);
   if (!src) { void speak(item.word, `chart:${item.ipa}`); return; }
   const sequence = ++speechSequence;
-  stopActiveSpeech();
+  interruptPlayback();
   speakingKey.value = '';
   ttsLoadingKey.value = '';
   void playLocalAudio(src, sequence).catch(() => {
@@ -512,6 +549,10 @@ function resetLessonState() {
   blendingActive.value = '';
   blendingSeq += 1;
   blendingBusy.value = false;
+  // 对照卡拼读同样要掐断：换课/换步骤后旧循环不许继续播下一个词
+  compareBlendSeq += 1;
+  compareBlendBusy.value = false;
+  compareBlendWord.value = '';
   // 回译课：换课即收起全部参考译文，重新自己翻
   translateRevealed.value = [];
 }
@@ -611,8 +652,36 @@ function toggleSaved() {
 
 function stopActiveSpeech() {
   try { window.speechSynthesis?.cancel(); } catch { /* 无浏览器语音时忽略 */ }
-  try { speechAudio?.pause(); } catch { /* 音频尚未初始化时忽略 */ }
-  speechAudio = null;
+  for (const playback of [...activePlaybacks]) {
+    activePlaybacks.delete(playback);
+    try { playback.audio.pause(); } catch { /* 音频已结束 */ }
+    // 打断 = 正常结束：不调 onSettled（否则会误触发「音频失败」兜底，又播一串音素 / 弹错误横幅）
+    playback.settle(false);
+  }
+}
+
+/**
+ * 唯一播放出口：创建 Audio、登记、ended/error/play 失败时结算。
+ * 被 stopActiveSpeech() 打断时按正常结束结算，循环型调用方靠 seq 守卫决定要不要继续下一音步。
+ */
+function playTrackedAudio(src: string, onSettled?: (failed: boolean) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(src);
+    const playback: Playback = {
+      audio,
+      settle: (failed) => { if (failed) reject(new Error('audio failed')); else resolve(); },
+      onSettled,
+    };
+    activePlaybacks.add(playback);
+    const done = (failed: boolean) => {
+      if (!activePlaybacks.delete(playback)) return; // 已结算（被打断 / 事件重复）
+      onSettled?.(failed);
+      playback.settle(failed);
+    };
+    audio.addEventListener('ended', () => done(false));
+    audio.addEventListener('error', () => done(true));
+    void audio.play().catch(() => done(true));
+  });
 }
 
 /**
@@ -624,7 +693,7 @@ async function speakIpa(sound: PathSound) {
   const src = phonicsAudioSrc(sound.ipa);
   if (!src) { void speak(sound.word, ''); return; }
   const sequence = ++speechSequence;
-  stopActiveSpeech();
+  interruptPlayback();
   speakingKey.value = '';
   ttsLoadingKey.value = '';
   try {
@@ -634,21 +703,11 @@ async function speakIpa(sound: PathSound) {
   }
 }
 
-/** 播放随包本地音频（绝对地址），ended/error 时 resolve/reject。 */
-function playLocalAudio(src: string, sequence: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    stopActiveSpeech();
-    // phonicsAudioSrc 已按 document.baseURI 补成绝对地址；这里只追加媒体鉴权 query
-    const audio = new Audio(withMediaAuthQuery(src));
-    speechAudio = audio;
-    const done = (err?: Error) => {
-      if (speechAudio === audio) speechAudio = null;
-      if (err) reject(err); else resolve();
-    };
-    audio.addEventListener('ended', () => done());
-    audio.addEventListener('error', () => done(new Error('audio error')));
-    void audio.play().catch((e: unknown) => done(e instanceof Error ? e : new Error(String(e))));
-  });
+/** 播放随包本地音频（绝对地址）；启动前先停掉全部在播音频，绝不叠音。 */
+function playLocalAudio(src: string, _sequence: number): Promise<void> {
+  stopActiveSpeech();
+  // phonicsAudioSrc 已按 document.baseURI 补成绝对地址；这里只追加媒体鉴权 query
+  return playTrackedAudio(withMediaAuthQuery(src));
 }
 
 // ── 逐音学习（零基础：一次只教一个音标，学会再下一个）──
@@ -731,46 +790,37 @@ function speakPart(part: { text: string; ipa: string | null }, fallbackWord = ''
   else void speak(fallbackWord || part.text, '');
 }
 
-/** 拼读演示专用：读一个词并**等它读完**（TTS 音频 ended；无 TTS 回退系统语音 onend），保证一组一组不重叠。 */
-function speakWordAwait(text: string): Promise<void> {
-  return new Promise((resolve) => {
-    void (async () => {
-      const sequence = ++speechSequence;
-      stopActiveSpeech();
-      speakingKey.value = 'pattern';
-      try {
-        let url = speechCache.get(`${ttsSpeed.value}|${text}`) || '';
-        if (!url) {
-          const response = await api.post<{ data?: { url?: string } }>('/learning/tts', {
-            text,
-            language: 'en-US',
-            speed: ttsSpeed.value,
-          });
-          if (sequence !== speechSequence) return resolve();
-          const error = responseError(response);
-          if (error) throw new Error(error);
-          url = unwrap<{ url?: string }>(response)?.url || '';
-          if (!url) throw new Error('英语语音未返回音频地址');
-          speechCache.set(`${ttsSpeed.value}|${text}`, url);
-        }
-        const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
-        speechAudio = audio;
-        const done = () => {
-          if (speechAudio === audio) speechAudio = null;
-          resolve();
-        };
-        audio.addEventListener('ended', done);
-        audio.addEventListener('error', done);
-        await audio.play();
-      } catch {
-        // 无后端 TTS：系统英语语音兜底（onend 续跑），不弹错误横幅（演示场景）
-        let settled = false;
-        const done = () => { if (!settled) { settled = true; speakingKey.value = ''; resolve(); } };
-        if (!speakWithEnglishBrowserVoice(text, 'pattern', sequence, done)) { speakingKey.value = ''; resolve(); }
-        setTimeout(done, 4000);
-      }
-    })();
-  });
+/** 拼读演示专用：读一个词并**等它读完**（走唯一播放出口；无 TTS 回退系统语音 onend），保证一组一组不重叠。 */
+async function speakWordAwait(text: string): Promise<void> {
+  const sequence = ++speechSequence;
+  stopActiveSpeech();
+  speakingKey.value = 'pattern';
+  try {
+    let url = speechCache.get(`${ttsSpeed.value}|${text}`) || '';
+    if (!url) {
+      const response = await api.post<{ data?: { url?: string } }>('/learning/tts', {
+        text,
+        language: 'en-US',
+        speed: ttsSpeed.value,
+      });
+      if (sequence !== speechSequence) return;
+      const error = responseError(response);
+      if (error) throw new Error(error);
+      url = unwrap<{ url?: string }>(response)?.url || '';
+      if (!url) throw new Error('英语语音未返回音频地址');
+      speechCache.set(`${ttsSpeed.value}|${text}`, url);
+    }
+    if (sequence !== speechSequence) return;
+    await playTrackedAudio(withMediaAuthQuery(absoluteMediaSrc(url)), () => {
+      if (sequence === speechSequence) speakingKey.value = '';
+    });
+  } catch {
+    // 无后端 TTS：系统英语语音兜底（onend 续跑），不弹错误横幅（演示场景）
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; speakingKey.value = ''; } };
+    if (!speakWithEnglishBrowserVoice(text, 'pattern', sequence, done)) done();
+    setTimeout(done, 4000);
+  }
 }
 
 /** 跟着演示拼一遍：逐个音素放本音，最后连成整词。 */
@@ -974,7 +1024,7 @@ async function speak(text: string, activeKey = '') {
   const spokenText = text.trim();
   if (!spokenText) return;
   const sequence = ++speechSequence;
-  stopActiveSpeech();
+  interruptPlayback();
   voiceRuntimeError.value = '';
   speakingKey.value = activeKey;
   ttsLoadingKey.value = activeKey;
@@ -1000,23 +1050,10 @@ async function speak(text: string, activeKey = '') {
     //   直接 new Audio(相对地址) 会解析成 file:///api/... → 媒体加载必挂
     //   （2026-11-13 实报「Failed to load because no supported source was found」）。
     //   与全仓媒体一致走 absoluteMediaSrc 补全 + withMediaAuthQuery 鉴权。
-    const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
-    speechAudio = audio;
     ttsLoadingKey.value = '';
-    const finish = () => {
-      if (sequence !== speechSequence) return;
-      speakingKey.value = '';
-      if (speechAudio === audio) speechAudio = null;
-    };
-    audio.addEventListener('ended', finish);
-    audio.addEventListener('error', () => {
-      finish();
-      if (sequence !== speechSequence) return;
-      if (!speakWithEnglishBrowserVoice(spokenText, activeKey, sequence)) {
-        void handleSpeechUnavailable(spokenText, activeKey, '音频播放失败，请重试。', sequence);
-      }
+    await playTrackedAudio(withMediaAuthQuery(absoluteMediaSrc(url)), () => {
+      if (sequence === speechSequence) speakingKey.value = '';
     });
-    await audio.play();
   } catch (error) {
     if (sequence !== speechSequence) return;
     if (!speakWithEnglishBrowserVoice(spokenText, activeKey, sequence)) {
@@ -1439,8 +1476,7 @@ onBeforeUnmount(() => {
                         @click="speakCompareName(pair)"
                       >
                         <b>{{ pair.letter }}</b>
-                        <span>{{ pair.name }}</span>
-                        <em v-if="pair.nameIpa">{{ pair.nameIpa }}</em>
+                        <span>{{ pair.nameIpa }}</span>
                       </button>
                       <button
                         type="button"
@@ -1449,8 +1485,7 @@ onBeforeUnmount(() => {
                         :aria-label="pair.word ? `读 ${pair.letter} 在 ${pair.word} 里的发音` : `读 ${pair.letter} 的发音`"
                         @click="speakCompareSound(pair)"
                       >
-                        <span>{{ pair.sound }}</span>
-                        <em v-if="pair.ipa">{{ pair.ipa }}</em>
+                        <span>{{ pair.ipa }}</span>
                       </button>
                       <button
                         v-if="pair.word"
@@ -1458,7 +1493,7 @@ onBeforeUnmount(() => {
                         class="lp-compare-word"
                         :class="{ playing: compareBlendWord === pair.word }"
                         :aria-label="`慢速拼读 ${pair.word}`"
-                        :title="pair.blendHint || `慢速拼读 ${pair.word}`"
+                        :title="compareHintOf(pair) || `慢速拼读 ${pair.word}`"
                         @click="playCompareBlend(pair)"
                       >{{ pair.word }}</button>
                     </div>
@@ -1968,7 +2003,7 @@ onBeforeUnmount(() => {
 .lp-sound-nav button.lp-sound-next:hover:not(:disabled) { filter: brightness(1.06); }
 /* 拼读演示：音素块逐个高亮，最后连成整词 */
 .lp-path-pattern.lp-path-pattern-blend { grid-template-columns: minmax(0, 1fr); }
-/* 对比认知课：一卡一组，上层「字母名」/ 下层「字母音 + 例词」，不再把 6 个元素挤成一行 */
+/* 对比认知课：一卡一组，上层字母名音标 / 下层本音音标 + 例词，全部 IPA，不用汉字拟音 */
 .lp-path-pattern.lp-path-compare { grid-template-columns: minmax(0, 1fr); gap: 9px; padding: 12px 14px; }
 .lp-compare-head { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .lp-compare-grid { grid-column: 1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
@@ -2002,7 +2037,7 @@ onBeforeUnmount(() => {
 .lp-compare-pair button.lp-compare-word { grid-area: word; justify-self: end; color: #0f766e; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .lp-compare-pair button b { color: #0f766e; font-size: 18px; line-height: 1.2; }
 .lp-compare-pair button.lp-compare-name span { color: var(--path-paper-muted); font-size: 12px; }
-.lp-compare-pair button.lp-compare-sound span { color: var(--path-paper-ink); font-size: 15px; font-weight: 600; }
+.lp-compare-pair button.lp-compare-sound span { color: #0f766e; font-size: 20px; font-weight: 700; }
 .lp-compare-pair button em { padding: 1px 5px; border-radius: 4px; background: #9fe1cb; color: #04342c; font-size: 11px; font-style: normal; line-height: 1.5; white-space: nowrap; }
 .lp-compare-pair button.lp-compare-name em { background: #f1efe8; color: #444441; }
 .lp-compare-pair button.playing em { background: rgba(255, 255, 255, .24); }

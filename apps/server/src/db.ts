@@ -5456,6 +5456,69 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_learning_session_user ON learning_session(user_id, started_at DESC);
 `);
 
+// ===== 传统文化 · 典籍文库（docs/传统文化与音乐学习模式方案-2026-11-14.md §4.2b）====
+// 文库层 SQLite：canon_work 原文 + canon_gloss 注解缓存 + canon_fts（FTS5 名句反查）。
+// 精读层注解是 TS 内容包不入库（人工预写硬约束，见 learning/culture/types.ts 头注）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS canon_work (
+    id TEXT PRIMARY KEY,                 -- 'canon_<来源前缀>_<原id>'，幂等 upsert 锚点
+    title TEXT NOT NULL,
+    author TEXT,
+    dynasty TEXT,                        -- 先秦|两汉|魏晋南北朝|唐|五代|宋|元|明|清
+    genre TEXT,                          -- 经|诗|词|曲|文|蒙学
+    collection TEXT DEFAULT '',          -- 丛书（唐诗三百首/古文观止/…）
+    tags TEXT DEFAULT '',                -- 主题 tag，JSON 数组串
+    popularity TEXT DEFAULT 'normal',    -- classic|notable|normal
+    difficulty TEXT DEFAULT '入门',      -- 蒙学|入门|进阶|深造
+    text TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    verified INTEGER NOT NULL DEFAULT 0, -- 精读层篇目=1（考核只出 verified）
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_canon_work_dims ON canon_work(genre, dynasty, popularity, difficulty);
+
+  CREATE TABLE IF NOT EXISTS canon_gloss (
+    work_id TEXT NOT NULL,
+    term TEXT NOT NULL,
+    plain TEXT,                          -- 字面 + 白话
+    context TEXT,                        -- 背景
+    in_one_line TEXT,                    -- 一句话说明白
+    pinyin TEXT,
+    origin TEXT NOT NULL DEFAULT 'assisted',  -- verified | assisted；assisted 不覆盖 verified
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (work_id, term)
+  );
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS canon_fts USING fts5(
+    title, author, text, content='canon_work', content_rowid='rowid'
+  );
+  -- FTS5 外部内容表靠触发器与 canon_work 保持同步（unicode61 逐字 token，中文短语查询即可名句反查）
+  CREATE TRIGGER IF NOT EXISTS canon_fts_ai AFTER INSERT ON canon_work BEGIN
+    INSERT INTO canon_fts(rowid, title, author, text) VALUES (new.rowid, new.title, new.author, new.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS canon_fts_ad AFTER DELETE ON canon_work BEGIN
+    INSERT INTO canon_fts(canon_fts, rowid, title, author, text) VALUES ('delete', old.rowid, old.title, old.author, old.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS canon_fts_au AFTER UPDATE ON canon_work BEGIN
+    INSERT INTO canon_fts(canon_fts, rowid, title, author, text) VALUES ('delete', old.rowid, old.title, old.author, old.text);
+    INSERT INTO canon_fts(rowid, title, author, text) VALUES (new.rowid, new.title, new.author, new.text);
+  END;
+`);
+
+// ===== 学习课时进度入库（docs/传统文化与音乐学习模式方案-2026-11-14.md §4.6 P1）====
+// 跨端备份用：英语/传统文化/音乐等科目扩展共用一张表，subject 列区分；
+// P0 的 localStorage 进度是主记录，本表只做 fire-and-forget 上报的备份（不读回合并，P2 再接）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS learning_lesson_progress (
+    user_id TEXT NOT NULL,
+    subject TEXT NOT NULL,             -- 英语|传统文化|音乐|…（科目扩展共用一张表）
+    lesson_id TEXT NOT NULL,
+    completed_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, subject, lesson_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON learning_lesson_progress(user_id, subject, completed_at DESC);
+`);
+
 // word_book 增量迁移：早期建表无 user_id（2026-11-08 测试抓到「A 的自定义词书 B 能看到」）——
 // 补列后按用户过滤；旧库已存在的行 user_id 为 NULL，视为共享目录（内置）不影响。
 try {

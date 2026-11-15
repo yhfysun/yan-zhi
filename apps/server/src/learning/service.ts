@@ -7,7 +7,7 @@ import {
   genDrillQuestions, judgeAnswer, type SrsWordRow, type DrillQuestion, type DrillAnswer,
 } from './srs.js';
 import { BUILTIN_WORDBOOKS } from './data/wordbooks.js';
-import { buildLearningContextSummary } from './context.js';
+import { buildLearningContextSummary, buildSubjectLearningContextSummary } from './context.js';
 import { COURSE_CATALOG, COURSE_STAGES, LEARNING_SUBJECTS, type LearningCourseStage } from './curriculum.js';
 
 export type LearningProfile = { cefr: string | null; goals: string | null; updated_at: number };
@@ -445,10 +445,15 @@ export type CourseView = {
   id: string; name: string; stage: LearningCourseStage; bookId: string; bookName: string;
   wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number;
   dueCount: number; progressPct: number;
-  kind: 'vocab' | 'exam' | 'security';
+  kind: 'vocab' | 'exam' | 'security' | 'culture' | 'music' | 'zhouyi';
   examLevel?: '中级' | '高级';
   examSpecialty?: string;
   securityPathId?: string;
+  cultureLevel?: '蒙学·对韵' | '诗词歌赋' | '四书' | '五经';
+  /** 音乐方向（音乐双方向重构方案 2026-11-15）：western / traditional */
+  musicTrack?: 'western' | 'traditional';
+  /** 周易路径（周易课程方案 2026-11-15 §3.0）：T0..T7 */
+  zhouyiTrack?: 'T0' | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7';
 };
 
 export function getCourses(userId: string, subject = '英语'): Array<{ stage: LearningCourseStage; courses: CourseView[] }> {
@@ -457,11 +462,14 @@ export function getCourses(userId: string, subject = '英语'): Array<{ stage: L
   for (const c of COURSE_CATALOG) {
     // ★ 按科目过滤（此前路由声称支持但没接 —— 已收口到此唯一实现）
     if (c.subject !== subject) continue;
-    if (c.kind === 'exam' || c.kind === 'security') {
+    // ★ culture/music/zhouyi 也走无词书视图（漏掉会被下面的 `if (!c.bookId) continue` 静默丢弃，
+    //   课程在课程地图上永远不出现 —— B2 钉子，见学习模式方案 §1.2 / 周易方案 §3.0）
+    if (c.kind === 'exam' || c.kind === 'security' || c.kind === 'culture' || c.kind === 'music' || c.kind === 'zhouyi') {
       const view: CourseView = {
         id: c.id, name: c.name, stage: c.stage, bookId: '', bookName: c.name,
         wordCount: 0, levelCount: 0, clearedLevels: 0, totalLevels: 0, dueCount: 0, progressPct: 0,
         kind: c.kind, examLevel: c.examLevel, examSpecialty: c.examSpecialty, securityPathId: c.securityPathId,
+        cultureLevel: c.cultureLevel, musicTrack: c.musicTrack, zhouyiTrack: c.zhouyiTrack,
       };
       const list = byStage.get(c.stage) || [];
       list.push(view);
@@ -511,6 +519,31 @@ export function addError(userId: string, e: { wrong: string; right: string; reas
   return { id, wrong: e.wrong, right: e.right, reason: e.reason ?? null, grammar_point: e.grammarPoint ?? null, created_at: now };
 }
 
+// ── 课时进度入库（§4.6 P1：跨端备份，两科目共用一张表，subject 列区分） ──────
+
+/** 用户在某科目下已完成课时的 lesson_id 列表（按完成时间升序） */
+export function listLessonProgress(userId: string, subject: string): string[] {
+  const rows = db.prepare(
+    'SELECT lesson_id FROM learning_lesson_progress WHERE user_id = ? AND subject = ? ORDER BY completed_at ASC',
+  ).all(userId, subject) as Array<{ lesson_id: string }>;
+  return rows.map((r) => r.lesson_id);
+}
+
+/** 课时完成上报：幂等 upsert（INSERT OR IGNORE），重复上报不重复入库；返回本次实际新写入条数 */
+export function updateLessonProgress(userId: string, subject: string, lessonIds: string[]): { saved: number } {
+  // 批内递增时间戳：同毫秒批量写入时保证 completed_at 严格有序（排序才稳定）
+  const t0 = Date.now();
+  const stmt = db.prepare(
+    'INSERT OR IGNORE INTO learning_lesson_progress (user_id, subject, lesson_id, completed_at) VALUES (?, ?, ?, ?)',
+  );
+  let saved = 0;
+  const tx = db.transaction((ids: string[]) => {
+    ids.forEach((id, i) => { saved += stmt.run(userId, subject, id, t0 + i).changes; });
+  });
+  tx(lessonIds);
+  return { saved };
+}
+
 // ── 上下文注入（§3.6 第 1 层） ───────────────────────────────────────────────
 
 /** 连续学习天数：learning_session 里相邻日期链条（今天或昨天为链尾才有效） */
@@ -531,7 +564,17 @@ function computeStreak(userId: string, now: number): number {
   return streak;
 }
 
-export function getLearningContext(userId: string): string {
+export function getLearningContext(userId: string, subject?: string): string {
+  // ★ 按科目分块（§4.6 P1）：传统文化/音乐/周易走各自的注入块（无数据输出空块不注入）；
+  //   英语或缺省 → 现有英语注入语义一字不改。
+  if (subject === '传统文化' || subject === '音乐' || subject === '周易') {
+    const lessons = listLessonProgress(userId, subject);
+    const recentLessons = lessons.slice(-5).reverse();
+    const topErrors = subject === '传统文化'
+      ? listErrors(userId, 3).map((e) => ({ wrong: e.wrong, right: e.right }))
+      : [];
+    return buildSubjectLearningContextSummary({ subject, recentLessons, topErrors });
+  }
   const now = Date.now();
   const profile = getProfile(userId);
   const recentLevels = db.prepare(

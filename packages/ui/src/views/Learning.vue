@@ -19,6 +19,15 @@ import SubjectPicker from '../components/learning/SubjectPicker.vue';
 import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
 import GrammarWorkbench from '../components/learning/GrammarWorkbench.vue';
+import CultureWorkbench from '../components/learning/CultureWorkbench.vue';
+import CanonLibrary from '../components/learning/culture/CanonLibrary.vue';
+import CultureStudio from '../components/learning/culture/CultureStudio.vue';
+import MusicWorkbench from '../components/learning/MusicWorkbench.vue';
+import CompositionStudio from '../components/learning/CompositionStudio.vue';
+import ZhouyiWorkbench from '../components/learning/zhouyi/ZhouyiWorkbench.vue';
+import DivinationWorkbench from '../components/learning/zhouyi/DivinationWorkbench.vue';
+import { subjectExtensionOf } from '../components/learning/subject-extensions';
+import { coachProfileOf, coachPresetPrefixes } from '../components/learning/coach-profiles';
 import SceneResultCard from '../components/chat/SceneResultCard.vue';
 import NoteQuickCreateDialog from '../components/notes/NoteQuickCreateDialog.vue';
 import { extractSceneResultBlocks, stripSceneResultBlocks } from '../utils/scene-result';
@@ -56,6 +65,30 @@ const noteDialogVisible = ref(false);
 type SubjectDef = { key: string; label: string; ready: boolean };
 const SUBJECTS = ref<SubjectDef[]>([{ key: '英语', label: '英语', ready: true }]);
 const subject = ref<string>('英语');
+/** 科目与 Tab 状态持久化：刷新/重开应用回到上次的科目与工作区（用户实报「刷新又变成英语」）。
+ *  只在 loadSubjects 确认该科目 ready 后恢复，服务端下线/未就绪的科目静默回落英语。 */
+type LearningTab = 'path' | 'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security' | 'culture' | 'canon' | 'studio' | 'music' | 'compose' | 'zhouyi' | 'divination';
+const SESSION_KEY = 'yz.learning.session.v1';
+function readLearningSession(): { subject?: string; tab?: string } {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as { subject?: string; tab?: string }) : {};
+  } catch { return {}; }
+}
+function saveLearningSession(): void {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ subject: subject.value, tab: tab.value }));
+  } catch { /* 隐私模式存不了就算了 */ }
+}
+/** 恢复 Tab 的合法性校验：扩展表科目按 tabDefs，存量科目按白名单；不在集内回落该科目默认 Tab。 */
+function restoreSavedTab(tabKey: string | undefined): void {
+  if (!tabKey) return;
+  const ext = subjectExtensionOf(subject.value);
+  const allowed = ext
+    ? ext.tabDefs.map((t) => t.key as string)
+    : ['path', 'coach', 'drill', 'words', 'scenes', 'grammar', 'reading', 'exam', 'security'];
+  if (allowed.includes(tabKey)) tab.value = tabKey as LearningTab;
+}
 const softExamSpecialty = ref('');
 type SoftKnowledgeDomain = { title: string; chapters: string[] };
 type SoftOfficialBook = {
@@ -88,6 +121,51 @@ const securityPathId = ref('');
 const securityFocusing = ref(false);
 const pathFocusing = ref(false);
 const grammarFocusing = ref(false);
+const cultureFocusing = ref(false);
+const musicFocusing = ref(false);
+const zhouyiFocusing = ref(false);
+/** 左栏文化课程点击 → 传给精读台聚焦到对应阶 */
+const cultureFocusLevel = ref('');
+/** 左栏音乐课程点击 → 传给谱面工作台聚焦到对应方向（western / traditional） */
+const musicFocusTrack = ref<'western' | 'traditional'>('western');
+/** 课程「写/奏」步送谱进编曲台（音乐双方向重构方案 §3.4） */
+const musicStudioSeed = ref<unknown>(null);
+/** 左栏周易课程点击 → 传给周易学习台聚焦到对应路径（T0..T7，独立学科，周易课程方案 §3.0） */
+const zhouyiFocusTrack = ref<'T0' | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7' | ''>('');
+// 每次左栏点击 / 测算台回课都 +1：同一路径重复点击时 focusTrack 值不变，watch 不触发，
+// 工作台就收不到「再展开一次并滚动到位」的请求（用户实报「课卡点不了」）。
+const zhouyiFocusNonce = ref(0);
+// 周易路径名（左栏分组标题与课卡 meta；与 ZhouyiWorkbench 的 tracks 同源口径，轻量常量避免额外请求）
+const ZHOUYI_TRACK_LABEL: Record<string, string> = {
+  T0: '入门与读法', T1: '经传精读', T2: '符号与象数语言', T3: '易学史与注疏',
+  T4: '图书与易图学', T5: '术数 · 易占', T6: '术数 · 风水命理择日', T7: '外缘与研究方法',
+};
+/** 周易已完成课时 id（左栏课卡打勾用；读 ZhouyiWorkbench 维护的同一 localStorage key） */
+const completedZhouyi = ref<string[]>([]);
+function readZhouyiProgress(): void {
+  try {
+    const raw = localStorage.getItem('yz.zhouyi.progress.v1');
+    const arr = raw ? JSON.parse(raw) : [];
+    completedZhouyi.value = Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
+  } catch { completedZhouyi.value = []; }
+}
+function onZhouyiFocusChange(active: boolean) {
+  zhouyiFocusing.value = active;
+  if (!active) readZhouyiProgress(); // 退出沉浸台时同步完成态到左栏课卡
+}
+// 左栏课程分组：周易 48 门不再平铺成一组长列表（用户圈红），按 T0-T7 路径拆成 8 组
+const groupedCourses = computed<CourseGroup[]>(() => {
+  if (subject.value !== '周易') return courses.value;
+  const out: CourseGroup[] = [];
+  for (const grp of courses.value) {
+    if (grp.stage !== '周易') { out.push(grp); continue; }
+    for (const [tid, label] of Object.entries(ZHOUYI_TRACK_LABEL)) {
+      const list = grp.courses.filter((c) => (c.zhouyiTrack || 'T0') === tid);
+      if (list.length) out.push({ stage: `${label}（${tid}）`, courses: list });
+    }
+  }
+  return out;
+});
 type SoftRegion = { name: string; officialUrl: string; registrationUrl: string };
 type SoftLiveNotice = { title: string; url: string; source: '全国' | '地区' };
 type SoftLiveInfo = {
@@ -313,6 +391,30 @@ async function loadSubjects() {
 }
 async function switchSubject(key: string) {
   if (!SUBJECTS.value.find((s) => s.key === key)?.ready) return;
+  // 陪练状态不跨科目残留：ensureCoachConv 是异步的，若沿用上一科目的 coachConvId，
+  // 切进周易后会先渲染英语历史消息、再被异步重建覆盖，表现为「对话没隔离」。
+  if (key !== subject.value) {
+    stopCoachMic();
+    stopCoachSpeak();
+    coachConvId.value = '';
+    coachConversationKind.value = '';
+    coachConversationSceneId.value = '';
+    activeScene.value = null;
+  }
+  // 新科目走声明式扩展表（方案 §4.5：改 3 个通用点、存量分支零改动）
+  const ext = subjectExtensionOf(key);
+  if (ext) {
+    subject.value = key;
+    activeBook.value = null;
+    levels.value = [];
+    tab.value = ext.tab;
+    cultureFocusing.value = false;
+    musicFocusing.value = false;
+    zhouyiFocusing.value = false;
+    if (key === '周易') readZhouyiProgress(); // 切入周易同步左栏完成态
+    await loadCourses();
+    return;
+  }
   const wasSoft = subject.value === '软考';
   const wasSecurity = subject.value === '网络安全';
   subject.value = key;
@@ -340,7 +442,8 @@ async function switchSubject(key: string) {
   await loadCourses();
 }
 // ── 工作区 Tab：陪练对话 / 闯关 / 词汇表 / 场景 / 语法 / 阅读（只切中栏内容，骨架不动）──
-const tab = ref<'path' | 'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security'>('path');
+const tab = ref<LearningTab>('path');
+watch([subject, tab], saveLearningSession, { flush: 'post' });
 const leftWidth = ref(300);
 const rightWidth = ref(280);
 const leftCollapsed = ref(false);
@@ -403,11 +506,11 @@ const ENGLISH_TAB_DEFS = [
 ] as const;
 const SOFT_TAB_DEFS = [{ key: 'exam', label: '软考备考' }] as const;
 const SECURITY_TAB_DEFS = [{ key: 'security', label: '安全路线' }] as const;
-const tabDefs = computed(() => subject.value === '软考'
+const tabDefs = computed(() => subjectExtensionOf(subject.value)?.tabDefs ?? (subject.value === '软考'
   ? SOFT_TAB_DEFS
   : subject.value === '网络安全'
     ? SECURITY_TAB_DEFS
-    : ENGLISH_TAB_DEFS);
+    : ENGLISH_TAB_DEFS));
 function switchTab(k: typeof tab.value) {
   tab.value = k;
   if (k === 'coach') void ensureCoachConv(); // 复用/创建陪练会话（不跳路由，内嵌对话）
@@ -440,9 +543,14 @@ async function loadAll() {
 type CourseView = {
   id: string; name: string; stage: string; bookId: string; bookName: string;
   wordCount: number; levelCount: number; clearedLevels: number; totalLevels: number;
-  dueCount: number; progressPct: number; kind: 'vocab' | 'exam' | 'security';
+  dueCount: number; progressPct: number; kind: 'vocab' | 'exam' | 'security' | 'culture' | 'music' | 'zhouyi';
   examLevel?: '中级' | '高级'; examSpecialty?: string;
   securityPathId?: string;
+  cultureLevel?: '蒙学·对韵' | '诗词歌赋' | '四书' | '五经';
+  /** 音乐方向（音乐双方向重构方案 2026-11-15）：western = 现代通用乐理 / traditional = 中国传统音乐 */
+  musicTrack?: 'western' | 'traditional';
+  /** 周易路径（周易课程方案 2026-11-15 §3.0）：T0..T7，独立学科 */
+  zhouyiTrack?: 'T0' | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7';
 };
 type CourseGroup = { stage: string; courses: CourseView[] };
 const courses = ref<CourseGroup[]>([]);
@@ -481,6 +589,24 @@ function openCourse(c: CourseView) {
     tab.value = 'security';
     return;
   }
+  if (c.kind === 'culture') {
+    // 带上课程对应的阶：左栏点击要联动展开精读台的该阶课时（此前只切 Tab，点了没反应）
+    cultureFocusLevel.value = c.cultureLevel || '';
+    tab.value = 'culture';
+    return;
+  }
+  if (c.kind === 'music') {
+    musicFocusTrack.value = c.musicTrack || 'western';
+    tab.value = 'music';
+    return;
+  }
+  if (c.kind === 'zhouyi') {
+    // 带上课程对应的路径：左栏点击联动展开周易学习台的该路径课时（独立学科，不挂传统文化）
+    zhouyiFocusTrack.value = c.zhouyiTrack || '';
+    zhouyiFocusNonce.value += 1;
+    tab.value = 'zhouyi';
+    return;
+  }
   // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）；
   // 但用户正在词汇表通读时保持当前 Tab（换书词汇表跟着换，不把人踢回闯关）
   if (tab.value !== 'words' && tab.value !== 'scenes') tab.value = 'drill';
@@ -488,6 +614,14 @@ function openCourse(c: CourseView) {
   sceneCourseId.value = c.id;
   if (tab.value === 'scenes') void loadScenes();
   void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount }, c.id);
+}
+// 测算实践台「回到第 X 课」→ 跳回周易课程主线并展开对应路径（内容包课 id zy_zxx ↔ 目录 id course_zy_zxx）
+function gotoZhouyiLesson(lessonId: string) {
+  const target = courses.value.flatMap((g) => g.courses).find((c) => c.id === `course_${lessonId}`);
+  zhouyiFocusTrack.value = target?.zhouyiTrack ?? '';
+  zhouyiFocusNonce.value += 1;
+  zhouyiFocusing.value = false;
+  tab.value = 'zhouyi';
 }
 const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom' && (b.subject || '英语') === subject.value));
 
@@ -1103,12 +1237,8 @@ async function startCoaching() {
     await ensureCoachConv();
     tab.value = 'coach'; // ★ 内嵌对话：留在学习模式，不跳聊天页（用户实报"又跳到办公模式"）
     if (!coachMsgs.value.length) {
-      await sendCoach([
-        'Hi! I want to practice English freely, without a fixed scene.',
-        'Start with one short question about what I want to talk about today.',
-        'Then continue naturally one question at a time, follow my topic, and recast important mistakes briefly.',
-        'Do not use scene missions, role-play scripts, or scene_result unless I ask for a scene.',
-      ].join('\n'));
+      // 开场白按科目取：中文陪练绝不能再拿英语自由口语的预设句去请求模型。
+      await sendCoach(coachProfile.value.openingPrompt);
     } else {
       speakLastCoachReply();
     }
@@ -1150,8 +1280,11 @@ const coachSceneInfoOpen = ref(false);
 const coachEntryRef = ref<HTMLInputElement | null>(null);
 const coachMsgs = computed(() => (coachConvId.value ? chat.messagesByConv[coachConvId.value] || [] : []));
 const coachStreaming = computed(() => !!coachConvId.value && chat.isConvStreaming(coachConvId.value));
+// 陪练面板呈现与会话身份走同一张科目表：空态兜底、开场白、角色标签一律按当前科目取。
+const coachProfile = computed(() => coachProfileOf(subject.value));
+// 预设 prompt 由科目表派生，新增科目不用再改正则；系统代发的开场白不算用户真实轮次。
 const isCoachPresetPrompt = (text: string) =>
-  /^(I am ready\. Please start|Continue the current scene|Hi! I want to practice English\.|请根据当前场景|请提示我怎么说)/.test(text.trim());
+  coachPresetPrefixes().some((prefix) => text.trim().startsWith(prefix));
 const coachUserLines = computed(() =>
   coachMsgs.value
     .filter((m) => m.role === 'user')
@@ -1176,7 +1309,7 @@ const coachCurrentReply = computed(() => {
   const last = [...coachMsgs.value].reverse().find((m) => m.role === 'assistant' && coachTextOf(m).trim());
   if (last) return coachTextOf(last);
   if (activeScene.value) return activeScene.value.guide.coachEn;
-  return "Hi, I'm ready. What would you like to practice today?";
+  return coachProfile.value.emptyReply;
 });
 const rawLatestCoachSceneResult = computed(() => {
   for (let i = coachMsgs.value.length - 1; i >= 0; i -= 1) {
@@ -1239,8 +1372,8 @@ const coachTalkLabel = computed(() => {
 const coachTalkHint = computed(() => {
   if (coachMicState.value === 'recording') return '说完再点一下，我会自动发送';
   if (coachMicState.value === 'transcribing') return '请稍等，我在听写你的句子';
-  if (coachStreaming.value) return '先听言言说完，或者点「停止」打断';
-  return activeScene.value ? '直接说英语，中英混说也可以' : '不用打字，开口和言言聊';
+  if (coachStreaming.value) return '先听这一段说完，或者点「停止」打断';
+  return activeScene.value ? '直接说英语，中英混说也可以' : coachProfile.value.talkIdleHint;
 });
 let coachMicStream: MediaStream | null = null;
 let coachMicRecorder: MediaRecorder | null = null;
@@ -1399,16 +1532,19 @@ function learningMetaOf(row: any): Record<string, unknown> {
   }
 }
 
-/** 只复用自由陪练会话；场景会话必须按场景独立创建，不能串进“自由发挥”。 */
+/** 只复用同科目、同任务形态的陪练会话；场景会话必须按场景独立创建，不能串进“自由发挥”。 */
 async function ensureCoachConv(): Promise<string> {
   if (coachConvId.value) {
     const current = chat.conversations.find((row) => row.id === coachConvId.value);
     const meta = learningMetaOf(current);
     const kind = meta.learningKind || coachConversationKind.value;
     const sceneId = String(meta.learningScene || coachConversationSceneId.value || '');
+    // 复用校验带科目：文化/音乐/英语的陪练会话互不串。
+    // meta.learningSubject 缺省视为英语（兼容科目分派上线前创建的旧英语会话）。
+    const convSubject = String(meta.learningSubject ?? '英语');
     const stillValid = activeScene.value
-      ? kind === 'scene' && sceneId === activeScene.value.id
-      : kind === 'free';
+      ? kind === 'scene' && sceneId === activeScene.value.id && convSubject === subject.value
+      : kind === 'free' && convSubject === subject.value;
     if (stillValid) return coachConvId.value;
     coachConvId.value = '';
     coachConversationKind.value = '';
@@ -1416,19 +1552,31 @@ async function ensureCoachConv(): Promise<string> {
   }
   const r = await api.get<any[]>('/conversations?mode=learning&limit=20');
   const list = unwrap<any[]>(r) || [];
-  const freeCoach = activeScene.value ? null : list.find((row) => learningMetaOf(row).learningKind === 'free');
+  const freeCoach = activeScene.value ? null : list.find((row) => {
+    const m = learningMetaOf(row);
+    return m.learningKind === 'free' && String(m.learningSubject ?? '英语') === subject.value;
+  });
   if (freeCoach) {
     coachConvId.value = String(freeCoach.id);
     coachConversationKind.value = 'free';
     coachConversationSceneId.value = '';
   } else {
-    coachConvId.value = await chat.createConversation(`场景：${activeScene.value?.title || '英语陪练'}`, {
-      agentId: LEARNING_AGENT_ID,
-      source: 'learning',
-      sourceMeta: activeScene.value
-        ? { learningKind: 'scene', learningScene: activeScene.value.id, learningCourseId: activeScene.value.courseId }
-        : { learningKind: 'free' },
-    });
+    // 科目分派（方案 §4.8 遗留①）：文化/音乐陪练用各自内置智能体（扩展表 agentId 与
+    // 服务端 builtin-learning-agents.ts 常量成对维护）；英语缺省仍是 a_builtin_learning_coach。
+    // 场景会话路径是英语场景卡专用，agentId/标题/meta 一概不动。
+    const ext = subjectExtensionOf(subject.value);
+    coachConvId.value = await chat.createConversation(
+      activeScene.value
+        ? `场景：${activeScene.value?.title || '英语陪练'}`
+        : ext ? `${subject.value}陪练` : '英语陪练',
+      {
+        agentId: ext?.agentId ?? LEARNING_AGENT_ID,
+        source: 'learning',
+        sourceMeta: activeScene.value
+          ? { learningKind: 'scene', learningScene: activeScene.value.id, learningCourseId: activeScene.value.courseId }
+          : { learningKind: 'free', learningSubject: subject.value },
+      },
+    );
     coachConversationKind.value = activeScene.value ? 'scene' : 'free';
     coachConversationSceneId.value = activeScene.value?.id || '';
   }
@@ -1636,6 +1784,17 @@ onMounted(() => {
   void loadSubjects();
   restoreSoftPlan();
   void loadSoftExamRegions();
+  window.addEventListener('mousedown', dismissNoteMenu);
+  readZhouyiProgress(); // 首次进入同步周易左栏完成态（默认科目切换前兜底）
+  // 恢复上次会话的科目与 Tab（loadSubjects 完成后再切，ready 校验在 switchSubject 内）
+  const savedSession = readLearningSession();
+  if (savedSession.subject && savedSession.subject !== subject.value) {
+    void (async () => {
+      await loadSubjects();
+      await switchSubject(savedSession.subject!);
+      restoreSavedTab(savedSession.tab);
+    })();
+  }
 });
 onMounted(loadAll);
 onMounted(loadTtsPack);
@@ -1645,7 +1804,48 @@ onBeforeUnmount(() => {
   stopCoachMic();
   stopCoachSpeak();
   stopWordSpeech();
+  window.removeEventListener('mousedown', dismissNoteMenu);
 });
+
+// ── 选中文本右键 → 记到笔记（docs/笔记功能方案-2026-11-14.md §5 改版：
+//    顶栏全局按钮不符合使用直觉，改为在学习内容里选中原文/注释/注解后右键沉淀；
+//    监听挂在 learning-page 根节点，事件冒泡使所有科目、所有 Tab（含沉浸台）统一生效）──
+const noteSelection = ref<{ x: number; y: number; text: string } | null>(null);
+const notePrefillTitle = ref('');
+const notePrefillContent = ref('');
+const NOTE_TAB_LABEL: Record<string, string> = {
+  path: '主线', coach: '陪练对话', drill: '闯关', words: '词汇表', scenes: '场景',
+  grammar: '语法微课', reading: '范文阅读', exam: '历年真题', security: '安全路线',
+  culture: '典籍精读', canon: '典籍文库', studio: '创作实践', music: '识谱与编曲',
+  compose: '编曲台', zhouyi: '课程主线', divination: '测算实践',
+};
+function currentNoteContext(): string {
+  const courseName = activeCourseId.value
+    ? (courses.value.flatMap((g) => g.courses).find((c) => c.id === activeCourseId.value)?.name ?? '')
+    : '';
+  return courseName ? `${subject.value} · ${courseName}` : `${subject.value} · ${NOTE_TAB_LABEL[tab.value] ?? ''}`.replace(/ · $/, '');
+}
+function onLearningContextmenu(event: MouseEvent) {
+  const sel = String(window.getSelection?.() ?? '').trim();
+  if (sel.length < 2) return; // 未选中文本：放行系统菜单（复制/检查等不受影响）
+  event.preventDefault();
+  noteSelection.value = {
+    x: Math.min(event.clientX, window.innerWidth - 150),
+    y: Math.min(event.clientY, window.innerHeight - 48),
+    text: sel.slice(0, 2000),
+  };
+}
+function dismissNoteMenu(event: MouseEvent) {
+  if (!(event.target as HTMLElement)?.closest?.('.lp-note-menu')) noteSelection.value = null;
+}
+function captureSelectionToNote() {
+  if (!noteSelection.value) return;
+  const ctx = currentNoteContext();
+  notePrefillTitle.value = `${ctx} · 选段`;
+  notePrefillContent.value = `${noteSelection.value.text}\n\n—— 摘自学习模式「${ctx}」`;
+  noteDialogVisible.value = true;
+  noteSelection.value = null;
+}
 watch(
   [softExamRegion, softExamSession, softExamDate, softRegistrationDeadline],
   () => persistSoftPlan(),
@@ -1662,8 +1862,8 @@ watch(softExamDate, (value) => {
 </script>
 
 <template>
-  <div class="learning-page">
-    <div class="lp-topbar" :inert="securityFocusing || pathFocusing || grammarFocusing || undefined">
+  <div class="learning-page" @contextmenu="onLearningContextmenu">
+    <div class="lp-topbar" :inert="securityFocusing || pathFocusing || grammarFocusing || cultureFocusing || musicFocusing || zhouyiFocusing || undefined">
       <SubjectPicker :value="subject" :options="SUBJECTS" @select="switchSubject" />
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
@@ -1671,16 +1871,26 @@ watch(softExamDate, (value) => {
         <template v-else-if="profile.cefr">等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · {{ profile.goals }}</span></template>
         <template v-else>先和言言聊 3 分钟，自动完成定级</template>
         <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
-        <!-- 记到笔记（docs/笔记功能方案-2026-11-14.md §5）：学习内容沉淀到 /notes，预填科目为标题 -->
-        <button class="lp-mini" @click="noteDialogVisible = true">记到笔记</button>
+        <!-- 记到笔记：全局按钮已移除（用户拍板：按钮不符合直觉），改为学习内容里选中文本右键「记到笔记」，
+             监听在 learning-page 根节点，所有科目/所有 Tab（含沉浸台）统一生效 -->
       </div>
     </div>
 
     <NoteQuickCreateDialog
       v-model:visible="noteDialogVisible"
-      :title="`${subject} 学习笔记`"
+      :title="notePrefillTitle || `${subject} 学习笔记`"
+      :content="notePrefillContent"
       category-name="学习"
     />
+
+    <!-- 选中文本右键菜单：记到笔记（z-index 高于沉浸台 3000） -->
+    <div
+      v-if="noteSelection"
+      class="lp-note-menu"
+      :style="{ left: noteSelection.x + 'px', top: noteSelection.y + 'px' }"
+    >
+      <button type="button" @click="captureSelectionToNote">记到笔记</button>
+    </div>
 
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
     <div class="lp-grid" :class="gridClasses" :style="gridStyle">
@@ -1728,7 +1938,7 @@ watch(softExamDate, (value) => {
         </div>
 
         <div class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
-          <div v-for="grp in courses" :key="grp.stage" class="lp-stage">
+          <div v-for="grp in groupedCourses" :key="grp.stage" class="lp-stage">
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
             <template v-for="c in grp.courses" :key="c.id">
               <button
@@ -1760,6 +1970,31 @@ watch(softExamDate, (value) => {
                   </span>
                 </span>
                 <span class="lp-course-meta">方法论 · 示例代码 · 授权靶场</span>
+              </button>
+              <button
+                v-else-if="c.kind === 'culture'"
+                class="lp-course lp-course-culture"
+                @click="openCourse(c)"
+              >
+                <span class="lp-course-row">
+                  <span class="lp-course-name">{{ c.name }}</span>
+                  <ChevronRight :size="13" />
+                </span>
+                <span class="lp-course-meta">精读路线 · 点击进入对应阶</span>
+              </button>
+              <button
+                v-else-if="c.kind === 'zhouyi'"
+                class="lp-course lp-course-zhouyi"
+                :class="{ done: completedZhouyi.includes(c.id) }"
+                @click="openCourse(c)"
+              >
+                <span class="lp-course-row">
+                  <span class="lp-course-name">{{ c.name }}</span>
+                  <Check v-if="completedZhouyi.includes(c.id)" :size="13" />
+                  <ChevronRight v-else :size="13" />
+                </span>
+                <!-- 无词书语义：不显示关卡/词数/进度条（那是英语词书卡的字段，周易课会渲染成 0/0 关 · 0 词） -->
+                <span class="lp-course-meta">{{ ZHOUYI_TRACK_LABEL[c.zhouyiTrack || 'T0'] }} · 点击进入对应路径</span>
               </button>
               <button
                 v-else
@@ -1805,9 +2040,9 @@ watch(softExamDate, (value) => {
           <div class="lp-coach-chat lp-voice-studio">
             <div class="lp-practice-head">
               <div class="lp-practice-title">
-                <p class="lp-eyebrow">{{ activeScene ? `${activeScene.courseName} · ${activeScene.theme}` : '自由口语陪练' }}</p>
-                <h2>{{ activeScene ? activeScene.title : '和言言聊聊今天' }}</h2>
-                <p>{{ activeScene ? activeScene.scene : '不用准备台词，直接开口。说错了也没关系，言言会顺着你的意思继续聊。' }}</p>
+                <p class="lp-eyebrow">{{ activeScene ? `${activeScene.courseName} · ${activeScene.theme}` : coachProfile.eyebrow }}</p>
+                <h2>{{ activeScene ? activeScene.title : coachProfile.title }}</h2>
+                <p>{{ activeScene ? activeScene.scene : coachProfile.subtitle }}</p>
                 <div v-if="activeScene" class="lp-scene-round-progress">
                   <span>第 {{ Math.min(coachRound + 1, sceneTargetRounds) }}/{{ sceneTargetRounds }} 轮</span>
                   <div><i :style="{ width: sceneProgressPct + '%' }"></i></div>
@@ -1823,7 +2058,8 @@ watch(softExamDate, (value) => {
                   <Lightbulb :size="15" /> 场景提示
                 </button>
                 <button v-if="activeScene" class="lp-tool-button" @click="startFreePractice">自由发挥</button>
-                <button class="lp-tool-button" @click="tab = 'scenes'">换场景</button>
+                <!-- 场景卡是英语学科专用；其它科目点了会跳进英语场景库，属于跨科目串味 -->
+                <button v-if="subject === '英语'" class="lp-tool-button" @click="tab = 'scenes'">换场景</button>
               </div>
             </div>
 
@@ -1875,7 +2111,7 @@ watch(softExamDate, (value) => {
                   <div class="lp-pet-speech-head">
                     <span>言言</span>
                     <i v-if="activeScene">{{ activeScene.roles[0] }}</i>
-                    <i v-else>英语陪练</i>
+                    <i v-else>{{ coachProfile.roleLabel }}</i>
                   </div>
                   <p>{{ coachCurrentReply }}</p>
                   <button
@@ -1884,7 +2120,7 @@ watch(softExamDate, (value) => {
                     :disabled="startingChat"
                     @click="startCoaching"
                   >
-                    <Mic :size="14" /> {{ startingChat ? '正在准备…' : '让言言先开场' }}
+                    <Mic :size="14" /> {{ startingChat ? '正在准备…' : coachProfile.startLabel }}
                   </button>
                   <button class="lp-speak" title="再听一遍" @click="speakCoachText(coachCurrentReply)">
                     <Volume2 :size="15" />
@@ -1943,7 +2179,7 @@ watch(softExamDate, (value) => {
                 ref="coachEntryRef"
                 v-model="coachInput"
                 class="lp-chat-entry"
-                :placeholder="activeScene ? '说英语或中文都可以…' : '不方便开口时，在这里打字…'"
+                :placeholder="activeScene ? '说英语或中文都可以…' : coachProfile.typingPlaceholder"
                 @keyup.enter="sendCoach()"
               />
               <button class="lp-primary" :disabled="coachSending || !coachInput.trim()" @click="sendCoach()">
@@ -2322,6 +2558,27 @@ watch(softExamDate, (value) => {
             :initial-soft-specialty="subject === '软考' ? softExamSpecialty : '全部'"
             :scoped-subject="subject === '软考' ? '软考' : '全部'"
           />
+        </template>
+        <template v-else-if="tab === 'culture'">
+          <CultureWorkbench :focus-level="cultureFocusLevel" @focus-change="cultureFocusing = $event" />
+        </template>
+        <template v-else-if="tab === 'canon'">
+          <CanonLibrary />
+        </template>
+        <template v-else-if="tab === 'studio'">
+          <CultureStudio />
+        </template>
+        <template v-else-if="tab === 'music'">
+          <MusicWorkbench :focus-track="musicFocusTrack" @focus-change="musicFocusing = $event" @open-studio="musicStudioSeed = $event; tab = 'compose'" />
+        </template>
+        <template v-else-if="tab === 'compose'">
+          <CompositionStudio :seed-score="musicStudioSeed as never" />
+        </template>
+        <template v-else-if="tab === 'zhouyi'">
+          <ZhouyiWorkbench :focus-track="zhouyiFocusTrack" :focus-nonce="zhouyiFocusNonce" @focus-change="onZhouyiFocusChange" />
+        </template>
+        <template v-else-if="tab === 'divination'">
+          <DivinationWorkbench @focus-change="zhouyiFocusing = $event" @goto-lesson="gotoZhouyiLesson" />
         </template>
       </section>
 
@@ -3123,4 +3380,29 @@ watch(softExamDate, (value) => {
   .lp-reading-list { max-height: 320px; overflow-y: auto; }
   .lp-reader { overflow: visible; padding-right: 0; }
 }
+
+/* 选中文本右键菜单：记到笔记（覆盖所有科目与沉浸台，层级高于沉浸台 3000） */
+.lp-note-menu {
+  position: fixed;
+  z-index: 3200;
+  background: var(--color-bg-elevated, #ffffff);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  padding: 4px;
+  min-width: 112px;
+}
+.lp-note-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text);
+}
+.lp-note-menu button:hover { background: var(--color-fill-secondary, #f2f3f5); }
 </style>
