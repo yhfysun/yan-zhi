@@ -155,6 +155,7 @@ describe('会话来源标记 · 写入规范化', () => {
       scope: 'shop-project',
       shopProjectId: 'p_shop',
       learningKind: 'scene',
+      learningSubject: '传统文化',
       learningScene: 'sc_cet4_course',
       learningCourseId: 'course_cet4',
       evil: 'x',
@@ -166,6 +167,7 @@ describe('会话来源标记 · 写入规范化', () => {
       scope: 'shop-project',
       shopProjectId: 'p_shop',
       learningKind: 'scene',
+      learningSubject: '传统文化',
       learningScene: 'sc_cet4_course',
       learningCourseId: 'course_cet4',
     });

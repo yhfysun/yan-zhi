@@ -58,6 +58,61 @@ function onGlobalKeydown(e: KeyboardEvent) {
 // ── 双栏分隔拖拽：编辑/预览宽度比例可调（20%-80%）──
 const splitRatio = ref(50); // 编辑区占 body 宽度百分比
 const mainBodyRef = ref<HTMLElement | null>(null);
+
+// ── 笔记插图（docs/音乐双方向重构方案-2026-11-15.md §3.5）：按钮 / 粘贴 / 拖拽三入口 ──
+// 统一走 POST /notes/media（落 /api/generated/images），光标处插 Markdown 图片。
+const editorRef = ref<HTMLTextAreaElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const uploadingImg = ref(false);
+
+function insertAtCursor(text: string): void {
+  const el = editorRef.value;
+  if (!el || !draft.value) {
+    if (draft.value) draft.value.content += text;
+    return;
+  }
+  const s = el.selectionStart ?? el.value.length;
+  const e = el.selectionEnd ?? s;
+  draft.value.content = el.value.slice(0, s) + text + el.value.slice(e);
+  requestAnimationFrame(() => { el.focus(); el.selectionStart = el.selectionEnd = s + text.length; });
+}
+
+async function uploadAndInsertImage(file: File): Promise<void> {
+  if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) return;
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] ?? '');
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+  uploadingImg.value = true;
+  try {
+    const r = await api.post<{ url: string }>('/notes/media', { name: file.name || 'image.png', base64 });
+    const data = r && typeof r === 'object' && 'data' in r ? (r as { data?: { url?: string } }).data : null;
+    if (data?.url) insertAtCursor(`\n![图片](${data.url})\n`);
+  } catch { /* 上传失败静默，不打断记录 */ }
+  finally { uploadingImg.value = false; }
+}
+
+function onEditorPaste(ev: ClipboardEvent): void {
+  const file = [...(ev.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'));
+  if (!file) return;
+  ev.preventDefault();
+  void uploadAndInsertImage(file);
+}
+
+function onEditorDrop(ev: DragEvent): void {
+  const file = [...(ev.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('image/'));
+  if (!file) return;
+  ev.preventDefault();
+  void uploadAndInsertImage(file);
+}
+
+function onPickImage(ev: Event): void {
+  const file = (ev.target as HTMLInputElement).files?.[0];
+  if (file) void uploadAndInsertImage(file);
+  (ev.target as HTMLInputElement).value = '';
+}
 let stopSplitResize: (() => void) | null = null;
 function startSplitResize(event: PointerEvent) {
   if (event.button !== 0) return;
@@ -449,6 +504,8 @@ const isGuest = computed(() => !auth.isLoggedIn);
             <label class="np-remind"><input v-model="remindOn" type="checkbox" :disabled="!editing" /> 到点提醒</label>
           </template>
           <span v-if="draft.source && draft.source !== 'manual'" class="np-chip np-chip-src">来自 {{ draft.source.startsWith('learning') ? '学习' : draft.source === 'chat' ? '对话' : draft.source }}</span>
+          <button v-if="editing" class="np-mini" :disabled="uploadingImg" @click="fileInputRef?.click()">{{ uploadingImg ? '上传中…' : '插入图片' }}</button>
+          <input ref="fileInputRef" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="np-img-input" @change="onPickImage" />
         </div>
         <div
           ref="mainBodyRef"
@@ -456,7 +513,7 @@ const isGuest = computed(() => !auth.isLoggedIn);
           :class="'mode-' + viewMode"
           :style="viewMode === 'split' ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) 8px minmax(0, ${100 - splitRatio}fr)` } : undefined"
         >
-          <textarea v-if="viewMode !== 'view'" v-model="draft.content" class="np-editor" :placeholder="viewMode === 'split' ? 'Markdown…（左侧编辑，右侧实时预览）' : 'Markdown…'"></textarea>
+          <textarea v-if="viewMode !== 'view'" ref="editorRef" v-model="draft.content" class="np-editor" :placeholder="viewMode === 'split' ? 'Markdown…（左侧编辑，右侧实时预览）' : 'Markdown…'" @paste="onEditorPaste" @drop="onEditorDrop" @dragover.prevent></textarea>
           <div v-if="viewMode === 'split'" class="np-split-resizer" aria-label="拖动调整编辑/预览宽度" @pointerdown="startSplitResize($event)"></div>
           <MarkdownPreview v-if="viewMode !== 'edit'" :content="draft.content" class="np-editor-preview" />
         </div>
@@ -473,6 +530,9 @@ const isGuest = computed(() => !auth.isLoggedIn);
 </template>
 
 <style scoped>
+/* 笔记插图入口（隐藏原生 file input，按钮触发） */
+.np-img-input { display: none; }
+
 .notes-page {
   display: grid;
   /* 左=窄导航（可拖 260-560） / 右=记录与查看主区（minmax(0,1fr) 吃满剩余全部） */

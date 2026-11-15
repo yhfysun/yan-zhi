@@ -1,7 +1,8 @@
 // 笔记接口（docs/笔记功能方案-2026-11-14.md §2）。业务规则唯一实现在 ../notes/service.ts，
-// 本文件只做参数校验与 HTTP 编排。
+// 本文件只做参数校验与 HTTP 编排。媒体上传见 ../notes/media.ts（音乐双方向重构方案 §3.5）。
 import { Router } from 'express';
 import { authMiddleware } from '../auth.js';
+import { saveNoteMedia } from '../notes/media.js';
 import {
   listCategories, ensureCategory, renameCategory, deleteCategory,
   listNotes, createNote, updateNote, toggleStar, togglePin, deleteNote, getNote,
@@ -166,6 +167,17 @@ router.post('/reminders/ack', (req, res) => {
     const ids = Array.isArray((req.body as any)?.ids) ? (req.body as any).ids.map(String) : [];
     res.json({ data: { acked: ackReminders(ids) } });
   } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+// ── 媒体上传（笔记插图 / 曲谱图 · docs/音乐双方向重构方案-2026-11-15.md §3.5）──
+// POST /api/notes/media { name, base64 } —— 业务规则唯一实现在 ../notes/media.ts
+
+router.post('/media', (req, res) => {
+  try {
+    const { name, base64 } = (req.body ?? {}) as { name?: string; base64?: string };
+    if (!name || typeof base64 !== 'string' || !base64) { res.status(400).json({ error: 'name 与 base64 为必填项' }); return; }
+    res.json({ data: saveNoteMedia(String(name), base64) });
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 export default router;

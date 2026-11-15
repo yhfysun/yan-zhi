@@ -17,12 +17,39 @@ const md = new MarkdownIt({
   breaks: true,
   highlight(str: string, lang: string): string {
     const code = lang && hljs.getLanguage(lang)
-      ? hljs.highlight(str, { language: lang }).value
+      ? md.utils.escapeHtml(hljs.highlight(str, { language: lang }).value)
       : md.utils.escapeHtml(str);
     // 代码块右上角复制按钮（事件委托在 onContentClick 处理）
     return `<pre class="hljs md-pre"><button class="md-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code>${code}</code></pre>`;
   },
 });
+
+// ── 受控内联音频（docs/音乐双方向重构方案-2026-11-15.md §3.5 P1）─────────────────
+// 语法（独占一行）：{{audio /api/generated/audios/xxx.m4a 试听整曲}}
+// ★ 安全收口：html:false 保持不变；url 只放行本地 /api/generated/audios/ 相对路径，
+//   其余输入原样按文本渲染（不渲染 audio 元素），防 v-html 面被外链/script 利用。
+const AUDIO_URL_RE = /^\/api\/generated\/audios\/[\w\-.%()（）\u4e00-\u9fa5]+$/;
+
+md.block.ruler.before('paragraph', 'note_audio', (state, startLine, endLine, silent) => {
+  const start = state.bMarks[startLine] + state.tShift[startLine];
+  const max = state.eMarks[startLine];
+  const line = state.src.slice(start, max);
+  const m = /^\{\{audio\s+(\S+)(?:\s+([^{}]+?))?\}\}\s*$/.exec(line);
+  if (!m) return false;
+  if (silent) return true;
+  const token = state.push('note_audio', '', 0);
+  token.meta = { url: m[1], title: (m[2] ?? '').trim() };
+  state.line = startLine + 1;
+  return true;
+});
+md.renderer.rules.note_audio = (tokens, idx) => {
+  const { url, title } = tokens[idx].meta as { url: string; title: string };
+  if (!AUDIO_URL_RE.test(url)) {
+    return `<p>${md.utils.escapeHtml(`{{audio ${url}${title ? ` ${title}` : ''}}}`)}</p>`;
+  }
+  const t = title ? `<span class="md-audio-title">${md.utils.escapeHtml(title)}</span>` : '';
+  return `<div class="md-audio-card"><audio controls preload="none" src="${md.utils.escapeHtml(url)}"></audio>${t}</div>`;
+};
 
 const html = computed(() => md.render(props.content || ''));
 
@@ -65,6 +92,15 @@ function onContentClick(e: MouseEvent) {
 }
 .md-preview :deep(pre:hover .md-copy-btn) { opacity: 1; }
 .md-preview :deep(.md-copy-btn:hover) { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+/* 受控内联音频卡（笔记里的曲谱试听） */
+.md-preview :deep(.md-audio-card) {
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 0; padding: 8px 10px;
+  border: 1px solid var(--color-border, #e5e7eb); border-radius: 10px;
+  background: var(--color-surface-hover, #f6f9fb);
+}
+.md-preview :deep(.md-audio-card audio) { flex: 1; min-width: 0; height: 34px; }
+.md-preview :deep(.md-audio-title) { color: var(--color-text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 </style>
 
 <!-- hljs token 主题（非 scoped，全局生效；与 FilePreview.vue 同一套，保证代码模式独立加载也有彩色 token）。
