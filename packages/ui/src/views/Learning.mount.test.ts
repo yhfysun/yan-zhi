@@ -1560,7 +1560,8 @@ describe('Learning 工作区 · 挂载契约', () => {
     const el = await mountPage()
     await chooseSubject(el, '网络安全')
     await vi.waitFor(() => expect(el.querySelector('.sec-workbench')).toBeTruthy())
-    expect(el.querySelector('.lp-tabs')).toBeFalsy()
+    // 安全学科现在与音乐一样有独立实操 Tab（原断言「无 Tab 条」已过时）
+    expect([...el.querySelectorAll('.lp-tab')].map((b) => b.textContent?.trim())).toEqual(['安全路线', '实操台'])
     expect(el.querySelector('.lp-grid')?.classList.contains('security-workspace')).toBe(true)
     expect(el.querySelector('.lp-col-left')).toBeFalsy()
     expect(el.querySelector('.lp-security-boundary')).toBeFalsy()
@@ -2085,9 +2086,34 @@ describe('Learning 工作区 · 挂载契约', () => {
     expect(speech).toContain('请先生先开讲')
     // 场景卡是英语学科专用，其它科目不得出现跨科目入口
     expect([...el.querySelectorAll('button')].some((b) => b.textContent?.trim() === '换场景')).toBe(false)
+    // 顶栏状态按科目分派：周易显示测算口径，英语定级话术不得跨科目残留
+    const topStatus = el.querySelector('.lp-top-status')?.textContent ?? ''
+    expect(topStatus).toContain('周易')
+    expect(topStatus).not.toContain('自动完成定级')
+    expect(topStatus).not.toContain('言言')
     // 会话身份仍按科目分派（面板呈现与 agentId 必须一致）
     await vi.waitFor(() => expect(createConversation).toHaveBeenCalled())
     const [, opts] = createConversation.mock.calls[0] as unknown as [string, { agentId?: string }]
     expect(opts.agentId).toBe('a_builtin_zhouyi_coach')
+  })
+})
+
+describe('网络安全实操台入口', () => {
+  it('★ 网络安全出现「实操台」Tab，点击后挂载可动手的 M1 实验台', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/learning/subjects')) {
+        return { data: [{ key: '英语', label: '英语', ready: true }, { key: '网络安全', label: '网络安全', ready: true }] }
+      }
+      return defaultGet(url)
+    })
+    const el = await mountPage()
+    await chooseSubject(el, '网络安全')
+    await vi.waitFor(() => expect([...el.querySelectorAll('.lp-tab')].some((b) => b.textContent?.includes('实操台'))).toBe(true))
+    const tab = [...el.querySelectorAll('.lp-tab')].find((b) => b.textContent?.includes('实操台')) as HTMLElement
+    tab.click()
+    await vi.waitFor(() => expect(el.querySelector('[data-testid="security-practice"]')).toBeTruthy())
+    expect(el.querySelector('[data-testid="m1-lab"]')).toBeTruthy()
+    expect((el.querySelector('[data-testid="m1-action"]') as HTMLButtonElement).disabled).toBe(true)
   })
 })

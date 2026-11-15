@@ -1851,9 +1851,13 @@ watch(softExamDate, (value) => {
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
         <template v-else-if="subject === '网络安全'">网络安全 · 专注学习 · 仅授权靶场实验</template>
+        <!-- 周易/传统文化/音乐先于英语 CEFR 分支：定级话术是英语学科专属，不能漏到其它科目（用户实报） -->
+        <template v-else-if="subject === '周易'">周易 · 经传精读与测算演练 · 民俗文化体验口径</template>
+        <template v-else-if="subject === '传统文化'">传统文化 · 典籍精读与对句练习</template>
+        <template v-else-if="subject === '音乐'">音乐 · 听音识谱与编曲启蒙</template>
         <template v-else-if="profile.cefr">等级 <b>{{ profile.cefr }}</b><span v-if="profile.goals"> · {{ profile.goals }}</span></template>
         <template v-else>先和言言聊 3 分钟，自动完成定级</template>
-        <span v-if="profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
+        <span v-if="subject === '英语' && profile.streakDays" class="lp-streak">🔥 连续 {{ profile.streakDays }} 天</span>
         <!-- 记到笔记：全局按钮已移除（用户拍板：按钮不符合直觉），改为学习内容里选中文本右键「记到笔记」，
              监听在 learning-page 根节点，所有科目/所有 Tab（含沉浸台）统一生效 -->
       </div>
