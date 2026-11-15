@@ -21,6 +21,14 @@
   background: var(--el-bg-color);
   overflow: hidden;
 }
+/* ===== 弹窗宽度视口兜底（2026-11-15 移动端实报）=====
+   全仓 60+ 个 el-dialog 写死 width="380~780px"，手机视口（~429px）必然横向溢出：
+   弹窗被视口裁剪、表单/图标网格挤压变形、footer 跑出屏幕。
+   逐个改 width 不现实且必漏（新增弹窗还会再犯），统一在这里用 max-width 收口 ——
+   桌面（视口 ≥ 弹窗宽）完全不受影响，窄屏自动缩到视口内。 */
+.el-dialog {
+  max-width: calc(100vw - 32px);
+}
 /* ===== 弹窗尺寸：视口垂直居中 + 固定高度（视口 80vh） =====
    头部/底部固定，body 占满剩余高度并内滚；内容少时也保持 80vh */
 .el-overlay-dialog {

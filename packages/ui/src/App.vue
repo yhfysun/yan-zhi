@@ -48,7 +48,7 @@
           </button>
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
-            <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom">
+            <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom" :disabled="isTouchLike">
               <button class="mobile-icon-btn" type="button" aria-label="切换主题" @click="toggleTheme">
                 <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
               </button>
@@ -343,6 +343,11 @@ void useRouter().isReady().then(() => { appBooted.value = true; });
 
 /** Task 11.1：移动端汉堡抽屉开合（仅 Capacitor 自绘顶栏的汉堡按钮会触发） */
 const navDrawerOpen = ref(false);
+/** 触屏（无 hover 能力）不启用 tooltip：tap 按钮后气泡会残留遮挡页面内容
+ *  （2026-11-15 真机实报「切换深色模式」黑气泡压住页面标题）。口径与 ModeSwitcher 一致。 */
+const isTouchLike = (() => {
+  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
+})();
 /** Task 11.2：meta.mobilePageShell 路由（如 /settings 示范页）用页面自带四段式骨架——
  *  壳顶栏隐藏、.main-content 顶部不再让位 44px（见 .no-shell-topbar）。桌面端不受影响。 */
 const isShellPage = computed(() => route.meta?.mobilePageShell === true);

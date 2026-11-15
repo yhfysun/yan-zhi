@@ -744,10 +744,12 @@ defineExpose({ save: handleSave, remove: handleDelete, reset: handleReset });
 .image-picker::-webkit-scrollbar { width: 5px; }
 .image-picker::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 .image-cell {
-  aspect-ratio: 1; padding: 0; border-radius: 10px; overflow: hidden; cursor: pointer;
+  /* 固定 44px 高（不用 aspect-ratio）：任何布局异常下每格都是小块，不会挤成巨型色块
+     （2026-11-15 移动端实报「素材挤一块」的兜底保险）。宽度由网格轨道决定。 */
+  height: 44px; padding: 0; border-radius: 10px; overflow: hidden; cursor: pointer;
   border: 2px solid transparent; background: color-mix(in srgb, var(--color-text) 4%, transparent); transition: border-color 0.15s, transform 0.15s;
 }
-.image-cell img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.image-cell img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .image-cell:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
 .image-cell.active { border-color: var(--color-primary); }
 .type-card {

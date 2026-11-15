@@ -31,12 +31,14 @@ const WEB_DIST = path.join(MOBILE_DIR, 'dist');
 function log(msg) { console.log('[build-mobile-server]', msg); }
 function error(msg) { console.error('[build-mobile-server][ERROR]', msg); }
 
-function copyRecursive(src, dest) {
+function copyRecursive(src, dest, skip = null) {
   const stat = fs.statSync(src);
   if (stat.isDirectory()) {
     fs.mkdirSync(dest, { recursive: true });
     for (const name of fs.readdirSync(src)) {
-      copyRecursive(path.join(src, name), path.join(dest, name));
+      // skip：按目录名排除（运行期数据目录，绝不打包 —— 打进去 = 设备升级后拿到打包机上的陈旧库）
+      if (skip && skip.has(name)) continue;
+      copyRecursive(path.join(src, name), path.join(dest, name), skip);
     }
   } else {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -186,10 +188,15 @@ const indexJs = [
   '',
   'const __dirname = path.dirname(fileURLToPath(import.meta.url));',
   '',
-  '// 数据目录：优先用插件提供的可写目录，未设置时回退到工程目录',
+  '// 数据目录：优先用插件提供的可写目录；否则放到 nodejs-project 的**上一级**。',
+  '// ★ 绝不能落在 __dirname（nodejs-project）内部：capacitor-nodejs 检测到 APK 更新',
+  '//   （lastUpdateTime 变化）会 deleteRecursively(projectDir) 整树重拷（Nodejs.java:163），',
+  '//   数据放里面 = 每次升级 APK 全部清零（2026-11-15 实报「内置数据都没了」的根因）。',
+  "//   __dirname 的上级 = 插件 baseDir，不在删除树内，升级幸存；且该目录绝不打进 APK",
+  '//   （见步骤 5 同步排除清单），否则升级后会拿到打包机上的陈旧库。',
   'const dataDir = process.env.NODEJS_MOBILE_DATA_DIR',
   '  || process.env.ANDROID_DATA_DIR',
-  "  || path.join(__dirname, 'yan-zhi-data');",
+  "  || path.join(path.resolve(__dirname, '..'), 'yan-zhi-data');",
   'fs.mkdirSync(dataDir, { recursive: true });',
   'process.env.DATA_DIR = dataDir;',
   '',
@@ -230,7 +237,10 @@ if (!fs.existsSync(WEB_DIST)) {
 if (fs.existsSync(webNodejs)) {
   fs.rmSync(webNodejs, { recursive: true, force: true });
 }
-copyRecursive(NODEJS_DIR, webNodejs);
+// ★ 运行期数据/日志目录必须排除（2026-11-15 实报）：nodejs/yan-zhi-data 是打包机本地
+//   跑 index.js 冒烟测试留下的库（10-25 版：1 平台 / 76 技能），打进去后设备升级 APK
+//   会拿到这份陈旧库 ——「内置模型平台空 / 内置数据都没了」的直接来源之一。
+copyRecursive(NODEJS_DIR, webNodejs, new Set(['yan-zhi-data', 'logs']));
 log('已同步: ' + path.relative(ROOT, webNodejs));
 
 // ── 步骤 6：摘要 ──

@@ -131,7 +131,7 @@
     </div>
 
     <div class="nav-bottom">
-      <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="right">
+      <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="right" :disabled="isTouchLike">
         <button class="nav-item nav-theme-toggle" type="button" aria-label="切换主题" @click="toggleTheme">
           <el-icon :size="20"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
         </button>
@@ -252,6 +252,11 @@ import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
 import { visibleModeDefs, isModeLicensed } from '../stores/mode';
+
+/** 触屏（无 hover 能力）禁用 tooltip：tap 后气泡残留遮挡内容（2026-11-15 真机实报） */
+const isTouchLike = (() => {
+  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
+})();
 import { isModeWindow } from '../utils/modeWindow';
 import { resolvePluginIcon } from '../plugin-icons';
 import { isElectron, isCapacitor, isLocalClient } from '../api/client';
