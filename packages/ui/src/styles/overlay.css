@@ -157,6 +157,9 @@
   box-shadow: var(--overlay-shadow);
   border: none;
   background: var(--el-bg-color);
+  /* ★ 视口兜底（同 el-dialog，2026-11-15 移动端实报同族）：EP 默认 420px + 全仓 77 处
+     confirm/alert 调用，手机视口（~429px）必然贴边/溢出。逐处改不现实，统一收口。 */
+  max-width: calc(100vw - 32px);
 }
 .el-message-box__title {
   font-size: var(--font-size-md);
@@ -186,6 +189,9 @@
 .el-drawer {
   background: var(--el-bg-color);
   box-shadow: var(--overlay-shadow);
+  /* ★ 视口兜底（同 el-dialog/message-box）：全仓多处 size="520~680px" 写死，
+     横向 drawer 手机必溢出；垂直方向 drawer 不受 max-width 影响。 */
+  max-width: calc(100vw - 32px);
 }
 .el-drawer__header {
   padding: 16px 20px;

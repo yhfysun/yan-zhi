@@ -28,7 +28,14 @@
 
   /* 字体三套：宋体 display / 无衬线 body / 等宽数据 */
   --font-display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", Georgia, serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  /* ★ Android WebView 实报（2026-11-15）：栈里的 PingFang SC / Microsoft YaHei 在国产
+     ROM（MIUI/鸿蒙等）WebView 上双缺，缺省回退会按字重命中 ROM 主题字体（实拍渲染成
+     楷体样，同一页面两种字形）。补设备端真实存在的 CJK sans（HarmonyOS Sans/MiSans/
+     Noto Sans CJK）+ generic sans-serif 兜底：桌面命中栈不变（前缀不变），移动端
+     回退落到确定性 sans。 */
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "HarmonyOS Sans SC", "MiSans", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
   /* ===== Type scale：全局字号/行高阶梯（正文基准 13px，消息/列表行 ≥13px） =====
