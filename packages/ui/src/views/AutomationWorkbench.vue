@@ -28,7 +28,7 @@
       </div>
     </header>
 
-    <div class="rpa-body">
+    <div class="rpa-body" :class="{ 'is-builder-open': builderOpen }">
       <aside class="rpa-library" aria-label="脚本库">
         <div class="rpa-search-wrap">
           <el-icon :size="14" class="rpa-search-icon"><Search /></el-icon>
@@ -418,6 +418,28 @@
           </div>
         </template>
       </main>
+
+      <!-- Builder 对话在右：与工作流 / 开发模式同款工作台内嵌栏，不换路由 -->
+      <section v-if="builderOpen" class="rpa-chat" aria-label="自动化脚本设计师">
+        <div class="rpa-chat-head">
+          <span>自动化脚本设计师</span>
+          <button class="rpa-chat-close" type="button" aria-label="收起设计对话" @click="closeBuilder">
+            <el-icon :size="14"><Close /></el-icon>
+          </button>
+        </div>
+        <ChatMessageList>
+          <template #welcome>
+            <div class="rpa-chat-welcome">
+              <b>描述要固化的重复操作</b>
+              <span>说清目标系统、输入、输出和成功判据，我来生成脚本草稿。</span>
+            </div>
+          </template>
+        </ChatMessageList>
+        <ChatInputArea />
+        <!-- 与开发模式工作台同款：输入区的工作目录 / 智能体编辑 / 模型平台配置等弹窗
+             由 ChatDialogs 承载，不挂会「点了没反应」。 -->
+        <ChatDialogs />
+      </section>
     </div>
 
     <el-dialog v-model="createOpen" title="新建自动化脚本" width="520px" append-to-body>
@@ -532,13 +554,13 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowDown,
   ArrowUp,
   ChatLineRound,
   CircleCheck,
+  Close,
   Connection,
   Delete,
   Document,
@@ -565,13 +587,22 @@ import { useAutomationStore, scriptRecordToDraft } from '../stores/automation';
 import { useChatStore } from '../stores/chat';
 import { useScheduledTaskStore } from '../stores/scheduledTask';
 import { isElectron } from '../api/client';
+import ChatMessageList from '../components/chat/ChatMessageList.vue';
+import ChatInputArea from '../components/chat/ChatInputArea.vue';
+import ChatDialogs from '../components/chat/ChatDialogs.vue';
+import { useChat } from '../composables/chat/useChat';
 
 const BrowserPanel = defineAsyncComponent(() => import('../components/BrowserPanel.vue'));
 
 const store = useAutomationStore();
 const chatStore = useChatStore();
 const scheduledTaskStore = useScheduledTaskStore();
-const router = useRouter();
+const chat = useChat();
+
+// ★ Builder 对话留在自动化模式工作台内（对话在右），不 push /chat：
+//   /chat 是 office 路由，整页跳过去会让「脚本工作台」与「会话归属 mode=rpa」错位。
+const builderOpen = ref(false);
+const builderConvId = ref('');
 
 const keyword = ref('');
 const filter = ref<'all' | 'published' | 'draft'>('all');
@@ -1007,13 +1038,29 @@ function elapsedLabel(run: { startedAt?: number | null; finishedAt?: number | nu
 
 async function openBuilder(): Promise<void> {
   try {
-    const convId = await chatStore.createConversation('新建自动化脚本', {
-      agentId: 'a_builtin_rpa_builder',
-    });
-    await router.push(`/chat/${convId}`);
+    // 复用本工作台已开的 Builder 会话，避免每次点按钮都堆一条空会话。
+    // 会话归属由 createConversation 取 activeMode（此时 = rpa）落库，不另传 mode。
+    let convId = builderConvId.value;
+    if (!convId || !chatStore.conversations.some((c) => c.id === convId)) {
+      convId = await chatStore.createConversation('新建自动化脚本', {
+        agentId: 'a_builtin_rpa_builder',
+      });
+    }
+    builderConvId.value = convId;
+    builderOpen.value = true;
+    // createConversation 只建行、不切当前会话：内嵌列表要靠 selectConv 才 loadHistory，
+    // 发消息时后端也才按 conv.agentId 取 Builder 的系统提示词与工具集。
+    await chat.selectConv(convId);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '无法打开自动化脚本设计师');
   }
+}
+
+async function closeBuilder(): Promise<void> {
+  builderOpen.value = false;
+  // Builder 刚生成的草稿要能立刻在脚本库里看到：收起时刷一次列表，
+  // 不新增按钮/提示，也不改 store.current（正在编辑的脚本不受影响）。
+  try { await store.loadScripts(); } catch { /* 刷新失败不挡收起 */ }
 }
 
 async function deleteCurrent(): Promise<void> {
@@ -1197,6 +1244,30 @@ onBeforeUnmount(() => {
 .rpa-top-actions { margin-left: auto; display: flex; gap: 8px; }
 
 .rpa-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 270px minmax(0, 1fr); }
+.rpa-body.is-builder-open { grid-template-columns: 270px minmax(0, 1fr) 352px; }
+
+/* Builder 对话栏：头固定、消息区独立滚动（与工作流模式同款窄栏） */
+.rpa-chat {
+  min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+.rpa-chat-head {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-bottom: 1px solid var(--color-border);
+  font-size: 12px; font-weight: 600;
+}
+.rpa-chat-close {
+  display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--color-text-secondary); cursor: pointer;
+}
+.rpa-chat-close:hover { background: var(--glass-bg-hover); color: var(--color-text); }
+.rpa-chat :deep(.messages) { padding-left: 14px; padding-right: 14px; }
+.rpa-chat-welcome {
+  display: flex; flex-direction: column; gap: 6px; padding: 18px 4px;
+  color: var(--color-text-secondary); font-size: 11px; line-height: 1.5;
+}
+.rpa-chat-welcome b { color: var(--color-text); font-size: 13px; }
 .rpa-library {
   min-height: 0; display: flex; flex-direction: column;
   border-right: 1px solid var(--color-border);
@@ -1393,10 +1464,25 @@ onBeforeUnmount(() => {
 .rpa-spacer { flex: 1; }
 
 .rpa-btn { height: 32px; border-radius: 7px; border: 1px solid var(--glass-border); background: var(--glass-bg); color: var(--color-text); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 11px; cursor: pointer; font-size: 11px; font-weight: 550; }
-.rpa-btn:hover:not(:disabled) { border-color: var(--glass-border-strong, var(--color-primary)); background: var(--glass-bg-hover); }
+/* ★ 通用 hover 必须排除 .primary/.publish：它的特异性 (0,3,0) 高于 .rpa-btn.primary (0,2,0)，
+   不限定就会把主按钮的紫底刷成浅灰、白字留在浅底上彻底看不见（用户截图实报）。 */
+.rpa-btn:hover:not(:disabled):not(.primary):not(.publish) {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--glass-border-strong, var(--color-border)));
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--glass-bg-hover));
+  color: var(--color-primary);
+}
 .rpa-btn.primary { color: #fff; background: var(--color-primary); border-color: var(--color-primary); }
-.rpa-btn.primary:hover:not(:disabled) { filter: brightness(1.04); }
+.rpa-btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 85%, #000);
+  border-color: color-mix(in srgb, var(--color-primary) 85%, #000);
+  color: #fff;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--color-primary) 28%, transparent);
+}
 .rpa-btn.publish { color: var(--color-success, #15803d); border-color: color-mix(in srgb, var(--color-success, #15803d) 28%, var(--color-border)); background: color-mix(in srgb, var(--color-success, #15803d) 7%, transparent); }
+.rpa-btn.publish:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success, #15803d) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-success, #15803d) 48%, var(--color-border));
+}
 .rpa-btn.ghost { background: transparent; }
 .rpa-btn.small { height: 28px; margin-top: 4px; }
 .rpa-btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -1412,7 +1498,14 @@ onBeforeUnmount(() => {
 @keyframes rpa-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1180px) {
-  .rpa-body { grid-template-columns: 230px minmax(0, 1fr); }
+  .rpa-body { position: relative; grid-template-columns: 230px minmax(0, 1fr); }
+  /* 窄屏不挤占工作台（编辑器检查器本身就要 300px）：Builder 对话改为右侧覆盖抽屉 */
+  .rpa-body.is-builder-open { grid-template-columns: 230px minmax(0, 1fr); }
+  .rpa-chat {
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 6;
+    width: min(360px, 62vw);
+    box-shadow: -8px 0 24px color-mix(in srgb, var(--color-text) 12%, transparent);
+  }
   .rpa-editor-shell { grid-template-columns: minmax(360px, 1fr) 300px; }
   .rpa-script-head { flex-direction: column; }
   .rpa-script-actions { width: 100%; justify-content: flex-start; }
@@ -1421,6 +1514,13 @@ onBeforeUnmount(() => {
 @media (max-width: 860px) {
   .rpa-top-stats { display: none; }
   .rpa-body { grid-template-columns: 1fr; min-height: 0; }
+  /* 手机宽度：抽屉落回文档流，堆在工作台下方，不再遮挡脚本编辑区 */
+  .rpa-body.is-builder-open { grid-template-columns: 1fr; grid-template-rows: auto 60vh; overflow: auto; }
+  .rpa-chat {
+    position: relative; top: auto; right: auto; bottom: auto;
+    width: 100%; height: 60vh; min-height: 320px;
+    box-shadow: none; border-left: 0; border-top: 1px solid var(--color-border);
+  }
   .rpa-library { display: none; }
   .rpa-workspace { overflow: auto; }
   .rpa-mobile-picker {

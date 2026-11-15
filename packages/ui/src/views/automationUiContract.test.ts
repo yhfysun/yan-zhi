@@ -29,6 +29,33 @@ describe('自动化模式 UI 契约', () => {
     expect(view).toContain('添加定时运行');
   });
 
+  it('★ AI Builder 留在自动化模式内：右栏内嵌对话，不整页 push /chat', () => {
+    const at = view.indexOf('async function openBuilder()');
+    const body = view.slice(at, view.indexOf('async function closeBuilder()', at));
+    // /chat 是 office 路由，跳过去会让脚本工作台与「会话归属 mode=rpa」错位（用户实报）。
+    expect(body, 'openBuilder 不得再跳办公模式聊天页').not.toContain('/chat/');
+    expect(view).not.toContain('useRouter');
+    // createConversation 只建行、不切当前会话：必须 selectConv 才会 loadHistory + 绑定 Builder 提示词。
+    expect(body).toContain('chat.selectConv(convId)');
+    expect(body).toContain('builderOpen.value = true');
+    expect(body.indexOf('createConversation')).toBeLessThan(body.indexOf('builderOpen.value = true'));
+    expect(body.indexOf('builderOpen.value = true')).toBeLessThan(body.indexOf('chat.selectConv(convId)'));
+    expect(view).toContain('class="rpa-chat"');
+    expect(view).toContain('<ChatMessageList');
+    expect(view).toContain('<ChatInputArea');
+    expect(view, '输入区的设置弹窗要有承载，否则点了没反应').toContain('<ChatDialogs');
+  });
+
+  it('★ 按钮 hover 守门：通用 hover 不得刷掉主按钮底色（白底白字回归）', () => {
+    // .rpa-btn:hover:not(:disabled) 特异性 (0,3,0) 高于 .rpa-btn.primary (0,2,0)，
+    // 不排除 .primary 就会把紫底刷成 #F0F2F7、白字只剩 1.12:1 对比度（用户截图实报）。
+    expect(view).toContain('.rpa-btn:hover:not(:disabled):not(.primary):not(.publish)');
+    expect(view).toContain('.rpa-btn.primary:hover:not(:disabled) {');
+    expect(view).toContain('.rpa-btn.ghost { background: transparent; }');
+    expect(view).not.toContain('filter: brightness(1.04)');
+    // 生效层由 scripts/rpa-button-hover-smoke.cjs 真 Chromium 量 computed style 验证。
+  });
+
   it('所有关键交互使用可访问按钮并提供移动端布局', () => {
     expect(view).toContain('aria-label="搜索自动化脚本"');
     expect(view).toContain('aria-label="添加步骤"');
