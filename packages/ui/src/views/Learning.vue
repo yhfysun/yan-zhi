@@ -409,6 +409,10 @@ async function switchSubject(key: string) {
   subject.value = key;
   activeBook.value = null;
   levels.value = [];
+  // tab 键不跨科目残留：从周易（tab='zhouyi'）切到英语时若不重置，
+  // 中栏 v-else-if="tab === 'zhouyi'" 会继续渲染旧科目工作台（用户实报「切到英语中间不变」）。
+  // 软考 / 网络安全分支随后会覆盖为各自的默认 tab。
+  tab.value = 'path';
   if (key === '软考') {
     tab.value = 'exam';
     softSideTab.value = 'exam';
@@ -459,6 +463,14 @@ function startColumnResize(side: 'left' | 'right', event: PointerEvent) {
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp, { once: true });
 }
+// 扩展科目（传统文化/音乐/周易）只有陪练对话 tab 有右栏（lp-coach-side），其余 tab
+// 右栏没有任何内容却仍占 280px（用户实报「右侧太空了」）⇒ 宽度归零让中栏占满。
+const hasRightColumn = computed(() => {
+  if (subject.value === '网络安全') return false;
+  const ext = subjectExtensionOf(subject.value);
+  if (ext) return tab.value === 'coach';
+  return true; // 英语 / 软考：右栏常驻
+});
 const gridStyle = computed(() => {
   if (subject.value === '网络安全') {
     return {
@@ -466,11 +478,16 @@ const gridStyle = computed(() => {
       '--lp-right-w': '0px',
     } as Record<string, string>;
   }
-  const rightVisibleWidth = rightCollapsed.value
-    ? 0
-    : tab.value === 'coach' && !coachHistoryOpen.value
-      ? 44
-      : rightWidth.value;
+  if (!hasRightColumn.value) {
+    return {
+      '--lp-left-w': `${leftCollapsed.value ? 0 : leftWidth.value}px`,
+      '--lp-right-w': '0px',
+    } as Record<string, string>;
+  }
+  // 陪练历史折叠时右栏**整列归零**（此前留 44px 通高空列，用户实报「像滚动条」）：
+  // 展开入口 = 右缘竖直居中的 History 悬浮按钮（lp-history-rail），不留任何空列。
+  const historyCollapsed = tab.value === 'coach' && !coachHistoryOpen.value;
+  const rightVisibleWidth = rightCollapsed.value || historyCollapsed ? 0 : rightWidth.value;
   return {
     '--lp-left-w': `${leftCollapsed.value ? 0 : leftWidth.value}px`,
     '--lp-right-w': `${rightVisibleWidth}px`,
@@ -567,26 +584,47 @@ async function loadCourses() {
   }
   if (tab.value === 'scenes' && sceneCourseId.value) void loadScenes();
 }
-function openCourse(c: CourseView) {
-  if (c.kind === 'exam') {
+/** ★ 移动端闯关全屏（2026-11-15 用户实报「沉浸式的弹窗根本出不来」）：移动端题目
+ *  就地渲染在中栏深处，用户点关卡后视口里毫无变化 ⇒ 体感"弹窗出不来"。
+ *  移动端把闯关区提升为 fixed 全屏沉浸层（同周易/沉浸台口径：一次一步 + 可退出），
+ *  退出按钮回到关卡地图。桌面不做覆盖（中栏本就是工作区主体）。 */
+function exitDrillLive() {
+  drillLevel.value = null;
+  reviewMode.value = false;
+  result.value = null;
+  questions.value = [];
+  feedback.value = {};
+  revealedAnswer.value = {};
+  qIndex.value = 0;
+  tab.value = 'drill';
+  void nextTick(() => {
+    document.querySelector('.lp-col-mid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+function openCourse(c: CourseView) {  if (c.kind === 'exam') {
     softExamSpecialty.value = c.examSpecialty || '全部';
     tab.value = 'exam';
+    scrollMidIntoViewOnMobile();
     return;
   }
   if (c.kind === 'security') {
     securityPathId.value = c.securityPathId || '';
     tab.value = 'security';
+    scrollMidIntoViewOnMobile();
     return;
   }
   if (c.kind === 'culture') {
     // 带上课程对应的阶：左栏点击要联动展开精读台的该阶课时（此前只切 Tab，点了没反应）
     cultureFocusLevel.value = c.cultureLevel || '';
     tab.value = 'culture';
+    scrollMidIntoViewOnMobile();
     return;
   }
   if (c.kind === 'music') {
     musicFocusTrack.value = c.musicTrack || 'western';
     tab.value = 'music';
+    scrollMidIntoViewOnMobile();
     return;
   }
   // 周易课卡不再进左栏（左栏只做导航入口）；左栏导航卡直接切 tab
@@ -597,6 +635,22 @@ function openCourse(c: CourseView) {
   sceneCourseId.value = c.id;
   if (tab.value === 'scenes') void loadScenes();
   void openBook({ id: c.bookId, name: c.bookName, kind: 'builtin', course: c.name, wordCount: c.wordCount, levelCount: c.totalLevels, maxLevelCleared: c.clearedLevels, dueCount: c.dueCount }, c.id);
+  scrollMidIntoViewOnMobile();
+}
+
+/**
+ * ★ 移动端选课跟随滚动（2026-11-15 用户实报「点击课程后还要滑动到最下面」）：
+ *   桌面 lp-grid 三栏并排，左栏点课程、中栏立刻出现关卡地图；移动端三栏堆成
+ *   单列长页，中栏被 ~1400px 的课程列表压在视口外 ⇒ 用户点完课要手动滑很远
+ *   才能看到关卡入口，「沉浸式弹窗出不来」其实是入口根本没进视口。
+ *   移动端点课程后统一把中栏滚进视口（各科目共用 openCourse，一处收口）；
+ *   桌面两栏同屏不受影响。判定用视口宽（窄屏才堆叠），与外壳 isMobile 同口径。
+ */
+function scrollMidIntoViewOnMobile() {
+  if (typeof window === 'undefined' || window.innerWidth >= 768) return;
+  void nextTick(() => {
+    document.querySelector('.lp-col-mid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 // 测算实践台「回到第 X 课」→ 跳回周易课程主线并展开对应路径（内容包课 id zy_zxx ↔ 目录 id course_zy_zxx）
 function gotoZhouyiLesson(lessonId: string) {
@@ -2194,7 +2248,11 @@ watch(softExamDate, (value) => {
         <!-- 单词闯关 -->
         <template v-else-if="tab === 'drill'">
           <!-- 单题聚焦模式：一次只答一题（此前 10 题平铺成一条长列表，又密又乱） -->
-          <template v-if="(drillLevel != null || reviewMode) && currentQ">
+          <div v-if="(drillLevel != null || reviewMode) && currentQ" class="lp-drill-live">
+            <!-- ★ 移动端全屏沉浸层的退出出口（桌面隐藏：中栏本来可见） -->
+            <div class="lp-drill-live-head">
+              <button class="lp-drill-exit" type="button" @click="exitDrillLive">✕ 退出本关</button>
+            </div>
             <p class="lp-drill-title">
               {{ reviewMode ? `到期复习（${activeQuestions.length} 题，跨词书）` : `${activeBook?.name} · 第 ${drillLevel} 关（${activeQuestions.length} 题）` }}
             </p>
@@ -2313,7 +2371,7 @@ watch(softExamDate, (value) => {
                 {{ submitting ? '判分中…' : '交卷' }}
               </button>
             </div>
-          </template>
+          </div>
           <template v-else-if="result">
             <div class="lp-result" :class="{ pass: result.passed }">
               <p class="lp-result-stars">{{ starText(result.stars) }} <b>{{ result.pct }} 分</b></p>
@@ -2589,7 +2647,7 @@ watch(softExamDate, (value) => {
       </section>
 
       <div
-        v-show="subject !== '网络安全' && !rightCollapsed && !(tab === 'coach' && !coachHistoryOpen)"
+        v-show="hasRightColumn && !rightCollapsed && !(tab === 'coach' && !coachHistoryOpen)"
         class="lp-column-resizer"
         title="拖动调整右侧宽度"
         @pointerdown="startColumnResize('right', $event)"
@@ -2796,27 +2854,17 @@ watch(softExamDate, (value) => {
         </div>
       </aside>
 
-      <aside v-if="tab === 'coach' && !rightCollapsed" class="lp-card lp-col-right lp-coach-side" :class="{ collapsed: !coachHistoryOpen }">
+      <!-- 折叠态不渲染本栏：右缘竖直居中的 History 悬浮按钮负责展开（见 lp-history-rail），
+           不再保留空列（用户实报「整列出来像滚动条」） -->
+      <aside v-if="tab === 'coach' && !rightCollapsed && coachHistoryOpen" class="lp-card lp-col-right lp-coach-side">
         <div class="lp-side-head">
-          <!-- 折叠态 = 单个图标按钮（竖排文字标签已退役：所有科目陪练共用此侧栏，改一处全覆盖） -->
-          <button
-            v-if="!coachHistoryOpen"
-            class="lp-side-toggle"
-            title="展开对话记录"
-            aria-label="展开对话记录"
-            @click="coachHistoryOpen = true"
-          >
+          <div class="lp-side-title">
             <History :size="15" />
+            <span>对话记录</span>
+          </div>
+          <button class="lp-side-toggle" title="收起对话记录" aria-expanded="true" @click="coachHistoryOpen = false">
+            <ChevronRight :size="15" />
           </button>
-          <template v-else>
-            <div class="lp-side-title">
-              <History :size="15" />
-              <span>对话记录</span>
-            </div>
-            <button class="lp-side-toggle" title="收起对话记录" aria-expanded="true" @click="coachHistoryOpen = false">
-              <ChevronRight :size="15" />
-            </button>
-          </template>
         </div>
         <div v-show="coachHistoryOpen" class="lp-side-body">
           <p class="lp-side-meta">{{ coachRound }} 轮 · 只保留这次陪练</p>
@@ -2852,7 +2900,17 @@ watch(softExamDate, (value) => {
       <button v-if="leftCollapsed && subject !== '网络安全'" class="lp-expand-rail left" title="展开左侧栏" aria-label="展开左侧栏" @click="leftCollapsed = false">
         <ChevronRight :size="15" />
       </button>
-      <button v-if="rightCollapsed && subject !== '网络安全'" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
+      <!-- 陪练对话历史折叠态：右缘竖直居中的悬浮图标（不占列宽） -->
+      <button
+        v-if="tab === 'coach' && !rightCollapsed && hasRightColumn && !coachHistoryOpen"
+        class="lp-expand-rail right lp-history-rail"
+        title="展开对话记录"
+        aria-label="展开对话记录"
+        @click="coachHistoryOpen = true"
+      >
+        <History :size="15" />
+      </button>
+      <button v-if="rightCollapsed && hasRightColumn" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
         <ChevronLeft :size="15" />
       </button>
     </div>
@@ -3100,14 +3158,11 @@ watch(softExamDate, (value) => {
 .lp-dock-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .lp-text-fallback { display: flex; gap: 8px; padding: 0 2px 10px; }
 .lp-text-fallback .lp-chat-entry { min-width: 0; }
-.lp-coach-side { display: flex; flex-direction: column; overflow: hidden; padding: 12px; transition: padding .18s ease; }
-.lp-coach-side.collapsed { padding: 12px 5px; align-items: center; }
+.lp-coach-side { display: flex; flex-direction: column; overflow: hidden; padding: 12px; }
 .lp-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
 .lp-side-title { display: flex; align-items: center; gap: 7px; color: var(--color-text); font-size: 12px; font-weight: 600; min-width: 0; }
 .lp-side-toggle { width: 26px; height: 26px; flex: 0 0 26px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .lp-side-toggle:hover { border-color: #9dbcf7; color: #245bdb; }
-.lp-coach-side.collapsed .lp-side-head { flex-direction: column; gap: 8px; }
-/* 折叠态收成单个图标按钮：竖排文字标签退役（用户实报「竖排记录很丑」） */
 .lp-side-body { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 8px; }
 .lp-side-meta { margin: 0 0 7px; color: var(--color-text-tertiary); font-size: 10px; flex-shrink: 0; }
 .lp-side-body .lp-chat-msgs { flex: 1; min-height: 0; max-height: none; overflow-y: auto; padding: 2px 2px 8px; }
@@ -3327,8 +3382,6 @@ watch(softExamDate, (value) => {
   .lp-coach-stage { grid-area: pet; justify-self: center; width: 330px; height: 340px; }
   .lp-scene-compact { position: fixed; top: 92px; right: 12px; left: 12px; width: auto; max-height: calc(100vh - 160px); }
   .lp-mic-radar { left: 50%; bottom: 12px; }
-  .lp-coach-side.collapsed { min-height: 40px; padding: 7px 12px; align-items: stretch; }
-  .lp-coach-side.collapsed .lp-side-head { flex-direction: row; }
   .lp-voice-dock { align-items: flex-start; flex-wrap: wrap; }
   .lp-dock-actions { width: 100%; justify-content: flex-start; }
   .lp-tabs { overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
@@ -3416,4 +3469,59 @@ watch(softExamDate, (value) => {
   color: var(--color-text);
 }
 .lp-note-menu button:hover { background: var(--color-fill-secondary, #f2f3f5); }
+
+/* ── 移动端闯关全屏沉浸层（2026-11-15 用户实报「沉浸式的弹窗根本出不来」）──
+   题目/结果此前就地渲染在中栏深处（单列长页中部），手机上点关卡后视口毫无变化。
+   窄屏（或平台=移动）下把闯关答题区与结果页提升为 fixed 全屏：一次一步 + 顶部
+   退出出口，符合「先选课再沉浸 / 一次只显示一个学习步骤」准则。
+   桌面 ≥768px 完全不命中，中栏布局逐字不变。 */
+.lp-drill-live-head { display: none; } /* 桌面/宽窗口：无移动专属退出头（默认隐藏） */
+@media (max-width: 767px) {
+  .lp-drill-live,
+  .lp-col-mid .lp-result {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--color-bg, #f7f8fa);
+    padding: max(10px, env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom));
+    border-radius: 0;
+    border: none;
+  }
+  .lp-drill-live-head { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+  .lp-drill-exit {
+    border: 1px solid var(--color-border, #e5e6eb);
+    background: var(--color-fill-secondary, #f2f3f5);
+    color: var(--color-text, #1f2329);
+    border-radius: 14px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .lp-drill-live .lp-drill-title { margin-top: 6px; }
+}
+/* 平台=移动（Capacitor 横屏视口 800px+ 时媒体查询会漏，见 MOBILE-NOTES 坑 1） */
+.platform-mobile .lp-drill-live,
+.platform-mobile .lp-col-mid .lp-result {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--color-bg, #f7f8fa);
+  padding: max(10px, env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom));
+  border-radius: 0;
+  border: none;
+}
+.platform-mobile .lp-drill-live-head { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+.platform-mobile .lp-drill-exit {
+  border: 1px solid var(--color-border, #e5e6eb);
+  background: var(--color-fill-secondary, #f2f3f5);
+  color: var(--color-text, #1f2329);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
 </style>
