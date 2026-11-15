@@ -21,7 +21,6 @@ import DivinationWorkbench from './DivinationWorkbench.vue'
 
 const BENCH_SRC = () => readFileSync(resolve(__dirname, 'DivinationWorkbench.vue'), 'utf8')
 
-const focusEvents: boolean[] = []
 const mountedApps: App[] = []
 
 async function mountBench(): Promise<HTMLElement> {
@@ -29,9 +28,7 @@ async function mountBench(): Promise<HTMLElement> {
   document.body.appendChild(el)
   const Host = defineComponent({
     setup() {
-      return () => h(DivinationWorkbench, {
-        onFocusChange: (active: boolean) => { focusEvents.push(active) },
-      })
+      return () => h(DivinationWorkbench, {})
     },
   })
   const app: App = createApp(Host)
@@ -65,28 +62,28 @@ beforeEach(() => {
   mountedApps.length = 0
   document.body.innerHTML = ''
   localStorage.clear()
-  focusEvents.length = 0
 })
 
 describe('DivinationWorkbench · 挂载契约', () => {
-  it('① 全屏沉浸契约（源码锚点）+ 顶栏四项 + 教学演示标识 + 无折叠', async () => {
+  it('① 中栏内嵌契约（源码锚点）+ 教学演示标识 + 无折叠；不再是全屏弹窗（用户实报「实战为啥要弹窗」）', async () => {
     const source = BENCH_SRC()
-    expect(source).toContain('position: fixed')
-    expect(source).toContain('z-index: 3000')
-    expect(source).toContain("document.body.style.overflow = 'hidden'")
+    // 不再是 fixed 全屏弹窗：不锁 body 滚动、不遮盖学习页
+    expect(source).not.toContain('position: fixed')
+    expect(source).not.toContain('z-index: 3000')
+    expect(source).not.toContain("document.body.style.overflow = 'hidden'")
+    // 内嵌工作台：高度链由宿主 .lp-col-mid:has(> .dv-root) 供足
+    expect(source).toContain('.dv-root')
+    expect(source).toContain('height: 100%')
     expect(source).toContain('民俗文化体验 · 教学演示')
 
     const el = await mountBench()
-    const immersive = el.querySelector('.dv-immersive') as HTMLElement
-    expect(immersive.getAttribute('role')).toBe('dialog')
-    expect(immersive.getAttribute('aria-modal')).toBe('true')
+    expect(el.querySelector('.dv-root')).toBeTruthy()
     expect(el.querySelector('.dv-banner')?.textContent).toContain('民俗文化体验 · 教学演示')
-    // 顶栏四项：返回 / 方法名 / 步骤 x/5 / 退出
     expect(el.querySelector('.dv-head')?.textContent).toContain('周易测算')
     expect(el.querySelector('.dv-count')?.textContent).toContain('/5')
     expect(el.querySelectorAll('.dv-step').length).toBe(1)
     expect(el.querySelectorAll('details').length).toBe(0)
-    expect(document.body.style.overflow).toBe('hidden')
+    expect(document.body.style.overflow).not.toBe('hidden')
   })
 
   it('② 梅花易数真跑：填年月日时 → 推演步渲染规则与出处；结果与纯函数直跑一致', async () => {
@@ -114,12 +111,12 @@ describe('DivinationWorkbench · 挂载契约', () => {
     expect(el.querySelectorAll('.dv-step').length).toBe(1)
   })
 
-  it('③ Escape 退出 emit focus-change false 并恢复滚动；记录不落输入原值（源码锚点）', async () => {
+  it('③ Escape 不再退出（工作台常驻中栏）；记录不落输入原值（源码锚点）', async () => {
     const el = await mountBench()
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await nextTick()
-    expect(el.querySelector('.dv-immersive')).toBeFalsy()
-    expect(focusEvents.at(-1)).toBe(false)
+    // 内嵌工作台不会被 Escape 卸载（离开用 Tab 切换）；body 滚动从不被锁
+    expect(el.querySelector('.dv-root')).toBeTruthy()
     expect(document.body.style.overflow).not.toBe('hidden')
     // 隐私锚点：持久化函数不得序列化输入对象（源码级断言，防止回归）
     const src = BENCH_SRC()

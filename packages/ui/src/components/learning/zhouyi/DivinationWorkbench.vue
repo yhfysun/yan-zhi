@@ -10,7 +10,6 @@ import { useChatStore } from '../../../stores/chat';
 import { usePlatformStore } from '../../../stores/platform';
 
 const emit = defineEmits<{
-  'focus-change': [enabled: boolean];
   'goto-lesson': [lessonId: string];
 }>();
 const props = defineProps<{ initialMethod?: string }>();
@@ -112,14 +111,13 @@ function applyUtterance() {
   inputError.value = '';
 }
 
-// ===== 沉浸台状态 =====
+// ===== 工作台状态（中栏内嵌，非弹窗） =====
 const STAGES = ['input', 'derive', 'canon', 'review', 'save'] as const;
 type Stage = typeof STAGES[number];
 const STAGE_NAMES: Record<Stage, string> = {
   input: '输入', derive: '推演', canon: '原文对照', review: '规则复盘', save: '记录',
 };
 
-const active = ref(true);
 const stage = ref<Stage>('input');
 const stageIndex = computed(() => STAGES.indexOf(stage.value));
 const method = ref<DivinationMethod>('meihua');
@@ -270,11 +268,6 @@ async function startRun() {
 }
 
 // ===== 步进导航 =====
-const canPrev = computed(() => {
-  if (stage.value === 'input') return false;
-  if (stage.value === 'derive') return stepIndex.value > 0;
-  return true;
-});
 
 function goNext() {
   switch (stage.value) {
@@ -319,31 +312,23 @@ function goPrev() {
   }
 }
 
-// ===== 生命周期 / 键盘 / 锁滚动 =====
+// ===== 生命周期 / 键盘 =====
+// ★ 中栏内嵌工作台（用户实报「实战为啥要弹窗」）：不再是 fixed 全屏弹窗——
+//   顶栏无返回/退出（离开用 Tab 切换），不锁 body 滚动，不 emit focus-change。
+//   组件随 tab 切换卸载，本地缓存的推演结果随组件销毁自然清空。
 let previousBodyOverflow = '';
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') { e.preventDefault(); exitWorkbench(); return; }
   const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
   if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
   if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
 }
 
-function exitWorkbench() {
-  if (!active.value) return;
-  active.value = false;
-  document.body.style.overflow = previousBodyOverflow;
-  result.value = null; // 本地缓存的推演结果到退出为止
-  emit('focus-change', false);
-}
-
 onMounted(() => {
   const initial = props.initialMethod as DivinationMethod | undefined;
   if (initial && initial in METHOD_LABELS) method.value = initial;
   previousBodyOverflow = document.body.style.overflow;
-  document.body.style.overflow = 'hidden';
   window.addEventListener('keydown', onKeydown);
-  emit('focus-change', true);
 });
 
 onBeforeUnmount(() => {
@@ -518,12 +503,10 @@ function askAboutResult() {
 </script>
 
 <template>
-  <section v-if="active" class="dv-immersive" role="dialog" aria-modal="true" aria-label="周易测算实践台">
+  <section class="dv-root" aria-label="周易测算实践台">
     <header class="dv-head">
-      <button class="dv-btn" :disabled="!canPrev" @click="goPrev">返回</button>
       <div class="dv-title">周易测算 · {{ methodLabel }}（{{ STAGE_NAMES[stage] }}）</div>
       <div class="dv-count">步骤 {{ stageIndex + 1 }}/5</div>
-      <button class="dv-btn" @click="exitWorkbench">退出</button>
     </header>
 
     <main class="dv-main">
@@ -961,8 +944,10 @@ function askAboutResult() {
 </template>
 
 <style scoped>
-/* ===== 沉浸台骨架（--dv-* 私有变量；深色外层 + 浅色纸面） ===== */
-.dv-immersive {
+/* ===== 工作台骨架（--dv-* 私有变量；深色工作台 + 浅色纸面） =====
+   ★ 中栏内嵌（用户实报「实战为啥要弹窗」）：非 fixed 弹窗，随 tab 切换挂载/卸载，
+   高度链由 Learning.vue 的 .lp-col-mid:has(> .dv-root) 特例供足。 */
+.dv-root {
   --dv-bg: #101418;
   --dv-panel: #1a2026;
   --dv-line: rgba(214, 205, 188, .16);
@@ -975,9 +960,8 @@ function askAboutResult() {
   --dv-line-soft: rgba(44, 42, 38, .18);
   --dv-error: #8a2f2b;
   --dv-serif: "Songti SC", "STSong", "SimSun", "Noto Serif SC", serif;
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -985,11 +969,11 @@ function askAboutResult() {
   background: linear-gradient(150deg, var(--dv-bg), #171d22 58%, #0c1014);
 }
 
-/* 顶栏：只有 返回 / 方法名 / 步骤 x/n / 退出 四项 */
+/* 顶栏：方法名 / 步骤 x/n（返回与退出已退役——离开用 Tab 切换） */
 .dv-head {
-  flex: 0 0 56px;
+  flex: 0 0 52px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   padding: 0 20px;

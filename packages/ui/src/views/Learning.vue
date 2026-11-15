@@ -15,6 +15,7 @@ import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
 import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
+import SecurityPracticeStudio from '../components/learning/SecurityPracticeStudio.vue';
 import SubjectPicker from '../components/learning/SubjectPicker.vue';
 import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
@@ -67,7 +68,7 @@ const SUBJECTS = ref<SubjectDef[]>([{ key: '英语', label: '英语', ready: tru
 const subject = ref<string>('英语');
 /** 科目与 Tab 状态持久化：刷新/重开应用回到上次的科目与工作区（用户实报「刷新又变成英语」）。
  *  只在 loadSubjects 确认该科目 ready 后恢复，服务端下线/未就绪的科目静默回落英语。 */
-type LearningTab = 'path' | 'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security' | 'culture' | 'canon' | 'studio' | 'music' | 'compose' | 'zhouyi' | 'divination';
+type LearningTab = 'path' | 'coach' | 'drill' | 'words' | 'scenes' | 'grammar' | 'reading' | 'exam' | 'security' | 'security-practice' | 'culture' | 'canon' | 'studio' | 'music' | 'compose' | 'zhouyi' | 'divination';
 const SESSION_KEY = 'yz.learning.session.v1';
 function readLearningSession(): { subject?: string; tab?: string } {
   try {
@@ -86,7 +87,7 @@ function restoreSavedTab(tabKey: string | undefined): void {
   const ext = subjectExtensionOf(subject.value);
   const allowed = ext
     ? ext.tabDefs.map((t) => t.key as string)
-    : ['path', 'coach', 'drill', 'words', 'scenes', 'grammar', 'reading', 'exam', 'security'];
+    : ['path', 'coach', 'drill', 'words', 'scenes', 'grammar', 'reading', 'exam', 'security', 'security-practice'];
   if (allowed.includes(tabKey)) tab.value = tabKey as LearningTab;
 }
 const softExamSpecialty = ref('');
@@ -493,7 +494,7 @@ const ENGLISH_TAB_DEFS = [
   { key: 'exam', label: '历年真题' },
 ] as const;
 const SOFT_TAB_DEFS = [{ key: 'exam', label: '软考备考' }] as const;
-const SECURITY_TAB_DEFS = [{ key: 'security', label: '安全路线' }] as const;
+const SECURITY_TAB_DEFS = [{ key: 'security', label: '安全路线' }, { key: 'security-practice', label: '实操台' }] as const;
 const tabDefs = computed(() => subjectExtensionOf(subject.value)?.tabDefs ?? (subject.value === '软考'
   ? SOFT_TAB_DEFS
   : subject.value === '网络安全'
@@ -2547,6 +2548,11 @@ watch(softExamDate, (value) => {
           />
         </template>
 
+        <!-- 网络安全实操台：与音乐「编曲台」同层的独立实践入口 -->
+        <template v-else-if="tab === 'security-practice'">
+          <SecurityPracticeStudio />
+        </template>
+
         <!-- 历年真题：考研 / 高考客观题训练 -->
         <template v-else-if="tab === 'exam'">
           <ExamTrainer
@@ -2574,7 +2580,7 @@ watch(softExamDate, (value) => {
           <ZhouyiWorkbench :focus-track="zhouyiFocusTrack" :focus-nonce="zhouyiFocusNonce" @focus-change="onZhouyiFocusChange" />
         </template>
         <template v-else-if="tab === 'divination'">
-          <DivinationWorkbench @focus-change="zhouyiFocusing = $event" @goto-lesson="gotoZhouyiLesson" />
+          <DivinationWorkbench @goto-lesson="gotoZhouyiLesson" />
         </template>
       </section>
 
@@ -2958,6 +2964,8 @@ watch(softExamDate, (value) => {
 /* 陪练对话（内嵌）：气泡列表 + 底部输入条 */
 /* 中栏在陪练 Tab 下改为纵向 flex（tabs 固定 + 对话区吃满剩余），关闭外层滚动让气泡区独立滚 */
 .lp-col-mid:has(> .lp-coach-chat) { overflow: hidden; display: flex; flex-direction: column; }
+/* 测算实践台是中栏内嵌工作台（深色 dv-root），高度链由这里供足（非弹窗） */
+.lp-col-mid:has(> .dv-root) { overflow: hidden; display: flex; flex-direction: column; }
 .lp-coach-chat { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lp-live-scene { flex-shrink: 0; border: 1px solid #dbe5f5; background: linear-gradient(180deg, #f8fbff 0%, var(--glass-bg) 100%); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .lp-live-scene-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
