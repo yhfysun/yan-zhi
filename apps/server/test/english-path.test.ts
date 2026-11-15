@@ -152,11 +152,13 @@ describe('零基础英语学习主线', () => {
     expect(letter.pattern).toBeUndefined();
     expect(letter.compare?.length).toBe(5);
     for (const pair of letter.compare ?? []) {
-      // ipa 不展示（零基础层藏符号），只用于点声音区放随包本音；nameAudio 是点名称区的朗读文本
+      // ipa 用于对照卡显示与点声音区放随包本音；nameAudio 是点名称区的朗读文本
       expect(pair.ipa, `${pair.letter} 本音 ipa`).toMatch(/^\/.+\/$/);
       expect(pair.nameAudio, `${pair.letter} 字母名朗读文本`).toBeTruthy();
-      // 拟音/字母/例词里不混入 IPA 符号，音标一律走独立的 nameIpa / ipa 字段
-      expect(`${pair.letter}${pair.name}${pair.sound}${pair.word ?? ''}`, `${pair.letter} 拟音字段不混入 IPA`).not.toContain('/');
+      // 只用 IPA：汉字拟音字段（name / sound / blendHint）全部删除
+      expect(pair, `${pair.letter} 无汉字拟音字段`).not.toHaveProperty('name');
+      expect(pair, `${pair.letter} 无汉字拟音字段`).not.toHaveProperty('sound');
+      expect(pair, `${pair.letter} 无中文合音提示`).not.toHaveProperty('blendHint');
       // 独立的 A 会被冠词规则改成 uh，读不出字母名 /eɪ/ —— 必须用拟音词 ay
       if (pair.letter === 'A') expect(pair.nameAudio).toBe('ay');
     }
@@ -165,14 +167,14 @@ describe('零基础英语学习主线', () => {
     expect(letter.quickCheck?.answer).toBe(1);
   });
 
-  it('★ 对比认知课：音标显式展示，每组例词都有音素拆分与逐步合音提示', () => {
+  it('★ 对比认知课：音标显式展示，每组例词都有音素拆分与专属拼读音频', () => {
     const letter = ENGLISH_PATH[0].steps[0];
     expect(letter.pattern).toBeUndefined();
     expect(letter.compare?.length).toBe(5);
     for (const pair of letter.compare ?? []) {
       expect(pair.nameIpa, `${pair.letter} 字母名音标`).toMatch(/^\/.+\/$/);
       expect(pair.ipa, `${pair.letter} 本音音标`).toMatch(/^\/.+\/$/);
-      expect(pair.blendHint, `${pair.letter} 逐步合音提示`).toContain(pair.word!);
+      expect(pair.blendAudio, `${pair.letter} 专属拼读音频`).toContain(pair.word!);
       // 音素逐字拼起来必须就是例词：不允许前端再猜辅音
       expect(pair.parts?.map((part) => part.text).join(''), `${pair.letter} 音素拼起来要等于例词`).toBe(pair.word);
       for (const part of pair.parts ?? []) {

@@ -59,6 +59,8 @@ describe('音标本音映射（phonics-audio）', () => {
     for (const word of ['tap', 'bed', 'sit', 'hot', 'cup']) {
       const src = lessonBlendAudioSrc(`lesson/letter-name-vs-sound/${word}.mp3`);
       expect(src, `${word} 地址绝对化`).toMatch(/phonics-audio\/lesson\/letter-name-vs-sound\//);
+      // 静态 mp3 会被浏览器/Electron 缓存：重做音频必须带版本号，否则刷新仍播旧文件
+      expect(src, `${word} 必须带缓存版本号`).toContain('?v=');
       const st = await stat(path.join(dir, `${word}.mp3`));
       expect(st.isFile(), `缺文件: ${word}.mp3`).toBe(true);
       expect(st.size, `文件过小: ${word}.mp3`).toBeGreaterThan(10000);

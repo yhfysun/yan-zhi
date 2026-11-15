@@ -106,13 +106,19 @@ export function phonicsAudioSrc(ipa: string): string | null {
 }
 
 /**
+ * 拼读示范音频版本：这些是 publicDir 静态文件，浏览器/Electron 会缓存。
+ * ★ 重做音频后必须 +1，否则刷新后仍播旧 mp3（2026-11-15 实报「改了没效果」）。
+ */
+const BLEND_AUDIO_VERSION = 3;
+
+/**
  * 课程专属拼读示范音频地址（相对 phonics-audio/ 的路径，如 `lesson/letter-name-vs-sound/tap.mp3`）。
  * 与 phonicsAudioSrc 同一绝对化口径；拒绝路径穿越与非法字符。
  */
 export function lessonBlendAudioSrc(rel: string): string | null {
   const file = String(rel || '').trim();
   if (!/^[A-Za-z0-9/_-]+\.mp3$/.test(file) || file.includes('..')) return null;
-  const url = `phonics-audio/${file}`;
+  const url = `phonics-audio/${file}?v=${BLEND_AUDIO_VERSION}`;
   if (typeof document === 'undefined') return url;
   return new URL(url, document.baseURI).href;
 }
