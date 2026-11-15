@@ -18,3 +18,7 @@ export * from './model-providers';
 
 // 周易测算纯函数库（纯函数、离线、seed 伪随机；断语只查白名单规则表）
 export * from './zhouyi/index';
+
+// M1 门禁卡 NFC 复制教学内核（模拟器与真机适配层共用同一份判定）
+// ★ 导出名统一 m1/M1 前缀，避免与 utils/* 的同名导出经 export * 静默覆盖
+export * from './m1-nfc/index';

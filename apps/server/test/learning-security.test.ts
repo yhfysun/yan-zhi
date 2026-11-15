@@ -232,4 +232,31 @@ describe('网络安全分支路线', () => {
       }
     }
   });
+
+  it('M1 门禁卡 NFC 复制课挂在身份路线，且实验声明了交互模拟器', () => {
+    const identity = SECURITY_PATHS.find((path) => path.id === 'sec_identity')!;
+    const mod = identity.modules.find((item) => item.id === 'sec_identity_m1_nfc')!;
+
+    // ① 内容真的接上了，不是只有一条目录记录
+    expect(mod.title).toContain('NFC');
+    expect(mod.lab?.simulator).toBe('m1-nfc-copy');
+    expect(mod.lesson?.walkthrough.length).toBeGreaterThanOrEqual(6);
+    expect(mod.lesson?.knowledgeChecks.length).toBeGreaterThanOrEqual(4);
+    expect(mod.lesson?.keyTerms.map((item) => item.term)).toContain('密码本');
+    expect(mod.code?.bad).toContain('allowedUids.has');
+    expect(mod.code?.good).toContain('answerChallenge');
+    expect(mod.control).toContain('一卡一密');
+    expect(mod.lab?.expected).toContain('简单加密');
+
+    // ② 教学正文里出现的大写缩写都能在该路线术语表查到（否则学员看不到解释）
+    const terms = new Set(identity.glossary.map((item) => item.term));
+    for (const acronym of ['M1', 'NFC', 'MIFARE', 'UID', 'BCC', 'SAK', 'ATQA', 'CUID']) {
+      expect(terms.has(acronym), acronym).toBe(true);
+    }
+
+    // ③ 模拟器是声明式挂载：存量模块零改动，不出现第二个误挂的 simulator
+    const allModules = SECURITY_PATHS.flatMap((path) => path.modules);
+    expect(allModules.filter((item) => item.lab?.simulator).map((item) => item.id))
+      .toEqual(['sec_identity_m1_nfc']);
+  });
 });

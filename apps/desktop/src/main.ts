@@ -10,11 +10,16 @@ import { initPluginHostBridge } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { localApiBase } from '@yan-zhi/shared';
 import { desktopAdapter } from './platform';
+import { registerDesktopM1NfcDriver } from './m1-nfc-desktop';
 
 console.log('[desktop] Electron 桌面端启动中...');
 console.log(`[desktop] 平台适配器: ${desktopAdapter.platform}`);
 console.log(`[desktop] 后端基址: ${localApiBase()}`);
 console.log(`[desktop] 实例: ${(window as any).electronAPI?.isDevInstance ? '开发' : '生产'}`);
+
+// M1 NFC 真机驱动：桌面无内置射频，只有主进程接了读卡器（electronAPI.m1Nfc）才会注册；
+// 未接硬件时保持无驱动，课程实验台自动降级到教学模拟器
+registerDesktopM1NfcDriver();
 
 // 首屏就绪信号：主进程收到后才 show 主窗并销毁 splash。
 // 必须等 Vue 真正 mount —— dev 下 vite 重跑依赖预构建时，窗口会先以背景色（近黑）亮出来，

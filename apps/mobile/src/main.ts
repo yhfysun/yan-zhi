@@ -12,8 +12,11 @@ import { Capacitor } from '@capacitor/core';
 import { ElMessage } from 'element-plus';
 import { mobileAdapter } from './platform';
 import { resumeSmsForwardIfEnabled } from './sms-forward';
+import { registerAndroidM1NfcDriver } from './m1-nfc';
 
 setPlatformAdapter(mobileAdapter);
+// M1 NFC 真机驱动：只有 Android 原生壳会注册，其余平台保持无驱动 → 课程自动走模拟器
+registerAndroidM1NfcDriver();
 
 /** 挂载应用。抽成函数是为了让初始化失败时也能走进来 —— 见下方 catch。 */
 function mountApp(): void {

@@ -18,6 +18,7 @@ import {
 } from 'lucide-vue-next';
 import { api } from '../../api/client';
 import SecurityCodeExample from './SecurityCodeExample.vue';
+import M1NfcCopyLab from './M1NfcCopyLab.vue';
 
 type SecurityCodeVariant = { language: string; bad: string; good: string; note: string };
 type SecurityCode = SecurityCodeVariant & {
@@ -35,7 +36,11 @@ type SecurityLesson = {
   walkthrough: Array<{ title: string; detail: string }>;
   knowledgeChecks: Array<{ question: string; answer: string }>;
 };
-type SecurityLab = { target: string; tools: string[]; steps: string[]; expected: string; commands?: string[] };
+type SecurityLab = {
+  target: string; tools: string[]; steps: string[]; expected: string; commands?: string[];
+  /** 声明式挂载的交互实验台标识；存量模块不带此字段，走纯文字靶场 */
+  simulator?: string;
+};
 type SecurityModule = {
   id: string; title: string; summary: string; useCase?: string; explanation?: string; topics: string[];
   lesson?: SecurityLesson; risk: string; control: string; code?: SecurityCode; lab?: SecurityLab;
@@ -562,6 +567,12 @@ onBeforeUnmount(() => {
                     </div>
                     <SecurityCodeExample v-if="focusedModule.code" v-bind="focusedModule.code" />
                   </section>
+
+                  <M1NfcCopyLab
+                    v-else-if="activeStep === 'lab' && focusedModule.lab?.simulator === 'm1-nfc-copy'"
+                    :lab="focusedModule.lab!"
+                    class="sec-lab-stage"
+                  />
 
                   <section v-else-if="activeStep === 'lab' && focusedModule.lab" class="sec-lab-stage">
                     <header class="sec-lab-heading">

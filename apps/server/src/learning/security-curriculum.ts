@@ -43,6 +43,11 @@ export type SecurityLab = {
   steps: string[];
   expected: string;
   commands?: string[];
+  /**
+   * 实验步骤内嵌的交互模拟器标识（前端按声明挂载组件，存量模块不受影响）。
+   * 目前仅 'm1-nfc-copy'：M1 门禁卡复制教学台。
+   */
+  simulator?: string;
 };
 
 export type SecurityModule = {
@@ -375,6 +380,14 @@ const SECURITY_PATH_SEEDS: Array<Omit<SecurityPath, 'glossary'>> = [
         topics: ['临时提权', '堡垒机', '服务账号', '工作负载身份'],
         risk: '共享管理员密码、长期服务密钥和不受监控的自动化账号会形成难以追踪的高权限后门。',
         control: '按任务临时提权，使用个人身份和审批记录，服务使用短期工作负载身份，特权操作全量审计。',
+      },
+      {
+        id: 'sec_identity_m1_nfc',
+        title: 'M1 门禁卡与 NFC 复制',
+        summary: '从卡内扇区结构、扇区密钥和访问控制位出发，理解近场凭证为什么能被完整复制，以及怎样让复制失效。',
+        topics: ['扇区与扇区尾', '扇区密钥', '密码本', '一卡一密', '防复制'],
+        risk: '门禁系统只校验卡号、所有扇区沿用出厂默认密钥时，凭证就是一段可被原样抄走的数据，卡丢了也无法区分原卡与复制卡。',
+        control: '改成一卡一密并做服务端挑战校验，升级到支持双向认证的卡片，绑定持卡人身份、启用挂失黑名单和异常开门告警。',
       },
     ],
   },
@@ -1594,6 +1607,7 @@ const SECURITY_CODE_CONTEXT: Record<string, string> = {
   sec_lang_php: 'PHP 安全编码示例',
   sec_lang_go: 'Go 安全编码示例',
   sec_lang_rust: 'Rust 安全编码示例',
+  sec_identity_m1_nfc: '门禁控制器凭证校验代码（教学伪代码，不绑定具体厂商设备）',
 };
 
 const SECURITY_CODE_APPLICATIONS: Record<string, string> = {
@@ -1639,6 +1653,7 @@ const SECURITY_CODE_APPLICATIONS: Record<string, string> = {
   sec_lang_php: 'PHP Web 应用',
   sec_lang_go: 'Go 后端服务',
   sec_lang_rust: 'Rust 系统服务',
+  sec_identity_m1_nfc: '园区门禁控制器与发卡系统',
 };
 
 const SECURITY_CODE_KINDS: Record<string, string> = {
@@ -1684,6 +1699,7 @@ const SECURITY_CODE_KINDS: Record<string, string> = {
   sec_lang_php: 'PHP 代码示例',
   sec_lang_go: 'Go 代码示例',
   sec_lang_rust: 'Rust 代码示例',
+  sec_identity_m1_nfc: '凭证校验代码（教学伪代码，非设备配置）',
 };
 
 for (const path of SECURITY_PATHS) {

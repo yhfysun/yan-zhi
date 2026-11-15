@@ -742,6 +742,52 @@ export const SECURITY_GLOSSARY = {
   签名: {
     explanation: '用私钥对软件或元数据生成可验证标记，接收方用公钥确认来源和内容未被篡改。',
   },
+  M1: {
+    fullName: 'MIFARE Classic 1K',
+    explanation: '一种 13.56MHz 高频卡，容量 1K 字节，分 16 个扇区，每扇区 4 块；每扇区用独立密钥控制读写，是老式门禁里最常见的卡型。',
+  },
+  NFC: {
+    fullName: 'Near Field Communication（近场通信）',
+    explanation: '十厘米内的短距离无线通信技术。手机和读卡器靠它给卡片供电并交换数据，卡本身通常不带电池。',
+  },
+  MIFARE: {
+    explanation: '恩智浦的一系列非接触式卡片产品族，包含 M1、Ultralight 和支持双向认证的 DESFire 等型号，不同型号的安全能力差别很大。',
+  },
+  UID: {
+    fullName: 'Unique Identifier（唯一标识符）',
+    explanation: '卡片的出厂卡号，存在第 0 块。它是可读取的公开标识，不是密钥；普通空白卡的这一块不可改写。',
+  },
+  BCC: {
+    fullName: 'Block Check Character（块校验字节）',
+    explanation: '第 0 块里由卡号四个字节异或得到的校验值，用来发现卡号读取错误；复制时必须与卡号保持一致。',
+  },
+  SAK: {
+    fullName: 'Select Acknowledge（选择应答）',
+    explanation: '读卡器选中卡片时返回的一个字节，用来标明卡片类型和是否支持后续协议，帮助判断这是不是一张 M1 卡。',
+  },
+  ATQA: {
+    fullName: 'Answer To Request A（请求应答类型 A）',
+    explanation: '卡片在寻卡阶段返回的两个字节，配合 SAK 一起判断卡片符合哪种 13.56MHz 协议与芯片族。',
+  },
+  CUID: {
+    fullName: 'Changeable UID（可改写卡号卡）',
+    explanation: '一种第 0 块允许改写的空白卡，教学里用来演示「连同卡号一起复制」；普通空白卡写不进这一块。',
+  },
+  扇区尾: {
+    explanation: '每个扇区的第 4 块，存放两把扇区密钥、访问控制位和一个通用字节。它决定这个扇区能读还是能写，写坏会让整扇区不可用。',
+  },
+  访问控制位: {
+    explanation: '扇区尾里规定两把密钥各自权限的 4 个字节，例如某把密钥只读、另一把可写。配置错误会把自己锁在扇区外面。',
+  },
+  密码本: {
+    explanation: '一份候选密钥清单。逐扇区拿候选密钥尝试认证，命中即说明该扇区用了弱密钥；字典只覆盖已知值，尝试次数必须设上限。',
+  },
+  一卡一密: {
+    explanation: '每张卡用独立派生的扇区密钥，而不是全系统共用一个出厂密钥。这样即使一张卡被读出，也拿不到其他卡的密钥。',
+  },
+  挂失黑名单: {
+    explanation: '服务端维护的已挂失卡号列表。验卡时先查名单，让复制卡和丢失卡在后台立刻失效，而不是只依赖卡片本身。',
+  },
 } satisfies Record<string, Omit<SecurityTerm, 'term'>>;
 
 export type SecurityTermKey = keyof typeof SECURITY_GLOSSARY;
@@ -751,6 +797,10 @@ export function securityTerms(keys: readonly SecurityTermKey[]): SecurityTerm[] 
 }
 
 export const SECURITY_MODULE_TERM_KEYS = {
+  sec_identity_m1_nfc: [
+    'M1', 'NFC', 'MIFARE', 'UID', 'BCC', 'SAK', 'ATQA', 'CUID',
+    '扇区尾', '访问控制位', '密码本', '一卡一密', '挂失黑名单',
+  ],
   sec_fund_threat_model: ['STRIDE', '数据流图', '对象存储', '预签名 URL', '多租户', 'MIME'],
   sec_fund_auth: ['密码哈希', '慢哈希', 'MFA', 'HttpOnly', 'SameSite', 'CSRF'],
   sec_fund_network: ['TLS', 'HTTPS', 'VPN', '堡垒机', 'NetworkPolicy'],
