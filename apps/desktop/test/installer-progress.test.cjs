@@ -99,6 +99,22 @@ describe('Windows 安装器进度页', () => {
     assert.match(ignore, /!apps\/desktop\/build\/installerHeader\.bmp/);
   });
 
+  test('header 改中文产品名，安装中隐藏上一步/下一步且离开时恢复', () => {
+    // 1037/1038 是 MUI2 header 的标题/副标题控件，位于外层窗口
+    assert.match(INSTALLER, /GetDlgItem \$1 \$HWNDPARENT 1037/);
+    assert.match(INSTALLER, /STR:言智 正在安装到您的电脑中，请稍等。/);
+    // 按钮 1=Next、3=Back；0=SW_HIDE
+    assert.match(INSTALLER, /GetDlgItem \$1 \$HWNDPARENT 3[\s\S]*?ShowWindow \$1 0/);
+    assert.match(INSTALLER, /GetDlgItem \$1 \$HWNDPARENT 1[\s\S]*?ShowWindow \$1 0/);
+    // ★ 离开安装页必须显式恢复，否则完成页没有「完成」按钮
+    assert.match(INSTALLER, /MUI_PAGE_CUSTOMFUNCTION_LEAVE yzInstFilesLeave/);
+    assert.match(INSTALLER, /Function yzInstFilesLeave[\s\S]*?ShowWindow \$1 1[\s\S]*?ShowWindow \$1 1/);
+  });
+
+  test('底部 branding 留空（极简，不再显示 yan-zhi <版本>）', () => {
+    assert.match(INSTALLER, /BrandingText " "/);
+  });
+
   test('所有 Windows NSIS 配置都接入自定义安装脚本', () => {
     for (const name of NSIS_CONFIGS) {
       const yml = fs.readFileSync(path.join(DESKTOP, name), 'utf8');

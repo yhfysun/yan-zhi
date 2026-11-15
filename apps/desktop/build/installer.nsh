@@ -11,6 +11,8 @@
 !macro customHeader
   ShowInstDetails nevershow
   InstProgressFlags smooth
+  ; 底部默认显示 "yan-zhi <版本>"，对标 TRAE 的极简直接留空（空格占位防布局塌陷）
+  BrandingText " "
 !macroend
 
 !ifndef BUILD_UNINSTALLER
@@ -39,6 +41,17 @@
     Push $1
     Push $2
     IfSilent yzInstallPageDone
+    ; header 标题/副标题（控件 1037/1038 在外层窗口）改成中文产品名，
+    ; 覆盖 electron-builder 默认的 "yan-zhi 正在安装，请稍候。"
+    GetDlgItem $1 $HWNDPARENT 1037
+    SendMessage $1 ${WM_SETTEXT} 0 "STR:正在安装"
+    GetDlgItem $1 $HWNDPARENT 1038
+    SendMessage $1 ${WM_SETTEXT} 0 "STR:言智 正在安装到您的电脑中，请稍等。"
+    ; 安装进行中隐藏 上一步/下一步（保留取消），页面更接近单页进度
+    GetDlgItem $1 $HWNDPARENT 3
+    ShowWindow $1 0
+    GetDlgItem $1 $HWNDPARENT 1
+    ShowWindow $1 0
     ; 进度条（控件 1004）着色为品牌绿：COLORREF 是 0x00BBGGRR，#16a34a → 0x004AA316。
     ; 启用 comctl32 v6 视觉样式时该消息可能被忽略，此时退化为系统默认色，不影响安装本身。
     FindWindow $1 "#32770" "" $HWNDPARENT
@@ -52,8 +65,19 @@
     Pop $1
   FunctionEnd
 
+  ; 离开安装页时显式恢复按钮 —— NSIS 不保证自己恢复，漏了会让完成页没有「完成」按钮
+  Function yzInstFilesLeave
+    IfSilent yzLeaveDone
+    GetDlgItem $1 $HWNDPARENT 1
+    ShowWindow $1 1
+    GetDlgItem $1 $HWNDPARENT 3
+    ShowWindow $1 1
+    yzLeaveDone:
+  FunctionEnd
+
   !macro customPageAfterChangeDir
     !define MUI_PAGE_CUSTOMFUNCTION_SHOW yzInstallPageShow
+    !define MUI_PAGE_CUSTOMFUNCTION_LEAVE yzInstFilesLeave
   !macroend
 
   !macro yzMarkFilesExtracted
