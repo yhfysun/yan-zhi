@@ -135,11 +135,6 @@ const zhouyiFocusTrack = ref<'T0' | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T
 // 每次左栏点击 / 测算台回课都 +1：同一路径重复点击时 focusTrack 值不变，watch 不触发，
 // 工作台就收不到「再展开一次并滚动到位」的请求（用户实报「课卡点不了」）。
 const zhouyiFocusNonce = ref(0);
-// 周易路径名（左栏分组标题与课卡 meta；与 ZhouyiWorkbench 的 tracks 同源口径，轻量常量避免额外请求）
-const ZHOUYI_TRACK_LABEL: Record<string, string> = {
-  T0: '入门与读法', T1: '经传精读', T2: '符号与象数语言', T3: '易学史与注疏',
-  T4: '图书与易图学', T5: '术数 · 易占', T6: '术数 · 风水命理择日', T7: '外缘与研究方法',
-};
 /** 周易已完成课时 id（左栏课卡打勾用；读 ZhouyiWorkbench 维护的同一 localStorage key） */
 const completedZhouyi = ref<string[]>([]);
 function readZhouyiProgress(): void {
@@ -149,23 +144,16 @@ function readZhouyiProgress(): void {
     completedZhouyi.value = Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
   } catch { completedZhouyi.value = []; }
 }
+/** 周易课程总数（左栏导航卡 meta；48 门由服务端课程目录决定，不写死） */
+const zhouyiCourseTotal = computed(() =>
+  courses.value.flatMap((g) => g.courses).filter((c) => c.kind === 'zhouyi').length,
+);
 function onZhouyiFocusChange(active: boolean) {
   zhouyiFocusing.value = active;
   if (!active) readZhouyiProgress(); // 退出沉浸台时同步完成态到左栏课卡
 }
-// 左栏课程分组：周易 48 门不再平铺成一组长列表（用户圈红），按 T0-T7 路径拆成 8 组
-const groupedCourses = computed<CourseGroup[]>(() => {
-  if (subject.value !== '周易') return courses.value;
-  const out: CourseGroup[] = [];
-  for (const grp of courses.value) {
-    if (grp.stage !== '周易') { out.push(grp); continue; }
-    for (const [tid, label] of Object.entries(ZHOUYI_TRACK_LABEL)) {
-      const list = grp.courses.filter((c) => (c.zhouyiTrack || 'T0') === tid);
-      if (list.length) out.push({ stage: `${label}（${tid}）`, courses: list });
-    }
-  }
-  return out;
-});
+// 左栏课程分组：周易科目不走此渲染（左栏只做导航入口，课程地图唯一呈现处在中栏工作台）
+const groupedCourses = computed<CourseGroup[]>(() => courses.value);
 type SoftRegion = { name: string; officialUrl: string; registrationUrl: string };
 type SoftLiveNotice = { title: string; url: string; source: '全国' | '地区' };
 type SoftLiveInfo = {
@@ -600,13 +588,7 @@ function openCourse(c: CourseView) {
     tab.value = 'music';
     return;
   }
-  if (c.kind === 'zhouyi') {
-    // 带上课程对应的路径：左栏点击联动展开周易学习台的该路径课时（独立学科，不挂传统文化）
-    zhouyiFocusTrack.value = c.zhouyiTrack || '';
-    zhouyiFocusNonce.value += 1;
-    tab.value = 'zhouyi';
-    return;
-  }
+  // 周易课卡不再进左栏（左栏只做导航入口）；左栏导航卡直接切 tab
   // 选中课程 → 中栏立即出现该课关卡地图（修"点了没用"）；
   // 但用户正在词汇表通读时保持当前 Tab（换书词汇表跟着换，不把人踢回闯关）
   if (tab.value !== 'words' && tab.value !== 'scenes') tab.value = 'drill';
@@ -1937,7 +1919,35 @@ watch(softExamDate, (value) => {
           </div>
         </div>
 
-        <div class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
+        <!-- 周易：左栏只做导航入口。48 张课卡与中栏课程地图完全重复（用户实报「和中间的卡片重复了」），
+             课程列表唯一呈现处在中栏 ZhouyiWorkbench；英语词书课卡保留（选词书是必要交互） -->
+        <div v-if="subject === '周易'" class="lp-courses">
+          <div class="lp-stage">
+            <h4 class="lp-stage-name">周易 · 独立学科</h4>
+            <button class="lp-course lp-course-zhouyi" :class="{ active: tab === 'zhouyi' }" @click="tab = 'zhouyi'">
+              <span class="lp-course-row">
+                <span class="lp-course-name">课程主线</span>
+                <ChevronRight :size="13" />
+              </span>
+              <span class="lp-course-meta">{{ zhouyiCourseTotal }} 课 · 已完成 {{ completedZhouyi.length }}</span>
+            </button>
+            <button class="lp-course lp-course-zhouyi" :class="{ active: tab === 'divination' }" @click="tab = 'divination'">
+              <span class="lp-course-row">
+                <span class="lp-course-name">测算实践</span>
+                <ChevronRight :size="13" />
+              </span>
+              <span class="lp-course-meta">11 种占法 · 对话测算 · 演练记录</span>
+            </button>
+            <button class="lp-course lp-course-zhouyi" :class="{ active: tab === 'coach' }" @click="switchTab('coach')">
+              <span class="lp-course-row">
+                <span class="lp-course-name">陪练对话</span>
+                <ChevronRight :size="13" />
+              </span>
+              <span class="lp-course-meta">和先生聊聊这一课</span>
+            </button>
+          </div>
+        </div>
+        <div v-else class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
           <div v-for="grp in groupedCourses" :key="grp.stage" class="lp-stage">
             <h4 class="lp-stage-name">{{ grp.stage }}</h4>
             <template v-for="c in grp.courses" :key="c.id">
@@ -1981,20 +1991,6 @@ watch(softExamDate, (value) => {
                   <ChevronRight :size="13" />
                 </span>
                 <span class="lp-course-meta">精读路线 · 点击进入对应阶</span>
-              </button>
-              <button
-                v-else-if="c.kind === 'zhouyi'"
-                class="lp-course lp-course-zhouyi"
-                :class="{ done: completedZhouyi.includes(c.id) }"
-                @click="openCourse(c)"
-              >
-                <span class="lp-course-row">
-                  <span class="lp-course-name">{{ c.name }}</span>
-                  <Check v-if="completedZhouyi.includes(c.id)" :size="13" />
-                  <ChevronRight v-else :size="13" />
-                </span>
-                <!-- 无词书语义：不显示关卡/词数/进度条（那是英语词书卡的字段，周易课会渲染成 0/0 关 · 0 词） -->
-                <span class="lp-course-meta">{{ ZHOUYI_TRACK_LABEL[c.zhouyiTrack || 'T0'] }} · 点击进入对应路径</span>
               </button>
               <button
                 v-else
