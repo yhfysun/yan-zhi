@@ -4,13 +4,15 @@
 <meta charset="utf-8" />
 <title>yan-zhi</title>
 <style>
-  /* 启动加载壳（2026-10-12）：后端健康检查期间显示，主窗 ready-to-show 后销毁。
-     极简：logo 文字 + indeterminate 滑条 + 一行阶段文案。无任何用户侧交互。 */
+  /* 启动加载壳：后端就绪 + 首屏闸门期间显示。
+     进度是主进程按六阶段加权上报的真实值；未收到任何数据时才用 indeterminate 兜底。
+     极简：logo + 进度条 + 阶段/百分比 + 当前动作，无任何用户侧交互。 */
   :root {
     --bg: #1d1d1c;        /* 与主窗 backgroundColor 一致，衔接零闪烁 */
     --title: #e6e6e6;
     --muted: #8a8a8a;
-    --accent: #3b82f6;
+    --faint: #6f6f6f;
+    --accent: #4ade80;    /* 与安装器进度条统一绿色系，深色底上用亮绿 */
     --track: rgba(255, 255, 255, 0.10);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,51 +28,88 @@
     width: 100%; height: 100%;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    gap: 22px;
+    gap: 14px;
   }
   .logo {
     font-size: 30px; font-weight: 600; letter-spacing: 2px;
     color: var(--title);
   }
   .track {
-    width: 240px; height: 4px; border-radius: 2px;
-    background: var(--track); overflow: hidden;
+    width: 280px; height: 5px; border-radius: 3px;
+    background: var(--track); overflow: hidden; margin-top: 8px;
   }
   .bar {
-    height: 100%; width: 30%;
-    background: var(--accent); border-radius: 2px;
-    animation: slide 1.4s linear infinite;
+    height: 100%; width: 0%;
+    background: var(--accent); border-radius: 3px;
+    transition: width .26s ease-out;
   }
-  .bar.failed { animation: none; width: 100%; background: #ef4444; }
+  /* 尚未收到任何真实进度：保留 indeterminate 兜底，避免 0% 看起来像卡死 */
+  .bar.pending { width: 30%; transition: none; animation: slide 1.4s linear infinite; }
+  .bar.failed { animation: none; transition: none; width: 100%; background: #ef4444; }
   @keyframes slide {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(333%); }
   }
-  .caption {
-    font-size: 12px; color: var(--muted);
+  .meta {
+    width: 280px; display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .phase { font-size: 12px; color: var(--muted); }
+  .pct { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .detail {
+    font-size: 11px; color: var(--faint);
     max-width: 420px; text-align: center;
     line-height: 1.6; white-space: pre-line;
+    min-height: 18px;
   }
+  .detail.failed-text { color: #ef4444; }
 </style>
 </head>
 <body>
   <div class="root">
     <div class="logo">言智</div>
-    <div class="track"><div id="bar" class="bar"></div></div>
-    <div id="caption" class="caption">正在准备运行环境…</div>
+    <div class="track"><div id="bar" class="bar pending"></div></div>
+    <div class="meta">
+      <span id="phase" class="phase">正在准备运行环境…</span>
+      <span id="pct" class="pct">0%</span>
+    </div>
+    <div id="detail" class="detail"></div>
   </div>
 
   <script>
     (function () {
       var bar = document.getElementById('bar');
-      var caption = document.getElementById('caption');
+      var phaseEl = document.getElementById('phase');
+      var pctEl = document.getElementById('pct');
+      var detailEl = document.getElementById('detail');
+      var terminated = false;   // 失败态终止：不再被后续普通 update 冲回蓝条
+      var lastPct = 0;
       // splash-preload.cjs 暴露 window.splashAPI；直接 file:// 调试时无 api，展示默认态
       var api = window.splashAPI;
+
       function apply(u) {
-        if (!u || typeof u !== 'object') return;
-        if (typeof u.caption === 'string') caption.textContent = u.caption;
-        if (u.failed) { bar.classList.add('failed'); }
-        else { bar.classList.remove('failed'); }
+        if (!u || typeof u !== 'object' || terminated) return;
+        if (u.failed) {
+          terminated = true;
+          bar.classList.remove('pending');
+          bar.classList.add('failed');
+          bar.style.width = '100%';   // inline 优先于 .failed，必须显式铺满
+          phaseEl.textContent = typeof u.caption === 'string' ? u.caption : '启动失败';
+          pctEl.textContent = '—';
+          detailEl.textContent = typeof u.detail === 'string' ? u.detail : '';
+          detailEl.classList.add('failed-text');
+          return;
+        }
+        if (typeof u.pct === 'number' && isFinite(u.pct)) {
+          // 前端也钳一次单调，防止下层把进度抵消回去
+          var pct = Math.max(lastPct, Math.min(100, Math.round(u.pct)));
+          lastPct = pct;
+          bar.classList.remove('pending');
+          bar.style.width = pct + '%';
+          pctEl.textContent = pct + '%';
+        }
+        if (typeof u.caption === 'string') phaseEl.textContent = u.caption;
+        if (typeof u.detail === 'string') detailEl.textContent = u.detail;
       }
       if (api && typeof api.onUpdate === 'function') api.onUpdate(apply);
       if (api && typeof api.getLastUpdate === 'function') {

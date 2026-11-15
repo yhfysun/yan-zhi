@@ -20,7 +20,13 @@ const path = require('node:path');
 
 const DESKTOP = path.resolve(__dirname, '..');
 const MAIN = fs.readFileSync(path.join(DESKTOP, 'main.cjs'), 'utf8');
-const YMLS = ['electron-builder.full.yml', 'electron-builder.lite.yml', 'electron-builder.mac.yml'];
+// 四份打包配置都要登记 splash 资源（壳包同样在 Windows 上出 NSIS 安装包）
+const YMLS = [
+  'electron-builder.full.yml',
+  'electron-builder.lite.yml',
+  'electron-builder.shell.yml',
+  'electron-builder.mac.yml',
+];
 
 /** 剥块注释与行注释（统一行尾，CRLF 下 $ 不匹配 \r 的坑已在 send-reentry-lock 踩过） */
 function stripComments(src) {
@@ -46,13 +52,15 @@ describe('splash：超时不得强制创建主窗', () => {
     );
   });
 
-  test('★ 反向校验：超时分支必须 push 失败态（failed: true）', () => {
+  test('★ 反向校验：超时分支必须推失败态（经 reportBootFailure 唯一出口）', () => {
     const anchor = mainCode.indexOf("启动超时（120 秒），不创建主窗");
     const branch = mainCode.slice(anchor, anchor + 1500);
     assert.ok(
-      branch.includes('failed: true'),
-      '超时分支未推送失败态 —— 用户将面对静止的滑条，无任何失败提示',
+      branch.includes('reportBootFailure('),
+      '超时分支未推送失败态 —— 用户将面对静止的进度条，无任何失败提示',
     );
+    // failed:true 由纯函数真实返回，在 splash-progress.test.cjs 里真跑断言（不是文本存在性）
+    assert.ok(MAIN.includes('function reportBootFailure(caption)'), '缺少失败态唯一出口');
   });
 
   test('健康检查超时上限为 120 秒常量（不再硬编码 30s）', () => {
@@ -104,7 +112,7 @@ describe('splash：生命周期收口', () => {
 });
 
 describe('splash：打包登记', () => {
-  test('★ splash.html 与 splash-preload.cjs 登记进三份 yml 的 files:', () => {
+  test('★ splash.html 与 splash-preload.cjs 登记进四份 yml 的 files:', () => {
     for (const yml of YMLS) {
       const src = fs.readFileSync(path.join(DESKTOP, yml), 'utf8');
       for (const f of ['splash.html', 'splash-preload.cjs']) {
@@ -151,10 +159,14 @@ describe('splash：preload 契约与渲染层', () => {
     );
   });
 
-  test('splash.html 引用 splashAPI 并具备 indeterminate 滑条与失败态', () => {
+  test('★ splash.html 把真实 pct 绑定到进度条宽度，且失败态会终止', () => {
     const html = fs.readFileSync(path.join(DESKTOP, 'splash.html'), 'utf8');
     assert.ok(html.includes('splashAPI'), 'splash.html 未使用 splashAPI');
-    assert.ok(html.includes('animation'), 'splash.html 缺滑条动画');
+    assert.match(html, /bar\.style\.width = pct \+ '%'/, '进度条没有绑定真实 pct（又退回假滑条）');
+    assert.ok(html.includes('pctEl.textContent'), '缺少百分比数字');
+    assert.ok(html.includes('pending'), '缺少「未收到数据」的 indeterminate 兜底');
+    assert.ok(html.includes('animation'), '缺少兜底滑条动画');
+    assert.ok(html.includes('terminated'), '失败态没有终止标志，会被普通 update 冲回蓝条');
     assert.ok(html.includes('failed'), 'splash.html 缺失败态样式');
   });
 
@@ -163,5 +175,54 @@ describe('splash：preload 契约与渲染层', () => {
     assert.ok(MAIN.includes("'splash-preload.cjs'"), 'main.cjs 未加载 splash-preload.cjs');
     assert.ok(fs.existsSync(path.join(DESKTOP, 'splash.html')));
     assert.ok(fs.existsSync(path.join(DESKTOP, 'splash-preload.cjs')));
+  });
+});
+
+describe('splash：真实进度上报链路', () => {
+  test('主进程 require 同一份纯函数实现（不是另写一份）', () => {
+    assert.ok(MAIN.includes("require('./splash-progress.cjs')"), 'main.cjs 未接入进度模块');
+    assert.ok(fs.existsSync(path.join(DESKTOP, 'splash-progress.cjs')));
+  });
+
+  test('★ 六个阶段都在真实启动事件上打点', () => {
+    for (const phase of ['prepare', 'backend', 'connect', 'window', 'render', 'done']) {
+      assert.ok(
+        mainCode.includes(`reportBootPhase('${phase}'`),
+        `缺少 ${phase} 阶段上报 —— 进度条会在该阶段停住`,
+      );
+    }
+  });
+
+  test('★ 满格帧：show 之后推 done，延后销毁让用户真的看到 100%', () => {
+    const gate = mainCode.indexOf('const revealMainWindow = () => {');
+    assert.ok(gate > 0);
+    const seg = mainCode.slice(gate, gate + 1200);
+    const showIdx = seg.indexOf('mainWindow.show()');
+    const doneIdx = seg.indexOf("reportBootPhase('done')");
+    const destroyIdx = seg.indexOf('destroySplashWindow();');
+    assert.ok(showIdx > 0 && doneIdx > showIdx, 'done 必须在 mainWindow.show() 之后');
+    assert.ok(destroyIdx > doneIdx, '必须先推满格再销毁 splash');
+    assert.ok(seg.includes('SPLASH_FINISH_HOLD_MS'), '缺少满格停留时长');
+    const hold = Number((MAIN.match(/SPLASH_FINISH_HOLD_MS = (\d+)/) || [])[1]);
+    assert.ok(hold >= 260, `满格停留 ${hold}ms 小于进度条 CSS 过渡 260ms，用户看不到走满`);
+  });
+
+  test('★ 后端启动失败也推失败态（原来只弹模态框，splash 永久转圈）', () => {
+    const anchor = mainCode.indexOf("后端] 启动失败:");
+    assert.ok(anchor > 0, '找不到后端启动失败分支');
+    assert.ok(
+      mainCode.slice(anchor, anchor + 500).includes('reportBootFailure('),
+      '后端启动失败时 splash 没有停下来',
+    );
+  });
+
+  test('★ splash-progress.cjs 登记进四份 yml 的 files:', () => {
+    for (const yml of YMLS) {
+      const src = fs.readFileSync(path.join(DESKTOP, yml), 'utf8');
+      assert.ok(
+        /^\s*-\s+splash-progress\.cjs\s*$/m.test(src),
+        `${yml} 未登记 splash-progress.cjs —— 打包版启动即崩`,
+      );
+    }
   });
 });

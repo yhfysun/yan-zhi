@@ -33,6 +33,10 @@ dist-release-*/
 dist-download/
 apps/desktop/build/*
 !apps/desktop/build/installer.nsh
+# NSIS 向导位图必须入库：electron-builder 默认在 build/ 下找这两张图，
+# 漏掉 = CI 打出的安装包退回默认蓝色渐变向导图（改造静默失效）。
+!apps/desktop/build/installerSidebar.bmp
+!apps/desktop/build/installerHeader.bmp
 apps/desktop/runtime/
 apps/desktop/release-lite/
 apps/desktop/release/

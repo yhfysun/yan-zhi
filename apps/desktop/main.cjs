@@ -9,6 +9,8 @@ const os = require('os');
 // 实例配置单一真相源：端口 / userData / 共享目录一律从这里取，禁止在本文件再硬编码。
 // 目的见 instance.cjs 顶部注释（dev 与安装版的运行期隔离）。
 const inst = require('./instance.cjs');
+// 启动加载壳的进度计算（纯函数，有单测）：六阶段加权 + 阶段内衰减，绝不倒退/提前满格。
+const { createBootProgress } = require('./splash-progress.cjs');
 // ★ 外链协议白名单（纯函数模块，有单测）—— 必须在**顶部** require：
 //   guardNavigation 在 ~800 行（主窗口创建处）就要用，靠后的 const 会 TDZ 抛错。
 //   四道闸门：① shell:openExternal 白名单 ② 主窗口 windowOpenHandler
@@ -564,11 +566,27 @@ let splashLastUpdate = null;   // splashAPI.getLastUpdate 的数据源（防错�
 const SPLASH_HEALTH_TIMEOUT_MS = 120000; // dev tsx 冷编译实测 60s+，30s 太紧
 // 主窗首屏闸门兜底：渲染层异常/脚本报错时永远等不到 ui-ready，超时后照旧显示，别让 splash 常驻
 const MAIN_REVEAL_TIMEOUT_MS = 15000;
+// 满格那一帧：show() 后先推 100%，留给用户看一眼再销毁（仍在首屏闸门内）
+// 必须大于 splash.html 里 .bar 的 width 过渡（260ms），否则进度条还没滑到 100% 就被销毁
+const SPLASH_FINISH_HOLD_MS = 360;
+const splashBoot = createBootProgress();
+
+// ★ 进度上报唯一出口：所有阶段与失败态都必须经这里，避免各处直接 send 绕过单调钳制。
 function pushSplashUpdate(update) {
+  if (!update) return;
   splashLastUpdate = update;
   if (splashWindow && !splashWindow.isDestroyed()) {
     splashWindow.webContents.send('splash:update', update);
   }
+}
+function reportBootPhase(phase, opts) {
+  pushSplashUpdate(splashBoot.advance(phase, opts));
+}
+function reportBootDetail(text) {
+  pushSplashUpdate(splashBoot.detail(text));
+}
+function reportBootFailure(caption) {
+  pushSplashUpdate(splashBoot.fail(caption));
 }
 function createSplashWindow() {
   if (splashWindow && !splashWindow.isDestroyed()) return;
@@ -592,6 +610,11 @@ function createSplashWindow() {
     },
   });
   void splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+  // 立即重放最新状态，修掉「前 3 秒只有默认文案」的静默期。
+  // startServer() 在本函数之前已打点，splash 打开就能看到真实阶段而不是空转圈；
+  // 渲染层此时可能尚未加载完，getLastUpdate() 会再回拉一次 splashLastUpdate 兜底。
+  if (splashBoot.state.phaseIndex < 0) reportBootPhase('prepare');
+  pushSplashUpdate(splashBoot.current());
 }
 function destroySplashWindow() {
   if (splashWindow && !splashWindow.isDestroyed()) {
@@ -1599,6 +1622,10 @@ async function stopIncompatibleServer() {
  */
 function scheduleBackendRestart(code, detached = false) {
   if (detached || isQuitting || SHELL_MODE) return;
+  // 启动过程中后端崩溃时 splash 可能还在，给出可见原因，别让进度条无声停住
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    reportBootDetail(`后端服务异常退出（code=${code}），正在自动恢复…`);
+  }
   if (backendRestartInFlight || serverRestartTimer) return;
   if (backendRestartAttempts >= BACKEND_AUTO_RESTART_MAX) {
     console.error(`[后端恢复] 已达到自动重启上限 ${BACKEND_AUTO_RESTART_MAX} 次，停止重试（code=${code}）`);
@@ -2006,14 +2033,18 @@ function createWindow() {
     // 还原上次的最大化状态（在 show 之前 maximize，避免先闪一下小窗再铺满）
     if (restoreMaximized) { try { mainWindow.maximize(); } catch { /* ignore */ } }
     mainWindow.show();
+    // ★ 满格那一帧：先推 100%，停留 SPLASH_FINISH_HOLD_MS 再销毁，让用户真的看到进度走满。
+    //   100% 只由这里的真实 show 事件触发，15s 兜底放行也走这条路径，不凭空补满。
+    reportBootPhase('done');
     // ★ splash 生命周期收口：主窗真正可见后才销毁（无缝衔接，不白闪）。
     //   挂在首屏闸门里而非健康检查通过处 —— 建窗 ≠ 可见，更 ≠ 渲染层已挂载。
-    destroySplashWindow();
+    setTimeout(() => { destroySplashWindow(); }, SPLASH_FINISH_HOLD_MS);
   };
   const gatedWc = mainWindow.webContents;
   const onUiReady = (event) => {
     if (event.sender !== gatedWc) return;
     mainUiReady = true;
+    reportBootPhase('render', { detail: '界面脚本已挂载' });
     revealMainWindow();
   };
   ipcMain.on('ui-ready', onUiReady);
@@ -2032,6 +2063,7 @@ function createWindow() {
     // ready-to-show 再走一次 WM_SETICON；dev 与安装版使用同一套逻辑。
     applyWindowIcon(mainWindow);
     mainReadyToShow = true;
+    reportBootPhase('render', { detail: '主窗口已绘制' });
     revealMainWindow();
   });
 
@@ -16238,10 +16270,13 @@ app.whenReady().then(async () => {
   //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
   await browserBridge.start();
   await startLocalCapabilitiesRuntime();
+  reportBootPhase('backend');
   const serverStartupPromise = startServer();
   serverStartupPromise.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[后端] 启动失败:', err);
+    // ★ 后端起不来时 splash 必须停下来显示失败态，不能让用户对着永久转圈 + 一个模态框
+    reportBootFailure(`后端服务未能启动：${msg}\n请关闭占用 ${API_PORT} 端口的其它言智实例后重试。`);
     dialog.showErrorBox('后端启动失败', `${msg}\n\n请关闭占用 ${API_PORT} 端口的其它言智实例后重试。`);
   });
 
@@ -16284,6 +16319,7 @@ app.whenReady().then(async () => {
     if (windowCreated || !backendReady || (isDevWindow && !viteReady)) return;
     windowCreated = true;
     console.log('[启动] 后端与前端均已就绪，创建窗口');
+    reportBootPhase('window');
     createWindow();
   };
 
@@ -16300,6 +16336,7 @@ app.whenReady().then(async () => {
       settled = true;
       viteReady = true;
       console.log('[vite] dev server 就绪');
+      reportBootDetail('开发服务器已就绪');
       tryCreateWindow();
     });
     req.on('error', retry);
@@ -16310,6 +16347,7 @@ app.whenReady().then(async () => {
     if (backendReady) return;
     backendReady = true;
     console.log('[后端] 健康检查通过');
+    reportBootDetail('后端服务已就绪');
     tryCreateWindow();
   };
   const startedAt = Date.now();
@@ -16321,23 +16359,21 @@ app.whenReady().then(async () => {
     if (SHELL_MODE && !healthUrl) {
       // 未内置地址：没有可探活的目标，直接放行到登录页（用户在那里填服务器地址）
       console.log('[后端] 轻量壳未内置后端地址，跳过健康检查，直接进入登录页');
+      // 壳包没有本机后端，阶段 2/3 被整段跳过；明确推进到建窗阶段，避免进度条停在原地
+      reportBootPhase('window', { detail: '轻量壳模式，跳过本机后端' });
       onBackendReady();
       return;
     }
     if (Date.now() - startedAt >= SPLASH_HEALTH_TIMEOUT_MS) {
       console.error('[后端] 启动超时（120 秒），不创建主窗，splash 显示失败态');
       try { fs.appendFileSync(path.join(app.getPath('userData'), 'server.log'), `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [后端] 120 秒健康检查超时，后端未就绪（大概率后端启动失败，见上方日志）；主窗未创建，请在 splash 结束后重启应用\n`); } catch {}
-      pushSplashUpdate({
-        failed: true,
-        caption: '启动失败：后端服务未能在 120 秒内就绪。\n请查看日志后重启应用。\n' + path.join(app.getPath('userData'), 'server.log'),
-      });
+      reportBootFailure('后端服务未能在 120 秒内就绪。\n请查看日志后重启应用。\n' + path.join(app.getPath('userData'), 'server.log'));
       return;
     }
-    // 每 20 次重试（约 3 秒）刷新一次等待文案，避免用户面对静止画面
-    if (retries > 0 && retries % 20 === 0) {
-      const sec = Math.round((Date.now() - startedAt) / 1000);
-      pushSplashUpdate({ caption: `正在启动后端服务…（已等待 ${sec} 秒）` });
-    }
+    // 阶段内真实进度 + 等待秒数：纯函数按 pct 变化节流，150ms 轮询不会刷屏。
+    // 旧实现每 3 秒才改一句文案，其余时间只有假滑条 —— 这里是「看得见在动」的关键。
+    const sec = Math.round((Date.now() - startedAt) / 1000);
+    reportBootPhase('connect', { detail: `已等待 ${sec} 秒` });
     // settled 守卫：error 与 timeout 可能先后触发，不加会派生出多条并发重试链
     let settled = false;
     const retry = () => {

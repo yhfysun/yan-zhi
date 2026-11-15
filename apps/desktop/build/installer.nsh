@@ -1,15 +1,15 @@
 ; NSIS 自定义安装脚本
 ; 参考：https://www.electron.build/nsis
 ;
-; electron-builder 默认设置 ShowInstDetails nevershow，并在安装阶段执行
-; SetDetailsPrint none，用户只能看到进度条移动，不知道当前在做什么。
-; 这里重新打开详情面板，展示安装阶段说明，并直接更新安装页的状态行；
-; 进度条仍由 NSIS 按 SectionSetSize 和实际解压进度驱动。
+; 2026-11-15 改造（对标 TRAE CN）：electron-builder 默认隐藏安装详情，旧实现靠
+; 打开详情面板 + 四阶段中文日志来补偿，结果是一整块滚动文字和步骤编号。
+; 现在改为极简：隐藏详情列表，只保留顶部单行「当前动作」+ 平滑进度条，
+; 并给系统进度条上品牌绿。静默安装(/S) 下所有 UI 操作一律跳过。
 
 !include "WinMessages.nsh"
 
 !macro customHeader
-  ShowInstDetails show
+  ShowInstDetails nevershow
   InstProgressFlags smooth
 !macroend
 
@@ -17,57 +17,47 @@
   ; 升级安装前强制结束言智主进程与它拉起的后端进程。
   ; 后端可能继承 detached 模式继续占用 3001；只覆盖安装而不结束它，新版前端会接到旧后端。
   !macro customCheckAppRunning
-    DetailPrint "正在关闭旧版言智主程序与后台服务..."
     nsExec::ExecToLog 'taskkill /F /T /IM "yan-zhi.exe"'
     Sleep 1200
   !macroend
 
-  ; 详情区只显示日志，不抢顶部状态行。安装区开始后 electron-builder 会再次
-  ; 执行 SetDetailsPrint none，因此每次更新阶段时都要重新打开列表输出。
-  Function yzWriteInstallOverview
-    SetDetailsPrint listonly
-    DetailPrint "言智安装进度"
-    DetailPrint "安装位置：$INSTDIR"
-    DetailPrint "----------------------------------------"
-    DetailPrint "[1/4] 准备安装环境"
-    DetailPrint "       检查安装目录、旧版本和正在运行的程序。"
-    DetailPrint "[2/4] 解压应用文件"
-    DetailPrint "       释放主程序、运行环境和应用资源；本阶段耗时最长。"
-    DetailPrint "[3/4] 创建快捷方式"
-    DetailPrint "       创建开始菜单、桌面快捷方式并写入卸载信息。"
-    DetailPrint "[4/4] 完成安装"
-    DetailPrint "       完成最后设置并检查安装结果。"
-    DetailPrint "----------------------------------------"
-  FunctionEnd
-
-  Function yzInstallPageShow
-    Call yzWriteInstallOverview
-    ; 安装页 SHOW 时 NSIS 已进入文件释放 Section。此阶段要解压约 500MB，
-    ; 是全程最耗时的步骤；状态行必须直接显示 [2/4]，不能停在 [1/4]。
-    Push "[2/4] 正在解压应用文件，请稍候..."
-    Call yzSetInstallStatus
-  FunctionEnd
-
+  ; 顶部状态行（控件 1006）是安装页唯一的动态文字位：一句当前动作，不带步骤编号。
+  ; Exch/Pop 必须在 IfSilent 之外，保证调用方 Push 的参数在任何分支都被消耗掉。
   Function yzSetInstallStatus
     Exch $0
+    IfSilent yzStatusDone
     Push $1
-    SetDetailsPrint listonly
-    DetailPrint "$0"
     FindWindow $1 "#32770" "" $HWNDPARENT
     GetDlgItem $1 $1 1006
     SendMessage $1 ${WM_SETTEXT} 0 "STR:$0"
     Pop $1
+    yzStatusDone:
     Pop $0
+  FunctionEnd
+
+  Function yzInstallPageShow
+    Push $1
+    Push $2
+    IfSilent yzInstallPageDone
+    ; 进度条（控件 1004）着色为品牌绿：COLORREF 是 0x00BBGGRR，#16a34a → 0x004AA316。
+    ; 启用 comctl32 v6 视觉样式时该消息可能被忽略，此时退化为系统默认色，不影响安装本身。
+    FindWindow $1 "#32770" "" $HWNDPARENT
+    GetDlgItem $2 $1 1004
+    SendMessage $2 ${PBM_SETBARCOLOR} 0 0x004AA316
+    ; 安装页 SHOW 时已进入最耗时的文件释放阶段（约 500MB），直接给出当前动作
+    Push "正在解压缩应用文件，请稍等…"
+    Call yzSetInstallStatus
+    yzInstallPageDone:
+    Pop $2
+    Pop $1
   FunctionEnd
 
   !macro customPageAfterChangeDir
     !define MUI_PAGE_CUSTOMFUNCTION_SHOW yzInstallPageShow
   !macroend
 
-  ; 应用文件解压是整个安装中最耗时的阶段。解压完成后再告知用户剩余动作，
-  ; 避免长时间只显示一句笼统的“正在安装”。
   !macro yzMarkFilesExtracted
-    Push "[3/4] 应用文件已解压，正在创建快捷方式并写入安装信息..."
+    Push "应用文件已解压，正在创建快捷方式…"
     Call yzSetInstallStatus
   !macroend
 
@@ -84,7 +74,7 @@
   !macroend
 
   !macro customInstall
-    Push "[4/4] 正在完成最后设置并检查安装结果..."
+    Push "正在完成最后设置…"
     Call yzSetInstallStatus
     ; 覆盖升级后让 Explorer 立即重读 exe / 快捷方式图标，避免任务栏继续显示旧图标。
     nsExec::ExecToLog 'ie4uinit.exe -show'

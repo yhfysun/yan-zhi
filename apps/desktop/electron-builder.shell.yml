@@ -25,6 +25,7 @@ files:
   - snip-overlay.js
   - splash.html
   - splash-preload.cjs
+  - splash-progress.cjs
   - keyring-crypto.cjs
   - instance.cjs
   - url-guard.cjs
