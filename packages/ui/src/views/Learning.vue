@@ -2792,19 +2792,25 @@ watch(softExamDate, (value) => {
 
       <aside v-if="tab === 'coach' && !rightCollapsed" class="lp-card lp-col-right lp-coach-side" :class="{ collapsed: !coachHistoryOpen }">
         <div class="lp-side-head">
-          <div class="lp-side-title">
-            <History :size="15" />
-            <span>{{ coachHistoryOpen ? '对话记录' : '记录' }}</span>
-          </div>
+          <!-- 折叠态 = 单个图标按钮（竖排文字标签已退役：所有科目陪练共用此侧栏，改一处全覆盖） -->
           <button
+            v-if="!coachHistoryOpen"
             class="lp-side-toggle"
-            :title="coachHistoryOpen ? '收起对话记录' : '展开对话记录'"
-            :aria-expanded="coachHistoryOpen"
-            @click="coachHistoryOpen = !coachHistoryOpen"
+            title="展开对话记录"
+            aria-label="展开对话记录"
+            @click="coachHistoryOpen = true"
           >
-            <ChevronRight v-if="coachHistoryOpen" :size="15" />
-            <ChevronLeft v-else :size="15" />
+            <History :size="15" />
           </button>
+          <template v-else>
+            <div class="lp-side-title">
+              <History :size="15" />
+              <span>对话记录</span>
+            </div>
+            <button class="lp-side-toggle" title="收起对话记录" aria-expanded="true" @click="coachHistoryOpen = false">
+              <ChevronRight :size="15" />
+            </button>
+          </template>
         </div>
         <div v-show="coachHistoryOpen" class="lp-side-body">
           <p class="lp-side-meta">{{ coachRound }} 轮 · 只保留这次陪练</p>
@@ -3093,8 +3099,7 @@ watch(softExamDate, (value) => {
 .lp-side-toggle { width: 26px; height: 26px; flex: 0 0 26px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--glass-bg); color: var(--color-text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .lp-side-toggle:hover { border-color: #9dbcf7; color: #245bdb; }
 .lp-coach-side.collapsed .lp-side-head { flex-direction: column; gap: 8px; }
-.lp-coach-side.collapsed .lp-side-title { flex-direction: column; gap: 7px; }
-.lp-coach-side.collapsed .lp-side-title span { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px; }
+/* 折叠态收成单个图标按钮：竖排文字标签退役（用户实报「竖排记录很丑」） */
 .lp-side-body { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 8px; }
 .lp-side-meta { margin: 0 0 7px; color: var(--color-text-tertiary); font-size: 10px; flex-shrink: 0; }
 .lp-side-body .lp-chat-msgs { flex: 1; min-height: 0; max-height: none; overflow-y: auto; padding: 2px 2px 8px; }
@@ -3316,8 +3321,6 @@ watch(softExamDate, (value) => {
   .lp-mic-radar { left: 50%; bottom: 12px; }
   .lp-coach-side.collapsed { min-height: 40px; padding: 7px 12px; align-items: stretch; }
   .lp-coach-side.collapsed .lp-side-head { flex-direction: row; }
-  .lp-coach-side.collapsed .lp-side-title { flex-direction: row; }
-  .lp-coach-side.collapsed .lp-side-title span { writing-mode: horizontal-tb; letter-spacing: 0; }
   .lp-voice-dock { align-items: flex-start; flex-wrap: wrap; }
   .lp-dock-actions { width: 100%; justify-content: flex-start; }
   .lp-tabs { overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
