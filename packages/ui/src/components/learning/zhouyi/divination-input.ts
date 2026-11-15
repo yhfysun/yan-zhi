@@ -88,6 +88,51 @@ export function buildDivinationInput(
   }
 }
 
+// ===== 输入脱敏（记录详情展示用：生辰打码，非敏感参数全显） =====
+
+/**
+ * 生成可落盘展示的脱敏输入摘要。
+ * ★ 口径：只有「生辰类」字段打码（月/日/时 → **，年保留；姓名只留首字），
+ *   起卦参数类（铜钱背字、梦象、测字、日期、五行、坐向）不属于隐私，全显。
+ *   与隐私契约一致：原始 input 永不落盘，这里生成的是**派生摘要**。
+ */
+export function maskDivinationInput(
+  method: DivinationMethod,
+  input: Record<string, string | number>,
+): string {
+  const s = (k: string): string => String(input[k] ?? '');
+  switch (method) {
+    case 'meihua':
+    case 'sizhu': {
+      const y = s('year') || '****';
+      return `${y}-**-** **时`;
+    }
+    case 'bazhai':
+      return `${s('year')} 年 · ${s('gender') || '**'}`;
+    case 'dayan':
+      return '无输入（seed 起卦）';
+    case 'liuyao':
+      return `铜钱：${s('coins') || '（seed 模拟摇卦）'}`;
+    case 'xuankong':
+      return `${s('yun')} 运 · ${s('sitting') || '**'}坐${s('facing') || '**'}向`;
+    case 'wuxing':
+      return `${s('a') || '**'} × ${s('b') || '**'}`;
+    case 'zari': {
+      const y = s('year'), m = s('month').padStart(2, '0'), d = s('day').padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    case 'cezi':
+      return s('chars') ? `测「${s('chars')}」` : `笔画 ${s('strokes')} 画`;
+    case 'jiemeng':
+      return `梦象「${s('dream')}」`;
+    case 'xingming': {
+      const name = s('name');
+      const maskedName = name ? `${[...name][0] ?? ''}${'*'.repeat(Math.max(0, [...name].length - 1))}` : '';
+      return maskedName ? `${maskedName}（${s('strokes') || '内置笔画表'}）` : `笔画 ${s('strokes')}`;
+    }
+  }
+}
+
 // ===== 一句话解析（自然语言 → 表单预填；本地纯函数，不交给模型编数据） =====
 
 export type DivinationParseResult = {

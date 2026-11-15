@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { runDivination, type DivinationMethod } from '@yan-zhi/shared'
-import { buildDivinationInput, toInt, parseDivinationUtterance, type DivinationFormState } from './divination-input'
+import { buildDivinationInput, toInt, parseDivinationUtterance, maskDivinationInput, type DivinationFormState } from './divination-input'
 
 const base: DivinationFormState = {
   year: '2026', month: '11', day: '15', hour: '9',
@@ -115,6 +115,20 @@ describe('buildDivinationInput · 八法字段契约', () => {
     expect(() => run('xingming', form({ nameStrokes: '4,3,4' }))).not.toThrow()
     expect(run('cezi', form({ ceziStrokes: '8' })).steps.length).toBeGreaterThan(0)
     expect(run('jiemeng', form({ dream: '梦见大水' })).verdict?.label).toContain('占梦')
+  })
+
+  it('脱敏输入摘要：生辰打码、起卦参数全显、姓名留首字', () => {
+    expect(maskDivinationInput('sizhu', { year: 1990, month: 5, day: 21, hour: 14 })).toBe('1990-**-** **时')
+    expect(maskDivinationInput('meihua', { year: 2026, month: 11, day: 15, hour: 9 })).toBe('2026-**-** **时')
+    expect(maskDivinationInput('bazhai', { year: 1990, gender: '男' })).toBe('1990 年 · 男')
+    expect(maskDivinationInput('dayan', {})).toBe('无输入（seed 起卦）')
+    expect(maskDivinationInput('liuyao', { coins: '背字背字背字' })).toBe('铜钱：背字背字背字')
+    expect(maskDivinationInput('xuankong', { yun: 8, sitting: '坎', facing: '离' })).toBe('8 运 · 坎坐离向')
+    expect(maskDivinationInput('wuxing', { a: '金', b: '木' })).toBe('金 × 木')
+    expect(maskDivinationInput('zari', { year: 2026, month: 11, day: 15 })).toBe('2026-11-15')
+    expect(maskDivinationInput('cezi', { chars: '明' })).toBe('测「明」')
+    expect(maskDivinationInput('jiemeng', { dream: '梦见掉牙' })).toBe('梦象「梦见掉牙」')
+    expect(maskDivinationInput('xingming', { name: '王小明', strokes: '' })).toBe('王**（内置笔画表）')
   })
 
   it('一句话解析：梦见 / 测字 / 生辰 / 事类口语', () => {

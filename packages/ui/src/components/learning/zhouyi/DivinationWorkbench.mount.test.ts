@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createApp, nextTick, h, defineComponent, type App } from 'vue'
+import { createPinia } from 'pinia'
 import { runDivination } from '@yan-zhi/shared'
 import DivinationWorkbench from './DivinationWorkbench.vue'
 
@@ -34,6 +35,8 @@ async function mountBench(): Promise<HTMLElement> {
     },
   })
   const app: App = createApp(Host)
+  // 组件内含对话测算（useChatStore/usePlatformStore），真 pinia + jsdom localStorage
+  app.use(createPinia())
   mountedApps.push(app)
   app.mount(el)
   await nextTick()
@@ -133,16 +136,19 @@ describe('DivinationWorkbench · 挂载契约', () => {
     const store = JSON.parse(raw)
     expect(store.meihua?.length).toBe(1)
     expect(store.meihua[0].summary.length).toBeGreaterThan(0)
-    // 隐私契约：出生年月日时等输入绝不落盘
+    // 脱敏输入：年保留、月日时打码；断语 label 落盘
+    expect(store.meihua[0].inputMasked).toBe('2026-**-** **时')
+    expect(store.meihua[0].verdictLabel?.length).toBeGreaterThan(0)
+    // 隐私契约：原始 input 字段名绝不落盘（mask 是派生摘要，非 input 对象）
     expect(raw).not.toContain('"year"')
     expect(raw).not.toContain('"month"')
     expect(raw).not.toContain('"hour"')
   })
 
-  it('⑤ 输入页可直接进记录页，且列表展示所有方法的历史（不只当前方法）', async () => {
+  it('⑤ 输入页可直接进记录页，点条目展开详情（结果断语 + 摘要 + 脱敏输入）', async () => {
     localStorage.setItem('yz.zhouyi.divination.v1', JSON.stringify({
-      meihua: [{ method: 'meihua', methodLabel: '梅花易数', summary: '上卦乾下卦坤', seed: 1, createdAt: '2026-11-15T00:00:00.000Z' }],
-      bazhai: [{ method: 'bazhai', methodLabel: '八宅命卦', summary: '命卦为坎', seed: 2, createdAt: '2026-11-15T01:00:00.000Z' }],
+      meihua: [{ method: 'meihua', methodLabel: '梅花易数', summary: '上卦乾下卦坤', seed: 1, createdAt: '2026-11-15T00:00:00.000Z', inputMasked: '2026-**-** **时', verdictLabel: '体用比和' }],
+      bazhai: [{ method: 'bazhai', methodLabel: '八宅命卦', summary: '命卦为坎', seed: 2, createdAt: '2026-11-15T01:00:00.000Z', inputMasked: '1990 年 · 男', verdictLabel: '东西四命' }],
     }))
     const el = await mountBench()
     const entryBtn = [...el.querySelectorAll('button')]
@@ -155,6 +161,14 @@ describe('DivinationWorkbench · 挂载契约', () => {
     expect(text).toContain('全部演练记录（2 条）')
     expect(text).toContain('梅花易数')
     expect(text).toContain('八宅命卦')
+    // 点击条目 → 展开详情：结果断语、摘要、脱敏输入都要看得见
+    const item = [...el.querySelectorAll('.dv-history-item')][0] as HTMLElement
+    item.click()
+    await nextTick()
+    const detail = el.querySelector('.dv-history-detail')?.textContent ?? ''
+    expect(detail).toContain('结果 ·')
+    expect(detail).toContain('输入（脱敏）')
+    expect(detail).toContain('1990 年 · 男')
     // 没有 result 时「上一步」应回输入页，不能退到不存在的规则复盘
     const prevBtn = [...el.querySelectorAll('button')]
       .find((b) => b.textContent?.trim() === '上一步') as HTMLElement

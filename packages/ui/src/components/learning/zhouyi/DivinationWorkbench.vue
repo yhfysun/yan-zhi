@@ -6,6 +6,8 @@
 // 本文件的 buildInput() 字段名必须与 divination.ts 各 divXxx() 读取的键一致。
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { useChatStore } from '../../../stores/chat';
+import { usePlatformStore } from '../../../stores/platform';
 
 const emit = defineEmits<{
   'focus-change': [enabled: boolean];
@@ -19,7 +21,10 @@ import type {
   DivinationMethod, DivinationSpec, DivinationResult,
   DivinationStep, DivinationCanonRef, DivinationVerdict, ZhouyiShape, ZhouyiCaseEntry,
 } from '@yan-zhi/shared';
-import { buildDivinationInput, toInt, parseDivinationUtterance } from './divination-input';
+import { buildDivinationInput, toInt, parseDivinationUtterance, maskDivinationInput } from './divination-input';
+
+const chat = useChatStore();
+const platformStore = usePlatformStore();
 
 type DivinationDiagram = NonNullable<DivinationStep['diagram']>;
 type DivinationSourceRef = DivinationStep['sourceRef'];
@@ -351,6 +356,10 @@ const STORE_KEY = 'yz.zhouyi.divination.v1';
 type StoredEntry = {
   method: DivinationMethod; methodLabel: string; summary: string;
   seed: number; createdAt: string; refLessonId?: string; caseName?: string;
+  /** 脱敏输入摘要（生辰打码、起卦参数全显；maskDivinationInput 派生，原始 input 仍不落盘） */
+  inputMasked?: string;
+  /** 结果断语 label（白名单口径，便于详情一眼看到「算出了什么」） */
+  verdictLabel?: string;
 };
 type StoreShape = Partial<Record<DivinationMethod, StoredEntry[]>>;
 
@@ -365,7 +374,10 @@ function writeStore(store: StoreShape) {
 }
 
 const savedThisRun = ref(false);
-const viewEntry = ref<StoredEntry | null>(null);
+// 展开的记录用稳定 key（method+seed+createdAt）判定，不用对象引用——history computed
+// 重新求值时数组元素是新对象，引用比较会让详情永远不展开（用户实报「点开没有结果」）。
+const viewKey = ref('');
+const entryKey = (e: StoredEntry): string => `${e.method}|${e.seed}|${e.createdAt}`;
 // 记录页展示所有方法，不再只显示当前 method —— 用户从「梅花」进来却看不到刚跑的「八宅」，
 // 表现就像记录丢了。按时间倒序，靠 e.methodLabel 区分。
 const history = computed<StoredEntry[]>(() => Object.values(readStore())
@@ -380,6 +392,8 @@ function ensureSaved() {
     summary: result.value.summary,
     seed: seed.value,
     createdAt: new Date().toISOString(),
+    inputMasked: maskDivinationInput(result.value.method, buildDivinationInput(result.value.method, f)),
+    verdictLabel: result.value.verdict?.label,
     ...(selectedCase.value ? { caseName: selectedCase.value.name } : {}),
     ...(result.value.refLessonId ? { refLessonId: result.value.refLessonId } : {}),
   };
@@ -401,7 +415,7 @@ async function clearMethodRecords() {
   const store = readStore();
   delete store[method.value];
   writeStore(store);
-  viewEntry.value = null;
+  viewKey.value = '';
   ElMessage.success('已清除本方法记录');
 }
 
@@ -445,8 +459,61 @@ function gotoLesson() {
 
 /** 从输入页直接看记录（不必先跑一次推演）；记录页没有 result 时「上一步」回到输入页。 */
 function openHistory() {
-  viewEntry.value = null;
+  viewKey.value = '';
   stage.value = 'save';
+}
+
+// ===== 对话测算（内嵌与「玄机先生」的对话：像聊天一样问事，不必填表单） =====
+const SUANMING_AGENT_ID = 'a_builtin_suanming'; // ★ 与 apps/server/src/builtin-learning-agents.ts 成对维护
+const showChat = ref(false);
+const chatConvId = ref('');
+const chatInput = ref('');
+const chatSending = ref(false);
+const chatMsgs = computed(() => (chatConvId.value ? chat.messagesByConv[chatConvId.value] || [] : []));
+const chatStreaming = computed(() => !!chatConvId.value && chat.isConvStreaming(chatConvId.value));
+
+async function openChat() {
+  showChat.value = true;
+  if (chatConvId.value) return;
+  await platformStore.ensurePlatforms();
+  await platformStore.ensureModels();
+  chatConvId.value = await chat.createConversation('测算台 · 对话测算', {
+    agentId: SUANMING_AGENT_ID,
+    source: 'learning',
+    sourceMeta: { learningKind: 'free', learningSubject: '周易' },
+  });
+  await chat.loadMessages(chatConvId.value);
+}
+function backToForm() {
+  showChat.value = false;
+}
+async function sendChat(preset?: string) {
+  const content = (preset ?? chatInput.value).trim();
+  if (!content || chatSending.value || !chatConvId.value) return;
+  const conv = chat.conversations.find((c) => c.id === chatConvId.value);
+  let model = conv?.modelId ? platformStore.models.find((m: any) => m.id === conv.modelId) : undefined;
+  if (!model) model = platformStore.models[0] as any;
+  const platform = model ? platformStore.platforms.find((p: any) => p.id === (model as any).platformId) : undefined;
+  if (!platform || !model) {
+    ElMessage.error('还没有可用的 AI 模型 —— 请先在对话页配置平台与模型');
+    return;
+  }
+  chatSending.value = true;
+  try {
+    if (!preset) chatInput.value = '';
+    await chat.sendMessage(content, platform, model, undefined, {}, chatConvId.value);
+  } catch (e) {
+    console.error('[zhouyi] 对话测算发送失败', e);
+    ElMessage.error(e instanceof Error ? `发送失败：${e.message}` : '发送失败，请稍后重试');
+  } finally {
+    chatSending.value = false;
+  }
+}
+/** 把当前排盘结果发给先生解读（只发摘要/seed/事类，不发原始输入） */
+function askAboutResult() {
+  if (!result.value) return;
+  const casePart = selectedCase.value ? `（事类：${selectedCase.value.name}）` : '';
+  void sendChat(`我刚在测算台用「${methodLabel.value}」${casePart}排了盘，seed ${seed.value}。排盘摘要：${result.value.summary}。请按古法口径给我解读这一盘。`);
 }
 </script>
 
@@ -460,7 +527,40 @@ function openHistory() {
     </header>
 
     <main class="dv-main">
-      <div class="dv-paper">
+      <!-- 对话测算：与玄机先生聊天问事（不必填表单，覆盖主区域） -->
+      <section v-if="showChat" class="dv-chat">
+        <header class="dv-chat-head">
+          <div>
+            <b>玄机先生 · 对话测算</b>
+            <span>民俗口径，仅供娱乐参考；医疗 / 投资 / 法律请找专业人士</span>
+          </div>
+          <button type="button" class="dv-btn-light" @click="backToForm">回到表单</button>
+        </header>
+        <div class="dv-chat-msgs">
+          <p v-if="!chatMsgs.length" class="dv-note">
+            直接问就行：「我 1990 年生男，今年适合换工作吗」「梦见大水什么意思」「测个「安」字」。
+            先生按古法口径给吉凶倾向；生辰属隐私，介意可只问事不报年。
+          </p>
+          <div v-for="(m, i) in chatMsgs" :key="i" class="dv-chat-row" :class="m.role">
+            <div class="dv-chat-bubble">{{ m.content }}</div>
+          </div>
+        </div>
+        <div class="dv-chat-entry">
+          <button v-if="result" type="button" class="dv-btn-light" @click="askAboutResult">把刚才的排盘发给先生</button>
+          <input
+            v-model="chatInput"
+            class="dv-chat-input"
+            type="text"
+            :placeholder="chatStreaming ? '先生正在回答…' : '想问什么？前程 / 姻缘 / 解梦 / 测字…'"
+            :disabled="chatStreaming"
+            @keyup.enter="sendChat()"
+          />
+          <button v-if="chatStreaming" type="button" class="dv-btn-light dv-btn-danger" @click="chat.stop(chatConvId)">停止</button>
+          <button v-else type="button" class="dv-primary" :disabled="chatSending || !chatInput.trim()" @click="sendChat()">{{ chatSending ? '发送中…' : '发送' }}</button>
+        </div>
+      </section>
+
+      <div v-else class="dv-paper">
         <!-- 第 1 步：输入 -->
         <section v-if="stage === 'input'" class="dv-step">
           <p class="dv-banner">民俗文化体验 · 教学演示</p>
@@ -508,7 +608,10 @@ function openHistory() {
 
           <div class="dv-top-row">
             <h2 class="dv-h2">选择起卦方法</h2>
-            <button type="button" class="dv-btn-light" @click="openHistory">演练记录（{{ history.length }}）</button>
+            <div class="dv-top-actions">
+              <button type="button" class="dv-btn-light" @click="openChat">对话测算 · 问先生</button>
+              <button type="button" class="dv-btn-light" @click="openHistory">演练记录（{{ history.length }}）</button>
+            </div>
           </div>
           <div class="dv-methods">
             <button
@@ -829,16 +932,20 @@ function openHistory() {
               <button
                 type="button"
                 class="dv-history-item"
-                :class="{ 'is-active': viewEntry === e }"
-                @click="viewEntry = viewEntry === e ? null : e"
+                :class="{ 'is-active': viewKey === entryKey(e) }"
+                @click="viewKey = viewKey === entryKey(e) ? '' : entryKey(e)"
               >
                 <span class="dv-history-method">{{ e.methodLabel }}</span>
+                <span v-if="e.caseName" class="dv-history-lesson">{{ e.caseName }}</span>
                 <span class="dv-history-time">{{ fmtTime(e.createdAt) }}</span>
                 <span class="dv-history-seed">seed {{ e.seed }}</span>
                 <span v-if="e.refLessonId" class="dv-history-lesson">第 {{ e.refLessonId }} 课</span>
               </button>
-              <div v-if="viewEntry === e" class="dv-history-detail">
-                <p>{{ e.caseName ? `事类 · ${e.caseName} — ` : '' }}{{ e.summary }}</p>
+              <div v-if="viewKey === entryKey(e)" class="dv-history-detail">
+                <p v-if="e.verdictLabel" class="dv-history-verdict">结果 · {{ e.verdictLabel }}</p>
+                <p>{{ e.summary }}</p>
+                <p v-if="e.inputMasked" class="dv-history-input">输入（脱敏）· {{ e.inputMasked }}</p>
+                <p v-else class="dv-history-input">（旧记录未存脱敏输入，仅摘要）</p>
               </div>
             </li>
           </ul>
@@ -940,6 +1047,57 @@ function openHistory() {
 .dv-h2 { margin: 0; font-family: var(--dv-serif); font-size: 22px; line-height: 1.4; }
 .dv-top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .dv-top-row .dv-h3 { margin: 0; }
+.dv-top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ===== 对话测算（玄机先生） ===== */
+.dv-chat {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+.dv-chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dv-chat-head > div { display: flex; flex-direction: column; gap: 2px; }
+.dv-chat-head b { color: var(--dv-ink); font-size: 15px; }
+.dv-chat-head span { color: var(--dv-muted, rgba(240, 234, 217, .55)); font-size: 11px; }
+.dv-chat-msgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.dv-chat-row { display: flex; }
+.dv-chat-row.user { justify-content: flex-end; }
+.dv-chat-row.assistant { justify-content: flex-start; }
+.dv-chat-bubble {
+  max-width: 78%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--dv-paper-ink);
+  background: var(--dv-paper);
+  border: 1px solid color-mix(in srgb, var(--dv-accent) 26%, transparent);
+}
+.dv-chat-row.user .dv-chat-bubble {
+  background: color-mix(in srgb, var(--dv-accent) 22%, var(--dv-panel));
+  color: var(--dv-ink);
+}
+.dv-chat-entry { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dv-chat-input {
+  flex: 1;
+  min-width: 200px;
+  border: 1px solid color-mix(in srgb, var(--dv-accent) 40%, transparent);
+  border-radius: 8px;
+  background: var(--dv-paper);
+  color: var(--dv-paper-ink);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.dv-chat-input:focus { outline: none; border-color: var(--dv-accent); }
+.dv-history-verdict { color: var(--dv-accent); font-weight: 600; }
+.dv-history-input { color: color-mix(in srgb, var(--dv-accent) 70%, var(--dv-paper-ink)); font-size: 11px; }
 
 /* ===== 事类（先问什么事，再选占法） ===== */
 .dv-case {
