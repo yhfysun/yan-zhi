@@ -188,6 +188,20 @@ describe('主区形态三态（编辑 / 双栏 / 查看，2026-11-15 用户定�
     expect(body.querySelector('.np-editor-preview')).toBeTruthy()
   })
 
+  it('★ 双栏分隔把手：双栏态出现（编辑/预览宽度可拖），编辑/查看态无', async () => {
+    const el = await mountAndTrack()
+    await selectFirstRow(el)
+    const body = el.querySelector('.np-main-body') as HTMLElement
+    const modeBtn = (label: string) => [...el.querySelectorAll('.np-mode-btn')].find((b) => b.textContent === label) as HTMLElement
+    expect(body.querySelector('.np-split-resizer')).toBeNull()
+    modeBtn('双栏').click()
+    await nextTick()
+    expect(body.querySelector('.np-split-resizer')).toBeTruthy()
+    modeBtn('编辑').click()
+    await nextTick()
+    expect(body.querySelector('.np-split-resizer')).toBeNull()
+  })
+
   it('★ 编辑后切「查看」：自动保存（PATCH 真发出，且带改动后的内容）', async () => {
     const el = await mountAndTrack()
     await selectFirstRow(el)

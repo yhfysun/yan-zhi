@@ -55,6 +55,30 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && immersive.value) immersive.value = false;
 }
 
+// ── 双栏分隔拖拽：编辑/预览宽度比例可调（20%-80%）──
+const splitRatio = ref(50); // 编辑区占 body 宽度百分比
+const mainBodyRef = ref<HTMLElement | null>(null);
+let stopSplitResize: (() => void) | null = null;
+function startSplitResize(event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  stopSplitResize?.();
+  const body = mainBodyRef.value;
+  if (!body) return;
+  const onMove = (moveEvent: PointerEvent) => {
+    const rect = body.getBoundingClientRect();
+    splitRatio.value = clamp(((moveEvent.clientX - rect.left) / rect.width) * 100, 20, 80);
+  };
+  const onUp = () => stopSplitResize?.();
+  stopSplitResize = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    stopSplitResize = null;
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp, { once: true });
+}
+
 // ── 栏宽拖拽（照 Learning.vue startColumnResize 范式）：左导航可拖，主区 minmax(0,1fr) 吃满剩余 ──
 const sideWidth = ref(300);
 let stopColumnResize: (() => void) | null = null;
@@ -312,6 +336,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown);
   offOpen?.();
   stopColumnResize?.();
+  stopSplitResize?.();
 });
 
 // 未登录（guest 路由防御）：页面仍渲染骨架，接口由 authMiddleware 拦
@@ -425,8 +450,14 @@ const isGuest = computed(() => !auth.isLoggedIn);
           </template>
           <span v-if="draft.source && draft.source !== 'manual'" class="np-chip np-chip-src">来自 {{ draft.source.startsWith('learning') ? '学习' : draft.source === 'chat' ? '对话' : draft.source }}</span>
         </div>
-        <div class="np-main-body" :class="'mode-' + viewMode">
+        <div
+          ref="mainBodyRef"
+          class="np-main-body"
+          :class="'mode-' + viewMode"
+          :style="viewMode === 'split' ? { gridTemplateColumns: `minmax(0, ${splitRatio}fr) 8px minmax(0, ${100 - splitRatio}fr)` } : undefined"
+        >
           <textarea v-if="viewMode !== 'view'" v-model="draft.content" class="np-editor" :placeholder="viewMode === 'split' ? 'Markdown…（左侧编辑，右侧实时预览）' : 'Markdown…'"></textarea>
+          <div v-if="viewMode === 'split'" class="np-split-resizer" aria-label="拖动调整编辑/预览宽度" @pointerdown="startSplitResize($event)"></div>
           <MarkdownPreview v-if="viewMode !== 'edit'" :content="draft.content" class="np-editor-preview" />
         </div>
       </template>
@@ -626,10 +657,17 @@ const isGuest = computed(() => !auth.isLoggedIn);
   border-radius: 8px; overflow: hidden;
   border: 1px solid var(--color-border, #e5e7eb);
 }
-/* 三态：编辑=满宽写 / 双栏=左写右预览 / 查看=满宽读 */
+/* 三态：编辑=满宽写 / 双栏=左写右预览（列宽由 :style 比例驱动，中间把手可拖）/ 查看=满宽读 */
 .np-main-body.mode-edit { grid-template-columns: minmax(0, 1fr); }
-.np-main-body.mode-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.np-main-body.mode-split { grid-template-columns: minmax(0, 1fr) 8px minmax(0, 1fr); }
 .np-main-body.mode-view { grid-template-columns: minmax(0, 1fr); }
+/* 双栏分隔把手 */
+.np-split-resizer { position: relative; cursor: col-resize; touch-action: none; }
+.np-split-resizer::after {
+  content: ""; position: absolute; top: 8px; bottom: 8px; left: 3px; width: 2px;
+  border-radius: 2px; background: var(--color-border, #e5e7eb); transition: background .15s ease;
+}
+.np-split-resizer:hover::after, .np-split-resizer:active::after { background: var(--el-color-primary, #2563eb); }
 .np-editor {
   display: block; width: 100%; height: 100%;
   border: none; resize: none; outline: none; padding: 14px 16px;
