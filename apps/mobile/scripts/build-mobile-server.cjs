@@ -240,6 +240,36 @@ log('=== 步骤 3.6: 裸包导入核对（硬闸） ===');
     process.exit(1);
   }
   log('裸包核对通过: ' + found.size + ' 个静态依赖全部在 node_modules 实物中');
+
+  // ── 3.6b：Unicode 属性转义硬闸（2026-11-15 真机实报）──
+  // nodejs-mobile 的老 V8 不支持 `\p{...}`：**正则字面量**在模块解析期直接 SyntaxError
+  // ⇒ 后端整个起不来（与缺依赖同族：桌面绿、移动端死）。运行时构造形式
+  // `new RegExp('...\\p{...}')`（源码里是字符串转义 \\p）配合 try/catch 可降级，放行；
+  // dist 编译产物里字面量保持单反斜杠 `\p{` —— 出现即 fail-fast。
+  const punctReFiles = [];
+  const scanPunct = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      if (st.isDirectory()) { scanPunct(full); continue; }
+      if (!name.endsWith('.js') || name.endsWith('.map')) continue;
+      const code = fs.readFileSync(full, 'utf8');
+      // 先剥块注释/行注释（dist 注释里常带 `\p{P}` 示例文案，2026-11-15 实报误报源）——
+      // 粗粒度剥离对本闸够用：字符串里含 /* */ 的形态本仓 dist 无。
+      const stripped = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      if (/(?<!\\)\\p\{/.test(stripped)) punctReFiles.push(path.relative(NODEJS_DIST, full));
+    }
+  };
+  scanDirs.forEach(scanPunct);
+  if (punctReFiles.length) {
+    for (const f of punctReFiles) {
+      error('内嵌后端存在 Unicode 属性转义正则字面量（\\p{...}，nodejs-mobile 老解析期必炸）: ' + f);
+    }
+    error('请改为运行时构造 new RegExp + try/catch 降级（参照 experience.ts PUNCT_RE / ontology-example.ts QUESTION_STRIP_RE）');
+    process.exit(1);
+  }
+  log('Unicode 属性转义核对通过: 无字面量 \\p{...}');
 }
 
 // ── 步骤 4：生成启动入口 ──
@@ -307,7 +337,7 @@ if (fs.existsSync(webNodejs)) {
 // ★ 运行期数据/日志目录必须排除（2026-11-15 实报）：nodejs/yan-zhi-data 是打包机本地
 //   跑 index.js 冒烟测试留下的库（10-25 版：1 平台 / 76 技能），打进去后设备升级 APK
 //   会拿到这份陈旧库 ——「内置模型平台空 / 内置数据都没了」的直接来源之一。
-copyRecursive(NODEJS_DIR, webNodejs, new Set(['yan-zhi-data', 'logs']));
+copyRecursive(NODEJS_DIR, webNodejs, new Set(['yan-zhi-data', 'logs', '.smoke-data', '.smoke-data18', '.smoke-data18b']));
 log('已同步: ' + path.relative(ROOT, webNodejs));
 
 // ── 步骤 6：摘要 ──

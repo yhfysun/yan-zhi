@@ -26,8 +26,22 @@ export interface SaveExampleInput {
   rowCount?: number;
 }
 
+/**
+ * ★ 移动端运行时兼容（2026-11-15 真机实报，同 experience.ts PUNCT_RE）：nodejs-mobile
+ *   的老 V8 不支持 Unicode 属性转义 `\p{P}`——**字面量正则在模块解析期直接 SyntaxError
+ *   ⇒ 内嵌后端整个起不来**（真机表现「数据全没了/模式全不可用」）。必须运行时构造 +
+ *   特性检测；老运行时回落显式字符类（ASCII+CJK 标点符号+符号，覆盖实际语料）。
+ */
+const QUESTION_STRIP_RE: RegExp = (() => {
+  try {
+    return new RegExp('[\\s\\p{P}\\p{S}]+', 'gu');
+  } catch {
+    return new RegExp('[\\s!"#$%&\'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~\u3001\u3002\uFF01\uFF1F\uFF1B\uFF1A\u201C\u201D\u2018\u2019\uFF08\uFF09\u300A\u300B\u3008\u3009\u3010\u3011\u2026\u2014\u00B7\uFF5E+\uFF0B=\uFF1D\u3000]+', 'g');
+  }
+})();
+
 export function normalizeQuestion(q: string): string {
-  return String(q || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+  return String(q || '').toLowerCase().replace(QUESTION_STRIP_RE, '');
 }
 
 /** 中文 bigram + 英文/数字词 */
