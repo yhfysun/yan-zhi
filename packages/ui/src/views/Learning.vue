@@ -19,6 +19,7 @@ import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbenc
 import { getPlatformAdapter } from '@yan-zhi/core';
 import SecurityPracticeStudio from '../components/learning/SecurityPracticeStudio.vue';
 import SubjectPicker from '../components/learning/SubjectPicker.vue';
+import LearningSelect from '../components/learning/LearningSelect.vue';
 import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
 import GrammarWorkbench from '../components/learning/GrammarWorkbench.vue';
@@ -414,25 +415,28 @@ async function switchSubject(key: string) {
   subject.value = key;
   activeBook.value = null;
   levels.value = [];
-  // tab 键不跨科目残留：从周易（tab='zhouyi'）切到英语时若不重置，
-  // 中栏 v-else-if="tab === 'zhouyi'" 会继续渲染旧科目工作台（用户实报「切到英语中间不变」）。
-  // 软考 / 网络安全分支随后会覆盖为各自的默认 tab。
-  tab.value = 'path';
-  if (key === '软考') {
-    tab.value = 'exam';
-    softSideTab.value = 'exam';
-    rightCollapsed.value = false;
-    rightWidth.value = Math.max(rightWidth.value, 360);
-    void loadSoftMaterials();
-    void loadSoftExamRegions();
-    void loadSoftExamLive();
-  } else if (wasSoft) {
-    tab.value = 'path';
-  } else if (key === '网络安全') {
-    tab.value = 'security';
-    securityFocusing.value = false;
-  } else if (wasSecurity) {
-    tab.value = 'path';
+  // 目标科目决定默认 tab；旧科目状态只能清理，不能抢占新科目的渲染分支。
+  switch (key) {
+    case '软考':
+      tab.value = 'exam';
+      softSideTab.value = 'exam';
+      rightCollapsed.value = false;
+      rightWidth.value = Math.max(rightWidth.value, 360);
+      void loadSoftMaterials();
+      void loadSoftExamRegions();
+      void loadSoftExamLive();
+      break;
+    case '网络安全':
+      tab.value = 'security';
+      securityFocusing.value = false;
+      break;
+    default:
+      tab.value = 'path';
+  }
+  if (wasSoft) {
+    if (key !== '软考') rightWidth.value = 280;
+  }
+  if (wasSecurity) {
     securityFocusing.value = false;
   }
   pathFocusing.value = false;
@@ -473,8 +477,12 @@ const booksOpen = ref(false);
 //   阶段+课程 = 一个分组下拉（optgroup=阶段，option=课程），一行 44px 替代 ~400px
 //   纵向手风琴。仅移动端渲染（isCompactLayout），桌面手风琴零改动。
 const compactCourseId = computed(() => activeCourseId.value || courses.value[0]?.courses[0]?.id || '');
-function onCompactCourseChange(event: Event) {
-  const id = (event.target as HTMLSelectElement).value;
+const compactCourseGroups = computed(() => groupedCourses.value.map((group) => ({
+  label: group.stage,
+  options: group.courses.map((course) => ({ value: course.id, label: course.name })),
+})));
+function onCompactCourseChange(value: string | number) {
+  const id = String(value);
   const target = courses.value.flatMap((g) => g.courses).find((item) => item.id === id);
   if (target) openCourse(target);
 }
@@ -2048,7 +2056,16 @@ watch(softExamDate, (value) => {
 <template>
   <div class="learning-page" @contextmenu="onLearningContextmenu">
     <div class="lp-topbar" :inert="securityFocusing || pathFocusing || grammarFocusing || cultureFocusing || musicFocusing || zhouyiFocusing || undefined">
-      <SubjectPicker :value="subject" :options="SUBJECTS" @select="switchSubject" />
+      <SubjectPicker class="lp-subject-picker" :value="subject" :options="SUBJECTS" @select="switchSubject" />
+      <LearningSelect
+        v-if="isCompactLayout && compactCourseGroups.length"
+        class="lp-stage-select lp-top-course-select"
+        :value="compactCourseId"
+        :groups="compactCourseGroups"
+        aria-label="选择阶段与课程"
+        placeholder="选择阶段 · 课程"
+        @change="onCompactCourseChange"
+      />
       <div class="lp-top-status">
         <template v-if="subject === '软考'">软考中高级备考 · 近三年资料可下载</template>
         <template v-else-if="subject === '网络安全'">网络安全 · 专注学习 · 仅授权靶场实验</template>
@@ -2083,7 +2100,10 @@ watch(softExamDate, (value) => {
     <!-- 稳定三栏骨架：所有 Tab 共用，切换只改中栏内容，不跳布局 -->
     <div class="lp-grid" :class="gridClasses" :style="gridStyle">
       <!-- 左：科目课程地图 + 我的词单 -->
-      <section v-if="subject !== '网络安全' && !leftCollapsed" class="lp-card lp-col-left">
+      <section
+        v-if="subject !== '网络安全' && !leftCollapsed && (!isCompactLayout || customBooks.length > 0)"
+        class="lp-card lp-col-left"
+      >
         <div class="lp-card-head">
           <h2>课程</h2>
           <div class="lp-card-actions">
@@ -2135,9 +2155,8 @@ watch(softExamDate, (value) => {
           </div>
         </div>
 
-        <!-- 周易：左栏只做导航入口。48 张课卡与中栏课程地图完全重复（用户实报「和中间的卡片重复了」），
-             课程列表唯一呈现处在中栏 ZhouyiWorkbench；英语词书课卡保留（选词书是必要交互） -->
-        <div v-if="subject === '周易'" class="lp-courses">
+        <!-- 周易桌面保留左栏导航；移动端三张卡与中栏 tab 完全重复，直接删除。 -->
+        <div v-if="subject === '周易' && !isCompactLayout" class="lp-courses">
           <div class="lp-stage">
             <h4 class="lp-stage-name">周易 · 独立学科</h4>
             <button class="lp-course lp-course-zhouyi" :class="{ active: tab === 'zhouyi' }" @click="tab = 'zhouyi'">
@@ -2163,20 +2182,7 @@ watch(softExamDate, (value) => {
             </button>
           </div>
         </div>
-        <div v-else class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
-          <!-- ★ v1.1 移动端骨架：阶段+课程=一个分组下拉（评审定稿），仅移动端渲染 -->
-          <select
-            v-if="isCompactLayout"
-            class="lp-stage-select"
-            :value="compactCourseId"
-            aria-label="选择阶段与课程"
-            @change="onCompactCourseChange($event)"
-          >
-            <option value="" disabled>选择阶段 · 课程</option>
-            <optgroup v-for="grp in groupedCourses" :key="grp.stage" :label="grp.stage">
-              <option v-for="c in grp.courses" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </optgroup>
-          </select>
+        <div v-else-if="!isCompactLayout" class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
           <!-- ★ 紧凑布局收口：阶段标题变折叠按钮（单开手风琴），点开才出该阶段课程，
                选完课自动收起（openCourse）。桌面仍全量平铺；v1.1 起移动端不再渲染手风琴。 -->
           <template v-if="!isCompactLayout">
@@ -3608,7 +3614,23 @@ watch(softExamDate, (value) => {
   :global(.main-content.has-learning) { overflow-y: auto; overscroll-behavior: contain; }
   :global(.main-content:has(.learning-page)) { overflow-y: auto; overscroll-behavior: contain; }
   .learning-page { padding: 12px; min-height: 0; height: auto; flex: none; }
-  .lp-topbar { align-items: flex-start; flex-direction: column; gap: 5px; }
+  /* ★ 科目与课程必须同一行；课程下拉不再占第二行。顶部容器本身吸顶 top:6px。 */
+  .lp-topbar {
+    position: sticky; top: 6px; z-index: 20;
+    align-items: center; flex-direction: row; gap: 8px;
+    margin-bottom: 8px; padding: 6px;
+    border-radius: 12px;
+    background: var(--color-bg-elevated, #fff);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .10);
+  }
+  .lp-subject-picker { flex: 0 0 auto; }
+  .lp-top-course-select {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    --learning-select-accent: var(--color-primary);
+    --learning-select-bg: #fff;
+  }
   .lp-top-status { text-align: left; }
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
   .lp-column-resizer { display: none; }
@@ -3616,29 +3638,9 @@ watch(softExamDate, (value) => {
   /* ★★ v1.1 总览骨架（评审定稿，docs/学习模式设计准则.md §6）：科目选择行只剩选择器，
      状态/引导文案整行隐藏（设置项不占首屏）；顶栏 padding 收紧。 */
   .lp-top-status { display: none; }
-  /* ★★ v1.1：阶段+课程=一个分组下拉，一行 44px 替代 ~400px 手风琴（手风琴已不渲染） */
-  .lp-stage-select {
-    width: 100%;
-    min-height: 44px;
-    margin: 2px 0 8px;
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
-    background: #fff;
-    color: var(--color-text);
-    padding: 8px 12px;
-    font-size: 14px;
-    font-weight: 600;
-    appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 12px center;
-  }
-  .lp-stage-select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  /* ★★ v1.1.1（用户定稿）：课程下拉吸顶——左栏卡片压缩成一行下拉，随页面固定；
-     卡片头（课程/自定义词单/收起）隐藏，词单折叠入口保留（booksOpen 展开）。 */
-  .lp-col-left { position: sticky; top: 6px; z-index: 6; padding: 8px 12px; }
+  /* 左栏不再承载移动端课程下拉；只有已有词单时才作为正文卡片出现。 */
+  .lp-col-left { position: static; padding: 8px 12px; }
   .lp-col-left .lp-card-head { display: none; }
-  .lp-stage-select { margin: 0; }
   /* ★★ 关卡卡按钮化（用户实报「一个按钮就可以」）：竖排大方块 → 横排紧凑按钮条 */
   .lp-level-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .lp-level { flex-direction: row; align-items: center; gap: 8px; padding: 7px 10px; min-height: 44px; }

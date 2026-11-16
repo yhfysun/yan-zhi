@@ -5,6 +5,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import MarkdownIt from 'markdown-it';
+import type StateBlock from 'markdown-it/lib/rules_block/state_block.mjs';
+import type Token from 'markdown-it/lib/token.mjs';
 import hljs from '../../utils/highlight';
 
 const props = defineProps<{ content: string }>();
@@ -30,7 +32,7 @@ const md = new MarkdownIt({
 //   其余输入原样按文本渲染（不渲染 audio 元素），防 v-html 面被外链/script 利用。
 const AUDIO_URL_RE = /^\/api\/generated\/audios\/[\w\-.%()（）\u4e00-\u9fa5]+$/;
 
-md.block.ruler.before('paragraph', 'note_audio', (state, startLine, endLine, silent) => {
+md.block.ruler.before('paragraph', 'note_audio', (state: StateBlock, startLine: number, endLine: number, silent: boolean) => {
   const start = state.bMarks[startLine] + state.tShift[startLine];
   const max = state.eMarks[startLine];
   const line = state.src.slice(start, max);
@@ -42,7 +44,7 @@ md.block.ruler.before('paragraph', 'note_audio', (state, startLine, endLine, sil
   state.line = startLine + 1;
   return true;
 });
-md.renderer.rules.note_audio = (tokens, idx) => {
+md.renderer.rules.note_audio = (tokens: Token[], idx: number) => {
   const { url, title } = tokens[idx].meta as { url: string; title: string };
   if (!AUDIO_URL_RE.test(url)) {
     return `<p>${md.utils.escapeHtml(`{{audio ${url}${title ? ` ${title}` : ''}}}`)}</p>`;

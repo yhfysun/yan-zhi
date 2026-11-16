@@ -9,6 +9,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '../../api/client';
 import { useScoreAudio } from '../../composables/useScoreAudio';
 import NoteQuickCreateDialog from '../notes/NoteQuickCreateDialog.vue';
+import LearningSelect from './LearningSelect.vue';
 import {
   NOTATION_BY_TRACK, PENTA_ORDER, PENTA_VIEW, STEP_ORDER, labelsFor, modeLabel, noteToTrad,
   staffLayout, trackLabel, transposeScore,
@@ -70,9 +71,16 @@ if (typeof window !== 'undefined' && window.matchMedia) {
   try { mqMw.addEventListener('change', onMqMw); } catch { mqMw.addListener(onMqMw); }
 }
 const mwStripStage = computed(() => openStage.value || stages.value[0]?.level || '');
+const mwStageOptions = computed(() => stages.value.map((stage) => ({
+  value: stage.level,
+  label: `${stage.level}（${stage.lessons.length} 课）`,
+})));
 const stripLessons = computed(() =>
   stages.value.find((stage) => stage.level === mwStripStage.value)?.lessons ?? [],
 );
+function onMwCompactStageChange(value: string | number) {
+  openStage.value = String(value);
+}
 const isCompactViewport = () =>
   typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches;
 const loading = ref(true);
@@ -435,17 +443,14 @@ onBeforeUnmount(() => {
       <div v-else-if="error" class="mw-error">{{ error }}</div>
       <div v-else class="mw-stage-list">
         <!-- ★ v1.1 移动端：阶段下拉 + 课件横滑单行（一屏放下）；桌面手风琴保持 -->
-        <select
+        <LearningSelect
           v-if="mwCompact"
           class="mw-stage-select"
           :value="mwStripStage"
+          :options="mwStageOptions"
           aria-label="选择学习阶段"
-          @change="openStage = ($event.target as HTMLSelectElement).value"
-        >
-          <option v-for="stage in stages" :key="stage.level" :value="stage.level">
-            {{ stage.level }}（{{ stage.lessons.length }} 课）
-          </option>
-        </select>
+          @change="onMwCompactStageChange"
+        />
         <template v-if="mwCompact">
           <div class="mw-lesson-strip">
             <button
@@ -883,19 +888,11 @@ onBeforeUnmount(() => {
   .mw-stage-select {
     position: sticky; top: 64px; z-index: 5;
     width: 100%;
-    min-height: 44px;
     margin: 4px 0 10px;
-    border: 1px solid var(--mw-line, #d8d3c8);
-    border-radius: 10px;
-    background: var(--mw-panel, #fff);
-    color: var(--mw-ink, #33302a);
-    padding: 8px 12px;
-    font-size: 14px;
-    font-weight: 600;
-    appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 12px center;
+    --learning-select-border: var(--mw-line, #d8d3c8);
+    --learning-select-bg: var(--mw-panel, #fff);
+    --learning-select-ink: var(--mw-ink, #33302a);
+    --learning-select-accent: var(--color-primary);
   }
   .mw-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
   .mw-lesson-strip .mw-lesson { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }

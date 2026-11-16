@@ -7,7 +7,7 @@
  *     package/android/libs/sherpa-onnx-1.10.35.aar（= 官方 1.10.35 全量 AAR，
  *     jni 4 ABI + classes.jar）；
  *   - 模型：vits-piper-en_US-amy-medium-int8（GitHub tts-models release，
- *     国内直连慢但只有 ~20MB，一次性下载后永久缓存）。
+ *     GitHub 直连不稳定，按 gh-proxy → GitHub → ghproxy.net 顺序回退）。
  *
  * ★ 二进制不入库（.gitignore native/android-sherpa/libs、assets）：
  *   换机器重建时先跑本脚本，再跑 build:android。
@@ -25,12 +25,31 @@ const TMP = path.join(ROOT, '..', '..', 'tmp');
 
 const RN_PKG_URL = 'https://registry.npmmirror.com/react-native-sherpa-onnx-offline-tts/-/react-native-sherpa-onnx-offline-tts-0.2.6.tgz';
 const AAR_IN_PKG = 'package/android/libs/sherpa-onnx-1.10.35.aar';
-const MODEL_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2';
+const MODEL_URLS = [
+  'https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2',
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2',
+  'https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2',
+];
 
 function curl(url, dest) {
   console.log('[fetch-sherpa] 下载:', url);
-  const r = spawnSync('curl.exe', ['-sL', '-m', '900', '--retry', '3', '-C', '-', url, '-o', dest], { stdio: 'inherit', shell: true });
+  const r = spawnSync('curl.exe', ['-sL', '-m', '900', '--retry', '3', '--retry-all-errors', '-C', '-', url, '-o', dest], { stdio: 'inherit', shell: true });
   if (r.status !== 0) throw new Error(`下载失败 (exit ${r.status}): ${url}`);
+}
+
+function downloadModel(dest) {
+  let lastError = null;
+  for (const url of MODEL_URLS) {
+    try {
+      curl(url, dest);
+      if (fs.existsSync(dest) && fs.statSync(dest).size > 10 * 1024 * 1024) return;
+      throw new Error(`下载产物过小: ${dest}`);
+    } catch (error) {
+      lastError = error;
+      console.warn('[fetch-sherpa] 镜像失败，尝试下一个:', String(error));
+    }
+  }
+  throw lastError || new Error('模型下载失败');
 }
 
 function main() {
@@ -60,17 +79,26 @@ function main() {
     console.log('[fetch-sherpa] 模型已存在，跳过:', modelMarker);
   } else {
     const tb = path.join(TMP, 'vits-amy.tar.bz2');
-    curl(MODEL_URL, tb);
+    if (!fs.existsSync(tb) || fs.statSync(tb).size <= 10 * 1024 * 1024) downloadModel(tb);
     const exDir = path.join(ASSETS_DEST);
+    fs.mkdirSync(exDir, { recursive: true });
     const ex = spawnSync('tar.exe', ['-xjf', tb, '-C', exDir], { stdio: 'inherit', shell: false });
     if (ex.status !== 0) throw new Error('模型解包失败');
     // tarball 包了一层目录 vits-piper-en_US-amy-medium-int8/，拍平
     const inner = path.join(exDir, 'vits-piper-en_US-amy-medium-int8');
     if (fs.existsSync(inner)) {
       for (const e of fs.readdirSync(inner)) {
-        fs.renameSync(path.join(inner, e), path.join(exDir, e));
+        const target = path.join(exDir, e);
+        fs.rmSync(target, { recursive: true, force: true });
+        fs.renameSync(path.join(inner, e), target);
       }
       fs.rmdirSync(inner);
+    }
+    const phontab = path.join(exDir, 'espeak-ng-data', 'phontab');
+    const tokens = path.join(exDir, 'tokens.txt');
+    if (!fs.existsSync(modelMarker) || fs.statSync(modelMarker).size <= 10 * 1024 * 1024
+      || !fs.existsSync(tokens) || !fs.existsSync(phontab)) {
+      throw new Error('模型解包后完整性校验失败');
     }
     console.log('[fetch-sherpa] 模型已就位:', ASSETS_DEST);
   }

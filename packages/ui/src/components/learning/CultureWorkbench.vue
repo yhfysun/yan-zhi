@@ -9,6 +9,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, X } from 'lucide-vue-next';
 import { api } from '../../api/client';
 import { useZhSpeech } from '../../composables/useZhSpeech';
+import LearningSelect from './LearningSelect.vue';
 import AnnotationDrawer from './culture/AnnotationDrawer.vue';
 import CoupletBoard from './culture/CoupletBoard.vue';
 import NoteQuickCreateDialog from '../notes/NoteQuickCreateDialog.vue';
@@ -46,11 +47,15 @@ if (typeof window !== 'undefined' && window.matchMedia) {
   const onMqCul = (e: MediaQueryListEvent) => { culCompact.value = e.matches; };
   try { mqCul.addEventListener('change', onMqCul); } catch { mqCul.addListener(onMqCul); }
 }
-function onCulStageChange(event: Event) {
-  const level = (event.target as HTMLSelectElement).value;
+function onCulStageChange(value: string | number) {
+  const level = String(value);
   const idx = stages.value.findIndex((s) => s.level === level);
   if (idx >= 0) stageIndex.value = idx;
 }
+const culStageOptions = computed(() => stages.value.map((stage, index) => ({
+  value: stage.level,
+  label: `${String(index + 1).padStart(2, '0')} · ${stage.level}（${stageDoneCount(stage)}/${stage.lessons.length + stage.couplets.length} 已完成）`,
+})));
 const loading = ref(true);
 const error = ref('');
 const completedIds = ref<string[]>([]);
@@ -425,17 +430,14 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <!-- ★ v1.1 移动端：阶下拉 + 课时横滑单行（一屏放下）；桌面手风琴保持 -->
-      <select
+      <LearningSelect
         v-if="culCompact"
         class="cul-stage-select"
         :value="stages[stageIndex]?.level ?? ''"
+        :options="culStageOptions"
         aria-label="选择学习阶段"
-        @change="onCulStageChange($event)"
-      >
-        <option v-for="(stage, si) in stages" :key="stage.level" :value="stage.level">
-          {{ String(si + 1).padStart(2, '0') }} · {{ stage.level }}（{{ stageDoneCount(stage) }}/{{ stage.lessons.length + stage.couplets.length }} 已完成）
-        </option>
-      </select>
+        @change="onCulStageChange"
+      />
       <template v-if="culCompact">
         <div class="cul-lesson-strip">
           <button
@@ -946,19 +948,11 @@ onBeforeUnmount(() => {
   .cul-stage-select {
     position: sticky; top: 64px; z-index: 5;
     width: 100%;
-    min-height: 44px;
     margin: 4px 0 10px;
-    border: 1px solid var(--cul-line, #d8d3c8);
-    border-radius: 10px;
-    background: var(--cul-panel, #fff);
-    color: var(--cul-ink, #33302a);
-    padding: 8px 12px;
-    font-size: 14px;
-    font-weight: 600;
-    appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 12px center;
+    --learning-select-border: var(--cul-line, #d8d3c8);
+    --learning-select-bg: var(--cul-panel, #fff);
+    --learning-select-ink: var(--cul-ink, #33302a);
+    --learning-select-accent: var(--color-primary);
   }
   .cul-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
   .cul-lesson-strip .cul-lesson-btn { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }

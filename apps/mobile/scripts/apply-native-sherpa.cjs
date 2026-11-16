@@ -9,7 +9,8 @@
  *
  * ★ 真相源 native/android-sherpa/（libs/*.aar + assets/sherpa-en/）：
  *   二进制不入库，由 scripts/fetch-sherpa.cjs 从国内源（npmmirror 等）下载缓存。
- *   本脚本只做铺设：复制 AAR / 模型 assets / patch build.gradle（无则跳过并告警）。
+ *   本脚本只做铺设：复制 AAR / 模型 assets / patch build.gradle。
+ *   真相源缺失时直接失败，避免打出一个「编译得过但永远无声」的 APK。
  *
  * 用法：node scripts/apply-native-sherpa.cjs（幂等，重复执行不重复插入）
  */
@@ -86,9 +87,16 @@ function main() {
   const lib = copyLib();
   const assets = copyAssets();
   const gradle = patchGradle();
+  const targetReady = fs.existsSync(path.join(DEST_ASSETS, 'en_US-amy-medium.onnx'))
+    && fs.existsSync(path.join(DEST_ASSETS, 'tokens.txt'))
+    && fs.existsSync(path.join(DEST_ASSETS, 'espeak-ng-data', 'phontab'));
   console.log(
     `[apply-native-sherpa] AAR: ${lib ? '已铺' : '缺失'} · assets 增量 ${assets === false ? '缺失' : assets + ' 文件'} · gradle 依赖: ${gradle ? '已插入' : '已存在'}`,
   );
+  if (!lib || !targetReady) {
+    console.error('[apply-native-sherpa] 内置 TTS 资源不完整；先运行 node scripts/fetch-sherpa.cjs');
+    process.exitCode = 1;
+  }
 }
 
 main();

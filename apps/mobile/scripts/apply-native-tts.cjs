@@ -8,7 +8,9 @@
  *   真相源 native/android-tts/（独立目录，避免与整目录复制的 native/android/ 混包）。
  *
  * ★ 无需 manifest 权限：系统 TTS 是普通 API，不涉危险权限；也不需要 NFC 那样的
- *   uses-feature 声明。只需 MainActivity 注册插件。
+ *   uses-feature 声明。
+ * ★ MainActivity 的本地插件注册统一走 safeRegisterPlugin：任一插件类加载失败只禁用
+ *   该插件并写 crash.log，不能让应用启动直接闪退。
  *
  * 用法：node scripts/apply-native-tts.cjs（幂等，重复执行不重复插入）
  */
@@ -21,7 +23,7 @@ const JAVA_DIR = path.join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com',
 const MAIN_ACTIVITY = path.join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'yanzhi', 'mobile', 'MainActivity.java');
 
 const PKG_IMPORT = 'import com.yanzhi.mobile.tts.TtsPlugin;';
-const REGISTER_LINE = 'registerPlugin(TtsPlugin.class);';
+const CRASH_IMPORT = 'import com.yanzhi.mobile.tts.CrashLogger;';
 
 function copyJavaSources() {
   fs.mkdirSync(JAVA_DIR, { recursive: true });
@@ -35,7 +37,6 @@ function patchMainActivity() {
   if (!fs.existsSync(MAIN_ACTIVITY)) throw new Error(`未找到 MainActivity.java: ${MAIN_ACTIVITY}`);
   let src = fs.readFileSync(MAIN_ACTIVITY, 'utf8');
   let changed = false;
-  if (src.includes('TtsPlugin')) return false;
   if (!src.includes(PKG_IMPORT)) {
     src = src.replace(
       'import com.getcapacitor.BridgeActivity;',
@@ -43,18 +44,48 @@ function patchMainActivity() {
     );
     changed = true;
   }
-  if (!src.includes(REGISTER_LINE)) {
-    if (/registerPlugin\(/.test(src) && /super\.onCreate\(/.test(src)) {
-      // 已有本地插件注册块：追加到最后一个 registerPlugin 之后
-      src = src.replace(
-        /(registerPlugin\([A-Za-z]+\.class\);)(\s*\n)/,
-        `$1$2        ${REGISTER_LINE}$2`,
-      );
-      changed = true;
-    } else {
-      src = src.replace(/(super\.onCreate\()/, `        ${REGISTER_LINE}\n        super.onCreate(`);
-      changed = true;
-    }
+  if (!src.includes(CRASH_IMPORT)) {
+    src = src.replace(
+      'import com.getcapacitor.BridgeActivity;',
+      `import com.getcapacitor.BridgeActivity;\n${CRASH_IMPORT}`,
+    );
+    changed = true;
+  }
+  if (!src.includes('CrashLogger.install(this);')) {
+    src = src.replace(
+      /(public void onCreate\(android\.os\.Bundle savedInstanceState\)\s*\{)/,
+      '$1\n        CrashLogger.install(this);',
+    );
+    changed = true;
+  }
+  const imports = [...src.matchAll(/^import\s+([\w.]+);$/gm)].map((m) => m[1]);
+  const next = src.replace(
+    /^(\s*)registerPlugin\(([A-Za-z0-9_]+)\.class\);\s*$/gm,
+    (_line, indent, className) => {
+      const fullName = imports.find((name) => name.endsWith(`.${className}`));
+      if (!fullName) throw new Error(`无法解析本地插件完整类名: ${className}`);
+      return `${indent}safeRegisterPlugin("${fullName}", "${className}");`;
+    },
+  );
+  if (next !== src) {
+    src = next;
+    changed = true;
+  }
+  if (!src.includes('private void safeRegisterPlugin(')) {
+    const helper = [
+      '',
+      '    @SuppressWarnings("unchecked")',
+      '    private void safeRegisterPlugin(String className, String label) {',
+      '        try {',
+      '            Class<?> raw = Class.forName(className);',
+      '            registerPlugin((Class<? extends com.getcapacitor.Plugin>) raw);',
+      '        } catch (Throwable error) {',
+      '            CrashLogger.record("MainActivity.registerPlugin:" + label, error);',
+      '        }',
+      '    }',
+    ].join('\n');
+    src = src.replace(/\n}\s*$/, `${helper}\n}\n`);
+    changed = true;
   }
   if (changed) fs.writeFileSync(MAIN_ACTIVITY, src, 'utf8');
   return changed;

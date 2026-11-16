@@ -52,6 +52,10 @@ public class TtsPlugin extends Plugin {
     private static final String TAG = "YZTTS";
     /** 引擎初始化超时：onInit 超过这个时间不回调 = 设备没有可用 TTS 引擎 */
     private static final long INIT_TIMEOUT_MS = 4000;
+    /** 系统引擎接受 speak 后仍可能永不回调 onDone；按文本长度给单句超时并转内置引擎。 */
+    private static final long SPEAK_TIMEOUT_BASE_MS = 8000L;
+    private static final long SPEAK_TIMEOUT_PER_CHAR_MS = 180L;
+    private static final long SPEAK_TIMEOUT_MAX_MS = 90000L;
 
     private TextToSpeech tts;
     private boolean engineReady = false;
@@ -60,8 +64,9 @@ public class TtsPlugin extends Plugin {
     private PendingSpeak initPending;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicInteger seq = new AtomicInteger(0);
-    /** utteranceId → 等待完成回调的 call（speak 提交后保存，done/error/stop 时释放） */
-    private final Map<String, PluginCall> active = new HashMap<>();
+    /** utteranceId → 等待完成回调的请求（speak 提交后保存，done/error/stop 时释放） */
+    private final Map<String, PendingSpeak> active = new HashMap<>();
+    private final Map<String, Runnable> activeTimeouts = new HashMap<>();
 
     // ★★ 内置离线引擎兜底（2026-11-16 用户拍板「没有 TTS 引擎可以打包自带一个」）：
     //    一加等 ROM 整机无 TTS 引擎（tts_default_synth=null）⇒ 系统链路必死。
@@ -91,15 +96,30 @@ public class TtsPlugin extends Plugin {
                     JSObject out = new JSObject();
                     out.put("ok", true);
                     out.put("engine", "bundled");
-                    pending.call.resolve(out);
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            pending.call.resolve(out);
+                        }
+                    });
                 } else if ("STOPPED".equals(r.reason)) {
                     JSObject out = new JSObject();
                     out.put("ok", false);
                     out.put("reason", "STOPPED");
-                    pending.call.resolve(out);
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            pending.call.resolve(out);
+                        }
+                    });
                 } else {
                     Log.w(TAG, "内置引擎失败: " + r.reason);
-                    pending.call.reject("BUNDLED_TTS_FAILED", "内置离线引擎朗读失败（" + r.reason + "）");
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            pending.call.reject("BUNDLED_TTS_FAILED", "内置离线引擎朗读失败（" + r.reason + "）");
+                        }
+                    });
                 }
             }
         }, "yz-sherpa-tts").start();
@@ -108,8 +128,14 @@ public class TtsPlugin extends Plugin {
     @Override
     public void load() {
         // 挂载即预热：用户首次点读时引擎通常已就绪（init 约 100-400ms）
-        Log.i(TAG, "plugin load: 预热引擎 init");
-        ensureEngine(null);
+        try {
+            Log.i(TAG, "plugin load: 预热引擎 init");
+            ensureEngine(null);
+        } catch (Throwable error) {
+            initFailed = true;
+            Log.e(TAG, "plugin load 预热失败，保持 App 可启动", error);
+            CrashLogger.record("TtsPlugin.load", error);
+        }
     }
 
     /** 懒初始化引擎；call 非空时在其 onInit 后继续提交，否则只预热。 */
@@ -131,52 +157,76 @@ public class TtsPlugin extends Plugin {
         }
         final Context ctx = getContext();
         Log.i(TAG, "TextToSpeech 构造（异步 init，" + INIT_TIMEOUT_MS + "ms 超时闸）");
-        tts = new TextToSpeech(ctx.getApplicationContext(), new TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                Log.i(TAG, "onInit 回调: status=" + status);
-                if (status == TextToSpeech.SUCCESS) {
-                    engineReady = true;
-                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                        @Override
-                        public void onStart(String utteranceId) { /* 无需通知 */ }
-
-                        @Override
-                        public void onDone(String utteranceId) {
-                            Log.d(TAG, "utterance done: " + utteranceId);
-                            finish(utteranceId, true);
-                        }
-
-                        @Override
-                        public void onError(String utteranceId) {
-                            Log.w(TAG, "utterance error: " + utteranceId);
-                            finish(utteranceId, false);
-                        }
-                    });
-                    if (initPending != null) { submitSpeak(initPending); initPending = null; }
-                    if (pending != null) submitSpeak(pending);
-                } else {
-                    initFailed = true;
-                    tts = null;
-                    Log.w(TAG, "onInit 失败 status=" + status + " → 内置引擎兜底");
-                    if (pending != null) {
-                        fallbackToBundled(pending, "onInit status=" + status);
+        try {
+            tts = new TextToSpeech(ctx.getApplicationContext(), new TextToSpeech.OnInitListener() {
+                @Override
+                public void onInit(int status) {
+                    if (initFailed) {
+                        Log.w(TAG, "忽略迟到的 onInit 回调: status=" + status);
+                        return;
                     }
+                    Log.i(TAG, "onInit 回调: status=" + status);
+                    if (status == TextToSpeech.SUCCESS && tts != null) {
+                        engineReady = true;
+                        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                            @Override
+                            public void onStart(String utteranceId) { /* 无需通知 */ }
+
+                            @Override
+                            public void onDone(String utteranceId) {
+                                Log.d(TAG, "utterance done: " + utteranceId);
+                                finish(utteranceId, true);
+                            }
+
+                            @Override
+                            public void onError(String utteranceId) {
+                                Log.w(TAG, "utterance error: " + utteranceId);
+                                finish(utteranceId, false);
+                            }
+                        });
+                        if (initPending != null) { submitSpeak(initPending); initPending = null; }
+                        if (pending != null) submitSpeak(pending);
+                        return;
+                    }
+                    initFailed = true;
+                    engineReady = false;
+                    TextToSpeech failed = tts;
+                    tts = null;
+                    if (failed != null) {
+                        try { failed.shutdown(); } catch (Exception e) { /* ignore */ }
+                    }
+                    Log.w(TAG, "onInit 失败 status=" + status + " → 内置引擎兜底");
+                    if (pending != null) fallbackToBundled(pending, "onInit status=" + status);
                     if (initPending != null) {
                         fallbackToBundled(initPending, "onInit status=" + status);
                         initPending = null;
                     }
                 }
+            });
+        } catch (Throwable e) {
+            initFailed = true;
+            engineReady = false;
+            tts = null;
+            Log.w(TAG, "TextToSpeech 构造异常 → 内置引擎兜底: " + e);
+            if (pending != null) fallbackToBundled(pending, "CONSTRUCT_ERROR");
+            if (initPending != null) {
+                fallbackToBundled(initPending, "CONSTRUCT_ERROR");
+                initPending = null;
             }
-        });
+            return;
+        }
         // ★★ 超时闸：onInit 永不回调（设备无 TTS 引擎）时 fail-fast，绝不挂死调用方
         main.postDelayed(new Runnable() {
             @Override
             public void run() {
                 if (engineReady || initFailed) return; // 已就绪/已失败：闸作废
                 initFailed = true;
-                try { tts.shutdown(); } catch (Exception e) { /* ignore */ }
+                engineReady = false;
+                TextToSpeech timedOut = tts;
                 tts = null;
+                if (timedOut != null) {
+                    try { timedOut.shutdown(); } catch (Exception e) { /* ignore */ }
+                }
                 Log.w(TAG, "init 超时（" + INIT_TIMEOUT_MS + "ms 内 onInit 未回调）⇒ 设备无可用 TTS 引擎 → 内置引擎兜底");
                 if (pending != null) {
                     fallbackToBundled(pending, "TTS_INIT_TIMEOUT");
@@ -190,12 +240,46 @@ public class TtsPlugin extends Plugin {
     }
 
     private void finish(String utteranceId, boolean ok) {
-        PluginCall call = active.remove(utteranceId);
-        if (call == null) return; // 非 JS 提交的 utterance：忽略
+        PendingSpeak pending = active.remove(utteranceId);
+        Runnable timeout = activeTimeouts.remove(utteranceId);
+        if (timeout != null) main.removeCallbacks(timeout);
+        if (pending == null) return; // 非 JS 提交 / 已超时的 utterance：忽略
+        if (!ok) {
+            failSystemSpeak(pending, "UTTERANCE_ERROR");
+            return;
+        }
         JSObject out = new JSObject();
-        out.put("ok", ok);
-        if (!ok) out.put("reason", "系统语音合成失败或被中断");
-        call.resolve(out);
+        out.put("ok", true);
+        pending.call.resolve(out);
+    }
+
+    private boolean isEnglish(String lang) {
+        return lang != null && lang.toLowerCase(Locale.ROOT).startsWith("en");
+    }
+
+    /** 系统链路已接收但失败/超时：英语转内置引擎，其他语言如实回落前端。 */
+    private void failSystemSpeak(PendingSpeak pending, String why) {
+        Log.w(TAG, "系统朗读失败(" + why + ") → " + (isEnglish(pending.lang) ? "内置引擎" : "前端降级"));
+        if (isEnglish(pending.lang)) {
+            fallbackToBundled(pending, why);
+            return;
+        }
+        JSObject out = new JSObject();
+        out.put("ok", false);
+        out.put("reason", why);
+        out.put("lang", pending.lang);
+        pending.call.resolve(out);
+    }
+
+    private void onUtteranceTimeout(String utteranceId) {
+        PendingSpeak pending = active.remove(utteranceId);
+        activeTimeouts.remove(utteranceId);
+        if (pending == null) return;
+        Log.w(TAG, "系统朗读超时，未收到 onDone: " + utteranceId);
+        if (tts != null) {
+            try { tts.stop(); } catch (Exception e) { /* ignore */ }
+        }
+        failSystemSpeak(pending, "UTTERANCE_TIMEOUT");
     }
 
     @PluginMethod
@@ -206,7 +290,12 @@ public class TtsPlugin extends Plugin {
             call.reject("EMPTY_TEXT", "朗读内容为空");
             return;
         }
-        ensureEngine(new PendingSpeak(call, text, lang));
+        try {
+            ensureEngine(new PendingSpeak(call, text, lang));
+        } catch (Throwable error) {
+            CrashLogger.record("TtsPlugin.speak", error);
+            call.reject("TTS_INTERNAL_ERROR", String.valueOf(error));
+        }
     }
 
     /** 引擎就绪后真正提交合成。 */
@@ -236,7 +325,19 @@ public class TtsPlugin extends Plugin {
         int r = tts.speak(pending.text, TextToSpeech.QUEUE_FLUSH, null, id);
         Log.i(TAG, "speak 提交: id=" + id + " lang=" + pending.lang + " len=" + pending.text.length() + " code=" + r);
         if (r == TextToSpeech.SUCCESS) {
-            active.put(id, pending.call);
+            active.put(id, pending);
+            long timeoutMs = Math.min(
+                SPEAK_TIMEOUT_MAX_MS,
+                Math.max(SPEAK_TIMEOUT_BASE_MS, pending.text.length() * SPEAK_TIMEOUT_PER_CHAR_MS)
+            );
+            Runnable watchdog = new Runnable() {
+                @Override
+                public void run() {
+                    onUtteranceTimeout(id);
+                }
+            };
+            activeTimeouts.put(id, watchdog);
+            main.postDelayed(watchdog, timeoutMs);
         } else {
             Log.w(TAG, "speak 提交失败 code=" + r + " → 内置引擎兜底");
             fallbackToBundled(pending, "SUBMIT_FAILED code=" + r);
@@ -247,13 +348,22 @@ public class TtsPlugin extends Plugin {
     public void stop(PluginCall call) {
         SherpaTts.stop(); // 内置引擎播放一并打断（原生 stop 必须同步停内置，见 SKILL 音频铁律）
         if (tts != null) tts.stop();
-        for (PluginCall c : active.values()) {
+        for (PendingSpeak pending : active.values()) {
             JSObject out = new JSObject();
             out.put("ok", false);
             out.put("reason", "STOPPED");
-            c.resolve(out);
+            pending.call.resolve(out);
         }
         active.clear();
+        for (Runnable timeout : activeTimeouts.values()) main.removeCallbacks(timeout);
+        activeTimeouts.clear();
+        if (initPending != null) {
+            JSObject out = new JSObject();
+            out.put("ok", false);
+            out.put("reason", "STOPPED");
+            initPending.call.resolve(out);
+            initPending = null;
+        }
         call.resolve();
     }
 

@@ -16,12 +16,13 @@ import { resolve } from 'node:path';
 const SRC = readFileSync(resolve(__dirname, 'Learning.vue'), 'utf8');
 
 describe('Learning · 移动端紧凑布局契约', () => {
-  it('★ v1.1 骨架：移动端课程导航=分组下拉（阶段 optgroup + 课程 option），桌面手风琴保留', () => {
-    // 分组下拉：仅移动端渲染（isCompactLayout 门控），选项来自 groupedCourses
-    expect(SRC).toMatch(/<select\s+v-if="isCompactLayout"\s+class="lp-stage-select"/);
-    expect(SRC).toMatch(/<optgroup v-for="grp in groupedCourses" :key="grp\.stage" :label="grp\.stage">/);
-    expect(SRC).toMatch(/<option v-for="c in grp\.courses" :key="c\.id" :value="c\.id">/);
-    expect(SRC).toMatch(/@change="onCompactCourseChange\(\$event\)"/);
+  it('★ v1.1 骨架：移动端课程导航=App 内分组下拉，桌面手风琴保留', () => {
+    // 分组下拉：仅移动端渲染（isCompactLayout 门控），选项由 groupedCourses 投影
+    expect(SRC).toContain("import LearningSelect from '../components/learning/LearningSelect.vue';");
+    expect(SRC).toMatch(/<LearningSelect\s+v-if="isCompactLayout && compactCourseGroups\.length"\s+class="lp-stage-select lp-top-course-select"/);
+    expect(SRC).toMatch(/:groups="compactCourseGroups"/);
+    expect(SRC).toMatch(/@change="onCompactCourseChange"/);
+    expect(SRC).toMatch(/const compactCourseGroups = computed\(\(\) => groupedCourses\.value\.map/);
     // 手风琴整段只在桌面渲染（移动端不再出 400px 纵向列表）
     expect(SRC).toMatch(/<template v-if="!isCompactLayout">/);
     // 桌面手风琴内部契约保持：折叠按钮 + v-show 门控 + 词单折叠
@@ -40,7 +41,25 @@ describe('Learning · 移动端紧凑布局契约', () => {
       /async function openBook\(book: Book, courseId = ''\) \{[\s\S]{0,200}isCompactLayout\.value\) booksOpen\.value = false;/,
     );
     expect(SRC).toMatch(/const compactCourseId = computed\(\(\) => activeCourseId\.value \|\| courses\.value\[0\]\?\.courses\[0\]\?\.id \|\| ''\);/);
-    expect(SRC).toMatch(/function onCompactCourseChange\(event: Event\)/);
+    expect(SRC).toMatch(/function onCompactCourseChange\(value: string \| number\)/);
+  });
+
+  it('★★ P0-1 科目切换先按目标科目分流，旧科目状态不得抢占目标 tab', () => {
+    const switchStart = SRC.indexOf('async function switchSubject');
+    const switchEnd = SRC.indexOf('// ── 工作区 Tab', switchStart);
+    const switchBody = SRC.slice(switchStart, switchEnd);
+    const softTarget = switchBody.indexOf("case '软考'");
+    const securityTarget = switchBody.indexOf("case '网络安全'");
+    const legacySoft = switchBody.indexOf('if (wasSoft');
+    const legacySecurity = switchBody.indexOf('if (wasSecurity');
+
+    expect(switchStart).toBeGreaterThan(-1);
+    expect(switchEnd).toBeGreaterThan(switchStart);
+    expect(switchBody).toMatch(/switch \(key\)/);
+    expect(softTarget).toBeGreaterThan(-1);
+    expect(securityTarget).toBeGreaterThan(softTarget);
+    expect(securityTarget).toBeLessThan(legacySoft);
+    expect(securityTarget).toBeLessThan(legacySecurity);
   });
 
   it('★ v1.1 骨架：顶栏状态文案隐藏 + 复习 CTA 吸底（sticky，拇指热区）', () => {
@@ -105,13 +124,52 @@ describe('Learning · 移动端紧凑布局契约', () => {
     // 移动端工具条：小节下拉（optgroup=阶段）+ 开始按钮，sticky 吸顶（课程条下方 64px）
     expect(epw).toMatch(/class="lp-path-compact-bar"/);
     expect(epw).toMatch(/class="lp-lesson-select"/);
-    expect(epw).toMatch(/<optgroup\s*v-for="\(s, si\) in stages"/);
-    expect(epw).toMatch(/:value="globalLessonIndex\(si, li\)"/);
+    expect(epw).toMatch(/:groups="compactLessonGroups"/);
+    expect(epw).toMatch(/value: globalLessonIndex\(stageIndex, lessonIndex\)/);
     expect(epw).toMatch(/@click="openFocus\(compactLessonIdx\)"/);
     expect(epw).toMatch(/\.lp-path-compact-bar \{[\s\S]{0,120}position: sticky; top: 64px;/);
     // 与下拉重复的移动端展示（阶段胶囊/课件卡）隐藏；桌面网格保持
     expect(epw).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lp-path-stages \{ display: none; \}/);
     expect(epw).toMatch(/\.lp-path-step-list \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); gap: 8px; \}/);
     expect(epw).not.toMatch(/lessonsExpanded|LESSON_PREVIEW_COUNT|visibleSteps/);
+  });
+
+  it('★★ P0-2 五处原生 select 全部替换为 LearningSelect，44px 触摸目标且不引入 fixed/:has()', () => {
+    const read2 = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
+    const learningSelect = read2('../components/learning/LearningSelect.vue');
+    expect(learningSelect).toContain('role="combobox"');
+    expect(learningSelect).toContain('role="listbox"');
+    expect(learningSelect).toContain('min-height: 44px;');
+    expect(learningSelect).not.toMatch(/position:\s*fixed/);
+    expect(learningSelect).not.toContain(':has(');
+
+    const epw = read2('../components/learning/EnglishPathWorkbench.vue');
+    const zy = read2('../components/learning/zhouyi/ZhouyiWorkbench.vue');
+    const mw = read2('../components/learning/MusicWorkbench.vue');
+    const cul = read2('../components/learning/CultureWorkbench.vue');
+    expect(epw).toMatch(/<LearningSelect[\s\S]{0,160}class="lp-lesson-select"/);
+    expect(zy).toMatch(/<LearningSelect[\s\S]{0,160}class="zy-track-select"/);
+    expect(mw).toMatch(/<LearningSelect[\s\S]{0,160}class="mw-stage-select"/);
+    expect(cul).toMatch(/<LearningSelect[\s\S]{0,160}class="cul-stage-select"/);
+    expect(SRC).not.toMatch(/<select\s+v-if="isCompactLayout"\s+class="lp-stage-select"/);
+    expect(epw).not.toMatch(/<select\s+class="lp-lesson-select"/);
+    expect(zy).not.toMatch(/<select\s+v-if="zyCompact"\s+class="zy-track-select"/);
+    expect(mw).not.toMatch(/<select\s+v-if="mwCompact"\s+class="mw-stage-select"/);
+    expect(cul).not.toMatch(/<select\s+v-if="culCompact"\s+class="cul-stage-select"/);
+    expect(SRC).toMatch(/\.lp-topbar \{[\s\S]{0,140}position: sticky; top: 6px;[\s\S]{0,180}flex-direction: row;/);
+    expect(SRC).toMatch(/\.lp-subject-picker \{ flex: 0 0 auto; \}/);
+    expect(SRC).toMatch(/\.lp-top-course-select \{[\s\S]{0,80}flex: 1 1 auto;/);
+    expect(SRC).toMatch(/<SubjectPicker class="lp-subject-picker"[\s\S]{0,500}<LearningSelect[\s\S]{0,100}class="lp-stage-select lp-top-course-select"/);
+    expect(SRC).toMatch(/<div v-else-if="!isCompactLayout" class="lp-courses"/);
+    expect(SRC).not.toMatch(/<div v-else-if="!isCompactLayout" class="lp-courses"[\s\S]{0,400}<LearningSelect/);
+    expect(epw).toMatch(/\.lp-path-compact-bar \{[\s\S]{0,120}position: sticky; top: 64px;/);
+    expect(zy).toMatch(/\.zy-track-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
+    expect(mw).toMatch(/\.mw-stage-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
+    expect(cul).toMatch(/\.cul-stage-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
+  });
+
+  it('★ P0-3 同一导航信息一屏只出现一处：周易移动端删左栏卡，软考 exam 卡仅桌面渲染', () => {
+    expect(SRC).toMatch(/<div v-if="subject === '周易' && !isCompactLayout" class="lp-courses">/);
+    expect(SRC).toMatch(/<template v-if="!isCompactLayout">[\s\S]*?v-if="c\.kind === 'exam'"[\s\S]*?<\/template>/);
   });
 });

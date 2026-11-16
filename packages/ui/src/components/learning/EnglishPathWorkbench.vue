@@ -23,6 +23,7 @@ import { absoluteMediaSrc } from '../../composables/useMediaPreview';
 import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { nativeStopTts, warnEngineUnavailableOnce } from '../../utils/nativeTts';
+import LearningSelect from './LearningSelect.vue';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 
@@ -189,9 +190,16 @@ function globalLessonIndex(si: number, li: number): number {
   for (let i = 0; i < si; i++) base += stages.value[i]?.steps.length ?? 0;
   return base + li;
 }
-function onCompactLessonChange(event: Event) {
-  compactLessonIdx.value = Number((event.target as HTMLSelectElement).value);
+function onCompactLessonChange(value: string | number) {
+  compactLessonIdx.value = Number(value);
 }
+const compactLessonGroups = computed(() => stages.value.map((stage, stageIndex) => ({
+  label: `${stageIndex + 1}. ${stage.title}（${stage.steps.filter((lesson) => completedIds.value.includes(lesson.id)).length}/${stage.steps.length}）`,
+  options: stage.steps.map((lesson, lessonIndex) => ({
+    value: globalLessonIndex(stageIndex, lessonIndex),
+    label: `${completedIds.value.includes(lesson.id) ? '✓ ' : ''}${lessonIndex + 1}. ${lesson.title}`,
+  })),
+})));
 const phase = computed(() => PHASES[phaseIndex.value] || PHASES[0]);
 const totalSteps = computed(() => stages.value.reduce((sum, item) => sum + item.steps.length, 0));
 const completedCount = computed(() => completedIds.value.length);
@@ -1254,26 +1262,13 @@ onBeforeUnmount(() => {
       <!-- ★ v1.1.1 移动端工具条（用户定稿）：小节下拉 + 开始按钮，一行吸顶；
            阶段胶囊与课件卡不再重复展示（选择都进下拉）。桌面保持原布局。 -->
       <div v-if="isCompactViewport" class="lp-path-compact-bar">
-        <select
+        <LearningSelect
           class="lp-lesson-select"
           :value="compactLessonIdx"
+          :groups="compactLessonGroups"
           aria-label="选择小节"
-          @change="onCompactLessonChange($event)"
-        >
-          <optgroup
-            v-for="(s, si) in stages"
-            :key="s.id"
-            :label="`${si + 1}. ${s.title}（${s.steps.filter((l) => completedIds.includes(l.id)).length}/${s.steps.length}）`"
-          >
-            <option
-              v-for="(l, li) in s.steps"
-              :key="l.id"
-              :value="globalLessonIndex(si, li)"
-            >
-              {{ completedIds.includes(l.id) ? '✓ ' : '' }}{{ li + 1 }}. {{ l.title }}
-            </option>
-          </optgroup>
-        </select>
+          @change="onCompactLessonChange"
+        />
         <button type="button" class="lp-path-go" @click="openFocus(compactLessonIdx)">开始</button>
       </div>
       <template v-else>
@@ -2318,18 +2313,10 @@ onBeforeUnmount(() => {
     box-shadow: 0 4px 14px rgba(0, 0, 0, .10);
   }
   .lp-lesson-select {
-    min-height: 40px;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: #fff;
-    color: var(--color-text);
-    padding: 6px 10px;
-    font-size: 13px;
-    font-weight: 600;
-    appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
+    --learning-select-bg: #fff;
+    --learning-select-accent: var(--color-primary);
+    --learning-select-font-size: 13px;
+    --learning-select-radius: 8px;
   }
   .lp-path-go {
     min-width: 64px; min-height: 40px;

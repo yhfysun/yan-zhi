@@ -21,7 +21,12 @@ describe('Android 打包链接线', () => {
     const c = chain();
     expect(c).not.toContain('cap build android');
     expect(c).toContain('scripts/assemble-debug.cjs');
-    expect(read('scripts/assemble-debug.cjs')).toContain("'assembleDebug'");
+    const assemble = read('scripts/assemble-debug.cjs');
+    expect(assemble).toContain("'assembleDebug'");
+    expect(assemble).toContain('resolveJavaHome');
+    expect(assemble).toContain('jdk-21');
+    expect(assemble).toContain('resolveAndroidSdk');
+    expect(assemble).toContain('local.properties');
   });
 
   it('★ 短路径补丁排在 cap sync 之后、Gradle 之前，且不批量删缓存', () => {

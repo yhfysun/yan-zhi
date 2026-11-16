@@ -69,7 +69,7 @@ final class SherpaTts {
             java.io.File dir = new java.io.File(ctx.getFilesDir(), ASSET_DIR);
             java.io.File model = new java.io.File(dir, MODEL_NAME);
             java.io.File phontab = new java.io.File(dir, "espeak-ng-data/phontab");
-            if (!model.exists() || !phontab.exists()) {
+            if (!model.exists() || model.length() <= 1024 * 1024 || !phontab.exists()) {
                 Log.i(TAG, "sherpa 模型拷贝 assets → filesDir（首次 ~35MB）...");
                 long t0 = System.currentTimeMillis();
                 copyAssets(ctx, ASSET_DIR, dir);
@@ -85,7 +85,9 @@ final class SherpaTts {
             OfflineTtsModelConfig mc = new OfflineTtsModelConfig(vits, 2, false, "cpu");
             OfflineTtsConfig config = new OfflineTtsConfig(mc, "", "", 1);
             tts = new OfflineTts(null, config); // null AssetManager ⇒ 走 newFromFile（真实路径）
-            Log.i(TAG, "sherpa 内置引擎就绪: " + (System.currentTimeMillis() - t0) + "ms, sr=" + tts.sampleRate());
+            int sampleRate = tts.sampleRate();
+            if (sampleRate <= 0) throw new IllegalStateException("invalid sample rate: " + sampleRate);
+            Log.i(TAG, "sherpa 内置引擎就绪: " + (System.currentTimeMillis() - t0) + "ms, sr=" + sampleRate);
             return true;
         } catch (Throwable e) {
             initFailed = true;
@@ -144,6 +146,7 @@ final class SherpaTts {
 
     /** AudioTrack PCM 播放（float → 16bit PCM byte[]，兼容所有 compileSdk），写完/打断返回。 */
     private static boolean play(float[] samples, int sampleRate) {
+        if (sampleRate <= 0) return false;
         // float [-1,1] → 16bit PCM 小端
         byte[] pcm = new byte[samples.length * 2];
         for (int i = 0; i < samples.length; i++) {
@@ -154,6 +157,7 @@ final class SherpaTts {
         }
         int minBuf = AudioTrack.getMinBufferSize(sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf <= 0) return false;
         track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -167,8 +171,15 @@ final class SherpaTts {
                 .setTransferMode(AudioTrack.MODE_STATIC)
                 .setBufferSizeInBytes(Math.max(minBuf, pcm.length))
                 .build();
-        track.write(pcm, 0, pcm.length);
+        if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+            try { track.release(); } catch (Exception e) { /* ignore */ }
+            track = null;
+            return false;
+        }
+        int written = track.write(pcm, 0, pcm.length);
+        if (written <= 0) return false;
         track.play();
+        if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) return false;
         // MODE_STATIC 静音期轮询：播完 / 被打断
         long total = (long) (samples.length * 1000L / sampleRate);
         long waited = 0;

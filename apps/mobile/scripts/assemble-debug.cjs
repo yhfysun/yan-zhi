@@ -9,11 +9,72 @@
  *   capacitor.settings.gradle，短路径补丁被冲掉后原生库又会撞 Windows MAX_PATH。
  */
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const androidDir = path.join(__dirname, '..', 'android');
 const isWin = process.platform === 'win32';
 const gradlew = path.join(androidDir, isWin ? 'gradlew.bat' : 'gradlew');
+const localProperties = path.join(androidDir, 'local.properties');
+
+function hasJava21(home) {
+  if (!home) return false;
+  const java = path.join(home, 'bin', isWin ? 'java.exe' : 'java');
+  if (!fs.existsSync(java)) return false;
+  const r = spawnSync(java, ['-version'], { encoding: 'utf8' });
+  const text = `${r.stdout || ''}\n${r.stderr || ''}`;
+  const match = /version "(\d+)/.exec(text);
+  return !!match && Number(match[1]) >= 21;
+}
+
+/** JDK 21 是 Capacitor 8 的硬要求；优先环境变量，其次常见安装位置。 */
+function resolveJavaHome() {
+  const candidates = [
+    process.env.JAVA_HOME,
+    'C:/APP/Java/jdk-21',
+    'C:/Program Files/Java/jdk-21',
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Android', 'Android Studio', 'jbr') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Android Studio', 'jbr') : '',
+  ];
+  const found = candidates.find(hasJava21);
+  if (!found) throw new Error('未找到 JDK 21。请设置 JAVA_HOME 或安装 JDK 21 后重试。');
+  return found;
+}
+
+function readConfiguredSdk() {
+  if (!fs.existsSync(localProperties)) return '';
+  const match = /^sdk\.dir=(.+)$/m.exec(fs.readFileSync(localProperties, 'utf8'));
+  return match ? match[1].trim() : '';
+}
+
+function validSdk(dir) {
+  if (!dir) return false;
+  return fs.existsSync(path.join(dir, 'platform-tools', isWin ? 'adb.exe' : 'adb'))
+    && fs.existsSync(path.join(dir, 'platforms'));
+}
+
+/** 顺序：环境变量 → local.properties → 标准位置 → 本机包装管理器内的 SDK。 */
+function resolveAndroidSdk() {
+  const candidates = [
+    process.env.ANDROID_HOME,
+    process.env.ANDROID_SDK_ROOT,
+    readConfiguredSdk(),
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk') : '',
+    'C:/Android/Sdk',
+  ];
+  const packagesRoot = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'Packages')
+    : '';
+  if (packagesRoot && fs.existsSync(packagesRoot)) {
+    for (const name of fs.readdirSync(packagesRoot)) {
+      candidates.push(path.join(packagesRoot, name, 'LocalCache', 'Local', 'Android', 'Sdk'));
+    }
+  }
+  const found = candidates.find(validSdk);
+  if (!found) throw new Error('未找到 Android SDK。请设置 ANDROID_HOME，或先安装 Android SDK。');
+  fs.writeFileSync(localProperties, `sdk.dir=${found.replace(/\\/g, '/')}\n`, 'utf8');
+  return found;
+}
 
 /**
  * 透传的 Gradle property（-Pxxx）。
@@ -27,10 +88,22 @@ if (process.env.YZ_GRADLE_PROPS) {
   }
 }
 
+const javaHome = resolveJavaHome();
+const androidSdk = resolveAndroidSdk();
+console.log('[assemble-debug] JAVA_HOME:', javaHome);
+console.log('[assemble-debug] ANDROID_HOME:', androidSdk);
+
 const result = spawnSync(gradlew, ['assembleDebug', '--console=plain', ...gradleProps], {
   cwd: androidDir,
   stdio: 'inherit',
   shell: isWin,
+  env: {
+    ...process.env,
+    JAVA_HOME: javaHome,
+    PATH: `${path.join(javaHome, 'bin')}${path.delimiter}${process.env.PATH || ''}`,
+    ANDROID_HOME: androidSdk,
+    ANDROID_SDK_ROOT: androidSdk,
+  },
 });
 
 if (result.error) {
