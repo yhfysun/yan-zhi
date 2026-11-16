@@ -80,6 +80,7 @@ const categories: SettingsCategory[] = [
   { key: 'skin', label: '外观皮肤', icon: MagicStick, pane: 'skin' },
   { key: 'pet', label: '宠物', icon: Present, pane: 'pet' },
   { key: 'models', label: '模型服务', icon: Cpu, comp: 'models' },
+  { key: 'gateway', label: '本地网关', icon: Connection, pane: 'gateway' },
   { key: 'skills', label: '技能', icon: Files, comp: 'skills' },
   { key: 'tools', label: '工具与连接', icon: Suitcase, comp: 'tools' },
   { key: 'data', label: '数据', icon: FolderOpened, pane: 'data' },

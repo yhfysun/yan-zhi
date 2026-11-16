@@ -24,6 +24,8 @@ let apiKey = '';
 let keyId = '';
 const PID = 'p_gateway_test';
 const MID = 'm_gateway_test';
+const EMBED_MID = 'm_gateway_embedding_test';
+const EMBED_API_ID = 'mock-embedding-v1';
 
 beforeAll(async () => {
   setPlatformAdapter(nodeAdapter);
@@ -49,6 +51,7 @@ beforeEach(() => {
   db.prepare('DELETE FROM gateway_usage').run();
   db.prepare('DELETE FROM gateway_client_key').run();
   db.prepare('DELETE FROM model WHERE id = ?').run(MID);
+  db.prepare('DELETE FROM model WHERE id = ?').run(EMBED_MID);
   db.prepare('DELETE FROM platform WHERE id = ?').run(PID);
   db.prepare("INSERT OR IGNORE INTO user (id, username, password_hash, created_at) VALUES ('guest', 'guest', 'x', ?)").run(Date.now());
   db.prepare(`
@@ -59,6 +62,10 @@ beforeEach(() => {
     INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, enabled, visible, created_at)
     VALUES (?, ?, 'guest', ?, 'Gateway Mock', 'llm', 32768, '[]', 1, 1, ?)
   `).run(MID, PID, MOCK_MODEL_ID, Date.now());
+  db.prepare(`
+    INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, enabled, visible, created_at)
+    VALUES (?, ?, 'guest', ?, 'Gateway Embedding', 'embedding', 8192, '[]', 1, 1, ?)
+  `).run(EMBED_MID, PID, EMBED_API_ID, Date.now());
   db.prepare(`
     INSERT INTO app_config (key, value, updated_at)
     VALUES ('model_pools', ?, ?)
@@ -149,6 +156,131 @@ describe('local-gateway', () => {
     expect(text).toContain('data: ');
     expect(text).toContain('"usage"');
     expect(text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('Chat Completions 工具调用保持 OpenAI tool_calls 形状', async () => {
+    const res = await request('/v1/chat/completions', {
+      model: 'auto',
+      messages: [{ role: 'user', content: '现在几点？' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'get_time',
+          description: '获取时间',
+          parameters: { type: 'object', properties: { tz: { type: 'string' } } },
+        },
+      }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe('get_time');
+  });
+
+  it('OpenAI Responses 非流式返回 output_text 与 response usage', async () => {
+    const res = await request('/v1/responses', {
+      model: 'auto',
+      input: 'ping',
+      max_output_tokens: 32,
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.object).toBe('response');
+    expect(body.output[0].content[0].text).toBeTruthy();
+    expect(body.usage.input_tokens).toBe(MOCK_USAGE.normalized.inputTokens);
+  });
+
+  it('OpenAI Responses 流式输出标准事件', async () => {
+    const res = await request('/v1/responses', {
+      model: 'auto',
+      input: 'ping',
+      max_output_tokens: 32,
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('event: response.created');
+    expect(text).toContain('event: response.output_text.delta');
+    expect(text).toContain('event: response.completed');
+  });
+
+  it('OpenAI Responses 工具调用转换为 function_call output item', async () => {
+    const res = await request('/v1/responses', {
+      model: 'auto',
+      input: '现在几点？',
+      tools: [{
+        type: 'function',
+        name: 'get_time',
+        description: '获取时间',
+        parameters: { type: 'object', properties: { tz: { type: 'string' } } },
+      }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    const item = body.output.find((entry: any) => entry.type === 'function_call');
+    expect(item?.name).toBe('get_time');
+  });
+
+  it('Anthropic Messages 非流式返回 content blocks 与 Anthropic usage', async () => {
+    const res = await request('/v1/messages', {
+      model: 'auto',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'ping' }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.type).toBe('message');
+    expect(body.content[0].type).toBe('text');
+    expect(body.usage.input_tokens).toBe(MOCK_USAGE.normalized.inputTokens);
+  });
+
+  it('Anthropic Messages 流式输出标准事件', async () => {
+    const res = await request('/v1/messages', {
+      model: 'auto',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'ping' }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('event: message_start');
+    expect(text).toContain('event: content_block_delta');
+    expect(text).toContain('event: message_stop');
+  });
+
+  it('Anthropic Messages 工具调用转换为 tool_use block', async () => {
+    const res = await request('/v1/messages', {
+      model: 'auto',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: '现在几点？' }],
+      tools: [{
+        name: 'get_time',
+        description: '获取时间',
+        input_schema: { type: 'object', properties: { tz: { type: 'string' } } },
+      }],
+      stream: false,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    const block = body.content.find((entry: any) => entry.type === 'tool_use');
+    expect(block?.name).toBe('get_time');
+  });
+
+  it('Embeddings 返回 OpenAI embeddings 形状并记录网关用量', async () => {
+    const res = await request('/v1/embeddings', {
+      model: EMBED_API_ID,
+      input: ['one'],
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.object).toBe('list');
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].embedding.length).toBeGreaterThan(0);
+    const usage = db.prepare("SELECT * FROM gateway_usage WHERE protocol = 'openai-embeddings'").get() as any;
+    expect(usage).toBeTruthy();
   });
 
   it('每日 token 上限在请求上游前拦截', async () => {

@@ -43,6 +43,13 @@
           />
           <el-button
             text
+            :icon="Pencil"
+            aria-label="编辑网关密钥"
+            :loading="busyId === item.id"
+            @click="openEdit(item)"
+          />
+          <el-button
+            text
             type="danger"
             :icon="Trash2"
             aria-label="删除网关密钥"
@@ -53,7 +60,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="createOpen" title="新建网关密钥" width="520px" destroy-on-close>
+    <el-dialog v-model="createOpen" :title="editingId ? '编辑网关密钥' : '新建网关密钥'" width="520px" destroy-on-close>
       <el-form label-width="92px">
         <el-form-item label="名称">
           <el-input v-model="createForm.name" maxlength="100" placeholder="例如 Claude Code、Cursor" />
@@ -73,11 +80,21 @@
         <el-form-item label="RPM">
           <el-input-number v-model="createForm.rpmLimit" :min="1" :max="100000" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="有效期">
+          <el-date-picker
+            v-model="createForm.expiresAt"
+            type="date"
+            value-format="x"
+            placeholder="永久有效"
+            clearable
+            style="width: 100%"
+          />
+        </el-form-item>
       </el-form>
       <div class="gateway-form-tip">0 表示不限制每日 tokens 或费用。</div>
       <template #footer>
         <el-button @click="createOpen = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="create">创建</el-button>
+        <el-button type="primary" :loading="creating" @click="create">{{ editingId ? '保存' : '创建' }}</el-button>
       </template>
     </el-dialog>
 
@@ -94,7 +111,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Copy, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
+import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-vue-next';
 import type { GatewayClientKeyView, GatewayUsageToday } from '@yan-zhi/shared';
 import { api } from '../../api/client';
 
@@ -106,6 +123,7 @@ const loading = ref(false);
 const creating = ref(false);
 const busyId = ref('');
 const createOpen = ref(false);
+const editingId = ref('');
 const secretOpen = ref(false);
 const secretKey = ref('');
 
@@ -115,6 +133,7 @@ const createForm = reactive({
   dailyTokenLimit: 0,
   dailyCostLimitCny: 0,
   rpmLimit: 60,
+  expiresAt: null as string | number | null,
 });
 
 function parseAllowedModels(raw: string): string[] {
@@ -153,11 +172,24 @@ async function load(): Promise<void> {
 }
 
 function openCreate(): void {
+  editingId.value = '';
   createForm.name = '';
   createForm.allowedModels = '*';
   createForm.dailyTokenLimit = 0;
   createForm.dailyCostLimitCny = 0;
   createForm.rpmLimit = 60;
+  createForm.expiresAt = null;
+  createOpen.value = true;
+}
+
+function openEdit(item: GatewayKeyItem): void {
+  editingId.value = item.id;
+  createForm.name = item.name;
+  createForm.allowedModels = item.allowedModels.join(', ');
+  createForm.dailyTokenLimit = item.dailyTokenLimit;
+  createForm.dailyCostLimitCny = item.dailyCostLimitCny;
+  createForm.rpmLimit = item.rpmLimit || 60;
+  createForm.expiresAt = item.expiresAt;
   createOpen.value = true;
 }
 
@@ -168,19 +200,25 @@ async function create(): Promise<void> {
   }
   creating.value = true;
   try {
-    const result = await api.post<GatewayKeyItem & { key: string }>('/gateway-keys', {
+    const payload = {
       name: createForm.name.trim(),
       allowedModels: parseAllowedModels(createForm.allowedModels),
       dailyTokenLimit: createForm.dailyTokenLimit,
       dailyCostLimitCny: createForm.dailyCostLimitCny,
       rpmLimit: createForm.rpmLimit,
-    });
+      expiresAt: createForm.expiresAt ? Number(createForm.expiresAt) : null,
+    };
+    const result = editingId.value
+      ? await api.patch<GatewayKeyItem>(`/gateway-keys/${editingId.value}`, payload)
+      : await api.post<GatewayKeyItem & { key: string }>('/gateway-keys', payload);
     if ('error' in result) {
-      ElMessage.error((result as any).error || '创建失败');
+      ElMessage.error((result as any).error || (editingId.value ? '保存失败' : '创建失败'));
       return;
     }
-    secretKey.value = result.data.key;
-    secretOpen.value = true;
+    if (!editingId.value) {
+      secretKey.value = (result.data as GatewayKeyItem & { key: string }).key;
+      secretOpen.value = true;
+    }
     createOpen.value = false;
     await load();
   } finally {

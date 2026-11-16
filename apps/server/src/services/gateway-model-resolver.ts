@@ -8,6 +8,8 @@ export interface ResolvedGatewayModel {
   requestedModel: string;
 }
 
+export type GatewayModelPurpose = 'chat' | 'embedding';
+
 function platformFromRow(row: any): Platform {
   let headers: Record<string, string> = {};
   try {
@@ -70,6 +72,7 @@ export function resolveGatewayModel(
   userId: string,
   requested: string,
   allowedModels: string[],
+  purpose: GatewayModelPurpose = 'chat',
 ): ResolvedGatewayModel | { error: string; code: 'model_not_allowed' | 'model_not_found' } {
   const modelName = String(requested || '').trim();
   const allowed = allowedModelIds(allowedModels);
@@ -77,11 +80,26 @@ export function resolveGatewayModel(
     if (!allowed.has('*') && !allowed.has('auto')) {
       return { error: `模型不在该密钥白名单内: ${modelName}`, code: 'model_not_allowed' };
     }
-    const first = resolvePool(db, { userId }, 'llm')[0];
-    if (!first) return { error: '当前账号没有可用的对话模型', code: 'model_not_found' };
-    const platform = loadPlatformForModel(db, userId, first.platformId);
-    if (!platform) return { error: '自动路由命中的模型平台不可用', code: 'model_not_found' };
-    return { platform, model: first.model, requestedModel: modelName };
+    if (purpose === 'chat') {
+      const first = resolvePool(db, { userId }, 'llm')[0];
+      if (!first) return { error: '当前账号没有可用的对话模型', code: 'model_not_found' };
+      const platform = loadPlatformForModel(db, userId, first.platformId);
+      if (!platform) return { error: '自动路由命中的模型平台不可用', code: 'model_not_found' };
+      return { platform, model: first.model, requestedModel: modelName };
+    }
+    const embedding = db.prepare(`
+      SELECT m.*
+        FROM model m
+        JOIN platform p ON p.id = m.platform_id
+       WHERE m.type = 'embedding' AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1
+         AND (m.user_id = ? OR p.is_public = 1 OR m.is_public = 1)
+       ORDER BY m.is_default DESC, m.created_at DESC
+       LIMIT 1
+    `).get(userId) as any;
+    if (!embedding) return { error: '当前账号没有可用的 Embedding 模型', code: 'model_not_found' };
+    const platform = loadPlatformForModel(db, userId, String(embedding.platform_id));
+    if (!platform) return { error: 'Embedding 模型平台不可用', code: 'model_not_found' };
+    return { platform, model: modelFromRow(embedding), requestedModel: modelName };
   }
 
   const row = db.prepare(`
@@ -98,6 +116,12 @@ export function resolveGatewayModel(
   if (!row) return { error: `模型不存在或不可用: ${modelName}`, code: 'model_not_found' };
 
   const model = modelFromRow(row);
+  if (purpose === 'embedding' && model.type !== 'embedding') {
+    return { error: `模型不是 Embedding 模型: ${modelName}`, code: 'model_not_found' };
+  }
+  if (purpose === 'embedding' && row.protocol === 'anthropic') {
+    return { error: 'Anthropic 协议不支持 Embeddings', code: 'model_not_found' };
+  }
   if (!allowed.has('*') && !allowed.has(model.id) && !allowed.has(model.modelId) && !allowed.has(model.alias || '')) {
     return { error: `模型不在该密钥白名单内: ${modelName}`, code: 'model_not_allowed' };
   }

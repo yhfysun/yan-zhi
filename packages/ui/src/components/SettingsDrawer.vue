@@ -55,6 +55,7 @@ import {
   Memo,
   MagicStick,
   Monitor,
+  Key,
   Close,
 } from '@element-plus/icons-vue';
 import {
@@ -79,6 +80,7 @@ const builtinSections: SettingsSection[] = [
   { section: 'general', label: '通用与数据', icon: Setting },
 
   { section: 'models', label: '模型平台', icon: Cpu },
+  { section: 'gateway', label: '本地网关', icon: Key },
   { section: 'tools', label: '工具与连接', icon: Suitcase },
   { section: 'skills', label: 'Skill 商店', icon: Files },
   { section: 'distill', label: 'Skill 蒸馏', icon: MagicStick },
@@ -123,6 +125,7 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
   general: defineAsyncComponent(() => import('../views/Settings.vue')),
 
   models: defineAsyncComponent(() => import('../views/Models.vue')),
+  gateway: defineAsyncComponent(() => import('./settings/GatewayKeyPanel.vue')),
   tools: defineAsyncComponent(() => import('../views/ToolMarket.vue')),
   skills: defineAsyncComponent(() => import('../views/skill-market/LocalSkillMarket.vue')),
   distill: defineAsyncComponent(() => import('../views/SkillDistill.vue')),

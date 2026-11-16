@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { LlmClient } from '@yan-zhi/core';
-import { isMissingUsage, type TokenUsageDetail } from '@yan-zhi/shared';
+import { isMissingUsage, type DeltaToolCall, type TokenUsageDetail } from '@yan-zhi/shared';
 import { db } from '../db.js';
 import {
   checkGatewayKeyLimits,
@@ -16,7 +16,15 @@ import {
   GatewayRequestError,
   normalizeGatewayChat,
   openAiError,
+  type NormalizedGatewayChat,
 } from '../services/gateway-openai-chat.js';
+import { normalizeAnthropicRequest, normalizeResponsesRequest } from '../services/gateway-protocol-normalizers.js';
+import {
+  anthropicUsage,
+  buildAnthropicMessage,
+  buildResponsesResult,
+  responsesUsage,
+} from '../services/gateway-protocol-responses.js';
 import { estimateUsageDetail, recordStandaloneUsage } from '../services/usage-ledger.js';
 
 const router = Router();
@@ -126,6 +134,19 @@ function usagePayload(detail: TokenUsageDetail): Record<string, unknown> {
   };
 }
 
+function chatOptions(normalized: NormalizedGatewayChat) {
+  return {
+    tools: normalized.tools,
+    temperature: normalized.temperature,
+    maxTokens: normalized.maxTokens,
+    topP: normalized.topP,
+    frequencyPenalty: normalized.frequencyPenalty,
+    presencePenalty: normalized.presencePenalty,
+    toolChoice: normalized.toolChoice,
+    responseFormat: normalized.responseFormat,
+  };
+}
+
 function writeSse(res: Response, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
@@ -133,6 +154,7 @@ function writeSse(res: Response, payload: unknown): void {
 function recordGatewayCall(input: {
   key: GatewayClientKeyRecord;
   requestId: string;
+  protocol: 'openai-chat' | 'openai-responses' | 'anthropic-messages' | 'openai-embeddings';
   requestedModel: string;
   platformId: string;
   apiModelId: string;
@@ -160,7 +182,7 @@ function recordGatewayCall(input: {
     keyId: input.key.id,
     userId: input.key.userId,
     requestId: input.requestId,
-    protocol: 'openai-chat',
+    protocol: input.protocol,
     requestedModel: input.requestedModel,
     platformId: input.platformId,
     modelId: input.apiModelId,
@@ -203,22 +225,13 @@ router.post('/v1/chat/completions', gatewayAuth, enforceGatewayLimits, async (re
 
     const client = new LlmClient(resolved.platform, resolved.model);
     const stream = body.stream === true;
-    const options = {
-      tools: normalized.tools,
-      temperature: normalized.temperature,
-      maxTokens: normalized.maxTokens,
-      topP: normalized.topP,
-      frequencyPenalty: normalized.frequencyPenalty,
-      presencePenalty: normalized.presencePenalty,
-      toolChoice: normalized.toolChoice,
-      responseFormat: normalized.responseFormat,
-    };
+    const options = chatOptions(normalized);
 
     if (!stream) {
       const chunk = await client.chat(normalized.messages, options);
       const outputText = `${chunk.delta?.content || ''}${chunk.delta?.reasoningContent || ''}`;
       const recorded = recordGatewayCall({
-        key, requestId, requestedModel, platformId: resolved.platform.id,
+        key, requestId, protocol: 'openai-chat', requestedModel, platformId: resolved.platform.id,
         apiModelId: resolved.model.modelId, status: 'ok', detail: chunk.usage?.detail,
         requestBody: body, outputText, startedAt,
       });
@@ -285,7 +298,7 @@ router.post('/v1/chat/completions', gatewayAuth, enforceGatewayLimits, async (re
     } catch (error) {
       if (abort.signal.aborted) {
         recordGatewayCall({
-          key, requestId, requestedModel, platformId: resolved.platform.id,
+          key, requestId, protocol: 'openai-chat', requestedModel, platformId: resolved.platform.id,
           apiModelId: resolved.model.modelId, status: 'aborted', detail: lastDetail,
           requestBody: body, outputText, startedAt, errorCode: 'client_disconnected',
         });
@@ -293,7 +306,7 @@ router.post('/v1/chat/completions', gatewayAuth, enforceGatewayLimits, async (re
       }
       failed = true;
       recordGatewayCall({
-        key, requestId, requestedModel, platformId: resolved.platform.id,
+        key, requestId, protocol: 'openai-chat', requestedModel, platformId: resolved.platform.id,
         apiModelId: resolved.model.modelId, status: 'error', detail: lastDetail,
         requestBody: body, outputText, startedAt,
         errorCode: String((error as any)?.code || 'upstream_error'),
@@ -303,7 +316,7 @@ router.post('/v1/chat/completions', gatewayAuth, enforceGatewayLimits, async (re
     }
     if (!failed) {
       const recorded = recordGatewayCall({
-        key, requestId, requestedModel, platformId: resolved.platform.id,
+        key, requestId, protocol: 'openai-chat', requestedModel, platformId: resolved.platform.id,
         apiModelId: resolved.model.modelId, status: 'ok', detail: lastDetail,
         requestBody: body, outputText, startedAt,
       });
@@ -315,6 +328,364 @@ router.post('/v1/chat/completions', gatewayAuth, enforceGatewayLimits, async (re
       res.write('data: [DONE]\n\n');
       res.end();
     }
+  } catch (error) {
+    gatewayError(res, error);
+  }
+});
+
+function writeProtocolEvent(res: Response, event: string, payload: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function mergeToolDeltas(target: DeltaToolCall[], incoming: DeltaToolCall[]): void {
+  for (const delta of incoming) {
+    const index = Number.isInteger(delta.index) ? Number(delta.index) : target.length;
+    const current = target[index] || { index };
+    target[index] = {
+      ...current,
+      ...(delta.id ? { id: delta.id } : {}),
+      ...(delta.type ? { type: delta.type } : {}),
+      function: {
+        ...(current.function || {}),
+        ...(delta.function?.name ? { name: delta.function.name } : {}),
+        ...(delta.function?.arguments
+          ? { arguments: String(current.function?.arguments || '') + delta.function.arguments }
+          : {}),
+      },
+    };
+  }
+}
+
+router.post('/v1/responses', gatewayAuth, enforceGatewayLimits, async (req: Request, res: Response) => {
+  const key = res.locals.gatewayKey as GatewayClientKeyRecord;
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  res.setHeader('X-Yanzhi-Request-Id', requestId);
+  try {
+    const body = req.body as Record<string, unknown>;
+    const normalized = normalizeResponsesRequest(body);
+    const requestedModel = String(body.model || 'auto');
+    const resolved = resolveGatewayModel(db, key.userId, requestedModel, key.allowedModels);
+    if ('error' in resolved) {
+      const status = resolved.code === 'model_not_allowed' ? 403 : 404;
+      res.status(status).json(openAiError(status, resolved.code, resolved.error));
+      return;
+    }
+    const client = new LlmClient(resolved.platform, resolved.model);
+    const options = chatOptions(normalized);
+    const stream = body.stream === true;
+    const responseId = `resp_${requestId}`;
+    if (!stream) {
+      const chunk = await client.chat(normalized.messages, options);
+      const outputText = `${chunk.delta?.content || ''}${chunk.delta?.reasoningContent || ''}`;
+      const recorded = recordGatewayCall({
+        key, requestId, protocol: 'openai-responses', requestedModel,
+        platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+        status: 'ok', detail: chunk.usage?.detail, requestBody: body,
+        outputText, startedAt,
+      });
+      res.json(buildResponsesResult(responseId, requestedModel, chunk, recorded.detail, startedAt));
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    const abort = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abort.abort();
+    });
+    const itemId = `msg_${requestId}`;
+    writeProtocolEvent(res, 'response.created', {
+      type: 'response.created',
+      response: {
+        id: responseId, object: 'response', created_at: Math.floor(startedAt / 1000),
+        status: 'in_progress', model: requestedModel, output: [],
+      },
+    });
+    let outputText = '';
+    let lastDetail: TokenUsageDetail | undefined;
+    let finishReason = 'stop';
+    const toolCalls: DeltaToolCall[] = [];
+    try {
+      for await (const chunk of client.chatStream(normalized.messages, { ...options, signal: abort.signal })) {
+        if (chunk.usage?.detail) lastDetail = chunk.usage.detail;
+        if (chunk.delta?.content) {
+          outputText += chunk.delta.content;
+          writeProtocolEvent(res, 'response.output_text.delta', {
+            type: 'response.output_text.delta',
+            response_id: responseId,
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            delta: chunk.delta.content,
+          });
+        }
+        if (chunk.delta?.toolCalls?.length) mergeToolDeltas(toolCalls, chunk.delta.toolCalls);
+        if (chunk.finishReason) finishReason = chunk.finishReason;
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        recordGatewayCall({
+          key, requestId, protocol: 'openai-responses', requestedModel,
+          platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+          status: 'error', detail: lastDetail, requestBody: body, outputText, startedAt,
+          errorCode: String((error as any)?.code || 'upstream_error'),
+        });
+        writeProtocolEvent(res, 'response.failed', {
+          type: 'response.failed',
+          response: {
+            id: responseId, object: 'response', status: 'failed', model: requestedModel,
+            error: { code: String((error as any)?.code || 'upstream_error'), message: '模型调用失败' },
+          },
+        });
+      }
+      res.end();
+      return;
+    }
+    if (abort.signal.aborted) {
+      recordGatewayCall({
+        key, requestId, protocol: 'openai-responses', requestedModel,
+        platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+        status: 'aborted', detail: lastDetail, requestBody: body, outputText, startedAt,
+        errorCode: 'client_disconnected',
+      });
+      return;
+    }
+    const chunk: any = {
+      delta: { content: outputText, toolCalls },
+      finishReason,
+    };
+    const recorded = recordGatewayCall({
+      key, requestId, protocol: 'openai-responses', requestedModel,
+      platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+      status: 'ok', detail: lastDetail, requestBody: body, outputText, startedAt,
+    });
+    const response = buildResponsesResult(responseId, requestedModel, chunk, recorded.detail, startedAt);
+    if (outputText) {
+      writeProtocolEvent(res, 'response.output_text.done', {
+        type: 'response.output_text.done',
+        response_id: responseId,
+        item_id: itemId,
+        output_index: 0,
+        content_index: 0,
+        text: outputText,
+      });
+    }
+    for (const item of response.output as Array<Record<string, any>>) {
+      if (item.type !== 'function_call') continue;
+      writeProtocolEvent(res, 'response.output_item.added', {
+        type: 'response.output_item.added',
+        response_id: responseId,
+        output_index: 0,
+        item,
+      });
+      writeProtocolEvent(res, 'response.output_item.done', {
+        type: 'response.output_item.done',
+        response_id: responseId,
+        output_index: 0,
+        item,
+      });
+    }
+    writeProtocolEvent(res, 'response.completed', { type: 'response.completed', response });
+    res.end();
+  } catch (error) {
+    gatewayError(res, error);
+  }
+});
+
+router.post('/v1/messages', gatewayAuth, enforceGatewayLimits, async (req: Request, res: Response) => {
+  const key = res.locals.gatewayKey as GatewayClientKeyRecord;
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  res.setHeader('X-Yanzhi-Request-Id', requestId);
+  try {
+    const body = req.body as Record<string, unknown>;
+    const normalized = normalizeAnthropicRequest(body);
+    const requestedModel = String(body.model || 'auto');
+    const resolved = resolveGatewayModel(db, key.userId, requestedModel, key.allowedModels);
+    if ('error' in resolved) {
+      const status = resolved.code === 'model_not_allowed' ? 403 : 404;
+      res.status(status).json(openAiError(status, resolved.code, resolved.error));
+      return;
+    }
+    const client = new LlmClient(resolved.platform, resolved.model);
+    const options = chatOptions(normalized);
+    const stream = body.stream === true;
+    const messageId = `msg_${requestId}`;
+    if (!stream) {
+      const chunk = await client.chat(normalized.messages, options);
+      const outputText = `${chunk.delta?.content || ''}${chunk.delta?.reasoningContent || ''}`;
+      const recorded = recordGatewayCall({
+        key, requestId, protocol: 'anthropic-messages', requestedModel,
+        platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+        status: 'ok', detail: chunk.usage?.detail, requestBody: body,
+        outputText, startedAt,
+      });
+      res.json(buildAnthropicMessage(messageId, requestedModel, chunk, recorded.detail));
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    const abort = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abort.abort();
+    });
+    writeProtocolEvent(res, 'message_start', {
+      type: 'message_start',
+      message: {
+        id: messageId, type: 'message', role: 'assistant', model: requestedModel,
+        content: [], stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    });
+    let outputText = '';
+    let lastDetail: TokenUsageDetail | undefined;
+    let finishReason = 'stop';
+    let textBlockOpen = false;
+    const openToolBlocks = new Set<number>();
+    let nextBlockIndex = 0;
+    try {
+      for await (const chunk of client.chatStream(normalized.messages, { ...options, signal: abort.signal })) {
+        if (chunk.usage?.detail) lastDetail = chunk.usage.detail;
+        if (chunk.delta?.content) {
+          if (!textBlockOpen) {
+            textBlockOpen = true;
+            writeProtocolEvent(res, 'content_block_start', {
+              type: 'content_block_start',
+              index: nextBlockIndex,
+              content_block: { type: 'text', text: '' },
+            });
+            nextBlockIndex++;
+          }
+          outputText += chunk.delta.content;
+          writeProtocolEvent(res, 'content_block_delta', {
+            type: 'content_block_delta',
+            index: textBlockOpen ? Math.max(0, nextBlockIndex - 1) : 0,
+            delta: { type: 'text_delta', text: chunk.delta.content },
+          });
+        }
+        for (const delta of chunk.delta?.toolCalls || []) {
+          const deltaIndex = Number.isInteger(delta.index) ? Number(delta.index) : 0;
+          const blockIndex = nextBlockIndex + deltaIndex;
+          if (!openToolBlocks.has(blockIndex)) {
+            openToolBlocks.add(blockIndex);
+            writeProtocolEvent(res, 'content_block_start', {
+              type: 'content_block_start',
+              index: blockIndex,
+              content_block: {
+                type: 'tool_use',
+                id: String(delta.id || `toolu_${blockIndex}`),
+                name: String(delta.function?.name || ''),
+                input: {},
+              },
+            });
+          }
+          if (delta.function?.arguments) {
+            writeProtocolEvent(res, 'content_block_delta', {
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: { type: 'input_json_delta', partial_json: delta.function.arguments },
+            });
+          }
+        }
+        if (chunk.finishReason) finishReason = chunk.finishReason;
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        recordGatewayCall({
+          key, requestId, protocol: 'anthropic-messages', requestedModel,
+          platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+          status: 'error', detail: lastDetail, requestBody: body, outputText, startedAt,
+          errorCode: String((error as any)?.code || 'upstream_error'),
+        });
+        writeProtocolEvent(res, 'error', {
+          type: 'error',
+          error: { type: 'api_error', message: '模型调用失败' },
+        });
+      }
+      res.end();
+      return;
+    }
+    if (abort.signal.aborted) {
+      recordGatewayCall({
+        key, requestId, protocol: 'anthropic-messages', requestedModel,
+        platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+        status: 'aborted', detail: lastDetail, requestBody: body, outputText, startedAt,
+        errorCode: 'client_disconnected',
+      });
+      return;
+    }
+    for (let index = 0; index < nextBlockIndex + openToolBlocks.size; index++) {
+      writeProtocolEvent(res, 'content_block_stop', { type: 'content_block_stop', index });
+    }
+    const recorded = recordGatewayCall({
+      key, requestId, protocol: 'anthropic-messages', requestedModel,
+      platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+      status: 'ok', detail: lastDetail, requestBody: body, outputText, startedAt,
+    });
+    writeProtocolEvent(res, 'message_delta', {
+      type: 'message_delta',
+      delta: {
+        stop_reason: finishReason === 'tool_calls' ? 'tool_use' : finishReason === 'length' ? 'max_tokens' : 'end_turn',
+        stop_sequence: null,
+      },
+      usage: anthropicUsage(recorded.detail),
+    });
+    writeProtocolEvent(res, 'message_stop', { type: 'message_stop' });
+    res.end();
+  } catch (error) {
+    gatewayError(res, error);
+  }
+});
+
+router.post('/v1/embeddings', gatewayAuth, enforceGatewayLimits, async (req: Request, res: Response) => {
+  const key = res.locals.gatewayKey as GatewayClientKeyRecord;
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  res.setHeader('X-Yanzhi-Request-Id', requestId);
+  try {
+    const body = req.body as Record<string, any>;
+    const requestedModel = String(body.model || 'auto');
+    const rawInput = body.input;
+    const input = typeof rawInput === 'string'
+      ? [rawInput]
+      : Array.isArray(rawInput) && rawInput.every((item) => typeof item === 'string')
+        ? rawInput as string[]
+        : null;
+    if (!input || input.length === 0 || input.length > 128) {
+      throw new GatewayRequestError(422, 'invalid_input', 'input 必须是字符串或 1~128 个字符串数组');
+    }
+    const resolved = resolveGatewayModel(db, key.userId, requestedModel, key.allowedModels, 'embedding');
+    if ('error' in resolved) {
+      const status = resolved.code === 'model_not_allowed' ? 403 : 404;
+      res.status(status).json(openAiError(status, resolved.code, resolved.error));
+      return;
+    }
+    const client = new LlmClient(resolved.platform, resolved.model);
+    const vectors = await client.embeddings(input);
+    const detail = estimateUsageDetail({ inputText: input.join('\n'), outputText: '' });
+    const recorded = recordGatewayCall({
+      key, requestId, protocol: 'openai-embeddings', requestedModel,
+      platformId: resolved.platform.id, apiModelId: resolved.model.modelId,
+      status: 'ok', detail, requestBody: body, outputText: '', startedAt,
+    });
+    res.json({
+      object: 'list',
+      data: vectors.map((embedding, index) => ({ object: 'embedding', index, embedding })),
+      model: requestedModel,
+      usage: {
+        prompt_tokens: recorded.detail.inputTokens,
+        total_tokens: recorded.detail.inputTokens,
+      },
+    });
   } catch (error) {
     gatewayError(res, error);
   }
