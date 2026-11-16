@@ -8,6 +8,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
 import { api, withMediaAuthQuery } from '../api/client';
+import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts';
 import { absoluteMediaSrc } from '../composables/useMediaPreview';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
@@ -706,9 +707,14 @@ const customBooks = computed(() => books.value.filter((b) => b.kind === 'custom'
 // ── 闯关状态 ──
 const drillLevel = ref<number | null>(null);
 const questions = ref<Question[]>([]);
-/** 听写题需要可用的朗读能力：本地语音包或浏览器/Electron 系统语音均可。 */
+/** 听写题需要可用的朗读能力：本地语音包 / 原生 TTS（Android）/ 系统语音均可。
+    ★ 原生 TTS 必须计入（2026-11-16）：Android WebView speechSynthesis API 存在但
+    国产 ROM 上静默 —— 只看 `'speechSynthesis' in window` 会把无声环境当可用，
+    听写题进来了却读不出。 */
 const canReadAloud = computed(() =>
-  !!ttsPackId.value || (typeof window !== 'undefined' && 'speechSynthesis' in window),
+  !!ttsPackId.value
+  || !!getNativeTts()
+  || (typeof window !== 'undefined' && 'speechSynthesis' in window),
 );
 const activeQuestions = computed(() => (canReadAloud.value ? questions.value : questions.value.filter((q) => q.kind !== 'dictation')));
 const answers = ref<Record<string, string>>({}); // qid → 选项/输入
@@ -1801,6 +1807,7 @@ async function loadTtsPack() {
 
 function stopWordSpeech() {
   ttsRequestSeq += 1;
+  nativeStopTts(); // ★ 原生朗读也要停（Android），否则点了停止还会继续念
   try { window.speechSynthesis?.cancel(); } catch { /* 系统语音不可用时忽略 */ }
   try { ttsPlaying.value?.pause(); } catch { /* 音频尚未加载时忽略 */ }
   ttsPlaying.value = null;
@@ -1840,8 +1847,23 @@ async function speak(text: string) {
   if (ttsSpeaking.value) stopWordSpeech();
   const seq = ++ttsRequestSeq;
 
-  // 没有安装语音包也能点：直接使用系统语音，避免按钮变成永远不可点。
+  /** ★ 原生 TTS（Android 唯一可靠的出声通道）：无语音包时首选；
+      语音包合成失败时兜底。WebView speechSynthesis 在国产 ROM 静默，只能当最后回落。 */
+  const tryNative = async (): Promise<boolean> => {
+    if (!getNativeTts()) return false;
+    ttsSpeaking.value = true;
+    ttsActiveWord.value = word;
+    const ok = await nativeSpeak(word, 'en-US');
+    if (seq !== ttsRequestSeq) return true; // 已被下一次请求打断：本次静默收场
+    ttsSpeaking.value = false;
+    ttsActiveWord.value = '';
+    return ok;
+  };
+
+  // 没有安装语音包也能点：原生 TTS 优先（Android），系统语音兜底，避免按钮变成永远不可点。
   if (!ttsPackId.value) {
+    const ok = await tryNative();
+    if (ok) return;
     if (!speakWithSystemVoice(word, word)) ElMessage.warning('当前系统没有可用的英语语音');
     return;
   }
@@ -1870,7 +1892,9 @@ async function speak(text: string) {
     if (seq !== ttsRequestSeq) return;
     ttsSpeaking.value = false;
     ttsActiveWord.value = '';
-    if (!speakWithSystemVoice(word, word)) ElMessage.warning('朗读失败，请检查系统语音');
+    // 语音包合成失败（移动端 sherpa 无 Android 分发时必失败）：原生 TTS 兜底再系统语音
+    const ok = await tryNative();
+    if (!ok && !speakWithSystemVoice(word, word)) ElMessage.warning('朗读失败，请检查系统语音');
   }
 }
 

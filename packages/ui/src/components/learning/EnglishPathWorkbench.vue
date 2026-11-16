@@ -22,6 +22,7 @@ import { api, withMediaAuthQuery } from '../../api/client';
 import { absoluteMediaSrc } from '../../composables/useMediaPreview';
 import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { nativeStopTts } from '../../utils/nativeTts';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 
@@ -662,6 +663,7 @@ function toggleSaved() {
 }
 
 function stopActiveSpeech() {
+  nativeStopTts(); // ★ 原生朗读也要停（Android）：否则打断后还在继续念
   try { window.speechSynthesis?.cancel(); } catch { /* 无浏览器语音时忽略 */ }
   for (const playback of [...activePlaybacks]) {
     activePlaybacks.delete(playback);

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
 import SecurityPracticeStudio from './SecurityPracticeStudio.vue';
 
 const mountedApps: App[] = [];
@@ -13,6 +14,10 @@ async function mountStudio(): Promise<HTMLElement> {
   const el = document.createElement('div');
   document.body.appendChild(el);
   const app = createApp(SecurityPracticeStudio);
+  // ★ 内嵌的 M1NfcCopyLab setup 里调 m1Wallet store —— 没有 active pinia 会直接抛
+  //   "getActivePinia() was called but there was no active Pinia"（2026-11-16 实测）。
+  //   生产壳层 App.vue 全局 use(pinia)，测试宿主必须同样装配。
+  app.use(createPinia());
   mountedApps.push(app);
   app.mount(el);
   await nextTick();

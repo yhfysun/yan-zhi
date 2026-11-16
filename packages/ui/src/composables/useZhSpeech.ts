@@ -7,6 +7,7 @@
 // rate 略缓 0.9。
 
 import { onBeforeUnmount, ref } from 'vue';
+import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts';
 
 export type ZhSpeechLoop = 'none' | 'all' | 'single';
 
@@ -85,6 +86,7 @@ export function useZhSpeech() {
     active.value = false;
     index.value = -1;
     clearTimer();
+    nativeStopTts(); // ★ 原生通道也要停（Android），否则诵读收不住
     try { window.speechSynthesis?.cancel(); } catch { /* 无浏览器语音时忽略 */ }
   }
 
@@ -131,6 +133,32 @@ export function useZhSpeech() {
     }, guard);
   }
 
+  /**
+   * ★ 原生通道（Android 唯一可靠出声路径，2026-11-16）：WebView speechSynthesis
+   *   在国产 ROM 静默 ⇒ 传统文化/周易诵读此前全是「只高亮不出声」。
+   *   逐句 speak（resolve 于朗读完成）推进队列；引擎拒绝该句（如系统无中文语音包，
+   *   ok=false）时按节奏推进高亮，保持诵读流程不中断。单句循环/全篇循环语义与
+   *   utterance 版一致。
+   */
+  async function nativePlayNext(i: number, loop: ZhSpeechLoop) {
+    if (!active.value) return;
+    if (i >= queue.length) {
+      if (loop === 'all' && queue.length) { void nativePlayNext(0, loop); return; }
+      active.value = false;
+      index.value = -1;
+      opts.onDone?.();
+      return;
+    }
+    emitIndex(i);
+    voiceLabel.value = '系统 TTS';
+    const ok = await nativeSpeak(queue[i], 'zh-CN');
+    if (!active.value) return; // stop() 打断
+    if (!ok) await new Promise((r) => setTimeout(r, SENTENCE_FALLBACK_MS));
+    if (!active.value) return;
+    if (loop === 'single' && queue.length) { void nativePlayNext(i, loop); return; }
+    void nativePlayNext(i + 1, loop);
+  }
+
   function start(texts: string[], options: ZhSpeechOptions = {}): void {
     stop();
     if (!texts.length) return;
@@ -138,6 +166,13 @@ export function useZhSpeech() {
     opts = options;
     const loop = options.loop ?? 'none';
     const rate = options.rate ?? 0.9;
+    // ★ 原生通道优先（Android）：不依赖 WebView voices（国产 ROM 上为空会误入静默降级）
+    if (getNativeTts()) {
+      active.value = true;
+      const first = Math.min(Math.max(0, options.startIndex ?? 0), queue.length - 1);
+      void nativePlayNext(first, loop);
+      return;
+    }
     if (!zhSpeechSupported() || !pickZhVoice()) {
       if (!options.silentFallback) return;
       // 降级：不发声，按节奏逐句推进高亮

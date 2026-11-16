@@ -3,14 +3,18 @@
 // 星级 + 分数 + 目标句型 + 纠错表（错句 → 母语者说法 → 一句为什么）；纠错项可朗读。
 // P2 场景重练：仅当当前会话带场景元数据时显示「重练」（建新会话由 ChatMessageList 接线）。
 import type { SceneResult } from '../../utils/scene-result';
+import { nativeSpeak } from '../../utils/nativeTts';
 
 const props = defineProps<{ result: SceneResult; canRetry?: boolean; retrying?: boolean }>();
 defineEmits<{ retry: [] }>();
 
-/** 本地朗读：不依赖语音包安装状态（Chromium 自带 SpeechSynthesis，en-US 优先） */
-function speak(text: string) {
+/** 本地朗读：★ 原生 TTS 优先（Android WebView speechSynthesis 静默，2026-11-16），
+    不可用回落 Chromium SpeechSynthesis（en-US 优先）。不依赖语音包安装状态。 */
+async function speak(text: string) {
+  if (!text.trim()) return;
+  if (await nativeSpeak(text, 'en-US')) return;
   try {
-    if (!text.trim() || !('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'en-US';
