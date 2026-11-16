@@ -27,7 +27,7 @@ describe('移动端原生 TTS 接线契约', () => {
 
   it('★ Learning.vue：单词点读 speak() 原生优先（无包首选 + 包失败兜底）+ 停止/可用性判定接线', () => {
     const src = read('../views/Learning.vue');
-    expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts'");
+    expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts'");
     // 无语音包时原生首选（此前直接走 WebView speechSynthesis = Android 静默）
     expect(src).toMatch(/if \(!ttsPackId\.value\) \{[\s\S]{0,200}await tryNative\(\)/);
     // 语音包合成失败时原生兜底（移动端 sherpa 无 Android 分发必失败）
@@ -39,7 +39,7 @@ describe('移动端原生 TTS 接线契约', () => {
 
   it('★ useZhSpeech：中文诵读原生通道优先（不依赖 WebView voices），stop 停原生', () => {
     const src = read('../composables/useZhSpeech.ts');
-    expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts'");
+    expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts'");
     // start 先判原生（国产 ROM voices 为空会误入静默降级，必须原生优先）
     expect(src).toMatch(/const loop = options\.loop \?\? 'none';[\s\S]{0,200}if \(getNativeTts\(\)\)/);
     // 原生逐句队列存在 + stop 停原生

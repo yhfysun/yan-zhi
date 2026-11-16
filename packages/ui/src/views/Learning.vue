@@ -8,7 +8,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
 import { api, withMediaAuthQuery } from '../api/client';
-import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts';
+import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts';
 import { absoluteMediaSrc } from '../composables/useMediaPreview';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
@@ -689,7 +689,10 @@ function openCourse(c: CourseView) {
  *   桌面两栏同屏不受影响。判定用视口宽（窄屏才堆叠），与外壳 isMobile 同口径。
  */
 function scrollMidIntoViewOnMobile() {
-  if (typeof window === 'undefined' || window.innerWidth >= 768) return;
+  // ★ 断点必须与单列 CSS 的 900px 同口径（2026-11-16 复检发现）：此前写 768，
+  //   769~900px 区间已是单列堆叠却在这里被跳过 ⇒ 点完课不跟随滚动，用户要手动
+  //   滑很远找入口（恰好是这个函数要解决的问题又复发了一遍）。
+  if (typeof window === 'undefined' || window.innerWidth >= 900) return;
   void nextTick(() => {
     document.querySelector('.lp-col-mid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
@@ -1815,6 +1818,38 @@ function stopWordSpeech() {
   ttsActiveWord.value = '';
 }
 
+/** ★ 服务端在线合成兜底（2026-11-16）：/learning/tts 的服务端链路是
+    桌面 SAPI / 移动端 edge-node（纯 Node 在线合成）—— 原生引擎缺失的设备
+    （ColorOS 无预装 TTS）上这是唯一能出声的通道。返回 true = 已播放。 */
+async function speakViaLearningTts(text: string, word: string, seq: number): Promise<boolean> {
+  try {
+    const r = await api.post<{ url?: string }>('/learning/tts', { text, language: 'en-US', speed: 'normal' });
+    const url = unwrap<{ url?: string }>(r)?.url;
+    if (seq !== ttsRequestSeq) return true;
+    if (!url) return false;
+    ttsSpeaking.value = true;
+    ttsActiveWord.value = word;
+    const audio = new Audio(withMediaAuthQuery(absoluteMediaSrc(url)));
+    ttsPlaying.value = audio;
+    const finish = () => {
+      if (seq !== ttsRequestSeq) return;
+      ttsSpeaking.value = false;
+      ttsActiveWord.value = '';
+      ttsPlaying.value = null;
+    };
+    audio.addEventListener('ended', finish);
+    audio.addEventListener('error', () => {
+      finish();
+      warnEngineUnavailableOnce();
+    });
+    await audio.play();
+    return true;
+  } catch {
+    if (seq !== ttsRequestSeq) return true;
+    return false;
+  }
+}
+
 function speakWithSystemVoice(text: string, word: string): boolean {
   const synth = window.speechSynthesis;
   if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return false;
@@ -1857,13 +1892,17 @@ async function speak(text: string) {
     if (seq !== ttsRequestSeq) return true; // 已被下一次请求打断：本次静默收场
     ttsSpeaking.value = false;
     ttsActiveWord.value = '';
+    if (!ok) warnEngineUnavailableOnce(); // 引擎不可用给可操作提示（init 超时/缺语言包）
     return ok;
   };
 
-  // 没有安装语音包也能点：原生 TTS 优先（Android），系统语音兜底，避免按钮变成永远不可点。
+  // 没有安装语音包也能点：原生 TTS 优先（Android），服务端在线合成次之
+  // （Android 无系统引擎时的唯一出声通道），系统语音最后兜底。
   if (!ttsPackId.value) {
     const ok = await tryNative();
     if (ok) return;
+    const viaServer = await speakViaLearningTts(word, word, seq);
+    if (viaServer) return;
     if (!speakWithSystemVoice(word, word)) ElMessage.warning('当前系统没有可用的英语语音');
     return;
   }
@@ -1892,9 +1931,13 @@ async function speak(text: string) {
     if (seq !== ttsRequestSeq) return;
     ttsSpeaking.value = false;
     ttsActiveWord.value = '';
-    // 语音包合成失败（移动端 sherpa 无 Android 分发时必失败）：原生 TTS 兜底再系统语音
+    // 语音包合成失败（移动端 sherpa 无 Android 分发时必失败）：原生 TTS 兜底 →
+    // 服务端在线合成 → 系统语音
     const ok = await tryNative();
-    if (!ok && !speakWithSystemVoice(word, word)) ElMessage.warning('朗读失败，请检查系统语音');
+    if (ok) return;
+    const viaServer = await speakViaLearningTts(word, word, seq);
+    if (viaServer) return;
+    if (!speakWithSystemVoice(word, word)) ElMessage.warning('朗读失败，请检查系统语音');
   }
 }
 
@@ -3540,13 +3583,14 @@ watch(softExamDate, (value) => {
      展开的面板内容才出现（选完课自动收起，见 openCourse）。 */
   .lp-stage { border-bottom: 1px dashed #f0f1f3; padding: 2px 0; }
   .lp-stage:last-child { border-bottom: 0; }
-  .lp-stage-toggle { min-height: 36px; margin: 0; letter-spacing: 1px; }
+  /* ★ 触摸目标 ≥44px（WCAG 2.5.5 / 移动端交互底线）：折叠头是最高频点击位 */
+  .lp-stage-toggle { min-height: 44px; margin: 0; letter-spacing: 1px; }
   .lp-custom-books { margin-top: 6px; padding-top: 6px; }
   /* 右栏收起后的展开轨：移动端从「贴边 26px 细条」（单列下几乎看不见）变通栏按钮，
      带文字说明——这是移动端复习/口语/软考资料的唯一入口，必须显眼。 */
   .lp-expand-rail.right {
     position: static; transform: none;
-    width: 100%; height: 40px;
+    width: 100%; height: 44px;
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     border: 1px dashed var(--color-border); border-radius: 8px;
     margin: 4px 0 10px; box-shadow: none;

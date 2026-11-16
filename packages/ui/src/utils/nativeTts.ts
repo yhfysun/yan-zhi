@@ -44,3 +44,22 @@ export function nativeStopTts(): void {
     void getNativeTts()?.stop();
   } catch { /* 适配器缺失时忽略 */ }
 }
+
+/**
+ * ★ 原生引擎不可用时给用户**可操作的**一次性提示（2026-11-16 真机实锤）：
+ *   部分 ROM（ColorOS 等）没有预装 TTS 引擎 ⇒ 原生读不出、WebView speechSynthesis
+ *   又静默 ⇒ 用户视角就是"点哪都没声"。此前只静默回落，用户不知道要去
+ *   系统设置装/启用语音引擎。每会话只提示一次，不打扰后续操作。
+ */
+let engineWarned = false;
+export function warnEngineUnavailableOnce(): void {
+  if (engineWarned) return;
+  engineWarned = true;
+  void import('element-plus').then(({ ElMessage }) => {
+    ElMessage({
+      message: '语音引擎不可用：请到 系统设置 → 语言与输入 → 文字转语音(TTS) 安装/启用一个语音引擎（如「讯飞语记」「Google 语音合成」）后重试',
+      type: 'warning',
+      duration: 8000,
+    });
+  }).catch(() => { /* 提示失败不影响朗读降级链 */ });
+}

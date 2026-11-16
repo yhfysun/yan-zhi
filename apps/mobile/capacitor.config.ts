@@ -4,6 +4,10 @@ const config: CapacitorConfig = {
   appId: 'com.yanzhi.mobile',
   appName: '言智',
   webDir: 'dist',
+  // ★ WebView 远程调试恒开（debug 包）：CDP 直连是移动端排障三板斧之一，
+  //   此前 Capacitor 默认行为下 socket 偶发不出现，排障全靠猜（2026-11-16 实锤）。
+  //   release 包不受影响（Capacitor 仅 debug 生效 + 上架包不含调试桥）。
+  webContentsDebuggingEnabled: true,
   server: {
     androidScheme: 'https',
     // androidScheme 是 https（存储 origin 稳定、可进安全上下文）。混合内容放行见 android 段。

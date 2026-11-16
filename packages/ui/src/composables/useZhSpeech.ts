@@ -7,7 +7,7 @@
 // rate 略缓 0.9。
 
 import { onBeforeUnmount, ref } from 'vue';
-import { getNativeTts, nativeSpeak, nativeStopTts } from '../utils/nativeTts';
+import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts';
 
 export type ZhSpeechLoop = 'none' | 'all' | 'single';
 
@@ -153,7 +153,7 @@ export function useZhSpeech() {
     voiceLabel.value = '系统 TTS';
     const ok = await nativeSpeak(queue[i], 'zh-CN');
     if (!active.value) return; // stop() 打断
-    if (!ok) await new Promise((r) => setTimeout(r, SENTENCE_FALLBACK_MS));
+    if (!ok) { warnEngineUnavailableOnce(); await new Promise((r) => setTimeout(r, SENTENCE_FALLBACK_MS)); }
     if (!active.value) return;
     if (loop === 'single' && queue.length) { void nativePlayNext(i, loop); return; }
     void nativePlayNext(i + 1, loop);

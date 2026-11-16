@@ -34,8 +34,12 @@ export async function nativeSpeak(text: string, lang: string): Promise<boolean> 
     const r = await YzTts.speak({ text, lang });
     if (r.ok) return true;
     // 引擎不带该语言（LANG_NOT_SUPPORTED）等：如实交给调用方回落
+    // ★ logcat 可见（Capacitor/Console 通道）：此前原生失败在日志里完全不可见
+    console.warn(`[nativeTts] 引擎拒绝朗读 lang=${lang} reason=${r.reason || 'unknown'}`);
     return false;
-  } catch {
+  } catch (e) {
+    // 超时闸 reject（TTS_INIT_TIMEOUT / TTS_INIT_FAILED）走这里：同样落日志
+    console.warn('[nativeTts] 原生朗读失败:', String(e));
     return false;
   }
 }

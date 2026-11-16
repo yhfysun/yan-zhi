@@ -22,7 +22,7 @@ import { api, withMediaAuthQuery } from '../../api/client';
 import { absoluteMediaSrc } from '../../composables/useMediaPreview';
 import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
 import { getPlatformAdapter } from '@yan-zhi/core';
-import { nativeStopTts } from '../../utils/nativeTts';
+import { nativeStopTts, warnEngineUnavailableOnce } from '../../utils/nativeTts';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 
@@ -1054,6 +1054,7 @@ async function speak(text: string, activeKey = '') {
       speakingKey.value = '';
       return;
     }
+    warnEngineUnavailableOnce(); // 引擎不可用（init 超时/缺语言包）：给可操作提示再走降级链
   }
   try {
     // 缓存 key 必须带语速档位：同一文本不同档位是不同音频，不区分会串档

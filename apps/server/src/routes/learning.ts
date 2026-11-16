@@ -16,7 +16,7 @@ import {
 } from '../learning/service.js';
 import { listSceneCards, GRAMMAR_POINTS, READING_PASSAGES } from '../learning/curriculum.js';
 import { ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../learning/english-path.js';
-import { LEARNING_TTS_SPEEDS, normalizeEnglishTtsText, normalizeLearningTtsSpeed, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
+import { LEARNING_EDGE_VOICE, LEARNING_TTS_SPEEDS, normalizeEnglishTtsText, normalizeLearningTtsSpeed, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
 import { ENGLISH_PHONIC_CHART } from '../learning/phonics-chart.js';
 import { previewTtsPack } from '../services/tts-packs.js';
 import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
@@ -518,6 +518,39 @@ router.post('/tts', async (req, res) => {
         });
         return;
       }
+    }
+
+    // ★★ 纯 Node 在线兜底（2026-11-16 真机实锤）：Android 壳无 Python/SAPI/本地语音包
+    //    ⇒ 上面三链在手机上全断 ⇒ 学习朗读恒 409 无声（用户实报「还是没声音」）。
+    //    mcp/edge-tts.ts 是零依赖纯 Node 实现（手写 WS 对接微软接口，聊天流式语音
+    //    live-tts 已在用）—— 移动端有网即出声，rate 与 SAPI 同刻度直接复用。
+    try {
+      const { edgeSpeak } = await import('../mcp/edge-tts.js');
+      const result = await edgeSpeak(text, {
+        voice: LEARNING_EDGE_VOICE,
+        rate: LEARNING_TTS_SPEEDS[speed].sapi,
+        timeoutMs: 30000,
+      });
+      if (result.buffer.length > 0) {
+        const file = path.join(target.dir, `learning-en-edge-node-${Date.now()}.mp3`);
+        await fsp.writeFile(file, result.buffer);
+        res.json({
+          data: {
+            url: `${target.urlBase}/${path.basename(file)}`,
+            engine: 'edge-node',
+            voice: result.voice,
+            language,
+          },
+        });
+        return;
+      }
+      console.warn('[learning/tts] edge-node 返回空 buffer');
+    } catch (edgeErr) {
+      // ★ 失败原因必须可见（此前吞错 ⇒ 409 无从排障）：进 logcat（nodejs-mobile console）+ 409 明文带出
+      const msg = edgeErr instanceof Error ? edgeErr.message : String(edgeErr);
+      console.warn('[learning/tts] edge-node 兜底失败:', msg);
+      res.status(409).json({ error: `在线语音合成失败（${msg.slice(0, 160)}）` });
+      return;
     }
 
     res.status(409).json({

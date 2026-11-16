@@ -14,7 +14,10 @@ import net from 'node:net';
 import tls from 'node:tls';
 
 const TRUSTED_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
-const CHROMIUM_FULL_VERSION = '143.0.3650.75';
+// ★ 版本串必须用官方 edge-tts 包验证过的 130.0.2849.68（2026-11-16 实锤）：先前用
+//   143.0.3650.75（更新）反而握手 403 —— 微软服务端按已知版本白名单校验，
+//   未经官方包验证的新版本串会被拒。对齐本地官方包 constants.py 的值。
+const CHROMIUM_FULL_VERSION = '130.0.2849.68';
 const CHROMIUM_MAJOR_VERSION = CHROMIUM_FULL_VERSION.split('.')[0];
 const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
 const HOST = 'speech.platform.bing.com';
