@@ -404,7 +404,11 @@ onMounted(async () => {
     // 回到原位：优先 focusTrack（课程地图跳入），其次上次学到的课时所在路径
     const pos = readJson<string>(POSITION_KEY, '');
     applyFocus(props.focusTrack ?? pos);
-    if (!expandedTrack.value) expandedTrack.value = tracks.value[0]?.id ?? '';
+    // ★ 页面浓缩（2026-11-16「布局还是长的很」）：仅桌面自动展开第一条路径；
+    //   移动端（≤900px）默认全部收起 —— 8 条路径各占一行，点开才出课卡
+    if (!expandedTrack.value && !window.matchMedia?.('(max-width: 900px)')?.matches) {
+      expandedTrack.value = tracks.value[0]?.id ?? '';
+    }
   } else {
     error.value = '学习路线加载失败';
   }

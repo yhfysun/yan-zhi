@@ -2227,6 +2227,11 @@ onBeforeUnmount(() => {
   .lp-path-actions { justify-content: flex-start; }
   .lp-path-stage-head > div { width: 100%; }
   .lp-path-step-list { grid-template-columns: 1fr; }
+  /* ★★ 页面浓缩（2026-11-16 用户实报「布局还是长的很」）：7 张阶段卡从 auto-fit 网格
+     （手机两列 4 行 ≈ 300px）变**横向滑动胶囊**（一行 ≈ 64px）——用户明确接受
+     左右滑交互；选中阶段课件表保持竖排主内容。 */
+  .lp-path-stages { display: flex; overflow-x: auto; gap: 6px; padding-bottom: 4px; scrollbar-width: thin; }
+  .lp-path-stages button { flex: 0 0 172px; width: 172px; }
   .lp-path-immersive-head { grid-template-columns: auto minmax(0, 1fr) auto; padding: 0 12px; }
   .lp-path-crumb span,
   .lp-path-crumb i,

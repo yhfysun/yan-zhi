@@ -52,4 +52,20 @@ describe('Learning · 移动端紧凑布局契约', () => {
   it('★ 紧凑判定用 900px 断点（与单列 CSS 同口径），且对 matchMedia 缺失环境安全', () => {
     expect(SRC).toContain("window.matchMedia?.('(max-width: 900px)')?.matches");
   });
+
+  it('★ 科目工作台总览层同步浓缩（第二轮「布局还是长的很」）', () => {
+    const read2 = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
+    // 英语主线：≤900px 阶段卡横向滑动胶囊（7 卡两列网格 ≈300px → 一行）
+    const epw = read2('../components/learning/EnglishPathWorkbench.vue');
+    expect(epw).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lp-path-stages \{ display: flex; overflow-x: auto/);
+    // 音乐：单开手风琴（此前全部阶段×全部课程平铺），移动端默认全收起
+    const music = read2('../components/learning/MusicWorkbench.vue');
+    expect(music).toContain('function toggleStage(level: string)');
+    expect(music).toMatch(/openStage\.value = isCompactViewport\(\) \? '' : first;/);
+    // 周易：紧凑态不自动展开第一条路径
+    const zy = read2('../components/learning/zhouyi/ZhouyiWorkbench.vue');
+    expect(zy).toContain("window.matchMedia?.('(max-width: 900px)')?.matches");
+    expect(zy).toMatch(/仅桌面自动展开第一条路径/);
+    expect(zy).toMatch(/expandedTrack\.value = tracks\.value\[0\]\?\.id/);
+  });
 });

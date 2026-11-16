@@ -53,6 +53,15 @@ const PLAY_BPM = 84;
 // ── 状态 ──────────────────────────────────────────────────────────────────────
 const track = ref<MusicTrack>('western');
 const stages = ref<MusicPathStage[]>([]);
+// ★★ 阶段手风琴（2026-11-16 用户实报「布局还是长的很」）：音乐总览此前全部阶段×全部
+//   课程平铺（两条路线各 4-6 阶 × 每阶 4-8 课）⇒ 页面巨长。与文化/周易统一为
+//   单开手风琴：桌面默认展开第一阶，移动端（≤900px）默认全收起。
+const openStage = ref('');
+function toggleStage(level: string) {
+  openStage.value = openStage.value === level ? '' : level;
+}
+const isCompactViewport = () =>
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches;
 const loading = ref(true);
 const error = ref('');
 const completed = ref<Record<string, boolean>>({});
@@ -153,6 +162,9 @@ async function loadPaths() {
     const data = unwrap<{ stages: MusicPathStage[] }>(r);
     stages.value = data?.stages ?? [];
     if (!stages.value.length) error.value = `${trackLabel(track.value)}路线为空`;
+    // 手风琴默认态：桌面展开第一阶（保留桌面信息密度），移动端全收起（页面浓缩）
+    const first = stages.value[0]?.level ?? '';
+    openStage.value = isCompactViewport() ? '' : first;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -165,6 +177,7 @@ function switchTrack(t: MusicTrack) {
   track.value = t;
   notation.value = NOTATION_BY_TRACK[t][0].mode;
   modeSel.value = t === 'western' ? 'C:major' : 'gong:pentatonic';
+  openStage.value = ''; // 换路线重置手风琴（各路线的阶段集不同）
 }
 
 watch(track, () => { loadCompleted(); void loadPaths(); });
@@ -409,14 +422,26 @@ onBeforeUnmount(() => {
       <div v-else-if="error" class="mw-error">{{ error }}</div>
       <div v-else class="mw-stage-list">
         <section v-for="stage in stages" :key="stage.level" class="mw-stage">
-          <h3>{{ stage.level }}</h3>
+          <!-- ★ 手风琴头（与文化/周易同款交互）：点开才出该阶段课程，页面不再被
+               全部阶段×全部课程撑长；移动端默认全收起，桌面默认第一阶展开 -->
           <button
-            v-for="l in stage.lessons" :key="l.id" class="mw-lesson"
-            :class="{ done: completed[l.id] }" @click="openLesson(l.id)"
+            type="button"
+            class="mw-stage-head"
+            :aria-expanded="openStage === stage.level"
+            @click="toggleStage(stage.level)"
           >
-            <b>{{ l.title }}</b>
-            <small>{{ l.goal }} · 约 {{ l.minutes }} 分钟</small>
+            <h3>{{ stage.level }}<i class="mw-stage-count">{{ stage.lessons.length }}</i></h3>
+            <span class="mw-caret" :class="{ open: openStage === stage.level }">▸</span>
           </button>
+          <div v-if="openStage === stage.level" class="mw-stage-lessons">
+            <button
+              v-for="l in stage.lessons" :key="l.id" class="mw-lesson"
+              :class="{ done: completed[l.id] }" @click="openLesson(l.id)"
+            >
+              <b>{{ l.title }}</b>
+              <small>{{ l.goal }} · 约 {{ l.minutes }} 分钟</small>
+            </button>
+          </div>
         </section>
       </div>
     </div>
@@ -652,8 +677,24 @@ onBeforeUnmount(() => {
   background: transparent; color: var(--score-muted); font-size: 12px; cursor: pointer;
 }
 .mw-track-switch button.active { background: var(--score-accent); color: #06231f; font-weight: 600; }
-.mw-stage-list { display: flex; flex-direction: column; gap: 14px; }
-.mw-stage h3 { margin: 0 0 6px; font-size: 12px; color: var(--score-accent); }
+.mw-stage-list { display: flex; flex-direction: column; gap: 8px; }
+/* ★ 手风琴头 + 折叠面板（2026-11-16 页面浓缩） */
+.mw-stage-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 10px 12px;
+  border: 1px solid var(--score-line); border-radius: 10px;
+  background: var(--score-panel); cursor: pointer; text-align: left;
+}
+.mw-stage-head h3 { margin: 0; font-size: 12px; color: var(--score-accent); display: inline-flex; align-items: center; gap: 6px; }
+.mw-stage-count {
+  font-style: normal; min-width: 18px; height: 16px; padding: 0 5px; border-radius: 999px;
+  background: color-mix(in srgb, var(--score-accent) 16%, transparent); color: var(--score-accent);
+  font-size: 10px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mw-caret { color: var(--score-muted); transition: transform .15s ease; }
+.mw-caret.open { transform: rotate(90deg); }
+.mw-stage-lessons { padding: 8px 2px 0; }
 .mw-lesson {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
   width: 100%; margin: 0 0 6px; padding: 8px 10px; text-align: left;
