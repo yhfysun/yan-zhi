@@ -6,7 +6,7 @@
 // 科目架构：科目分段预留（日语/数学/物理筹备中），课程目录按科目过滤（服务端 ?subject=）。
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { BookOpen, Check, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
+import { BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, History, Keyboard, Lightbulb, LoaderCircle, MapPin, Mic, MicOff, Target, Volume2, X } from 'lucide-vue-next';
 import { api, withMediaAuthQuery } from '../api/client';
 import { absoluteMediaSrc } from '../composables/useMediaPreview';
 import { useChatStore } from '../stores/chat';
@@ -381,6 +381,9 @@ async function loadSubjects() {
 }
 async function switchSubject(key: string) {
   if (!SUBJECTS.value.find((s) => s.key === key)?.ready) return;
+  // 紧凑布局：切科目重置折叠面板（新科目的阶段默认全收起，页面回到一屏内）
+  openStage.value = '';
+  booksOpen.value = false;
   // 陪练状态不跨科目残留：ensureCoachConv 是异步的，若沿用上一科目的 coachConvId，
   // 切进周易后会先渲染英语历史消息、再被异步重建覆盖，表现为「对话没隔离」。
   if (key !== subject.value) {
@@ -442,6 +445,29 @@ const leftWidth = ref(300);
 const rightWidth = ref(280);
 const leftCollapsed = ref(false);
 const rightCollapsed = ref(false);
+// ★★ 移动端紧凑布局（2026-11-16 用户实报「目录全平铺页面很长很丑，能不能动动脑子」）：
+//   ≤900px 单列下左栏课程地图（全部阶段×全部课程卡）+ 右栏工具全部纵向平铺 ⇒ 页面巨长。
+//   收口设计：① 阶段标题变**折叠按钮**（手风琴，单开），点开才出课程列表，选完课自动收起；
+//   ② 我的词单同折叠；③ 右栏（复习/口语/错误本、软考资料）默认收起，展开轨在移动端变
+//   通栏按钮。桌面（>900px）零改动。
+const isCompactLayout = ref(
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqCompact = window.matchMedia('(max-width: 900px)');
+  const onMqCompact = (e: MediaQueryListEvent) => { isCompactLayout.value = e.matches; };
+  try { mqCompact.addEventListener('change', onMqCompact); } catch { mqCompact.addListener(onMqCompact); }
+}
+// 紧凑布局初始即收起右栏（展开轨是移动端的展开入口，见模板 lp-expand-rail）
+if (isCompactLayout.value) rightCollapsed.value = true;
+/** 紧凑布局下当前展开的阶段（单开手风琴；'' = 全收起）。 */
+const openStage = ref('');
+function toggleStage(stage: string) {
+  if (!isCompactLayout.value) return;
+  openStage.value = openStage.value === stage ? '' : stage;
+}
+/** 紧凑布局下「我的词单」面板是否展开。 */
+const booksOpen = ref(false);
 let stopColumnResize: (() => void) | null = null;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 function startColumnResize(side: 'left' | 'right', event: PointerEvent) {
@@ -614,7 +640,10 @@ if (typeof window !== 'undefined' && window.matchMedia) {
   try { mq.addEventListener('change', onMq); } catch { mq.addListener(onMq); }
 }
 
-function openCourse(c: CourseView) {  if (c.kind === 'exam') {
+function openCourse(c: CourseView) {
+  // 紧凑布局：选完课立刻收起阶段面板/词单面板（页面回到一屏内，符合「先选课再沉浸」）
+  if (isCompactLayout.value) { openStage.value = ''; booksOpen.value = false; }
+  if (c.kind === 'exam') {
     softExamSpecialty.value = c.examSpecialty || '全部';
     tab.value = 'exam';
     scrollMidIntoViewOnMobile();
@@ -745,6 +774,8 @@ watch(qIndex, async () => {
 });
 
 async function openBook(book: Book, courseId = '') {
+  // 紧凑布局：选完词单立刻收起面板（同 openCourse）
+  if (isCompactLayout.value) booksOpen.value = false;
   activeCourseId.value = courseId;
   activeBook.value = book;
   drillLevel.value = null;
@@ -1999,9 +2030,19 @@ watch(softExamDate, (value) => {
         </div>
 
         <!-- 我的词单放顶部（个人资产优先于课程目录；此前埋在课程列表底部被裁半，用户两次圈红框） -->
+        <!-- ★ 紧凑布局收口（2026-11-16「目录全平铺页面很长」）：词单收成折叠入口，
+             点开才出列表；桌面常开不变（isCompactLayout=false 时 v-show 恒真、点击无效果） -->
         <div v-if="customBooks.length" class="lp-custom-books">
-          <h3 class="lp-stage-name">我的词单</h3>
-          <div class="lp-books">
+          <button
+            type="button"
+            class="lp-stage-name lp-stage-toggle"
+            :aria-expanded="!isCompactLayout || booksOpen"
+            @click="isCompactLayout && (booksOpen = !booksOpen)"
+          >
+            我的词单<i class="lp-stage-count">{{ customBooks.length }}</i>
+            <ChevronDown v-if="isCompactLayout" :size="13" class="lp-stage-caret" :class="{ open: booksOpen }" />
+          </button>
+          <div v-show="!isCompactLayout || booksOpen" class="lp-books">
             <button
               v-for="b in customBooks" :key="b.id"
               class="lp-book" :class="{ active: activeBook?.id === b.id }"
@@ -2043,9 +2084,20 @@ watch(softExamDate, (value) => {
           </div>
         </div>
         <div v-else class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
+          <!-- ★ 紧凑布局收口：阶段标题变折叠按钮（单开手风琴），点开才出该阶段课程，
+               选完课自动收起（openCourse）。桌面仍全量平铺。 -->
           <div v-for="grp in groupedCourses" :key="grp.stage" class="lp-stage">
-            <h4 class="lp-stage-name">{{ grp.stage }}</h4>
-            <template v-for="c in grp.courses" :key="c.id">
+            <button
+              type="button"
+              class="lp-stage-name lp-stage-toggle"
+              :aria-expanded="!isCompactLayout || openStage === grp.stage"
+              @click="toggleStage(grp.stage)"
+            >
+              {{ grp.stage }}<i class="lp-stage-count">{{ grp.courses.length }}</i>
+              <ChevronDown v-if="isCompactLayout" :size="13" class="lp-stage-caret" :class="{ open: openStage === grp.stage }" />
+            </button>
+            <div v-show="!isCompactLayout || openStage === grp.stage" class="lp-stage-courses">
+              <template v-for="c in grp.courses" :key="c.id">
               <button
                 v-if="c.kind === 'exam'"
                 class="lp-course lp-course-exam"
@@ -2099,7 +2151,8 @@ watch(softExamDate, (value) => {
                 <span class="lp-course-bar"><span class="lp-course-fill" :style="{ width: c.progressPct + '%' }"></span></span>
                 <span class="lp-course-meta">{{ c.clearedLevels }}/{{ c.totalLevels }} 关 · {{ c.wordCount }} 词</span>
               </button>
-            </template>
+              </template>
+            </div>
           </div>
           <p v-if="!courses.length && !loading" class="lp-hint">课程加载中…</p>
         </div>
@@ -2960,6 +3013,13 @@ watch(softExamDate, (value) => {
       </button>
       <button v-if="rightCollapsed && hasRightColumn" class="lp-expand-rail right" title="展开右侧栏" aria-label="展开右侧栏" @click="rightCollapsed = false">
         <ChevronLeft :size="15" />
+        <!-- ★ 紧凑布局：通栏入口带文字说明（桌面窄条不放字，v-if 门控）；
+             文案按科目分流——扩展科目（周易/文化/音乐）的 coach 右栏是陪练历史，不是复习 -->
+        <span v-if="isCompactLayout" class="lp-rail-label">
+          {{ subject === '软考' ? '考试信息 · 学习清单 · 知识体系'
+            : subject === '英语' ? `今日复习 · ${dueCount} 词到期 · 口语跟读`
+            : '对话记录' }}
+        </span>
       </button>
     </div>
   </div>
@@ -3015,6 +3075,28 @@ watch(softExamDate, (value) => {
 .lp-courses { display: flex; flex-direction: column; gap: 10px; }
 .lp-stage { display: flex; flex-direction: column; }
 .lp-stage-name { font-size: 12px; color: #8f959e; margin: 0 0 6px; letter-spacing: 2px; }
+/* ★★ 阶段/词单标题变折叠按钮（2026-11-16「目录全平铺页面很长」收口）：
+   桌面（>900px）视觉与原 h3/h4 一致——按钮重置后加回粗体；带课程数徽标；
+   移动端另出 caret（v-if 门控）。桌面点击无效（toggleStage 直接 return）。 */
+.lp-stage-toggle {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; margin: 0 0 6px; padding: 0;
+  border: 0; background: none;
+  font-family: inherit; font-size: 12px; font-weight: 600; letter-spacing: 2px;
+  color: #8f959e; text-align: left; cursor: pointer;
+}
+.lp-stage-count {
+  font-style: normal; letter-spacing: 0;
+  min-width: 18px; height: 16px; padding: 0 5px; border-radius: 999px;
+  background: #f0f1f3; color: #8f959e; font-size: 10px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.lp-stage-caret { margin-left: auto; flex: none; transition: transform .15s ease; }
+.lp-stage-caret.open { transform: rotate(180deg); }
+/* 折叠面板：课程卡从「.lp-stage 直接子元素」变为面板内布局（桌面单列同原样；
+   网安横滑布局用 display:contents 保住——课程卡回到 .lp-stage 的 row 流）。 */
+.lp-stage-courses { display: flex; flex-direction: column; }
+.lp-courses-security-mobile .lp-stage-courses { display: contents; }
 .lp-course { text-align: left; border: 1px solid #e5e6eb; background: #fafbfc; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; color: #1f2329; }
 .lp-course:hover { border-color: #3370ff; }
 .lp-course.active { border-color: #3370ff; background: #f0f5ff; }
@@ -3429,6 +3511,23 @@ watch(softExamDate, (value) => {
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
   .lp-column-resizer { display: none; }
   .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
+  /* ★★ 页面浓缩（2026-11-16「全部平铺页面很长很丑」）：阶段手风琴行收紧——
+     收起时每个阶段只占一行（~36px），整张课程地图从几百 px 塌到 6×36px；
+     展开的面板内容才出现（选完课自动收起，见 openCourse）。 */
+  .lp-stage { border-bottom: 1px dashed #f0f1f3; padding: 2px 0; }
+  .lp-stage:last-child { border-bottom: 0; }
+  .lp-stage-toggle { min-height: 36px; margin: 0; letter-spacing: 1px; }
+  .lp-custom-books { margin-top: 6px; padding-top: 6px; }
+  /* 右栏收起后的展开轨：移动端从「贴边 26px 细条」（单列下几乎看不见）变通栏按钮，
+     带文字说明——这是移动端复习/口语/软考资料的唯一入口，必须显眼。 */
+  .lp-expand-rail.right {
+    position: static; transform: none;
+    width: 100%; height: 40px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border: 1px dashed var(--color-border); border-radius: 8px;
+    margin: 4px 0 10px; box-shadow: none;
+  }
+  .lp-rail-label { font-size: 12px; color: inherit; }
   .lp-courses-security-mobile { flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
   .lp-courses-security-mobile .lp-stage { flex-direction: row; gap: 6px; }
   .lp-courses-security-mobile .lp-stage-name { display: none; }
