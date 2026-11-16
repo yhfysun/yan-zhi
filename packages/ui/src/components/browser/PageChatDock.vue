@@ -38,7 +38,7 @@
     </div>
 
     <!-- 消息流 -->
-    <div ref="listRef" class="pcd-list">
+    <div ref="listRef" class="pcd-list" @scroll="onListScroll">
       <div v-if="!state.messages.length" class="pcd-empty">
         <p class="pcd-empty-title">就这个页面聊点什么</p>
         <p class="pcd-empty-sub">问答 / 点击 / 填写这类轻任务在这里就地做；跨页操作、数据分析请走工具栏「移交给主智能体」。</p>
@@ -62,9 +62,30 @@
         v-for="m in state.messages" :key="m.id"
         class="pcd-msg" :class="[m.role === 'user' ? 'is-user' : 'is-assistant', { 'is-note': m.error }]"
       >
-        <div v-if="m.error" class="pcd-note" v-html="renderMarkdown(m.content)"></div>
-        <div v-else class="pcd-bubble" v-html="renderAssistantMarkdown(m.content)"></div>
+        <!-- 错误/提示泡可折叠（2026-11-15 用户「聊天页面UI真的需要优化」）：
+             授权指引/委派失败这类长说明只露首行，点开再看 —— 不再整屏刷错误 */
+        -->
+        <details v-if="m.error" class="pcd-note">
+          <summary>{{ firstLine(m.content) }}</summary>
+          <div v-html="renderMarkdown(m.content)"></div>
+        </details>
+        <div v-else class="pcd-bubble" :class="{ 'is-clamped': isClamped(m) }">
+          <div v-html="renderAssistantMarkdown(m.content)"></div>
+          <button v-if="isClampable(m)" class="pcd-expand" @click="toggleExpand(m.id)">
+            {{ expandedIds.has(m.id) ? '收起' : '展开全文' }}
+          </button>
+        </div>
         <span v-if="m.streaming" class="pcd-cursor">▍</span>
+      </div>
+    </div>
+
+    <!-- 工具活动条（2026-11-15 用户「工具调用参考聊天模式」）：与主对话浏览器步骤条同款，
+         名称+人话+状态的小字流水，不把工具调用灌进消息流 -->
+    <div v-if="state.tools.length" class="pcd-tools">
+      <div v-for="(t, i) in state.tools" :key="i" class="pcd-tool">
+        <span class="pcd-tool-dot" :class="t.status"></span>
+        <span class="pcd-tool-label" :title="t.name">{{ t.label }}</span>
+        <span v-if="t.status === 'timeout'" class="pcd-tool-warn">超时未回执</span>
       </div>
     </div>
 
@@ -78,7 +99,48 @@
         :placeholder="inputPlaceholder"
         @keydown.enter.exact.prevent="onSend()"
       ></textarea>
+      <!-- 模型切换（2026-11-15）：与办公聊天输入框**同款同位** —— 底部工具条上、发送键旁
+           （第一版独立占一行被用户打回「UI还是不对」）。形态 = 胶囊按钮 + 搜索 + 平台分组弹层，
+           modelGroups 复用 useChat 那份（同一实现，不另写一套） -->
       <div class="pcd-actions">
+        <el-popover
+          v-model:visible="modelPopOpen"
+          placement="top-start" :width="260" trigger="click" :show-arrow="false"
+          popper-class="model-select-popper"
+        >
+          <template #reference>
+            <button type="button" class="model-select-btn" :title="`模型：${currentModelName}`">
+              <el-icon :size="13"><Cpu /></el-icon>
+              <span class="model-select-name">{{ currentModelName }}</span>
+              <el-icon :size="11"><ArrowDown /></el-icon>
+            </button>
+          </template>
+          <div class="pop-select-list pop-select-models">
+            <el-input v-model="modelSearch" size="small" placeholder="搜索模型" clearable class="pop-model-search">
+              <template #prefix><el-icon><Search /></el-icon></template>
+            </el-input>
+            <div class="pop-select-item" :class="{ active: !modelOverrideKey }" @click="pickOverride('')">
+              <span class="pop-select-name">跟随全局默认模型</span>
+            </div>
+            <div class="pop-model-scroll">
+              <template v-for="g in filteredModelGroups" :key="g.platformId">
+                <div class="pop-select-label pop-model-group">
+                  <span class="pop-model-platform">{{ g.platformName }}</span>
+                  <span class="pop-model-count">{{ g.models.length }}</span>
+                </div>
+                <div
+                  v-for="m in g.models" :key="m.id"
+                  class="pop-select-item pop-select-model" :class="{ active: m.id === modelOverrideKey }"
+                  @click="pickOverride(m.id, g.platformId)"
+                >
+                  <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                  <span class="pop-select-ctx">{{ m.contextWindow ? `${Math.round(m.contextWindow / 1000)}K` : '' }}</span>
+                </div>
+              </template>
+              <div v-if="!filteredModelGroups.length" class="pop-model-empty">没有匹配的模型</div>
+            </div>
+          </div>
+        </el-popover>
         <span class="pcd-hint">Enter 发送 · Shift+Enter 换行</span>
         <button v-if="state.streaming" class="pcd-btn stop" @click="onStop">■ 停止</button>
         <button
@@ -106,10 +168,12 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { Close } from '@element-plus/icons-vue';
+import { ArrowDown, Close, Cpu, Search } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePageChatStore } from '../../stores/page-chat';
 import { usePageCommandsStore } from '../../stores/page-commands';
+import { usePlatformStore } from '../../stores/platform';
+import { useSettingsStore } from '../../stores/settings';
 // 命令中枢（2026-10-16）：chips 的清单经命令总线取（与聊天框的 `/` 菜单同一套口径）
 import { useCommandsStore } from '../../stores/commands';
 import type { CommandDef } from '@yan-zhi/core';
@@ -147,11 +211,79 @@ const cmdsStore = usePageCommandsStore();
 const commandsStore = useCommandsStore();
 const { renderMarkdown, renderAssistantMarkdown, store: chatStore } = useChat();
 
+// ===== 模型切换（2026-11-15）：与办公聊天输入框**同款形态**（用户拍板不要两套）——
+// 胶囊按钮 + 搜索 + 平台分组弹层；modelGroups 直接复用 useChat 那份（同一实现，不再各写一份）。
+const platformStore = usePlatformStore();
+const settingsStore = useSettingsStore();
+const { modelGroups } = useChat();
+const modelPopOpen = ref(false);
+const modelSearch = ref('');
+const filteredModelGroups = computed(() => {
+  const kw = modelSearch.value.trim().toLowerCase();
+  const groups = modelGroups.value as Array<{ platformId: string; platformName: string; models: any[] }>;
+  if (!kw) return groups;
+  return groups
+    .map((g) => ({ ...g, models: g.models.filter((m) => String(`${m.alias || ''}${m.modelId || ''}`).toLowerCase().includes(kw)) }))
+    .filter((g) => g.models.length > 0);
+});
+const modelOverrideKey = computed(() => {
+  const o = pageChat.modelOverride;
+  return o ? `${o.platformId}::${o.modelId}` : '';
+});
+const currentModelName = computed(() => {
+  const o = pageChat.modelOverride;
+  if (o) return o.alias;
+  // 跟随全局：显示全局默认模型的名字（取不到就笼统说"默认"）
+  for (const g of modelGroups.value as Array<{ platformId: string; models: any[] }>) {
+    const hit = g.models.find((m) => String(m.id) === String((settingsStore.settings as any).defaultModelId));
+    if (hit) return String(hit.alias || hit.modelId);
+  }
+  return '默认';
+});
+/** 面板覆盖的选中值是「platformId::modelId」，pick 时拆开写回 store */
+function pickOverride(modelId: string, platformId?: string): void {
+  if (!modelId) { pageChat.setModelOverride(null); modelPopOpen.value = false; return; }
+  const g = (modelGroups.value as Array<{ platformId: string; models: any[] }>).find((x) => x.platformId === platformId);
+  const m = g?.models.find((x) => String(x.id) === String(modelId));
+  if (m && g) pageChat.setModelOverride({ platformId: g.platformId, modelId: String(modelId), alias: String(m.alias || m.modelId) });
+  modelPopOpen.value = false;
+}
+// ★ 游戏窗是独立渲染进程：platformStore 的模型清单未必加载（共享缓存被单实体视图清空的老坑，
+//   MEMORY 判据 #6）。进面板时兜底拉一次，保证选择器有货。
+onMounted(async () => {
+  try {
+    if (!platformStore.modelsLoaded || !(platformStore.models || []).length) {
+      if (!platformStore.platformsLoaded) await platformStore.loadPlatforms();
+      await platformStore.loadModels();
+    }
+  } catch { /* 取不到模型清单就不显示可选项，选择器仍可见 */ }
+});
+
 const draft = ref('');
 const listRef = ref<HTMLElement | null>(null);
 /** P3-5：历史弹窗 / 蒸馏弹窗的开关 */
 const historyVisible = ref(false);
 const distillVisible = ref(false);
+
+// ===== 长内容折叠（2026-11-15 用户「聊天页面UI真的需要优化，说了多少遍」）=====
+// 错误/授权指引类 note 只露首行（details）；超过 600 字的助手消息默认钳到 280px 可展开。
+const CLAMP_LEN = 600;
+const expandedIds = ref(new Set<string>());
+function firstLine(s: string): string {
+  const line = String(s || '').split('\n').find((l) => l.trim()) || '';
+  return line.length > 90 ? line.slice(0, 90) + '…' : line;
+}
+function isClampable(m: { id?: string; content: string; error?: boolean }): boolean {
+  return !m.error && String(m.content || '').length > CLAMP_LEN;
+}
+function isClamped(m: { id: string; content: string; error?: boolean }): boolean {
+  return isClampable(m) && !expandedIds.value.has(m.id);
+}
+function toggleExpand(id: string): void {
+  const next = new Set(expandedIds.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  expandedIds.value = next;
+}
 
 const state = computed(() => pageChat.stateOf(props.tabId));
 /** 蒸馏素材：只含真正的对话（丢掉"已停止""页面漂移"这类本地面板提示） */
@@ -201,14 +333,27 @@ function scrollToBottom() {
   });
 }
 
+// 新消息 / 流式增量 → **智能跟随**到底部（2026-11-15 用户咆哮「我往上滚动的时候不要一直往下跳」）：
+// 只有用户本来就贴在底部（±48px）时才跟随；用户往上翻了就绝不拽人，直到他滚回底部。
+// 用"下一次滚动事件是否由程序发起"防抖：程序滚到底后 anchor 恢复 true。
+const followBottom = ref(true);
+function onListScroll(): void {
+  const el = listRef.value;
+  if (!el) return;
+  followBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+}
 // 新消息 / 流式增量 → 跟到底部（用"总字数"当增量信号，避免 deep watch 整棵消息树）
 watch(
   () => [state.value.messages.length, state.value.messages.reduce((n, m) => n + m.content.length, 0)],
-  scrollToBottom,
+  () => {
+    if (!followBottom.value) return;   // 用户在看历史：不拽
+    scrollToBottom();
+  },
 );
 
 async function sendText(text: string): Promise<void> {
   draft.value = '';
+  followBottom.value = true;   // 用户自己发言 → 重新跟随到底
   scrollToBottom();
   const r = await pageChat.send({
     tabId: props.tabId,
@@ -465,8 +610,29 @@ watch(() => props.tabCount, (now) => {
 .pcd-msg.is-assistant .pcd-bubble :deep(th),
 .pcd-msg.is-assistant .pcd-bubble :deep(td) { border: 1px solid var(--el-border-color-lighter, #ebeef5); padding: 2px 6px; }
 .pcd-note { font-size: 12px; color: var(--el-color-warning, #e6a23c); background: var(--el-color-warning-light-9, #fdf6ec); padding: 6px 10px; border-radius: 8px; }
+.pcd-note summary { cursor: pointer; list-style: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcd-note summary::-webkit-details-marker { display: none; }
+.pcd-note summary::before { content: '⚠ '; }
+.pcd-note[open] summary { border-bottom: 1px dashed var(--el-color-warning-light-5, #f0d8a8); padding-bottom: 4px; margin-bottom: 4px; }
+.pcd-bubble.is-clamped { max-height: 280px; overflow: hidden; position: relative; }
+.pcd-bubble.is-clamped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 32px; background: linear-gradient(transparent, var(--el-fill-color-light, #f5f7fa)); pointer-events: none; }
+.pcd-expand { align-self: flex-start; border: none; background: transparent; color: var(--el-color-primary, #409eff); font-size: 11px; cursor: pointer; padding: 2px 0; }
 .pcd-cursor { color: var(--el-color-primary); animation: pcd-blink 1s steps(2, start) infinite; }
 @keyframes pcd-blink { to { visibility: hidden; } }
+
+/* 工具活动条：弱化小字，一眼看出 agent 正在动哪块（与主对话步骤条同语义） */
+.pcd-tools {
+  flex-shrink: 0; max-height: 108px; overflow-y: auto;
+  border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
+  padding: 4px 10px; display: flex; flex-direction: column; gap: 2px;
+}
+.pcd-tool { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--el-text-color-secondary, #909399); min-width: 0; }
+.pcd-tool-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--el-text-color-placeholder, #c0c4cc); flex: none; }
+.pcd-tool-dot.running { background: var(--el-color-primary); animation: pcd-blink 1s steps(2, start) infinite; }
+.pcd-tool-dot.done { background: var(--el-color-success, #67c23a); }
+.pcd-tool-dot.timeout { background: var(--el-color-warning, #e6a23c); }
+.pcd-tool-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcd-tool-warn { color: var(--el-color-warning, #e6a23c); flex: none; }
 
 .pcd-input-row { flex-shrink: 0; border-top: 1px solid var(--el-border-color-lighter, #ebeef5); padding: 8px; }
 .pcd-input {
@@ -475,12 +641,40 @@ watch(() => props.tabCount, (now) => {
   background: var(--el-bg-color, #fff); color: var(--el-text-color-primary, #303133); outline: none;
 }
 .pcd-input:focus { border-color: var(--el-color-primary); }
+/* 模型胶囊进 actions 行（同办公聊天：工具条右侧、发送键旁），不再独立占行 */
 .pcd-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.pcd-hint { flex: 1; font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); }
+.pcd-actions .model-select-btn { flex-shrink: 0; }
+.pcd-actions .model-select-name { max-width: 110px; }
+.pcd-hint { flex: 1; font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); text-align: right; }
 .pcd-btn {
   border: none; border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
   background: var(--el-color-primary); color: #fff;
 }
 .pcd-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .pcd-btn.stop { background: var(--el-color-warning, #e6a23c); }
+</style>
+
+<!-- 模型弹层样式：与 views/chat.css 同名同款（popper 挂 body，必须非 scoped；
+     抽共享组件前先保持双份一致，改这边要同步 chat.css） -->
+<style>
+.model-select-popper .pop-select-list { max-height: 260px; overflow-y: auto; }
+.model-select-popper .pop-select-label { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; padding: 4px 12px 2px; }
+.model-select-popper .pop-select-item {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--color-text);
+  transition: background 0.15s;
+}
+.model-select-popper .pop-select-item:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+.model-select-popper .pop-select-item.active { color: var(--color-primary); font-weight: 600; background: color-mix(in srgb, var(--color-primary) 14%, transparent); }
+.model-select-popper .pop-select-model { gap: 8px; }
+.model-select-popper .pop-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select-popper .pop-select-ctx { flex-shrink: 0; font-size: 11.5px; font-weight: 400; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.model-select-popper .pop-select-item.active .pop-select-ctx { color: var(--color-primary); }
+.model-select-popper .pop-select-models { display: flex; flex-direction: column; max-height: 340px; overflow: hidden; }
+.model-select-popper .pop-model-search { flex-shrink: 0; margin-bottom: 6px; }
+.model-select-popper .pop-model-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.model-select-popper .pop-model-group { display: flex; align-items: center; gap: 5px; }
+.model-select-popper .pop-model-platform { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select-popper .pop-model-count { flex-shrink: 0; font-size: 10.5px; font-weight: 500; opacity: 0.75; }
+.model-select-popper .pop-model-empty { padding: 14px 12px; text-align: center; font-size: 12px; color: var(--color-text-secondary); }
 </style>

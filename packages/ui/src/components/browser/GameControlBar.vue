@@ -34,7 +34,7 @@
     <!-- 显式移交（仅游戏窗）：把这一页交给智能体代玩，agent 才操作得到它 -->
     <button v-if="isGame" class="gb-btn gb-btn--handoff" :class="{ on: handoffOn }"
             :disabled="busy || handoffBusy"
-            :title="handoffOn ? '结束代玩，agent 不再操作这一页（页面不会被关闭）' : '把当前这一页交给主窗口的智能体代玩'"
+            :title="handoffOn ? '结束代玩，agent 不再操作这一页（页面不会被关闭）' : '把当前这一页交给「页面对话」的智能体就地代玩'"
             @click="toggleHandoff">{{ handoffOn ? '收回代玩' : '交给智能体代玩' }}</button>
     <button class="gb-stop" :disabled="busy" @click="panic">急停 Esc</button>
   </div>
@@ -43,6 +43,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { parseKeySequence } from '../../utils/gamePlan';
+// ★ 命名区分：局部 api = electronAPI.browserView（IPC 桥）；apiClient = 服务端 HTTP 客户端
+import { api as apiClient } from '../../api/client';
+import { usePageChatStore } from '../../stores/page-chat';
 
 /** 游戏窗传 'game'，主窗口 /browser 传 'page' —— 两边 tab 空间不能串 */
 const props = withDefaults(defineProps<{ scope?: string }>(), { scope: 'page' });
@@ -69,6 +72,7 @@ interface LoopResult {
 
 const api = (window as any).electronAPI?.browserView;
 const cw = (window as any).electronAPI?.childWindow;
+const pageChat = usePageChatStore();
 const busy = ref(false);
 const pinned = ref(false);
 const stateText = ref('未读取');
@@ -225,9 +229,14 @@ onMounted(async () => {
 onBeforeUnmount(() => { try { offHandoff?.(); } catch { /* ignore */ } });
 
 /**
- * 显式移交：把游戏窗当前这一页交给主窗口的智能体。
- * ★ 必须由用户点这个按钮 —— 游戏窗的页不在 agent 的 preview 执行面里，
- *   不显式移交的话 agent 会另开一页（看的那页 ≠ 操作的那页）。
+ * 显式移交：把游戏窗当前这一页交给**本窗「页面对话」的会话**代玩。
+ *
+ * ★★ 语义修正（2026-11-15 用户拍板「游戏模式就是进游戏页让 AI 代玩，不该跑回聊天页」）：
+ *   旧实现回落"主窗最近会话"，主窗没选会话就死路（「请先在主窗口打开一个会话」）——
+ *   用户得专门跑到主窗聊天页，违背游戏模式的产品形态。现在移交目标 = 本 tab 的
+ *   页面对话会话（没有就现建），用户在旁边面板直接发指令，agent 就地代玩。
+ *   ★ 会话顺手升到 default 档：代玩 = 用户明确要 AI 动手，老会话若是 readonly 档
+ *   （本修复之前建的全会话都是）点啥都被拒，移交等于白交。
  */
 async function toggleHandoff() {
   if (!api) return;
@@ -252,14 +261,29 @@ async function toggleHandoff() {
         hasError.value = true;
         return;
       }
-      const r = await api.handoff?.({ tabId: id });
+      // ① 目标会话：本 tab 的页面对话会话（没有就现建；url/title 现取，历史入口要认得出是哪一页）
+      let convId = '';
+      try {
+        let url = ''; let title = '';
+        try { url = String(await api.getUrl?.(id) || ''); } catch { /* 取不到就按无名页建 */ }
+        try { title = String((await api.action(id, 'get_page_info', {}))?.title || ''); } catch { /* 同上 */ }
+        convId = await pageChat.ensureOwnConversation(String(id), { url, title });
+      } catch (e: any) {
+        stateText.value = '移交失败';
+        readout.value = `创建代玩会话失败：${String(e?.message || e).slice(0, 90)}`;
+        hasError.value = true;
+        return;
+      }
+      // ② 代玩 = 明确要 AI 动手：会话权限升到 default（幂等；老 readonly 会话不升就是白交）
+      try { await apiClient.patch(`/conversations/${encodeURIComponent(convId)}`, { permissionMode: 'default' }); } catch { /* 失败不阻断，后端闸门兜底 */ }
+      const r = await api.handoff?.({ tabId: id, convId });
       if (!r || r.ok === false) {
         stateText.value = '移交失败';
         readout.value = String((r && r.error) || '未知原因').slice(0, 120);
         hasError.value = true;
       } else {
         stateText.value = '已交给智能体';
-        readout.value = '回到主窗口发指令即可代玩；结束后点「收回代玩」';
+        readout.value = '在右侧「页面对话」发指令即可代玩；结束后点「收回代玩」';
       }
     }
   } catch (e: any) {

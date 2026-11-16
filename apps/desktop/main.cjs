@@ -4174,11 +4174,12 @@ ipcMain.handle('browserView:unpinTarget', (_e, convId, flow) => {
 });
 
 // ============================================================
-// 显式移交（2026-10-29）：把独立游戏窗里用户正在玩的那一页交给智能体代玩。
+// 显式移交（2026-10-29；2026-11-15 语义修正）：把独立游戏窗里用户正在玩的那一页
+// 交给**本窗「页面对话」的会话**代玩（就地代玩，不再要求用户去主窗发指令）。
 //
 // ★ 为什么必须"显式"：游戏窗（scope='game'）不在 agent 的 preview 执行面里；
 //   若让 agent 自己去找页，它会另开一个 preview tab —— 用户看的是 Game，agent 玩的是 Login，
-//   这正是「看的那页 ≠ 操作的那页」。移交把**用户指的这一页**登记成本会话的执行目标：
+//   这正是「看的那页 ≠ 操作的那页」。移交把**用户指的这一页**登记成该会话的执行目标：
 //   flowPin（禁换页）+ 锚 + 归属，三条一起才让显式 tabId 与无 tabId 两条路都落在这里。
 // ★ 收尾不关页（closeConvTabs 只释放），因为这是用户自己的页面。
 // ============================================================
@@ -4207,7 +4208,8 @@ function handoffInfoOf(tabId, convId, flowKey, on, reason) {
 ipcMain.handle('browserView:handoff', (_e, payload) => {
   const p = payload || {};
   const tabId = String(p.tabId || '');
-  // 缺省用**主窗口最近会话**：游戏窗自己的 currentConvId 未必与主窗同步
+  // ★ 会话来源（2026-11-15 语义修正）：**优先游戏窗显式传来的「页面对话」会话**（就地代玩，
+  //   用户不必跑回主窗聊天页）；lastMainConvId 只作旧路径兜底。两者都空才拒。
   const convId = String(p.convId || lastMainConvId || '');
   if (!tabId) return { ok: false, error: '没有可移交的页面' };
   const meta = isWebviewEngine() ? webviewTabs.get(tabId) : browserViews.get(tabId);
@@ -4216,7 +4218,7 @@ ipcMain.handle('browserView:handoff', (_e, payload) => {
   if (sc !== 'game' && !isProtectedGameUrl(urlOfTab(tabId))) {
     return { ok: false, error: '只能移交游戏页' };
   }
-  if (!convId) return { ok: false, error: '请先在主窗口打开一个会话' };
+  if (!convId) return { ok: false, error: '没有可用的代玩会话（页面对话会话创建失败）' };
   const flowKey = flowKeyOf(convId, p.flow);
   const pinned = flowPins.resolve(flowKey);
   if (pinned && pinned !== tabId) {
@@ -8080,7 +8082,15 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     //   这样"读状态 → 决策 → 动作"整段闭环在一次调用里跑完，既不撞脚本熔断，
     //   也不用每步问一次模型。
     async function executeRunLoop(plan, io) {
-      const steps = Array.isArray(plan && plan.steps) ? plan.steps.slice(0, 80) : [];
+      // ★ 入参健壮性（2026-11-15 实测）：模型常把 steps 传成 JSON **字符串**、把脚本键写成
+      //   `code`（agent 真跑复现：steps="[...]" + {type:'script',code:'...'} → 原实现
+      //   steps=[] 静默空跑 / script='' 抛 "Script failed to execute"）。这里统一收口：
+      //   steps 字符串先 JSON.parse（失败按空数组走原有守卫），脚本键 `code` 与 `script` 等价。
+      let rawSteps = plan && plan.steps;
+      if (typeof rawSteps === 'string') {
+        try { rawSteps = JSON.parse(rawSteps); } catch (e) { rawSteps = []; }
+      }
+      const steps = Array.isArray(rawSteps) ? rawSteps.slice(0, 80) : [];
       const rounds = Math.max(1, Math.min(Number(plan && plan.rounds) || 1, 200));
       const maxSteps = Math.max(1, Math.min(Number(plan && plan.maxSteps) || 200, 2000));
       const maxMs = Math.max(50, Math.min(Number(plan && plan.maxSeconds) || 30, 300)) * 1000;
@@ -8112,7 +8122,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           if (type === 'if') {
             // 条件分支：script 的返回值按真值判断（页面里 return 布尔值即可）
             if (depth >= 3) { aborted = 'ifTooDeep'; return; }
-            const cond = await io.runScript(String(s.script || ''));
+            const cond = await io.runScript(String(s.script ?? s.code ?? ''));
             const branch = cond ? s.then : s.else;
             if (Array.isArray(branch) && branch.length) await runList(branch, depth + 1);
             done++;
@@ -8149,7 +8159,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             await io.sleep(60);
             io.mouseUp(s.toX, s.toY);
           } else if (type === 'script') {
-            const out = await io.runScript(String(s.script || ''));
+            const out = await io.runScript(String(s.script ?? s.code ?? ''));
             if (s.as || s.keep === true) results[tag] = out;
           } else if (type === 'http') {
             // 本地游戏桥（Minecraft 的 mod / Mineflayer 之类）：只允许回环地址

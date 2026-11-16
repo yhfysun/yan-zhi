@@ -1955,7 +1955,9 @@ describe('Learning 工作区 · 挂载契约', () => {
     await vi.waitFor(() => expect(el.querySelector('.lp-coach-chat')).toBeTruthy())
     expect(el.querySelector('.lp-pet-stage')).toBeTruthy()
     expect(el.querySelector('.lp-talk-button')).toBeTruthy()
-    expect(el.querySelector('.lp-coach-side.collapsed')).toBeTruthy()
+    // ★ 用户实报「空列像滚动条」：历史折叠时右栏整列不渲染，只留右缘竖直居中的悬浮展开按钮
+    expect(el.querySelector('.lp-coach-side')).toBeNull()
+    expect(el.querySelector('.lp-history-rail')).toBeTruthy()
     expect(el.querySelector('.lp-col-right')?.getAttribute('style')).toContain('display: none')
     // ★ 独立学习页必须自己幂等预热平台/模型，否则首次发送必然落到「没有可用模型」提示
     expect(ensurePlatforms).toHaveBeenCalled()
@@ -2011,13 +2013,13 @@ describe('Learning 工作区 · 挂载契约', () => {
     ]
     const el = await mountPage()
     ;([...el.querySelectorAll('.lp-tab')] as HTMLElement[]).find((b) => b.textContent?.includes('陪练对话'))!.click()
+    // 折叠态：右栏整列不渲染（此前是 44px 空列，用户实报「像滚动条」），只留右缘居中悬浮按钮
+    expect(el.querySelector('.lp-coach-side')).toBeNull()
+    expect(el.querySelector('.lp-history-rail')).toBeTruthy()
+    ;(el.querySelector('.lp-history-rail') as HTMLElement).click()
     await vi.waitFor(() => expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2))
     expect(el.querySelector('.lp-coach-chat')).toBeTruthy()
     expect(el.querySelector('.lp-pet-speech')?.textContent).toContain('How are you today?')
-    expect(el.querySelector('.lp-side-body')?.getAttribute('style')).toContain('display: none')
-    ;(el.querySelector('.lp-side-toggle') as HTMLElement).click()
-    await vi.waitFor(() => expect(el.querySelector('.lp-side-body')?.getAttribute('style') || '').not.toContain('display: none'))
-    expect(el.querySelectorAll('.lp-chat-bubble').length).toBe(2)
     expect(el.querySelector('.lp-chat-text')?.textContent).toContain('Hi!')
     expect(el.textContent).toContain('How are you today?')
     // assistant 气泡带 🔊 朗读按钮；三栏骨架仍在
@@ -2079,7 +2081,7 @@ describe('Learning 工作区 · 挂载契约', () => {
       .find((b) => b.textContent?.trim() === '陪练对话')!.click()
     await vi.waitFor(() => expect(el.querySelector('.lp-pet-speech')).toBeTruthy())
     const speech = el.querySelector('.lp-pet-speech')?.textContent ?? ''
-    expect(speech).toContain('今天想读哪一段')
+    expect(speech).toContain('今天想读经传还是问一卦')
     expect(speech).not.toContain("Hi, I'm ready")
     expect(speech).not.toContain('What would you like to practice')
     expect(speech).toContain('周易陪练')

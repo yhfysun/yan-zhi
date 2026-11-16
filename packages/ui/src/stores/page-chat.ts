@@ -14,7 +14,7 @@
 
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../api/client';
 import { consumeSseStream } from '../utils/sse';
 import { useSettingsStore } from './settings';
 import { usePlatformStore } from './platform';
@@ -137,8 +137,9 @@ export const usePageChatStore = defineStore('page-chat', () => {
     const taskId = s?.taskId;
     if (!taskId) return;
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      // ★ 必须走 buildRequestHeaders：打包版授权门禁开启时只带 Authorization 会被 403，
+      //   表象是「点停止没反应、任务在服务端继续烧 token」（stream 同理报「SSE 连接失败」）。
+      await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: buildRequestHeaders() });
     } catch { /* 网络失败不阻断 UI：本地已停 */ }
     if (s) s.taskId = '';
   }
@@ -149,7 +150,18 @@ export const usePageChatStore = defineStore('page-chat', () => {
   }
 
   /** 取默认平台/模型（与运维控制台同口径：设置里的默认项） */
+  /** 页面对话的模型覆盖（2026-11-15 用户实报「模型切换也没有」）：null = 跟随全局默认。
+   *  会话内存级（不落盘）—— 面板选择器写入，send 时优先于全局默认。 */
+  const modelOverride = ref<{ platformId: string; modelId: string; alias: string } | null>(null);
+  function setModelOverride(v: { platformId: string; modelId: string; alias: string } | null): void {
+    modelOverride.value = v;
+  }
+
   function resolveModel(): { platformId: string; modelId: string } | null {
+    // 面板覆盖优先（游戏窗里的页面对话可能想换掉全局那个弱模型）
+    if (modelOverride.value) {
+      return { platformId: modelOverride.value.platformId, modelId: modelOverride.value.modelId };
+    }
     const settings = useSettingsStore().settings;
     const platformStore = usePlatformStore();
     const platform = platformStore.platforms.find((p) => p.id === settings.defaultPlatformId);
@@ -162,8 +174,14 @@ export const usePageChatStore = defineStore('page-chat', () => {
   async function createOwnConversation(title: string, agentId: string, meta?: ConversationSourceMeta): Promise<string> {
     // ★ 必须带来源标记：这条会话是"浏览器页面对话"（历史入口按它查、会话列表按它打徽标）。
     //   没有标记就只能靠标题前缀猜，用户一改名就失效。
+    // ★★ 必须带 permissionMode:'default'（2026-11-15 实测）：不传时服务端 fail-safe 落 readonly，
+    //   而 browser_click / browser_run_loop 都是写类工具 → 首次调用弹授权卡；可本会话
+    //   只在页面对话面板里消费（主窗没打开它、面板也不渲染授权卡）→ 无人应答 → 一律被拒。
+    //   用户实测原话：「点击被拒绝了——当前是只读权限会话」。页面对话的产品语义就是
+    //   "让它在这一页上做点什么"，浏览器写操作是本体能力，不是越权，故 default 档起步。
     const r = await api.post<any>('/conversations', {
       title, agentId, source: CONV_SOURCE_BROWSER_PAGE, sourceMeta: meta || undefined,
+      permissionMode: 'default',
     });
     if ('error' in r) throw new Error(r.error);
     const id = (r.data as any)?.id;
@@ -185,9 +203,10 @@ export const usePageChatStore = defineStore('page-chat', () => {
 
   /** 订阅任务 SSE，逐条归约到该 tab 的状态里 */
   async function subscribeTask(state: PageChatState, taskId: string, ac: AbortController): Promise<void> {
-    const token = localStorage.getItem('auth_token') || '';
+    // ★ 必须走 buildRequestHeaders（补 x-license）：授权门禁（打包版恒开）下裸 Bearer 会被 403，
+    //   send() 里 catch 到的就是那句没信息量的「SSE 连接失败」——用户视角「页面对话根本用不了」。
     const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=0`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: buildRequestHeaders(),
       signal: ac.signal,
     });
     if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');
@@ -205,6 +224,29 @@ export const usePageChatStore = defineStore('page-chat', () => {
    * 发一条页面内对话：装配页面上下文 → 起任务 → 流式回填。
    * 失败一律落成面板里的提示气泡（不静默）。
    */
+  /**
+   * 就地代玩的会话入口（2026-11-15）：拿到（必要时懒创建）本 tab 的页面对话会话。
+   * 消费方两个：send() 的自建分支、游戏执行条「交给智能体代玩」（用户拍板：
+   * 游戏模式 = 进游戏页就地让 AI 代玩，**不再要求用户跑回主窗聊天页**）。
+   * 返回会话 id；创建失败抛错由调用方提示。
+   */
+  async function ensureOwnConversation(
+    tabId: string, tab: { url?: string; title?: string }, agentId?: string,
+  ): Promise<string> {
+    const state = stateOf(tabId);
+    if (state.conversationId) return state.conversationId;
+    const aid = String(agentId || '') || PAGE_CHAT_AGENT_ID;
+    const url = String(tab?.url || '');
+    const convId = await createOwnConversation(
+      `浏览器 · ${hostOf(url) || '页面'}`, aid,
+      // 来源附加信息：站点/地址落库，历史列表才能显示"哪一页"、才能做"只看本站"
+      { url, host: hostOf(url), scope: 'page' },
+    );
+    state.conversationId = convId;
+    state.ownConversation = true;
+    return convId;
+  }
+
   async function send(input: PageChatSendInput): Promise<PageChatSendResult> {
     const { tabId, tab, question } = input;
     const text = String(question || '').trim();
@@ -237,12 +279,7 @@ export const usePageChatStore = defineStore('page-chat', () => {
         own = true;
       } else {
         agentId = agentId || PAGE_CHAT_AGENT_ID;
-        const url = String(tab?.url || '');
-        convId = await createOwnConversation(
-          `浏览器 · ${hostOf(url) || '页面'}`, agentId,
-          // 来源附加信息：站点/地址落库，历史列表才能显示"哪一页"、才能做"只看本站"
-          { url, host: hostOf(url), scope: 'page' },
-        );
+        convId = await ensureOwnConversation(tabId, tab, agentId);
         own = true;
       }
     } catch (e: any) {
@@ -358,6 +395,8 @@ export const usePageChatStore = defineStore('page-chat', () => {
 
   return {
     states, stateOf, hasChat, isStreaming, dropTab, dropAll, clearTab, stop, stopTabs, note, send,
+    ensureOwnConversation,
+    modelOverride, setModelOverride,
     listSessions, openSession, deleteSession,
   };
 });

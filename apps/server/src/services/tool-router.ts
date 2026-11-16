@@ -18,12 +18,13 @@
 
 /**
  * 触发路由的工具面阈值：超过才裁。
- * ★ 必须大于常驻核心集规模（当前 37，含应用编排家族 + 设计素材清单）+ 常见 custom_/mcp_
- *   挂载数，否则核心集直接占满阈值、裁剪永远不触发（首版设 24 被测试抓出这个 bug；
- *   2026-10-17 两度随核心集扩张 30→36→42）。
+ * ★ 必须大于常驻核心集规模（当前 41，2026-11-15 补确定性循环家族 browser_run_loop/
+ *   press_key/wait/wait_for —— 刷关/连续操作类任务的关键件，被裁掉模型只能逐轮手点）
+ *   + 常见 custom_/mcp_ 挂载数，否则核心集直接占满阈值、裁剪永远不触发（首版设 24 被
+ *   测试抓出这个 bug；2026-10-17 两度随核心集扩张 30→36→42，本轮 42→46）。
  *   超出部分仍按相关性裁；核心集再膨胀时应考虑收敛清单而不是继续抬阈值。
  */
-export const TOOL_ROUTE_THRESHOLD = 42;
+export const TOOL_ROUTE_THRESHOLD = 46;
 
 /**
  * 常驻核心集：无论打分高低都不裁。
@@ -51,6 +52,11 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   // 浏览器四件套 + 代码模式 + 截图（pageAgent 主链路）
   'browser_navigate', 'browser_click', 'browser_type', 'browser_get_page_content',
   'browser_run_script', 'browser_screenshot', 'browser_list_upload_inputs', 'browser_upload',
+  // ★ 确定性循环家族（2026-11-15 用户实报「这么简单的刷机任务都完不成」）：
+  //   刷关/翻页/连续操作类任务的正解是 browser_run_loop **一次调用跑完整段**，
+  //   被裁掉后模型只能逐轮手点 —— 每轮一次模型调用还慢，页面稍变就断。
+  //   press_key / wait / wait_for 是循环步与游戏按键的配套件，与 run_script 同族不裁。
+  'browser_run_loop', 'browser_press_key', 'browser_wait', 'browser_wait_for',
   // 视觉识别（纯视觉兜底路线的执行件）
   'image_analyze',
   // 记忆底座（收尾沉淀用）

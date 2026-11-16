@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>sc33 秘境挑战模拟</title></head>
+<body style="margin:0;font-family:sans-serif">
+<!--
+  秘境挑战场景模拟（game-runloop-scenario.test.cjs 的被测页）：
+  · 初始有两层弹窗遮挡（每日礼包 / 公告），不关掉就点不到下面的按钮 —— 对应真实游戏的礼包弹窗；
+  · 「下一关」按钮只在结算期（phase='settle'）出现，点击后进入战斗期（fight），200ms 后再次结算；
+  · 关卡计数落在 window.__game.level，供 until 条件与测试断言读取。
+-->
+<div id="hud" style="padding:8px;font-size:14px">level:396</div>
+<button id="next" style="position:absolute;left:370px;top:400px;width:80px;height:40px;display:none">下一关</button>
+<div id="popup" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10">
+  <button id="popup-close" style="position:absolute;left:390px;top:290px;width:60px;height:32px">关闭</button>
+</div>
+<script>
+window.__game = { level: 396, phase: 'fight' };
+function settle() {
+  window.__game.phase = 'settle';
+  document.getElementById('next').style.display = 'block';
+}
+document.getElementById('next').addEventListener('click', function () {
+  if (window.__game.phase !== 'settle') return;           // 战斗期点击无效（真实游戏同款约束）
+  window.__game.level += 1;
+  document.getElementById('hud').textContent = 'level:' + window.__game.level;
+  window.__game.phase = 'fight';
+  document.getElementById('next').style.display = 'none';
+  setTimeout(settle, 200);
+});
+document.getElementById('popup-close').addEventListener('click', function () {
+  var p = document.getElementById('popup');
+  if (p) p.remove();
+});
+setTimeout(settle, 150);
+</script>
+</body>
+</html>

@@ -25,6 +25,16 @@ vi.mock('../utils/sse', () => ({ consumeSseStream: vi.fn(async () => {}) }));
 // 页面上下文采集要走渲染层 / Electron，这里只关心"发出去什么"，故整体替身
 vi.mock('../utils/pageContext', () => ({
   buildPageTaskPrompt: (x: { question: string }) => x.question,
+  // ★ 与真实实现同口径（page-chat-state 依赖它折叠服务端 prompt）：取【用户的问题】分节
+  displayQuestionOf: (content: string) => {
+    const raw = String(content || '');
+    const start = raw.indexOf('【用户的问题】');
+    if (start < 0) return raw;
+    const from = start + '【用户的问题】'.length;
+    let end = raw.indexOf('【执行面约束', from);
+    if (end < 0) end = raw.length;
+    return raw.slice(from, end).trim() || raw;
+  },
   collectPageContext: async () => ({ url: '', title: '', host: '', selection: '', visibleText: '', readFailed: false }),
   hostOf: (u: string) => { try { return new URL(u).host; } catch { return ''; } },
   isRealPageUrl: (u: string) => /^https?:\/\//i.test(String(u || '')),

@@ -81,9 +81,30 @@ export function buildPageTaskPrompt(input: { question: string; ctx: PageContext 
   lines.push('【执行面约束（务必遵守）】');
   lines.push('1. 上面这一页**已经打开**，就是用户正在看的页。不要新开标签页（不要 browser_new_tab），不要改变地址。');
   lines.push('2. 调用浏览器工具时**不要传 tabId**：页面内对话的操作目标已绑定为当前页，显式传 tabId 会被判成"访问其它会话的页面"而被拒绝。');
-  lines.push('3. 若工具提示「该会话尚未绑定浏览器页面」：先调用一次 browser_navigate 打开**同一个地址**建立绑定（会原地重载一次，属正常），然后再继续读取/点击。');
+  lines.push('3. 若工具提示「该会话尚未绑定浏览器页面」：**不要用 browser_navigate 处理游戏/带登录态的页面** —— 重新导航会丢失入口 referrer，直接 404 并杀掉用户正开着的游戏。正确做法：让用户在面板里**再发一条消息**（发送时会自动钉住当前页完成绑定），然后继续读取/点击。普通文档页才允许 navigate 同地址重建绑定。');
   lines.push('4. 只做用户要求的这件事；做完给结论，不要把页面留在别的地址上。');
   return lines.join('\n');
+}
+
+/**
+ * 从一条 userContent 里还原「用户实际说了什么」（面板显示用）。
+ *
+ * ★ 为什么必须有（2026-11-15 用户实报「提示词都放出来了？不是用户问题？」）：
+ *   服务端落库的用户消息 = `buildPageTaskPrompt` 的**完整拼装**（页面上下文 + 问题 + 执行面约束），
+ *   页面对话面板按服务端真相渲染（message:added / 收尾 refreshFromServer 两条路都会进来），
+ *   于是面板里出现一大坨提示词而用户自己那句话被淹没。提取口径与 buildPageTaskPrompt 的
+ *   分节标记**同源同文件**（【用户的问题】…【执行面约束），builder 改格式这里跟着改，不会漂。
+ *   非 prompt 形态（历史数据 / 纯文本）原样返回。
+ */
+export function displayQuestionOf(content: string): string {
+  const raw = String(content || '');
+  const start = raw.indexOf('【用户的问题】');
+  if (start < 0) return raw;
+  const from = start + '【用户的问题】'.length;
+  let end = raw.indexOf('【执行面约束', from);
+  if (end < 0) end = raw.length;
+  const q = raw.slice(from, end).trim();
+  return q || raw;
 }
 
 /** 宿主在页面里跑的读取脚本（只读：不改 DOM、不发请求） */

@@ -4,6 +4,14 @@
 //   "按 tab 隔离 / 关 tab 即清 / 切 tab 不串 / chunk 只并到最后一条流式助手消息" 这些是**行为**，
 //   写成 Vue 组件里的内联逻辑就只能靠静态断言。抽出来 → 单测真跑（见 page-chat-state.test.ts）。
 
+// ★ 显示口径收口（2026-11-15 用户实报「提示词都放出来了？」）：服务端落库的用户消息是
+//   buildPageTaskPrompt 的完整拼装，两条服务端进路（message:added / replaceMessagesFromServer）
+//   都必须先经 displayQuestionOf 折回用户原话，否则面板被提示词刷屏。
+//   提取器与 builder 同在 utils/pageContext.ts（分节标记同源，不会漂）。
+import { displayQuestionOf } from '../utils/pageContext';
+// 工具 → 一句人话（与主对话的浏览器步骤条同一实现，工具调用展示参考聊天模式）
+import { describeBrowserAction } from '../composables/chat/browser-step-label';
+
 /** 页面内对话的一条消息（UI 直接渲染；内容为 markdown） */
 export interface PageChatMessage {
   id: string;
@@ -54,12 +62,62 @@ export interface PageChatState {
    *   清消息不等于任务结束（手动清空时任务可能还在跑）。
    */
   pinnedTabId: string;
+  /**
+   * 工具活动条（2026-11-15 用户「工具调用参考聊天模式」）：与主对话的浏览器步骤条
+   * 同语义 —— 名称 + 一句人话 + 状态，**只在条里显示，不灌进消息流**。
+   * 有上限（尾 6 条）；任务收尾由调用方决定保留（刷新后自然清空）。
+   */
+  tools: Array<{ name: string; label: string; status: 'running' | 'done' | 'timeout'; time: number }>;
 }
 
 let seq = 0;
 function localId(prefix: string): string {
   seq += 1;
   return `${prefix}-${Date.now()}-${seq}`;
+}
+
+/**
+ * 活动噪音过滤（2026-11-15 用户实报「这个需要优化」）：任务计划类工具会把
+ * 「已创建任务计划…」「已更新第 N 步状态为 done」这类**工具回执**当成消息落库，
+ * 页面对话面板照单全收就把对话刷成了流水账。这类行在面板里没有任何信息量
+ * （任务进展在聊天页有完整呈现），两条服务端进路一律丢弃。
+ * ★ 白名单式判据：只滤已知的活动句式，不猜 —— 模型真正的回复哪怕再乱也不动它。
+ */
+export function isActivityNoise(content: string): boolean {
+  const c = String(content || '').trim();
+  if (!c) return false;
+  return /^已创建任务计划/.test(c)
+    || /^已更新任务计划/.test(c)
+    || /^已更新第\s*\d+\s*步状态为/.test(c);
+}
+
+/** 工具活动条上限（尾 N 条）：对话面板宽度有限，流水账只留最近几步 */
+const TOOL_STRIP_MAX = 6;
+
+function pushTool(state: PageChatState, entry: { name: string; label: string; status: 'running' | 'done' | 'timeout'; time: number }): void {
+  state.tools.push(entry);
+  if (state.tools.length > TOOL_STRIP_MAX) state.tools.splice(0, state.tools.length - TOOL_STRIP_MAX);
+}
+
+/** tool:start / tool:result / tool:timeout → 活动条（参考主对话 pushBrowserStep 的口径） */
+function applyToolEvent(state: PageChatState, event: any): void {
+  const name = String(event?.toolName || '');
+  if (!name) return;
+  const type = String(event.type || '');
+  if (type === 'tool:start') {
+    pushTool(state, { name, label: describeBrowserAction(name, event.args as Record<string, unknown> | null), status: 'running', time: Date.now() });
+    return;
+  }
+  // 回执/超时：改**最后一条同名的 running**（重放时找不到 running 就丢弃，不造重复行）
+  const cur = [...state.tools].reverse().find((t) => t.name === name && t.status === 'running');
+  if (!cur) return;
+  if (type === 'tool:timeout') {
+    cur.status = 'timeout';
+    return;
+  }
+  cur.status = 'done';
+  const digest = String(event.result || '').replace(/\s+/g, ' ').trim();
+  if (digest) cur.label = `${cur.label} · ${digest.slice(0, 40)}`;
 }
 
 export function createChatState(tabId: string): PageChatState {
@@ -75,6 +133,7 @@ export function createChatState(tabId: string): PageChatState {
     targetTabCount: 0,
     repairHint: '',
     pinnedTabId: '',
+    tools: [],
   };
 }
 
@@ -106,14 +165,29 @@ export function addErrorNote(state: PageChatState, text: string): PageChatMessag
  */
 export function applyTaskEvent(state: PageChatState, event: any): boolean {
   const type = String(event?.type || '');
+  if (type === 'tool:start' || type === 'tool:result' || type === 'tool:timeout') {
+    // 工具调用走活动条（参考聊天模式），不进消息流
+    applyToolEvent(state, event);
+    return true;
+  }
   if (type === 'message:added') {
     const msg = event.message || {};
+    const isUser = msg.role === 'user';
+    // 用户消息：折回原话 + **内容去重** —— 本地回显（addUserEcho）先到、服务端落库后到，
+    // 两者内容一致时不重复渲染（此前服务端版是整段 prompt，看不出重复；折叠后不挡就会出双份）。
+    const content = isUser ? displayQuestionOf(String(msg.content || '')) : String(msg.content || '');
+    if (isUser && state.messages.some((m) => m.role === 'user' && m.content === content)) return true;
+    if (!isUser && isActivityNoise(content)) return true;   // 任务计划回执：面板不渲染
+    // ★ 光标风暴修复（2026-11-15 用户实报「怎么这么多光标输入动画在动」）：每条 assistant
+    //   消息都带着 streaming:true 进来，而此前没人把**上一条**的流式标记关掉 —— 工具回执
+    //   一条条落，光标就一条条常亮。语义只有一种：**只有最后一条 assistant 在流式**。
+    if (!isUser) for (const m of state.messages) { if (m.streaming) m.streaming = false; }
     addMessage(state, {
       id: String(msg.id || localId('srv')),
-      role: msg.role === 'user' ? 'user' : 'assistant',
-      content: String(msg.content || ''),
+      role: isUser ? 'user' : 'assistant',
+      content,
       createdAt: Date.now(),
-      streaming: msg.role === 'assistant',
+      streaming: !isUser,
     });
     return true;
   }
@@ -141,12 +215,21 @@ export function applyTaskEvent(state: PageChatState, event: any): boolean {
 
 /** 服务端消息列表 → 状态（自建会话收尾时用它对齐真相） */
 export function replaceMessagesFromServer(state: PageChatState, rows: any[]): void {
-  state.messages = (rows || []).map((m) => ({
-    id: String(m.id ?? localId('srv')),
-    role: m.role === 'user' ? 'user' : 'assistant',
-    content: String(m.content || ''),
-    createdAt: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
-  }));
+  const out: PageChatMessage[] = [];
+  for (const m of rows || []) {
+    const isUser = m.role === 'user';
+    // 用户消息同样折回原话；相邻重复（本地回显 + 服务端落库）只留一条
+    const content = isUser ? displayQuestionOf(String(m.content || '')) : String(m.content || '');
+    if (isUser && out.length && out[out.length - 1].role === 'user' && out[out.length - 1].content === content) continue;
+    if (!isUser && isActivityNoise(content)) continue;      // 任务计划回执：面板不渲染
+    out.push({
+      id: String(m.id ?? localId('srv')),
+      role: isUser ? 'user' : 'assistant',
+      content,
+      createdAt: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
+    });
+  }
+  state.messages = out;
 }
 
 /** 清空一个 tab 的对话内容（关 tab / 用户手动清空）：消息与运行态清掉，会话绑定由调用方决定 */
@@ -155,6 +238,7 @@ export function resetChatState(state: PageChatState): void {
   state.streaming = false;
   state.taskId = '';
   state.lastError = '';
+  state.tools = [];
   state.repairHint = '';   // 手动清空后不再挂着"修复脚本"入口（它对应的是已被清掉的那次失败）
 }
 

@@ -144,3 +144,116 @@ describe('★ 重置语义', () => {
     expect(s.targetTabCount).toBe(0);
   });
 });
+
+// ★★★ 2026-11-15 用户实报「提示词都放出来了？不是用户问题？」：
+//   服务端落库的用户消息 = buildPageTaskPrompt 的完整拼装，面板两条服务端进路
+//   （message:added / replaceMessagesFromServer）都必须折回用户原话，且不与本地回显重复。
+describe('★ 服务端用户消息折叠：prompt 只显示用户原话（不把提示词刷进面板）', () => {
+  const PROMPT = [
+    '【当前页面（用户正在浏览器里看着的页）】',
+    '标题：生存33天',
+    '地址：https://www.wanyiwan.top/game/sc33t',
+    '',
+    '【页面可见文本（宿主已抓取，可直接依据它回答，无需再读一次）】',
+    'V3 5625 成长值 全屏 音乐关 ……（一大坨）',
+    '',
+    '【用户的问题】',
+    '帮我玩玩这个游戏。。',
+    '',
+    '【执行面约束（务必遵守）】',
+    '1. 上面这一页已经打开……',
+  ].join('\n');
+
+  it('message:added 的用户消息折叠为【用户的问题】分节', () => {
+    const s = createChatState('t');
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'm1', role: 'user', content: PROMPT } });
+    expect(s.messages.map((m) => m.content)).toEqual(['帮我玩玩这个游戏。。']);
+  });
+
+  it('与本地回显内容相同时不重复渲染（折叠前靠"长度不同"蒙混，折叠后会出双份）', () => {
+    const s = createChatState('t');
+    addUserEcho(s, '帮我玩玩这个游戏。。');
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'srv-1', role: 'user', content: PROMPT } });
+    expect(s.messages.filter((m) => m.role === 'user').length).toBe(1);
+  });
+
+  it('replaceMessagesFromServer 同样折叠 + 相邻去重', () => {
+    const s = createChatState('t');
+    replaceMessagesFromServer(s, [
+      { id: 'a', role: 'user', content: PROMPT, created_at: '2026-11-15T10:00:00.000Z' },
+      { id: 'b', role: 'assistant', content: '好，我来。', created_at: '2026-11-15T10:00:01.000Z' },
+    ]);
+    expect(s.messages.map((m) => m.content)).toEqual(['帮我玩玩这个游戏。。', '好，我来。']);
+  });
+
+  it('非 prompt 形态（纯文本用户消息）原样保留', () => {
+    const s = createChatState('t');
+    replaceMessagesFromServer(s, [{ id: 'a', role: 'user', content: '普通一句话', created_at: '2026-11-15T10:00:00.000Z' }]);
+    expect(s.messages.map((m) => m.content)).toEqual(['普通一句话']);
+  });
+});
+
+// ★★★ 2026-11-15 用户实报「这个需要优化」「怎么这么多光标输入动画在动」：
+//   任务计划工具回执把面板刷成流水账 + 每条 assistant 消息都留着 streaming 光标。
+describe('★ 面板降噪 + 光标唯一', () => {
+  it('任务计划回执（已创建/已更新第 N 步）不进面板', () => {
+    const s = createChatState('t');
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'a', role: 'assistant', content: '已创建任务计划「连续刷秘境挑战5层」，共 3 步' } });
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'b', role: 'assistant', content: '已更新第 1 步状态为 done' } });
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'c', role: 'assistant', content: '战斗结束后我继续点「下一关」。' } });
+    expect(s.messages.map((m) => m.content)).toEqual(['战斗结束后我继续点「下一关」。']);
+  });
+
+  it('replaceMessagesFromServer 同样滤掉活动噪音', () => {
+    const s = createChatState('t');
+    replaceMessagesFromServer(s, [
+      { id: 'a', role: 'user', content: '帮我玩玩这个游戏', created_at: '2026-11-15T10:00:00.000Z' },
+      { id: 'b', role: 'assistant', content: '已更新第 2 步状态为 running', created_at: '2026-11-15T10:00:01.000Z' },
+      { id: 'c', role: 'assistant', content: '好的，我来代玩。', created_at: '2026-11-15T10:00:02.000Z' },
+    ]);
+    expect(s.messages.map((m) => m.content)).toEqual(['帮我玩玩这个游戏', '好的，我来代玩。']);
+  });
+
+  it('★ 光标唯一：新 assistant 消息到达时关掉上一条的 streaming', () => {
+    const s = createChatState('t');
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'a', role: 'assistant', content: '第一条' } });
+    applyTaskEvent(s, { type: 'message:added', message: { id: 'b', role: 'assistant', content: '第二条' } });
+    const streaming = s.messages.filter((m) => m.streaming);
+    expect(streaming.length, '★ 只允许最后一条在流式').toBe(1);
+    expect(streaming[0].content).toBe('第二条');
+  });
+});
+
+// ★★★ 2026-11-15 用户「工具调用参考聊天模式里面的」：工具调用按主对话步骤条同款
+// 语义走**活动条**（名称+人话+状态），不灌进消息流。
+describe('★ 工具活动条（参考聊天模式）', () => {
+  it('tool:start 进条、tool:result 改状态并带结果摘要，不产生消息', () => {
+    const s = createChatState('t');
+    applyTaskEvent(s, { type: 'tool:start', toolName: 'browser_click', args: { index: 2 } });
+    applyTaskEvent(s, { type: 'tool:result', toolName: 'browser_click', result: 'click 执行成功' });
+    expect(s.messages.length).toBe(0);
+    expect(s.tools.length).toBe(1);
+    expect(s.tools[0].status).toBe('done');
+    expect(s.tools[0].label).toContain('点击');
+    expect(s.tools[0].label).toContain('click 执行成功');
+  });
+
+  it('活动条有上限（尾 6 条），running 光标只标最后一条同名的', () => {
+    const s = createChatState('t');
+    for (let i = 0; i < 9; i++) {
+      applyTaskEvent(s, { type: 'tool:start', toolName: 'browser_click', args: { index: i } });
+      applyTaskEvent(s, { type: 'tool:result', toolName: 'browser_click', result: 'ok' });
+    }
+    applyTaskEvent(s, { type: 'tool:start', toolName: 'browser_screenshot', args: {} });
+    expect(s.tools.length).toBe(6);
+    expect(s.tools.filter((t) => t.status === 'running').length).toBe(1);
+    expect(s.tools[5].name).toBe('browser_screenshot');
+  });
+
+  it('tool:timeout 标记超时（不再让用户以为卡死）', () => {
+    const s = createChatState('t');
+    applyTaskEvent(s, { type: 'tool:start', toolName: 'browser_navigate', args: { url: 'https://x.com' } });
+    applyTaskEvent(s, { type: 'tool:timeout', toolName: 'browser_navigate', timeoutMs: 480000 });
+    expect(s.tools[0].status).toBe('timeout');
+  });
+});

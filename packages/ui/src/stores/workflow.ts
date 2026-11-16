@@ -6,7 +6,8 @@
 // 与 AgentCanvas 里 runAgent 的区别：那个是 1s 轮询 + 阻塞等待（编辑页里试跑），
 // 这里是运行台：订阅 SSE 拿节点级事件，页面关掉也不影响后端执行。
 import { ref } from 'vue';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { consumeSseStream } from '../utils/sse';
 
 export type WorkflowFieldType = 'string' | 'number' | 'boolean' | 'array' | 'object';
 
@@ -246,18 +247,29 @@ async function debugContinue(
 /**
  * 订阅运行事件（SSE）。返回关闭函数，组件卸载时必须调。
  * since 用于断线续传（传最后收到的 seq）。
- * 注意：本地模式 authMiddleware 恒 guest，EventSource 不需要带 token。
+ * ★ 不能用 EventSource（2026-11-15）：它发不了自定义头，打包版授权门禁
+ *   （YZ_LICENSE_GUARD=1）下 `GET /workflow/runs/:id/stream` 裸连 403，
+ *   运行页事件流**静默全断**。与 cicd.ts 同口径改 fetch + consumeSseStream（头能力一致）。
  */
 function subscribeRun(runId: string, since: number, onEvent: (e: WorkflowRunEvent) => void): () => void {
-  const es = new EventSource(`${API_BASE}/workflow/runs/${runId}/stream?since=${since}`);
-  es.onmessage = (ev: MessageEvent) => {
-    let data: any = null;
-    try { data = JSON.parse(ev.data); } catch { return; }
-    // connected 只是握手（带当前 seq 与状态），不作为事件推进 UI
-    if (!data || data.type === 'connected') return;
-    onEvent(data as WorkflowRunEvent);
-  };
-  return () => es.close();
+  const ac = new AbortController();
+  void (async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/workflow/runs/${runId}/stream?since=${since}`, {
+        headers: buildRequestHeaders(),
+        signal: ac.signal,
+      });
+      if (!resp.ok || !resp.body) return;
+      await consumeSseStream(resp.body, (payload) => {
+        let data: any = null;
+        try { data = JSON.parse(payload); } catch { return; }
+        // connected 只是握手（带当前 seq 与状态），不作为事件推进 UI
+        if (!data || data.type === 'connected') return;
+        onEvent(data as WorkflowRunEvent);
+      });
+    } catch { /* 中止（组件卸载/重订）或网络失败：由调用方的重订逻辑收口 */ }
+  })();
+  return () => ac.abort();
 }
 
 const store = defineWorkflowStore();

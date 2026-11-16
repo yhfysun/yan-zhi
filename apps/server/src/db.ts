@@ -1468,6 +1468,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_switch_tab: 切换可见标签页；后台流只能按 tabId 读取，不能切走用户正在看的页面
 - browser_close_tab: 关闭自己打开的中间页；只收尾清理时用
 - browser_wait_for: 等待页面加载或等待指定文本出现；页面仍在加载时用它，不要连续 navigate 同一 URL
+- browser_run_loop: **连续重复类任务（刷关/翻页/签到/挂机/连续点击）必须用它** —— 一次调用把「读状态→条件分支→动作」跑完整段，不要逐轮手点（每轮一次模型调用又慢又脆，页面稍一变化就断）。参数形态：steps 是**数组**（不要传 JSON 字符串），循环步可用 if（script 返回真值走 then / 否则走 else）、script（页面 JS，可内联 querySelector 找 DOM 覆盖层按钮并 .click()）、click（x,y 坐标走真实鼠标事件，canvas 游戏用它）、key、wait；rounds 循环轮数；maxSteps 到限即停。刷关示例：每轮按顺序扫「玩法→挑战大厅→秘境挑战→挑战→下一关」，在哪个页面点哪个入口，进入后只剩「下一关」会被点，自动循环。
+- ★★ browser_navigate 导航警告：**游戏页/带登录态/入口 token 型页面严禁重复 navigate** —— 脱离入口 referrer 重载直接 404，并杀掉用户正开着的游戏（实测 wanyiwan 的 game1frame）。若「尚未绑定浏览器页面」，先 browser_get_tabs 确认目标页是否存在：存在就说明是钉页/归属问题，让用户在页面对话面板再发一条消息完成绑定，**绝不要 navigate 同地址**；普通文档页才允许 navigate。
 - browser_get_api_data: 接口直采——页面自然发生的 XHR/fetch JSON 响应按 URL 模式直取（urlPattern 传 "/api/..." 子串）。列表/搜索/分页取数首选它，比读 DOM 省 token 且拿到的是结构化数据；刚打开的新页先等加载或滚动触发请求后再取，取不到回退 browser_get_page_content
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位

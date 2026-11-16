@@ -1021,7 +1021,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, API_BASE, isElectron } from '../../api/client';
+import { api, API_BASE, buildRequestHeaders, isElectron } from '../../api/client';
 import ChatConsolePanel from '../../components/chat/ChatConsolePanel.vue';
 import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
@@ -1320,18 +1320,17 @@ async function abortSecChat() {
   secAbort?.abort();
   if (!secConvId.value) return;
   try {
-    const token = localStorage.getItem('auth_token') || '';
+    // ★ buildRequestHeaders：授权门禁（打包版恒开）下裸 Bearer 会被 403（abort 与 stream 同理）
     const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${secConvId.value}`);
     const taskId = ('data' in r && r.data?.[0]?.id) || null;
-    if (taskId) await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    if (taskId) await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: buildRequestHeaders() });
   } catch { /* 忽略 */ }
 }
 
 /** SSE 订阅（与运维控制台同协议；状态完全本地，不碰全局 chat store） */
 async function subscribeSecTask(taskId: string, ac: AbortController): Promise<void> {
-  const token = localStorage.getItem('auth_token') || '';
   const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=0`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: buildRequestHeaders(),
     signal: ac.signal,
   });
   if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');

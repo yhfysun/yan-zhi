@@ -27,9 +27,14 @@ describe('游戏窗 scope', () => {
     expect(GAME_BAR).toMatch(/ensureActiveTab\(wantScope\.value\)/);
   });
 
-  it('执行条的「交给智能体代玩」只在游戏窗出现', () => {
+  it('执行条的「交给智能体代玩」只在游戏窗出现，且**就地代玩**（绑定本窗页面对话会话）', () => {
     expect(GAME_BAR).toMatch(/v-if="isGame"[\s\S]{0,400}toggleHandoff/);
-    expect(GAME_BAR).toContain("api.handoff?.({ tabId: id })");
+    // ★ 2026-11-15 语义修正：移交目标 = 本 tab 的页面对话会话（显式传 convId），
+    //   不再回落"主窗最近会话"（旧实现主窗没选会话就死路，逼用户跑回聊天页）。
+    expect(GAME_BAR).toContain('api.handoff?.({ tabId: id, convId })');
+    expect(GAME_BAR).toContain('pageChat.ensureOwnConversation');
     expect(GAME_BAR).toContain("api.handoffRelease?.");
+    // 成功回执必须指向本窗「页面对话」，不能再说"回主窗口"
+    expect(GAME_BAR).not.toContain('回到主窗口');
   });
 });
