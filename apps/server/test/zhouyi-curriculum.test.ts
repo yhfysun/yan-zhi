@@ -68,13 +68,13 @@ function checkLesson(lesson: ZhouyiLesson, v: (cond: boolean, msg: string) => vo
   walk(lesson);
 }
 
-describe('周易课程目录（48 门全建）', () => {
-  it('8 条路径；48 门课 id 唯一；P0 14 门 ready 且每条路径至少 1 门可用', () => {
+describe('周易课程目录（53 门全建）', () => {
+  it('8 条路径；53 门课 id 唯一；19 门 ready 且每条路径至少 1 门可用', () => {
     expect(ZHOUYI_TRACKS).toHaveLength(8);
-    expect(ZHOUYI_COURSES).toHaveLength(48);
-    expect(new Set(ZHOUYI_COURSES.map((c) => c.id)).size).toBe(48);
+    expect(ZHOUYI_COURSES).toHaveLength(53);
+    expect(new Set(ZHOUYI_COURSES.map((c) => c.id)).size).toBe(53);
     const ready = ZHOUYI_COURSES.filter((c) => c.ready);
-    expect(ready.length).toBeGreaterThanOrEqual(14);
+    expect(ready.length).toBeGreaterThanOrEqual(19);
     for (const t of ZHOUYI_TRACKS) {
       expect(ready.some((c) => c.track === t.id), `${t.id} 无可用课`).toBe(true);
     }
@@ -96,7 +96,7 @@ describe('周易课程目录（48 门全建）', () => {
 
 describe('★ 行级 100%：注释与注解两个都得有', () => {
   it('每门课、每行原文都通过行级校验', () => {
-    expect(ZHOUYI_LESSONS.length).toBeGreaterThanOrEqual(14);
+    expect(ZHOUYI_LESSONS.length).toBeGreaterThanOrEqual(19);
     for (const lesson of ZHOUYI_LESSONS) {
       checkLesson(lesson, (cond, msg) => expect(cond, msg).toBe(true));
     }

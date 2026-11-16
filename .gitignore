@@ -55,6 +55,9 @@ apps/server/electron-*.mjs
 # Capacitor
 apps/mobile/ios/
 apps/mobile/android/
+# mobile 的 publicDir 是构建期从 apps/web/public/phonics-audio 同步来的产物（vite
+# 插件 yz-sync-phonics-audio 生成），不入库 —— 真相源在 apps/web/public/phonics-audio
+apps/mobile/public/
 *.apk
 *.ipa
 

@@ -1,14 +1,16 @@
 // 周易 · 主线课程汇总（独立学习学科，与英语/传统文化/音乐平级）。
-//   lessons-t0.ts —— T0 入门与读法（Z01-Z06，P0 全 ready）
-//   lessons-t1.ts —— T1 经传精读（Z07、Z10，P0 ready；Z08/Z09/Z11/Z12 P1）
-//   lessons-t2.ts —— T2 符号与象数语言（Z13、Z14、Z16 P0 ready；Z15/Z17/Z18 P1）
+//   lessons-t0.ts —— T0 入门与读法（Z01-Z06 全 ready；Z49 谦卦精读示范）
+//   lessons-t1.ts —— T1 经传精读（Z07-Z12 全部 ready）
+//   lessons-t2.ts —— T2 符号与象数语言（Z13-Z18 全部 ready；Z50 说卦传精读）
 //   lessons-t3.ts —— T3 易学史与注疏（Z19 P0 ready；Z20-Z24 P1）
-//   lessons-t4.ts —— T4 图书与易图学（Z25-Z30 全部 P1）
+//   lessons-t4.ts —— T4 图书与易图学（Z25-Z30 全部 ready；Z51 太极图说精读）
 //   lessons-t5.ts —— T5 术数·易占（Z31 P0 ready；Z32-Z36 P1）
-//   lessons-t6.ts —— T6 术数·风水命理择日（Z37 P0 ready；Z38-Z42 P1）
-//   lessons-t7.ts —— T7 外缘与研究方法（Z43-Z48 全部 P1）
+//   lessons-t6.ts —— T6 术数·风水命理择日（Z37-Z42 全部 ready；Z52 葬书内篇精读）
+//   lessons-t7.ts —— T7 外缘与研究方法（Z43-Z48 全部 ready；Z53 参同契节选精读）
 // ★ 注释（Annotation 训诂）与注解（Interpretation 历代注家）分层见 types.ts；
-//   全部人工预写，interpretations 只收确切注语原文，记不准一律 paraphrase=true 标「大意转述」。
+//   Z01-Z48 人工预写，interpretations 只收确切注语原文，记不准一律 paraphrase=true 标「大意转述」。
+//   2026-11-16 用户拍板允许 AI 起草补课（Z49-Z53）：释义一律 paraphrase=true 标「大意转述」待人工校对；
+//   逐字引文仅限确切记得的古注/传文原文，记不准绝不冒充逐字引文，一律走「今按」。
 import type { ZhouyiBookEntry, ZhouyiCourseMeta, ZhouyiLesson, ZhouyiTerm, ZhouyiTrack } from './types.js';
 import { T0_LESSONS } from './lessons-t0.js';
 import { T1_LESSONS } from './lessons-t1.js';
@@ -30,7 +32,7 @@ export const ZHOUYI_TRACKS: ReadonlyArray<{ id: ZhouyiTrack; name: string; desc:
   { id: 'T7', name: '外缘与研究方法', desc: '出土文献、跨学科影响与引用规范' },
 ] as const;
 
-// 48 门全部注册（P0 14 门 ready:true，其余 ready:false 建设中）。
+// 53 门全部注册（19 门 ready:true，其余 ready:false 建设中）。
 export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   // T0 入门与读法
   { id: 'zy_z01', track: 'T0', name: '易学是什么：经、传、易学与术数的边界', goal: '分清经、传两层与「易学/术数」两个层面的边界', minutes: 8, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z01' },
@@ -39,6 +41,7 @@ export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   { id: 'zy_z04', track: 'T0', name: '底本与版本：读哪一本书', goal: '为后续精读选好底本与关键参考书', minutes: 10, kind: 'lecture', ready: true, branch: '研究方法', code: 'Z04' },
   { id: 'zy_z05', track: 'T0', name: '怎样读一层原文：五层阅读法', goal: '掌握本课程精读「五层阅读法」的用法', minutes: 10, kind: 'lecture', ready: true, branch: '研究方法', code: 'Z05' },
   { id: 'zy_z06', track: 'T0', name: '术语总表：象数理占', goal: '用象数理占四要素统摄全部术语', minutes: 8, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z06' },
+  { id: 'zy_z49', track: 'T0', name: '谦卦精读示范：五层阅读法入门', goal: '以谦卦为样本走通五层阅读法，学会分层读原文', minutes: 12, kind: 'read', ready: true, branch: '经部易类', code: 'Z49' },
   // T1 经传精读
   { id: 'zy_z07', track: 'T1', name: '乾卦精读：卦辞、六爻、用九', goal: '逐句精读乾卦经文，配合象传文言分层理解', minutes: 18, kind: 'read', ready: true, branch: '经部易类', code: 'Z07' },
   { id: 'zy_z08', track: 'T1', name: '坤卦精读与乾坤《文言》', goal: '精读坤卦经文与乾坤二卦文言', minutes: 18, kind: 'read', ready: true, branch: '经部易类', code: 'Z08' },
@@ -53,6 +56,7 @@ export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   { id: 'zy_z16', track: 'T2', name: '五行：生克制化与方位时序', goal: '掌握五行生克制化及其方位时序干支配属', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z16' },
   { id: 'zy_z17', track: 'T2', name: '天干地支与六十甲子', goal: '掌握干支系统与六十甲子的排法', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z17' },
   { id: 'zy_z18', track: 'T2', name: '筮法：大衍之数与《左传》筮例', goal: '了解大衍筮法流程与左传古筮例', minutes: 12, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z18' },
+  { id: 'zy_z50', track: 'T2', name: '《说卦传》第一至三章精读：立卦生爻', goal: '精读说卦前三章，掌握生蓍立卦生爻的符号演卦原理', minutes: 12, kind: 'read', ready: true, branch: '经部易类', code: 'Z50' },
   // T3 易学史与注疏
   { id: 'zy_z19', track: 'T3', name: '两派六宗：《四库总目·易类小序》精读', goal: '精读易类小序，掌握两派六宗的易学史框架', minutes: 15, kind: 'read', ready: true, branch: '经部易类', code: 'Z19' },
   { id: 'zy_z20', track: 'T3', name: '汉易：卦气、纳甲八宫、焦林', goal: '梳理汉代象数易的卦气纳甲诸说', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z20' },
@@ -67,6 +71,7 @@ export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   { id: 'zy_z28', track: 'T4', name: '卦气、爻辰、纳甲、十二消息卦', goal: '掌握四类汉代易图配伍体系', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z28' },
   { id: 'zy_z29', track: 'T4', name: '易图学的独立性与清代辨伪', goal: '了解易图学的独立发展与清代考辨', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z29' },
   { id: 'zy_z30', track: 'T4', name: '历代易图总览与识图法', goal: '建立历代易图总览与基本识图能力', minutes: 10, kind: 'lecture', ready: true, branch: '经部易类', code: 'Z30' },
+  { id: 'zy_z51', track: 'T4', name: '《太极图说》精读：无极而太极', goal: '精读太极图说全文，掌握其易学骨架并知朱陆无极之争', minutes: 12, kind: 'read', ready: true, branch: '经部易类', code: 'Z51' },
   // T5 术数·易占
   { id: 'zy_z31', track: 'T5', name: '梅花易数（一）：源流与托名辨', goal: '掌握梅花易数的文献面貌与托名问题', minutes: 15, kind: 'read', ready: true, branch: '子部术数类', code: 'Z31' },
   { id: 'zy_z32', track: 'T5', name: '梅花易数（二）：起卦诸法', goal: '按古籍口径梳理梅花诸起卦法', minutes: 12, kind: 'lecture', ready: true, branch: '子部术数类', code: 'Z32' },
@@ -81,6 +86,7 @@ export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   { id: 'zy_z40', track: 'T6', name: '理气派（二）：八宅、玄空飞星', goal: '掌握八宅与玄空飞星的规则框架', minutes: 10, kind: 'lecture', ready: true, branch: '子部术数类', code: 'Z40' },
   { id: 'zy_z41', track: 'T6', name: '阳宅与营造：《宅经》与都城规划', goal: '梳理宅经文献与古代都城规划中的方位观念', minutes: 10, kind: 'lecture', ready: true, branch: '子部术数类', code: 'Z41' },
   { id: 'zy_z42', track: 'T6', name: '命理、相法与择日', goal: '概览命理相法择日三类文献的谱系', minutes: 10, kind: 'lecture', ready: true, branch: '子部术数类', code: 'Z42' },
+  { id: 'zy_z52', track: 'T6', name: '《葬书》内篇节选精读：乘生气与风水之名', goal: '精读葬书内篇核心段落，辨其托名与「风水」得名之所本', minutes: 12, kind: 'read', ready: true, branch: '子部术数类', code: 'Z52' },
   // T7 外缘与研究方法
   { id: 'zy_z43', track: 'T7', name: '易与中医：五运六气、子午流注', goal: '了解易学与中医运气学说的文献关联', minutes: 10, kind: 'lecture', ready: true, branch: '易学外缘', code: 'Z43' },
   { id: 'zy_z44', track: 'T7', name: '易与丹道、天文历法、乐律、兵法', goal: '梳理易在丹道天文乐律兵法中的援引史', minutes: 10, kind: 'lecture', ready: true, branch: '易学外缘', code: 'Z44' },
@@ -88,6 +94,7 @@ export const ZHOUYI_COURSES: ZhouyiCourseMeta[] = [
   { id: 'zy_z46', track: 'T7', name: '易与文学、建筑与东亚传播', goal: '梳理易在文学建筑与东亚的传播史', minutes: 10, kind: 'lecture', ready: true, branch: '易学外缘', code: 'Z46' },
   { id: 'zy_z47', track: 'T7', name: '出土易文献：帛书、上博简、王家台秦简', goal: '概览出土易文献的版本价值', minutes: 10, kind: 'lecture', ready: true, branch: '研究方法', code: 'Z47' },
   { id: 'zy_z48', track: 'T7', name: '研究方法与引用规范', goal: '掌握易学研究的基本方法与引用规范', minutes: 10, kind: 'lecture', ready: true, branch: '研究方法', code: 'Z48' },
+  { id: 'zy_z53', track: 'T7', name: '《周易参同契》节选精读：乾坤门户与丹道', goal: '精读参同契开篇章句，了解丹道援易的符号语言与外缘谱系', minutes: 12, kind: 'read', ready: true, branch: '易学外缘', code: 'Z53' },
 ];
 
 export const ZHOUYI_LESSONS: ZhouyiLesson[] = [

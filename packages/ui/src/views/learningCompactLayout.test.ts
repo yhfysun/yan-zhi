@@ -10,7 +10,7 @@
  * （本仓 learning 系既有做法）。
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const SRC = readFileSync(resolve(__dirname, 'Learning.vue'), 'utf8');
@@ -134,13 +134,18 @@ describe('Learning · 移动端紧凑布局契约', () => {
     expect(epw).not.toMatch(/lessonsExpanded|LESSON_PREVIEW_COUNT|visibleSteps/);
   });
 
-  it('★★ P0-2 五处原生 select 全部替换为 LearningSelect，44px 触摸目标且不引入 fixed/:has()', () => {
+  it('★★ P0-2 五处原生 select 全部替换为 LearningSelect，44px 触摸目标；窄屏 bottom sheet + 不引入 :has()', () => {
     const read2 = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
     const learningSelect = read2('../components/learning/LearningSelect.vue');
     expect(learningSelect).toContain('role="combobox"');
     expect(learningSelect).toContain('role="listbox"');
     expect(learningSelect).toContain('min-height: 44px;');
-    expect(learningSelect).not.toMatch(/position:\s*fixed/);
+    // v1.1.2（用户拍板「点击要翻到最后才能看到？弹窗也行」）：窄屏菜单 Teleport 到
+    // body 变 bottom sheet —— **先 Teleport 再 fixed** 才安全（脱离 .main-content
+    // 层叠上下文/祖先 transform，同沉浸台口径，z-index 3000 盖过 TabBar）；桌面
+    // Teleport disabled 保持原位下拉。:has() 仍禁（老 WebView 不认会整条丢弃）。
+    expect(learningSelect).toContain('<Teleport to="body" :disabled="!isNarrowViewport">');
+    expect(learningSelect).toMatch(/position: fixed;\s*inset: 0;/);
     expect(learningSelect).not.toContain(':has(');
 
     const epw = read2('../components/learning/EnglishPathWorkbench.vue');
@@ -166,6 +171,18 @@ describe('Learning · 移动端紧凑布局契约', () => {
     expect(zy).toMatch(/\.zy-track-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
     expect(mw).toMatch(/\.mw-stage-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
     expect(cul).toMatch(/\.cul-stage-select \{[\s\S]{0,80}position: sticky; top: 64px;/);
+  });
+
+  it('★★ 移动端必须随包 phonics-audio（点音标/慢速拼读出真人本音，缺了会回退 TTS 读例词）', () => {
+    // 2026-11-16 真机实锤：mobile vite 没同步 web public 的 phonics-audio ⇒ APK 内
+    // 全部 404 ⇒ 点 /æ/ 播出「tap」（回退 TTS 读例词）、慢速拼读无声。真相源在
+    // apps/web/public/phonics-audio，mobile 构建期由 yz-sync-phonics-audio 插件同步。
+    const repoRoot = resolve(__dirname, '../../../..');
+    const viteCfg = readFileSync(resolve(repoRoot, 'apps/mobile/vite.config.ts'), 'utf8');
+    expect(viteCfg).toContain('yz-sync-phonics-audio');
+    const audioDir = resolve(repoRoot, 'apps/web/public/phonics-audio');
+    expect(existsSync(resolve(audioDir, 'sound_æ.mp3'))).toBe(true);
+    expect(existsSync(resolve(audioDir, 'lesson/letter-name-vs-sound/tap.mp3'))).toBe(true);
   });
 
   it('★ P0-3 同一导航信息一屏只出现一处：周易移动端删左栏卡，软考 exam 卡仅桌面渲染', () => {

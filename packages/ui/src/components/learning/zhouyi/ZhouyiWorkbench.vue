@@ -127,6 +127,9 @@ function coursesOf(trackId: string): ZhouyiCourse[] {
   return courses.value.filter((c) => c.track === trackId
     && (kindFilter.value === 'all' || c.kind === kindFilter.value));
 }
+/** 课型筛选下当前路径无课时时的空态提示（用户实报「T0 原文精读都是空的」：
+ *  课程表里 T0 六门全是 lecture，read 自 T1 起——必须显性说明，不能静默空白）。 */
+const kindLabel = computed(() => FILTERS.find((f) => f.key === kindFilter.value)?.label ?? '');
 function courseCountOf(trackId: string): number {
   return courses.value.filter((c) => c.track === trackId).length;
 }
@@ -541,6 +544,9 @@ onBeforeUnmount(() => {
             <small>{{ c.minutes }} 分钟 · {{ c.kind === 'read' ? '原文精读' : '概念讲义' }}</small>
           </button>
         </div>
+        <p v-if="!coursesOf(zyStripTrack).length" class="zy-empty-hint">
+          本路径暂无「{{ kindLabel }}」课时：各阶段开设的课型不同（如 T0 只有概念讲义，原文精读自 T1 起）。可切回「全部」或换条路径。
+        </p>
         <p class="zy-disclaimer">{{ disclaimerText }}</p>
       </template>
       <template v-else>
@@ -573,6 +579,9 @@ onBeforeUnmount(() => {
             <p>{{ c.goal }}</p>
             <small>{{ c.minutes }} 分钟 · {{ c.kind === 'read' ? '原文精读' : '概念讲义' }}</small>
           </button>
+          <p v-if="!coursesOf(t.id).length" class="zy-empty-hint">
+            本路径暂无「{{ kindLabel }}」课时：各阶段开设的课型不同（如 T0 只有概念讲义，原文精读自 T1 起）。可切回「全部」或换条路径。
+          </p>
         </div>
       </article>
       <p class="zy-disclaimer">{{ disclaimerText }}</p>
@@ -1199,4 +1208,15 @@ onBeforeUnmount(() => {
 .zy-canon-work p { margin: 0 0 6px; font-size: 14px; line-height: 1.8; font-family: 'Songti SC', 'Noto Serif SC', serif; }
 .zy-canon-work p small { color: var(--zy-muted, #8a8578); margin-left: 6px; }
 .zy-disclaimer { padding: 10px 18px 16px; font-size: 12px; color: var(--zy-muted, #8a8578); }
+/* 课型筛选空态：显性说明 + 引导，禁止静默空白（T0 无 read 课是课程表设计使然） */
+.zy-empty-hint {
+  margin: 6px 0 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--zy-border, #d8d3c8);
+  border-radius: 10px;
+  background: var(--zy-paper-soft, #faf7f0);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--zy-muted, #8a8578);
+}
 </style>

@@ -140,6 +140,22 @@ public class TtsPlugin extends Plugin {
 
     /** 懒初始化引擎；call 非空时在其 onInit 后继续提交，否则只预热。 */
     private void ensureEngine(final PendingSpeak pending) {
+        // ★★ initFailed 闸必须排在 tts != null 之前：部分 ROM（一加/ColorOS 实锤）
+        //   在无任何 TTS 引擎时，TextToSpeech 构造函数内**同步**回调 onInit(ERROR) ——
+        //   此刻 `tts = new TextToSpeech(...)` 的赋值尚未执行，失败分支的 `tts = null`
+        //   置了个寂寞，构造返回后字段被「复活」成非空但永不就绪的死引擎 ⇒ 后续 speak
+        //   全部走进排队分支且永不冲掉（2026-11-16 真机实锤「还是没声音」的根因）。
+        //   initFailed 优先 ⇒ 必 fail-fast 转内置引擎。
+        if (initFailed) {
+            TextToSpeech dead = tts;
+            tts = null;
+            if (dead != null) {
+                try { dead.shutdown(); } catch (Exception e) { /* ignore */ }
+            }
+            Log.w(TAG, "引擎此前已初始化失败，直接 fail-fast → 内置引擎兜底");
+            if (pending != null) fallbackToBundled(pending, "TTS_INIT_FAILED(此前已失败)");
+            return;
+        }
         if (tts != null) {
             if (engineReady) {
                 if (pending != null) submitSpeak(pending);
@@ -148,11 +164,6 @@ public class TtsPlugin extends Plugin {
                 if (initPending == null) initPending = pending;
                 Log.i(TAG, "init 进行中，请求排队: lang=" + pending.lang);
             }
-            return;
-        }
-        if (initFailed) {
-            Log.w(TAG, "引擎此前已初始化失败，直接 fail-fast → 内置引擎兜底");
-            if (pending != null) fallbackToBundled(pending, "TTS_INIT_FAILED(此前已失败)");
             return;
         }
         final Context ctx = getContext();

@@ -104,6 +104,31 @@ plugins: {
 
 ## 排障
 
+### 0. 装机/传包注意事项（2026-11-16 闪退实锤复盘）
+
+**症状**：APK 装到手机启动即闪退，logcat crash 缓冲报
+`UnsatisfiedLinkError: dlopen failed: library "libnode.so" not found`
+（Capacitor 注册 Nodejs 插件时崩，走不到 WebView）。**不是后端问题**——
+是装的 APK 里根本没打进 nodejs-mobile 原生库。
+
+**根因**：手机上装的不是本仓库构建链的产物。微信群里流转的那份 155.3MB
+精简包（`app-debug.apk.1`，微信自动改名）来自旧目录/旧 checkout 的构建，
+缺 `libnode.so`；而本仓库正常产物含全 ABI 原生库。
+
+**规则（防复发）**：
+- 装机**只认本仓库** `pnpm --filter @yan-zhi/mobile build:android`（普通包
+  ~368MB，三 ABI）或 `build:android:slim`（精简包 ~155MB，仅 arm64-v8a）
+  的产物（`copy-apk.cjs` 会复制到 `dist-release/android/<版本>/`）。
+  装前可用 zip 工具抽查 APK 内 `lib/arm64-v8a/libnode.so` 是否存在。
+- **微信传 APK 会被改名 `xxx.apk.1` 且可能被压缩/拦截**：接收后必须重命名
+  回 `.apk` 才能安装；跨机传包建议走网盘/局域网，不走微信。
+- 装机前先卸载旧包（`adb uninstall com.yanzhi.mobile`）或
+  `adb install -r`；验证启动用
+  `adb shell am start -W -n com.yanzhi.mobile/.MainActivity` + crash 缓冲
+  `adb shell logcat -d -b crash`。
+- 真机排障三板斧见 `.trae/skills/mobile-design`（后端日志落盘 / CDP 直连 /
+  截屏）；TTS 无声先抓 `logcat | grep YZTTS`。
+
 ### 1. CMake "object file directory has 243 characters" / "build.ninja still dirty"
 
 **症状**：`ninja: error: manifest 'build.ninja' still dirty after 100 tries`，CMake 警告对象路径超 250 字符上限（Windows 上的 `CMAKE_OBJECT_PATH_MAX`）。

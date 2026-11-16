@@ -144,9 +144,15 @@ final class SherpaTts {
         }
     }
 
-    /** AudioTrack PCM 播放（float → 16bit PCM byte[]，兼容所有 compileSdk），写完/打断返回。 */
+    /** AudioTrack PCM 播放（float → 16bit PCM byte[]，兼容所有 compileSdk），写完/打断返回。
+     *  ★ MODE_STREAM 流式写入（2026-11-16 真机实锤 BUNDLED_PLAY_FAILED）：MODE_STATIC
+     *    要一次性把 ~64k samples 的缓冲写进静态缓冲区再 play，部分 ROM（一加/ColorOS）
+     *    在大 buffer 下 write/初始化直接失败；MODE_STREAM 边写边播是全 ROM 稳路径。 */
     private static boolean play(float[] samples, int sampleRate) {
-        if (sampleRate <= 0) return false;
+        if (sampleRate <= 0) {
+            Log.w(TAG, "AudioTrack 播放失败: sampleRate 非法 " + sampleRate);
+            return false;
+        }
         // float [-1,1] → 16bit PCM 小端
         byte[] pcm = new byte[samples.length * 2];
         for (int i = 0; i < samples.length; i++) {
@@ -157,8 +163,11 @@ final class SherpaTts {
         }
         int minBuf = AudioTrack.getMinBufferSize(sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        if (minBuf <= 0) return false;
-        track = new AudioTrack.Builder()
+        if (minBuf <= 0) {
+            Log.w(TAG, "AudioTrack 播放失败: getMinBufferSize=" + minBuf);
+            return false;
+        }
+        AudioTrack track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -168,19 +177,37 @@ final class SherpaTts {
                         .setSampleRate(sampleRate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build())
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(Math.max(minBuf, pcm.length))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(Math.max(minBuf, 16384))
                 .build();
         if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+            Log.w(TAG, "AudioTrack 播放失败: 初始化未完成 state=" + track.getState());
             try { track.release(); } catch (Exception e) { /* ignore */ }
-            track = null;
             return false;
         }
-        int written = track.write(pcm, 0, pcm.length);
-        if (written <= 0) return false;
-        track.play();
-        if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) return false;
-        // MODE_STATIC 静音期轮询：播完 / 被打断
+        try {
+            track.play();
+        } catch (IllegalStateException e) {
+            Log.w(TAG, "AudioTrack 播放失败: play() " + e);
+            try { track.release(); } catch (Exception e2) { /* ignore */ }
+            return false;
+        }
+        // 流式写入：write 可能阻塞，分块跑以便 playAbort 及时打断
+        final int chunk = 16384;
+        int written = 0;
+        while (written < pcm.length) {
+            if (playAbort.get()) {
+                Log.i(TAG, "AudioTrack 播放被 stop 打断（写入中途）");
+                return false;
+            }
+            int n = track.write(pcm, written, Math.min(chunk, pcm.length - written));
+            if (n <= 0) {
+                Log.w(TAG, "AudioTrack 播放失败: write 返回 " + n + " @ " + written);
+                return false;
+            }
+            written += n;
+        }
+        // 排空：等播完（总时长 + 500ms 余量）或被打断
         long total = (long) (samples.length * 1000L / sampleRate);
         long waited = 0;
         try {
@@ -188,7 +215,6 @@ final class SherpaTts {
                 if (playAbort.get()) return false;
                 Thread.sleep(80);
                 waited += 80;
-                if (track.getPlayState() == AudioTrack.PLAYSTATE_PAUSED) break;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -196,7 +222,6 @@ final class SherpaTts {
         } finally {
             try { track.stop(); } catch (Exception e) { /* ignore */ }
             try { track.release(); } catch (Exception e) { /* ignore */ }
-            track = null;
         }
         return true;
     }

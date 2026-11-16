@@ -1,5 +1,5 @@
-// T0 入门与读法 · 讲义课（Z01-Z06，P0 全部 ready）。
-// ★ 全部人工预写；interpretations 只收确切记得的注语原文，记不准一律 paraphrase=true 标「大意转述」。
+// T0 入门与读法 · 讲义课（Z01-Z06，P0 全部 ready）+ 精读示范课（Z49 谦卦五层试读）。
+// ★ Z01-Z06 人工预写；Z49 为 2026-11-16 用户拍板允许 AI 起草的补课内容，释义一律 paraphrase=true 标「大意转述」待人工校对，逐字引文仅限确切记得的传文/古注原文。
 import type { ZhouyiLesson } from './types.js';
 
 export const T0_LESSONS: ZhouyiLesson[] = [
@@ -519,6 +519,106 @@ export const T0_LESSONS: ZhouyiLesson[] = [
     },
     sources: [
       { work: '周易·系辞上', dynasty: '先秦至汉', edition: '通行十三经注疏本', license: '公版' },
+    ],
+  },
+  {
+    id: 'zy_z49',
+    kind: 'read',
+    track: 'T0',
+    branch: '经部易类',
+    title: '谦卦精读示范：五层阅读法入门',
+    goal: '以谦卦卦辞、大象、初六为样本走通五层阅读法，学会分层读原文',
+    minutes: 12,
+    ready: true,
+    source: '《周易·谦》：卦辞、大象、初六、九三爻辞及彖象传节选，通行本（十三经注疏本）',
+    plainSummary: [
+      '谦卦艮下坤上、唯一阳爻居九三，旧说是六十四卦中唯一六爻全无凶咎断语的卦。',
+      '本课以卦辞、大象、初六三段为样本，示范注释、白话、注解、脉络、自检五层的走法。',
+      '读时先分清经文与传文两层，再看历代注解；标注「大意转述」者非古人原话。',
+    ],
+    lines: [
+      {
+        id: 'q49_1',
+        text: '谦：亨，君子有终。',
+        plain: '谦卦卦辞：谦下则亨通，君子能保持到底。',
+        annotations: [
+          { term: '谦', gloss: '卦名：有而不居、退让不夸之德', type: '释词' },
+          { term: '有终', gloss: '善始善终、保持到最后', type: '释词' },
+        ],
+        interpretations: [
+          { kind: '传', school: '《谦·彖传》', dynasty: '先秦至汉', text: '天道亏盈而益谦，地道变盈而流谦，鬼神害盈而福谦，人道恶盈而好谦。', paraphrase: false, plain: '彖传以天道、地道、鬼神、人道四途并举：满盈者受亏损，谦下者受增益，天地人鬼都站在谦的一边。' },
+          { kind: '今按', school: '本教程编者按', dynasty: '今', text: '旧说谦卦六爻皆吉而无凶咎断语，为六十四卦中独有；本课选它作五层阅读法的入门样本，即取其义理平易、经传层次分明。', paraphrase: true, plain: '大意：谦是唯一六爻全吉的卦，义理好懂，适合当精读第一课。' },
+        ],
+        blocks: [
+          { kind: 'hexagram', lines: [0, 0, 1, 0, 0, 0], caption: '谦：艮下坤上，唯一阳爻居九三' },
+        ],
+      },
+      {
+        id: 'q49_2',
+        text: '《象》曰：地中有山，谦；君子以裒多益寡，称物平施。',
+        plain: '大象传：山在地之下，就是谦卦的象；君子效法它，取多者以补寡者，称量多少而公平施予。',
+        annotations: [
+          { term: '地中有山', gloss: '大象取象：艮山居坤地之下，高者自处卑位', type: '比喻' },
+          { term: '裒', pinyin: 'póu', gloss: '取、减损；裒多益寡谓取于多者以增益寡者', type: '释词' },
+          { term: '称物平施', gloss: '称量物之多少而公平施予', type: '释词' },
+        ],
+        interpretations: [
+          { kind: '古注·大意', school: '孔颖达《周易正义》', dynasty: '唐', text: '孔疏谓裒取其多者而增益其寡者，称物之宜而平其施，取谦之象以明均平之义。', paraphrase: true, plain: '大意：孔颖达说，减多的补少的，按实际情况公平分配，就是谦的道理。' },
+          { kind: '今按', school: '本教程编者按', dynasty: '今', text: '大象句式两截：先述卦象（地中有山），再以「君子以」垂教（裒多益寡），正是 T0 第五课所讲大象体例的标准样本。', paraphrase: true, plain: '大意：先画象、再讲人该怎么做，这就是大象传的标准两截式。' },
+        ],
+      },
+      {
+        id: 'q49_3',
+        text: '初六：谦谦君子，用涉大川，吉。',
+        plain: '初六：谦而又谦的君子，可以借此渡过大河险难，吉利。',
+        annotations: [
+          { term: '谦谦', gloss: '谦而又谦，叠用以致其谦之极', type: '释词' },
+          { term: '用涉大川', gloss: '用此谦德以涉险难；涉大川为经文习用的涉险之喻', type: '比喻' },
+        ],
+        interpretations: [
+          { kind: '今按', school: '本教程编者按', dynasty: '今', text: '初六处谦卦最下、柔爻居柔位，谦之又谦；以柔德而能济险，是全卦「以卑致亨」的第一步。', paraphrase: true, plain: '大意：初六最谦，靠谦德也能闯大关，所以说吉。' },
+        ],
+      },
+      {
+        id: 'q49_4',
+        text: '《象》曰：谦谦君子，卑以自牧也。',
+        plain: '小象传：谦而又谦的君子，是以卑下自养、自我修治。',
+        annotations: [
+          { term: '自牧', gloss: '自我修养、自牧其德；牧，养也', type: '释词' },
+        ],
+        interpretations: [
+          { kind: '今按', school: '本教程编者按', dynasty: '今', text: '小象逐爻释辞：此句即初六爻辞的解释层。爻辞是经、小象是传，合编本把两者排在同一卦下，读时须分层——这正是五层阅读法的日常操练。', paraphrase: true, plain: '大意：爻辞是经，小象是解释；两句放一起读，正好练习分清经和传。' },
+        ],
+      },
+      {
+        id: 'q49_5',
+        text: '九三：劳谦，君子有终，吉。',
+        plain: '九三：有功劳而不自居的谦，君子能保持到底，吉利。',
+        annotations: [
+          { term: '劳谦', gloss: '有大功而能谦下；九三为全卦唯一阳爻，一阳而众阴所归', type: '释词' },
+        ],
+        interpretations: [
+          { kind: '经内互证', school: '《系辞下》', dynasty: '先秦至汉', text: '劳而不伐，有功而不德，厚之至也。', paraphrase: false, plain: '《系辞下》正是拿谦卦九三说事：劳苦而不夸耀，有功而不自以为有德，是敦厚到了极点——经内互证，谦卦的分量由此可见。' },
+          { kind: '今按', school: '本教程编者按', dynasty: '今', text: '《系辞下》三陈九卦，谦居其一，称「谦，德之柄也」；九三劳谦为全卦主爻，卦辞「有终」于此落实。', paraphrase: true, plain: '大意：系辞把谦说成德行的把手，九三这根独阳就是谦卦的主角。' },
+        ],
+      },
+    ],
+    structure: [
+      { label: '卦辞总纲', hint: '谦亨，君子有终', lineIndex: 0 },
+      { label: '大象立象', hint: '地中有山，裒多益寡', lineIndex: 1 },
+      { label: '初六爻辞', hint: '谦谦君子，用涉大川', lineIndex: 2 },
+      { label: '小象释爻', hint: '卑以自牧，经传分层', lineIndex: 3 },
+      { label: '九三与系辞', hint: '劳谦有终，经内互证', lineIndex: 4 },
+    ],
+    steps: ['gloss', 'annotate', 'interpret', 'plain', 'structure', 'check'],
+    quickCheck: {
+      question: '谦卦大象以什么物象取象？',
+      options: ['地中有山', '山下出泉', '风行地上'],
+      answer: '地中有山',
+      explanation: '谦卦艮下坤上，山在地之下，故曰「地中有山」；山下出泉是蒙卦，风行地上是观卦。',
+    },
+    sources: [
+      { work: '周易·谦（经文及彖象）', author: '王弼、韩康伯注，孔颖达疏', dynasty: '魏晋·唐', edition: '通行十三经注疏本（维基文库、中国哲学书电子化计划有录）', license: '公版' },
     ],
   },
 ];

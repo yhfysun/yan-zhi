@@ -27,17 +27,28 @@ function hasJava21(home) {
   return !!match && Number(match[1]) >= 21;
 }
 
-/** JDK 21 是 Capacitor 8 的硬要求；优先环境变量，其次常见安装位置。 */
+/** JDK 21 是 Capacitor 8 的硬要求；优先环境变量，其次扫描常见安装根目录自动探测版本。 */
 function resolveJavaHome() {
   const candidates = [
     process.env.JAVA_HOME,
-    'C:/APP/Java/jdk-21',
-    'C:/Program Files/Java/jdk-21',
     process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Android', 'Android Studio', 'jbr') : '',
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Android Studio', 'jbr') : '',
   ];
+  // 扫描 Java 安装根目录下的子目录（不写死版本号目录名，如 jdk-21.0.12.1+1 也能命中）
+  const javaRoots = [
+    'C:/APP/Java',
+    'C:/Program Files/Java',
+    'C:/Program Files/Eclipse Adoptium',
+    'C:/Program Files/Microsoft',
+  ];
+  for (const root of javaRoots) {
+    if (!fs.existsSync(root)) continue;
+    for (const name of fs.readdirSync(root)) {
+      candidates.push(path.join(root, name));
+    }
+  }
   const found = candidates.find(hasJava21);
-  if (!found) throw new Error('未找到 JDK 21。请设置 JAVA_HOME 或安装 JDK 21 后重试。');
+  if (!found) throw new Error('未找到 JDK 21。请设置 JAVA_HOME 指向 JDK 21+ 后重试。');
   return found;
 }
 
