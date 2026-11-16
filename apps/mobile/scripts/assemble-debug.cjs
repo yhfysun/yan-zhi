@@ -15,7 +15,19 @@ const androidDir = path.join(__dirname, '..', 'android');
 const isWin = process.platform === 'win32';
 const gradlew = path.join(androidDir, isWin ? 'gradlew.bat' : 'gradlew');
 
-const result = spawnSync(gradlew, ['assembleDebug', '--console=plain'], {
+/**
+ * 透传的 Gradle property（-Pxxx）。
+ * ★ 目前只有 yanZhiAbiFilters —— 精简包用它裁掉 x86_64 的 libnode.so（省 55.6MB）。
+ *   普通构建不传 ⇒ 与此前行为逐字一致（保留模拟器 ABI）。
+ */
+const gradleProps = [];
+if (process.env.YZ_GRADLE_PROPS) {
+  for (const p of String(process.env.YZ_GRADLE_PROPS).split(/[;\s]+/).map((s) => s.trim()).filter(Boolean)) {
+    gradleProps.push(`-P${p}`);
+  }
+}
+
+const result = spawnSync(gradlew, ['assembleDebug', '--console=plain', ...gradleProps], {
   cwd: androidDir,
   stdio: 'inherit',
   shell: isWin,

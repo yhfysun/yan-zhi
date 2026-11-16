@@ -101,9 +101,30 @@ if (!okCore || !okShared) {
 // 缺目录（未跑过构建）只提示不拦：源码兜底注册仍在。
 {
   const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
+  const keepRaw = String(process.env.YZ_BUILD_PLUGIN_KEEP || '').trim();
   if (fs.existsSync(builtinSrc)) {
-    copyRecursive(builtinSrc, path.join(NODEJS_DIST, 'plugins', 'builtin'));
-    log('已复制 内置插件包 -> ' + path.relative(ROOT, path.join(NODEJS_DIST, 'plugins', 'builtin')));
+    const keep = keepRaw
+      ? new Set(keepRaw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))
+      : null;
+    const destDir = path.join(NODEJS_DIST, 'plugins', 'builtin');
+    if (!keep) {
+      copyRecursive(builtinSrc, destDir);
+      log('已复制 内置插件包（全量） -> ' + path.relative(ROOT, destDir));
+    } else {
+      // 精简包：只拷保留项，其余包目录**不进包**（省体积）
+      fs.mkdirSync(destDir, { recursive: true });
+      const excluded = [];
+      for (const name of fs.readdirSync(builtinSrc)) {
+        const src = path.join(builtinSrc, name);
+        if (!fs.statSync(src).isDirectory()) continue;
+        if (keep.has(name)) copyRecursive(src, path.join(destDir, name));
+        else excluded.push(name);
+      }
+      log(`已复制 内置插件包（精简） -> ${path.relative(ROOT, destDir)}：保留 ${[...keep].join(', ')}`);
+      log(`已裁掉（不进包）: ${excluded.join(', ') || '无'}`);
+      // 交给内嵌后端：未选插件**连源码兜底注册也跳过**（否则目录没了、插件却还在）
+      process.env.YZ_BUILD_PLUGINS_EXCLUDED = excluded.join(',');
+    }
   } else {
     log('提示: apps/server/plugins/builtin 不存在（未跑 build-plugins.mjs），内置插件走源码兜底注册');
   }
@@ -188,6 +209,43 @@ if (process.env.YZ_SKIP_MOBILE_NPM === '1' && fs.existsSync(path.join(NODEJS_DIR
   stripGz(path.join(NODEJS_DIR, 'node_modules'));
   log('已剥离依赖内 *.gz 预压缩文件 ' + gzRemoved + ' 个');
   log('依赖安装完成');
+}
+
+// ── 步骤 3.55：剔除 sql.js 的非必需产物（省 ~20MB，零行为影响）──
+// sql.js 实际只用 dist/sql-wasm.js + dist/sql-wasm.wasm（0.67MB，services/sqlite-driver.ts
+// 的 locateFile 只找这两个）。包里另外还躺着：
+//   sql-asm-debug.js 5.36MB + worker.sql-asm-debug.js 5.36MB（未压缩调试版）
+//   sql-asm.js 1.29MB + worker.sql-asm.js 1.29MB（asm 变体，WASM 路径不用）
+//   sql-wasm-debug.js/.wasm、sql-wasm-browser*（浏览器变体，Node 不用）
+//   sqljs-all.zip 4.21MB 等（分发用 zip）
+// 全是**静态冗余**（不是代码逻辑），删掉不影响任何运行路径 —— 移动端后端只 import('sql.js')
+// 且 Node 分支只解析 sql-wasm.js。
+{
+  const sqlDist = path.join(NODEJS_DIR, 'node_modules', 'sql.js', 'dist');
+  if (fs.existsSync(sqlDist)) {
+    // 保留清单：Node 运行时真正会加载的文件
+    const KEEP = new Set([
+      'sql-wasm.js', 'sql-wasm.wasm',
+      'sql-wasm-browser.js', 'sql-wasm-browser.wasm',
+      'worker-sql-wasm.js', 'worker.sql-wasm.js',
+      'package.json',
+    ]);
+    let removed = 0;
+    let freed = 0;
+    for (const name of fs.readdirSync(sqlDist)) {
+      if (KEEP.has(name)) continue;
+      const full = path.join(sqlDist, name);
+      if (!fs.statSync(full).isFile()) continue;
+      freed += fs.statSync(full).size;
+      fs.rmSync(full);
+      removed += 1;
+    }
+    if (removed) {
+      log(`已剔除 sql.js 非必需产物 ${removed} 个（省 ${(freed / 1024 / 1024).toFixed(1)} MB）：只保留 sql-wasm.js/.wasm`);
+    }
+  } else {
+    log('提示: 未找到 sql.js/dist（本次没装该依赖），跳过剔除');
+  }
 }
 
 // ── 步骤 3.6：裸包导入硬闸（防依赖漂移静默进包）──
@@ -320,6 +378,12 @@ const indexJs = [
   "process.env.MOBILE_MODE = '1';",
   "process.env.DISABLE_PLAYWRIGHT = '1';",
   "process.env.DISABLE_COMPUTER_USE = '1';",
+  // ★ 精简包（2026-11-16）：未选插件**连源码兜底注册也跳过**。
+  //   必须写进 index.js（设备上跑的是这个文件，构建机的 env 传不过去）——
+  //   否则目录裁掉了、插件却还在注册：包里「看起来有」、实际只有后端没界面。
+  ...(process.env.YZ_BUILD_PLUGINS_EXCLUDED
+    ? [`process.env.YZ_BUILD_PLUGINS_EXCLUDED = '${String(process.env.YZ_BUILD_PLUGINS_EXCLUDED).replace(/'/g, "\\'")}';`]
+    : []),
   '',
   "console.log('[mobile-server] 数据目录:', dataDir);",
   "console.log('[mobile-server] 监听: http://127.0.0.1:' + process.env.PORT);",
