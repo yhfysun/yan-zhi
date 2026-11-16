@@ -16,6 +16,8 @@ import {
   startSmsForward,
   stopSmsForward,
 } from './sms-forward';
+// 系统 TTS（Android 原生 TextToSpeech 插件）：注入 mobileAdapter.nativeTts
+import { nativeSpeak, nativeStopTts } from './tts';
 
 /**
  * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机内嵌后端。
@@ -164,5 +166,11 @@ export const mobileAdapter: PlatformAdapter = {
     setConfig: (cfg) => setSmsForwardConfig(cfg),
     start: () => startSmsForward(),
     stop: () => stopSmsForward(),
+  },
+  // 系统语音合成（Android 原生 TextToSpeech）：WebView speechSynthesis 在国产 ROM
+  // 上无声/只有中文，朗读统一走原生（详见 native/android-tts/TtsPlugin.java 头注）
+  nativeTts: {
+    speak: (text: string, lang: string) => nativeSpeak(text, lang),
+    stop: () => nativeStopTts(),
   },
 };

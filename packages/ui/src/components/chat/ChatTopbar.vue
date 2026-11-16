@@ -75,7 +75,10 @@
            对话页（ChatTopbar 自带会话抽屉入口）⇒ 手机上对话页没有模式切换入口 —— 补挂。 -->
       <MobileModeSwitch v-if="isMobile" />
 
-      <el-tooltip content="上下文栏" placement="bottom">
+      <!-- ★ 移动端隐藏（2026-11-15 用户实报顶栏图标重叠）：上下文栏/文件面板/右侧栏
+           视图都是桌面工作区形态的能力（右侧栏本身手机上没有），入口全保留只会在
+           窄顶栏挤成一团 —— 全部隐藏，移动端顶栏只留 模式切换 + 新建任务 + 头像。 -->
+      <el-tooltip v-if="!isMobile" content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
           <!-- 用 DataLine 而非 Grid：Grid 已被右侧面板空态的「数据浏览」占用，
                两者同屏会撞脸（2026-09-21 实测 2 处重复）。 -->
@@ -83,9 +86,9 @@
         </el-button>
       </el-tooltip>
 
-      <ChatFilePanel />
+      <ChatFilePanel v-if="!isMobile" />
 
-      <el-dropdown trigger="click">
+      <el-dropdown v-if="!isMobile" trigger="click">
         <el-button size="small" circle title="右侧栏视图" aria-label="右侧栏视图">
           <el-icon><Operation /></el-icon>
         </el-button>

@@ -41,6 +41,26 @@ function patchManifest() {
     changed = true;
   }
 
+  // 2b) 麦克风权限（2026-11-15 用户实报「麦克风打不开」）：口语陪练 getUserMedia
+  //     需要 RECORD_AUDIO（清单声明）+ 运行时申请（Capacitor BridgeWebChromeClient
+  //     的 onPermissionRequest 会自动弹系统授权框，见 @capacitor/android 8.5 源码）——
+  //     清单缺声明时 WebView 直接拒绝，连授权框都不弹。MODIFY_AUDIO_SETTINGS 同组。
+  if (!xml.includes('android.permission.RECORD_AUDIO')) {
+    const anchor = '<uses-permission android:name="android.permission.CAMERA" />';
+    if (xml.includes(anchor)) {
+      xml = xml.replace(
+        anchor,
+        `${anchor}\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />`,
+      );
+    } else {
+      xml = xml.replace(
+        '</manifest>',
+        '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n</manifest>',
+      );
+    }
+    changed = true;
+  }
+
   // 3) 相机硬件声明为可选（无摄像头设备仍可安装）
   if (!xml.includes('android.hardware.camera')) {
     xml = xml.replace(

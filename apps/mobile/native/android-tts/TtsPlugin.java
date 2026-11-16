@@ -1,0 +1,170 @@
+package com.yanzhi.mobile.tts;
+
+import android.content.Context;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * 系统语音合成插件（Android TextToSpeech）。
+ *
+ * ★ 为什么需要（2026-11-15 用户实报「手机上喇叭没用/语音不行」）：
+ *   Android WebView 的 speechSynthesis 依赖 WebView 实现 + ROM 语音包 —— 实测
+ *   国产 ROM 上要么 voices 为空、要么只有中文 voice，英语朗读静默无声。
+ *   系统级 TextToSpeech API 所有 ROM 都带（小爱/讯飞/Google TTS 均支持中英文），
+ *   由原生层调用最可靠。
+ *
+ * ★ 协议：
+ *   - speak({text, lang}) → { ok, reason? }；ok=true 时经 done 事件回传完成
+ *     （{ id, ok }），JS 侧据此 resolve 等待中的朗读 Promise（口语陪练的
+ *     「说完接着录音」依赖完成回调）；
+ *   - stop()：打断当前朗读（active call 一并 resolve(false)）；
+ *   - 引擎不带目标语言时 resolve({ok:false, reason:'LANG_NOT_SUPPORTED'})，
+ *     JS 侧回落 speechSynthesis 或提示。
+ *
+ * ★ 初始化：TextToSpeech 构造即异步 init —— 首个 speak 调用挂起，onInit 成功后
+ *   继续提交（避免「首次点击无声」）；init 失败 reject（TTS_INIT_FAILED）。
+ */
+@CapacitorPlugin(name = "YzTts")
+public class TtsPlugin extends Plugin {
+
+    private TextToSpeech tts;
+    private boolean engineReady = false;
+    private boolean initFailed = false;
+    private final AtomicInteger seq = new AtomicInteger(0);
+    /** utteranceId → 等待完成回调的 call（speak 提交后保存，done/error/stop 时释放） */
+    private final Map<String, PluginCall> active = new HashMap<>();
+
+    @Override
+    public void load() {
+        // 挂载即预热：用户首次点读时引擎通常已就绪（init 约 100-400ms）
+        ensureEngine(null);
+    }
+
+    /** 懒初始化引擎；call 非空时在其 onInit 后继续提交，否则只预热。 */
+    private void ensureEngine(final PendingSpeak pending) {
+        if (tts != null) {
+            if (engineReady) {
+                if (pending != null) submitSpeak(pending);
+            }
+            return;
+        }
+        if (initFailed) {
+            if (pending != null) pending.call.reject("TTS_INIT_FAILED", "系统语音引擎初始化失败（此前已失败）");
+            return;
+        }
+        final Context ctx = getContext();
+        tts = new TextToSpeech(ctx.getApplicationContext(), new TextToSpeech.InitListener() {
+            @Override
+            public void onInit(int status) {
+                if (status == TextToSpeech.SUCCESS) {
+                    engineReady = true;
+                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                        @Override
+                        public void onStart(String utteranceId) { /* 无需通知 */ }
+
+                        @Override
+                        public void onDone(String utteranceId) {
+                            finish(utteranceId, true);
+                        }
+
+                        @Override
+                        public void onError(String utteranceId) {
+                            finish(utteranceId, false);
+                        }
+                    });
+                    if (pending != null) submitSpeak(pending);
+                } else {
+                    initFailed = true;
+                    tts = null;
+                    if (pending != null) {
+                        pending.call.reject("TTS_INIT_FAILED", "系统语音引擎初始化失败（status=" + status + "）");
+                    }
+                }
+            }
+        });
+    }
+
+    private void finish(String utteranceId, boolean ok) {
+        PluginCall call = active.remove(utteranceId);
+        if (call == null) return; // 非 JS 提交的 utterance：忽略
+        JSObject out = new JSObject();
+        out.put("ok", ok);
+        if (!ok) out.put("reason", "系统语音合成失败或被中断");
+        call.resolve(out);
+    }
+
+    @PluginMethod
+    public void speak(final PluginCall call) {
+        final String text = call.getString("text", "");
+        final String lang = call.getString("lang", "en-US");
+        if (text == null || text.trim().isEmpty()) {
+            call.reject("EMPTY_TEXT", "朗读内容为空");
+            return;
+        }
+        ensureEngine(new PendingSpeak(call, text, lang));
+    }
+
+    /** 引擎就绪后真正提交合成。 */
+    private void submitSpeak(PendingSpeak pending) {
+        Locale locale;
+        try {
+            locale = Locale.forLanguageTag(pending.lang);
+        } catch (Exception e) {
+            locale = Locale.US;
+        }
+        int set = tts.setLanguage(locale);
+        if (set == TextToSpeech.LANG_MISSING_DATA || set == TextToSpeech.LANG_NOT_SUPPORTED) {
+            // 引擎不带目标语言：如实返回，JS 侧回落系统 speechSynthesis 或提示
+            JSObject out = new JSObject();
+            out.put("ok", false);
+            out.put("reason", "LANG_NOT_SUPPORTED");
+            out.put("lang", pending.lang);
+            pending.call.resolve(out);
+            return;
+        }
+        final String id = "yz-" + seq.incrementAndGet();
+        int r = tts.speak(pending.text, TextToSpeech.QUEUE_FLUSH, null, id);
+        if (r == TextToSpeech.SUCCESS) {
+            active.put(id, pending.call);
+        } else {
+            pending.call.reject("TTS_SUBMIT_FAILED", "朗读提交失败（code=" + r + "）");
+        }
+    }
+
+    @PluginMethod
+    public void stop(PluginCall call) {
+        if (tts != null) tts.stop();
+        for (PluginCall c : active.values()) {
+            JSObject out = new JSObject();
+            out.put("ok", false);
+            out.put("reason", "STOPPED");
+            c.resolve(out);
+        }
+        active.clear();
+        call.resolve();
+    }
+
+    /** 待提交的朗读请求（init 完成前的暂存）。 */
+    private static final class PendingSpeak {
+        final PluginCall call;
+        final String text;
+        final String lang;
+
+        PendingSpeak(PluginCall call, String text, String lang) {
+            this.call = call;
+            this.text = text;
+            this.lang = lang;
+        }
+    }
+}

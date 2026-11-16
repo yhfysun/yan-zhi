@@ -15,6 +15,7 @@ import { setMode, activeMode } from '../stores/mode';
 import LearnStage from '../components/learning/LearnStage.vue';
 import ExamTrainer from '../components/learning/ExamTrainer.vue';
 import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
+import { getPlatformAdapter } from '@yan-zhi/core';
 import SecurityPracticeStudio from '../components/learning/SecurityPracticeStudio.vue';
 import SubjectPicker from '../components/learning/SubjectPicker.vue';
 import LearningAvatarPicker from '../components/learning/LearningAvatarPicker.vue';
@@ -1692,16 +1693,34 @@ function speakLastCoachReply() {
 function speakCoachText(text: string) {
   const t = text.trim().slice(0, 600);
   if (!t) return;
+  const lang = /[\u3400-\u9fff]/.test(t) ? 'zh-CN' : 'en-US';
+  const finish = () => {
+    stageRef.value?.play('wave');
+    const finished = coachMsgs.value.some((m) => sceneResultsOf(m).some((r) => r.ok));
+    if (coachVoiceOn.value && practiceMicEnabled.value && !finished) scheduleCoachRecording();
+  };
+  // ★ 移动端优先系统 TTS 原生插件（2026-11-15 真机实报：WebView speechSynthesis
+  //   在国产 ROM 上无声/只有中文 voice，英语陪练静音）。能力由 PlatformAdapter
+  //   注入（nativeTts，Android 专属），resolve 于朗读完成，完成后再进「自动录音」链。
+  const nativeTts = (() => { try { return getPlatformAdapter().nativeTts; } catch { return undefined; } })();
+  if (nativeTts) {
+    stageRef.value?.play('pet');
+    void nativeTts.speak(t, lang).then((ok) => {
+      if (ok) { finish(); return; }
+      coachSpeakViaSynthesis(t, lang, finish);
+    });
+    return;
+  }
+  coachSpeakViaSynthesis(t, lang, finish);
+}
+
+/** WebView speechSynthesis 朗读（非 Android 壳 / 原生引擎不可用时的回落） */
+function coachSpeakViaSynthesis(t: string, lang: string, finish: () => void) {
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(t);
-    u.lang = /[\u3400-\u9fff]/.test(t) ? 'zh-CN' : 'en-US';
+    u.lang = lang;
     u.rate = 0.95;
-    const finish = () => {
-      stageRef.value?.play('wave');
-      const finished = coachMsgs.value.some((m) => sceneResultsOf(m).some((r) => r.ok));
-      if (coachVoiceOn.value && practiceMicEnabled.value && !finished) scheduleCoachRecording();
-    };
     u.onend = finish;
     u.onerror = finish;
     speechSynthesis.speak(u);
@@ -3384,7 +3403,10 @@ watch(softExamDate, (value) => {
      原 `:has(.learning-page)` 整条规则静默失效 ⇒ main-content overflow:hidden ⇒
      触摸滚动死、页面滑不动（相册正常 = 触摸硬件没问题）。类名由 Learning.vue
      挂载/卸载时加/摘，任何 WebView 都能命中。:has() 行保留供新引擎双保险。 */
-  :global(.main-content.has-learning),
+  /* ★ 选择器列表原子性（2026-11-15 Redmi 9 实锤）：`.a, .b:has(x) {}` 中老 WebView
+     不认识 :has() 会把**整条规则（含合法的 .a）一起丢弃** —— 必须拆成独立规则，
+     不能为了省一行把兼容写法和 :has() 合并。 */
+  :global(.main-content.has-learning) { overflow-y: auto; overscroll-behavior: contain; }
   :global(.main-content:has(.learning-page)) { overflow-y: auto; overscroll-behavior: contain; }
   .learning-page { padding: 12px; min-height: 0; height: auto; flex: none; }
   .lp-topbar { align-items: flex-start; flex-direction: column; gap: 5px; }

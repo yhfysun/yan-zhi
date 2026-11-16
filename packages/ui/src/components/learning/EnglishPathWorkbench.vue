@@ -21,6 +21,7 @@ import {
 import { api, withMediaAuthQuery } from '../../api/client';
 import { absoluteMediaSrc } from '../../composables/useMediaPreview';
 import { lessonBlendAudioSrc, phonicsAudioSrc } from '../../utils/phonics-audio';
+import { getPlatformAdapter } from '@yan-zhi/core';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 
@@ -1038,6 +1039,20 @@ async function speak(text: string, activeKey = '') {
   voiceRuntimeError.value = '';
   speakingKey.value = activeKey;
   ttsLoadingKey.value = activeKey;
+  // ★ 移动端优先系统 TTS 原生插件（2026-11-15 真机实报）：sherpa 引擎无 Android
+  //   分发（npm 无 sherpa-onnx-android-arm64）⇒ 后端合成必败；WebView
+  //   speechSynthesis 在国产 ROM 上无声/只有中文。原生 TextToSpeech 所有 ROM
+  //   自带且支持英文 —— 命中即朗读并返回；不可用（false）继续既有链路。
+  const nativeTts = (() => { try { return getPlatformAdapter().nativeTts; } catch { return undefined; } })();
+  if (nativeTts) {
+    const ok = await nativeTts.speak(spokenText, 'en-US');
+    if (sequence !== speechSequence) return;
+    if (ok) {
+      ttsLoadingKey.value = '';
+      speakingKey.value = '';
+      return;
+    }
+  }
   try {
     // 缓存 key 必须带语速档位：同一文本不同档位是不同音频，不区分会串档
     const cacheKey = `${ttsSpeed.value}|${spokenText}`;

@@ -107,6 +107,18 @@ export interface PlatformAdapter {
    * UI（packages/ui）据此渲染「短信验证码转发」开关，而不必依赖 @capacitor/*（ui 未依赖该包）。
    */
   smsForward?: SmsForwardAdapter;
+  /**
+   * 系统语音合成适配（仅 Android 移动端注入，2026-11-15）。
+   *
+   * 为什么由外部注入：WebView 的 speechSynthesis 在国产 ROM 上不可靠（voices 空/
+   * 只有中文 voice，英语朗读静默），系统级 TextToSpeech API 需原生插件（YzTts），
+   * 属**平台相关能力**——与 smsForward 同套路：差异由边缘层注入，core 只管用。
+   * speak resolve 于朗读完成（ok=false 表示引擎不可用/不带该语言，调用方回落）。
+   */
+  nativeTts?: {
+    speak(text: string, lang: string): Promise<boolean>;
+    stop(): Promise<void>;
+  };
 }
 
 /** 短信转发适配器（Android 端实现，见 apps/mobile/src/sms-forward.ts） */
