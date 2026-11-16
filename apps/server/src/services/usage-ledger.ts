@@ -44,7 +44,7 @@ import {
 import { recordQuotaUsage } from '../enterprise/quota.js';
 
 /** 明细里的调用来源（与方案 §3.1 口径一致） */
-export type UsageSource = 'main' | 'sub_agent' | 'summary' | 'judge' | 'probe';
+export type UsageSource = 'main' | 'sub_agent' | 'summary' | 'judge' | 'probe' | 'gateway';
 
 /** 计费种类：`token` 走单价；`image`/`video` 按次（**当前一律计入 unpriced**） */
 export type UsageKind = 'token' | 'image' | 'video';

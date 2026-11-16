@@ -713,6 +713,29 @@ export interface ModelCall {
   createdAt: number;
 }
 
+/** 本地模型网关客户密钥（列表永不返回明文） */
+export interface GatewayClientKeyView {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  allowedModels: string[];
+  dailyTokenLimit: number;
+  dailyCostLimitCny: number;
+  rpmLimit: number;
+  enabled: boolean;
+  expiresAt: number | null;
+  lastUsedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 本地模型网关今日累计用量 */
+export interface GatewayUsageToday {
+  requests: number;
+  tokens: number;
+  costCny: number;
+}
+
 /** 聊天请求参数 */
 export interface ChatRequest {
   model: string;

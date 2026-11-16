@@ -866,6 +866,57 @@ db.exec(`
     ON model_health(user_id, cooldown_until DESC, last_fail_at DESC);
 `);
 
+// 本地模型网关客户密钥：明文只在创建响应返回一次，库内只存 SHA-256 哈希。
+// 每个密钥绑定一个 user_id，模型白名单、每日 token/费用和每分钟请求上限都独立生效。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gateway_client_key (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    allowed_models_json TEXT NOT NULL DEFAULT '["*"]',
+    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+    daily_cost_limit_cny REAL NOT NULL DEFAULT 0,
+    rpm_limit INTEGER NOT NULL DEFAULT 60,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    expires_at INTEGER,
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_gateway_client_key_user
+    ON gateway_client_key(user_id, enabled, created_at DESC);
+`);
+
+// 网关逐请求审计与额度累计：成功、失败和中止都留一条，便于客户限额与排障。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gateway_usage (
+    id TEXT PRIMARY KEY,
+    key_id TEXT NOT NULL REFERENCES gateway_client_key(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    requested_model TEXT,
+    platform_id TEXT,
+    model_id TEXT,
+    status TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_cny REAL NOT NULL DEFAULT 0,
+    estimated INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_gateway_usage_key_day
+    ON gateway_usage(key_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_gateway_usage_user_day
+    ON gateway_usage(user_id, created_at DESC);
+`);
+
 // 迁移：把 platform.api_key_enc 中的存量 Key 导入 platform_api_key 表（幂等，已存在则跳过）
 try {
   const rows = db.prepare("SELECT id, user_id, api_key_enc FROM platform WHERE api_key_enc IS NOT NULL AND api_key_enc != ''").all() as any[];

@@ -194,7 +194,7 @@ function fmtCost(n: number): string {
 
 /** 调用来源的中文名（与后端 source 口径一致） */
 const SOURCE_LABELS: Record<string, string> = {
-  main: '主对话', sub_agent: '子智能体', summary: '进展总结', judge: '自评/判断', probe: '连通性测试',
+  main: '主对话', sub_agent: '子智能体', summary: '进展总结', judge: '自评/判断', probe: '连通性测试', gateway: '本地网关',
 };
 function sourceLabel(s: string): string {
   return SOURCE_LABELS[s] || s;

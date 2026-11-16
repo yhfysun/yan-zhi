@@ -51,6 +51,8 @@ import automationRoutes from './routes/automation.js';
 import mcpRoutes from './routes/mcp.js';
 import mcpCredentialRoutes from './routes/mcp-credentials.js';
 import mcpAccessKeyRoutes from './routes/mcp-access-keys.js';
+import gatewayKeyRoutes from './routes/gateway-keys.js';
+import localGatewayRouter from './routes/local-gateway.js';
 import { createInboundMcpRouter } from './mcp/inbound-server.js';
 import skillRoutes from './routes/skills.js';
 import skillDraftRoutes from './routes/skill-drafts.js';
@@ -358,8 +360,11 @@ app.use('/api/automation', automationRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
 app.use('/api/mcp-credentials', mcpCredentialRoutes);
 app.use('/api/mcp-access-keys', mcpAccessKeyRoutes);
+app.use('/api/gateway-keys', gatewayKeyRoutes);
 // 入站 MCP 服务端：作为 MCP server 被外部客户端连接（SSE + Streamable HTTP）
 app.use('/mcp', createInboundMcpRouter());
+// 本地统一模型网关：自有 Bearer 密钥 + 本机回环限制，不使用 JWT 登录态
+app.use('/gateway', localGatewayRouter);
 app.use('/api/skills', skillRoutes);
 // Skill 蒸馏草稿（2026-10-15）：三屏工作台的蒸馏任务持久化
 app.use('/api/skill-drafts', skillDraftRoutes);
