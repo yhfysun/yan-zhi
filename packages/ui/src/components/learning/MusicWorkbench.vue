@@ -681,7 +681,7 @@ onBeforeUnmount(() => {
 /* ★ 手风琴头 + 折叠面板（2026-11-16 页面浓缩） */
 .mw-stage-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  width: 100%; padding: 10px 12px;
+  width: 100%; min-height: 44px; padding: 10px 12px; /* ★ 触摸目标 ≥44px */
   border: 1px solid var(--score-line); border-radius: 10px;
   background: var(--score-panel); cursor: pointer; text-align: left;
 }

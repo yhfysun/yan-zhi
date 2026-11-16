@@ -89,11 +89,13 @@ describe('插件路由同步信号', () => {
 describe('P4：三模式路由插件化后，冷启动仍回到“记忆中的模式”', () => {
   const restoreFn = CODE.match(/function restoreActiveModeRouteAfterSync\(\)[\s\S]*?\n\}/)?.[0] ?? '';
 
-  it('首次同步后就地恢复（只在 firstSync 分支调用，后续启用/停用插件不弹走用户）', () => {
-    expect(SYNC, '缺少首次同步判据').toContain('const firstSync = !pluginRoutesSynced');
-    expect(SYNC, '首次同步未调用恢复').toMatch(/if \(firstSync\) restoreActiveModeRouteAfterSync\(\)/);
-    // 恢复必须在 mark 之后（此时路由已 addRoute）
+  it('★ 每次同步都尝试恢复（2026-11-16 移动端实锤：首次 sync 常跑在内嵌后端就绪前，快照为空 ⇒ /learning 未注册 ⇒ 首次恢复空转，只恢复一次就永远停在 /chat）', () => {
+    // 恢复在 mark 之后（此时路由已 addRoute）
     expect(SYNC.indexOf('restoreActiveModeRouteAfterSync()')).toBeGreaterThan(SYNC.indexOf('markPluginRoutesSynced()'));
+    // 不再被 firstSync 门控（否则后端晚就绪的设备永远回不到记忆模式）
+    expect(SYNC, '恢复不得被 firstSync 门控').not.toMatch(/if \(firstSync\) restoreActiveModeRouteAfterSync\(\)/);
+    // 恢复函数自身的判据（/chat 列表页 + 模式可用 + 路由已注册）保证了多次执行安全
+    expect(restoreFn).toContain("cur.path !== '/chat'");
   });
 
   it('恢复判据与守卫的「模式记忆」逐条对齐（office/可用/路由已注册/移动端屏蔽）', () => {

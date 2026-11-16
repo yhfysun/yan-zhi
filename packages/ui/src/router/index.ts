@@ -590,14 +590,17 @@ export async function syncPluginRoutes(): Promise<void> {
       });
     }
     // 首次同步完成 → 放行冷启动里等着的导航（见 whenPluginRoutesSynced）
-    const firstSync = !pluginRoutesSynced;
     markPluginRoutesSynced();
     // ★ 2026-10-26 P4：dev/wf/clip 的 /code、/workflow、/clip 也改成插件贡献后，
     //   首次导航一定跑在 addRoute 之前 → 上面「模式记忆」那道闸（isModeRouteRegistered）
     //   在冷启动时必然不成立，用户会停在 /chat 而不是自己的模式工作台。
-    //   这里补一次**仅首次**的就地恢复（等价于 pre-P4 静态路由下的行为）；
-    //   后续 sync（启用/停用插件触发）不恢复，避免把正在对话的用户弹走。
-    if (firstSync) restoreActiveModeRouteAfterSync();
+    // ★★ 恢复改为**每次 sync 都尝试**（2026-11-16 移动端实锤「重启后学习模式还是
+    //    聊天页面」）：原来仅首次恢复，但移动端冷启动首次 sync 常跑在**内嵌后端
+    //    就绪之前** —— 快照为空 ⇒ /learning 尚未注册 ⇒ 恢复空转且 firstSync 被消费；
+    //    等后端就绪、快照补齐再 sync 时已不再恢复 ⇒ 用户永远停在 /chat。
+    //    恢复条件与 beforeEach 的「模式记忆」同语义（只认 /chat 列表页 + 模式可用 +
+    //    路由已注册），多次执行安全：用户已切回 office 时天然跳过，不会打扰任何人。
+    restoreActiveModeRouteAfterSync();
     recoverIfCurrentRouteUnmatched();
   } catch {
     /* plugin store 未就绪 */
