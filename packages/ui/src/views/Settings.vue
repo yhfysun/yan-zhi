@@ -452,6 +452,9 @@
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="卡包" name="m1wallet" lazy>
+        <M1CardWallet />
+      </el-tab-pane>
       <el-tab-pane label="工具钩子" name="userhooks" lazy>
         <UserHooksPanel />
       </el-tab-pane>
@@ -974,7 +977,7 @@ async function pickPetVrm() {
   if (r?.ok && r.path) setPet({ vrmMode: 'custom', vrmPath: r.path });
   else if (r && !r.canceled) ElMessage.error(r.msg || '选择失败');
 }
-import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
+import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor, CreditCard } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase } from '../api/client';
@@ -1012,6 +1015,7 @@ import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
 import LocalModelPanel from '../components/LocalModelPanel.vue';
 import UserHooksPanel from '../components/settings/UserHooksPanel.vue';
+import M1CardWallet from '../components/learning/M1CardWallet.vue';
 import BrowserExtensionsPanel from '../components/settings/BrowserExtensionsPanel.vue';
 
 const settingsStore = useSettingsStore();
@@ -1125,6 +1129,8 @@ const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   //   enterMobileGroup 里对 key==='remote' 特判路由跳转；tabs 空数组仅满足类型（不会进入）。
   { key: 'remote', label: '远程控制', desc: '用手机实时观看并操作你的电脑', icon: Monitor, tabs: [] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
+  // M1 卡包（2026-11-16）：已复制门禁卡的本地管理 + 一键写白卡；试验台是读卡入口
+  { key: 'm1wallet', label: 'M1 卡包', desc: '已复制的门禁卡 · 贴空白卡一键写卡 · 导出', icon: CreditCard, tabs: [{ name: 'm1wallet', label: '卡包' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
   { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
   { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网访问 · 语音包 · 本地模型', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }, { name: 'localmodel', label: '本地模型' }] },
@@ -1204,8 +1210,8 @@ function skinPreviewUrl(s: SkinTheme): string {
 }
 async function downloadSkinSource(s: SkinTheme) {
   try {
-    const token = localStorage.getItem('auth_token') || '';
-    const resp = await fetch(`${API_BASE}/plugins/${s.id}/export`, { headers: { Authorization: `Bearer ${token}` } });
+    // ★ buildRequestHeaders：授权门禁（打包版恒开）下只带 Authorization 会被 403（导出失败）
+    const resp = await fetch(`${API_BASE}/plugins/${s.id}/export`, { headers: buildRequestHeaders() });
     const json = await resp.json();
     if (!json?.data?.base64) { ElMessage.error(json?.error || '导出失败'); return; }
     const bin = Uint8Array.from(atob(json.data.base64), (c) => c.charCodeAt(0));

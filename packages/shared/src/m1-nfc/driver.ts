@@ -18,8 +18,11 @@ import {
   m1VerifyCopy,
   m1WriteDump,
   type M1CopyResult,
+  type M1Dump,
   type M1Keybook,
   type M1KeySlot,
+  type M1RecoverResult,
+  type M1SectorKeyResult,
   type M1TargetKind,
 } from './core';
 
@@ -154,6 +157,109 @@ export async function m1RunRealCopy(params: {
     };
   } finally {
     // 无论成功失败都释放连接，避免占住 NFC 前台服务
+    await driver.stopSession().catch(() => undefined);
+  }
+}
+
+/**
+ * 卡包写卡：把保存的 dump 直接写入贴上的目标卡（M1CardWallet 简化链路）。
+ *
+ * ★ 与 m1RunRealCopy 的差别：没有「读源卡」步骤 —— 首个贴上来的 tag 就是目标卡，
+ *   所以**不需要** onNeedTargetCard/awaitTargetCard 换卡编排。
+ * ★ 防呆（high 风险）：贴上来的 tag UID 与 dump.uid 相同 = 用户把源卡又贴上来了，
+ *   必须拒绝写入，否则会把源卡内容原样写回源卡自己身上。
+ * ★ 结论仍走 m1CopyReason 唯一出口：用 dump.keys 合成 recovery（卡包写卡没有恢复过程）。
+ */
+export async function m1WriteSavedCard(params: {
+  driver: M1NfcDriver;
+  dump: M1Dump;
+  targetKind?: M1TargetKind;
+  onStage?: (stage: 'waiting-tag' | 'writing' | 'verifying') => void;
+}): Promise<M1CopyResult> {
+  const { driver, dump } = params;
+  const targetKind = params.targetKind ?? 'uid-writable';
+  await driver.startSession();
+  try {
+    params.onStage?.('waiting-tag');
+    // readCard 挂起等贴卡并完成连接（含裸 NfcA 回退），复用真机同一条链路
+    const meta = await driver.readCard();
+    if (meta.uid.toUpperCase() === dump.uid.toUpperCase()) {
+      throw new Error('贴上来的是源卡自己（UID 相同）。请移开源卡，贴目标空白卡');
+    }
+    params.onStage?.('writing');
+    const plan = m1PlanWrite(dump, targetKind);
+    const written = await m1WriteDump(dump, plan, async (index, data) => {
+      const sector = Math.floor(index / M1_BLOCKS_PER_SECTOR);
+      const hit = dump.keys[sector];
+      if (!hit?.key || !hit.slot) return false;
+      const outcome = await driver.writeBlock(index, data, hit.key, hit.slot);
+      return outcome.ok;
+    });
+    params.onStage?.('verifying');
+    const verify = m1VerifyCopy(dump, written);
+    const recovery = m1RecoveryFromDump(dump);
+    const reason = m1CopyReason(recovery, plan, verify);
+    return { ok: verify.ok, reason, recovery, dump, plan, verify };
+  } finally {
+    await driver.stopSession().catch(() => undefined);
+  }
+}
+
+/** 从保存的 dump 合成密钥恢复结果：密钥已在 dump.keys 里，无需真的跑恢复。 */
+export function m1RecoveryFromDump(dump: M1Dump): M1RecoverResult {
+  const sectors: M1SectorKeyResult[] = dump.keys.map((hit, index) => ({
+    sector: index,
+    key: hit.key,
+    slot: hit.slot,
+    attempts: 0,
+    hitBy: null,
+    hitLabel: null,
+  }));
+  const unreadableSectors = sectors
+    .filter((item) => item.key === null)
+    .map((item) => item.sector);
+  return {
+    sectors,
+    totalAttempts: 0,
+    capped: false,
+    recovered: sectors.length - unreadableSectors.length,
+    unreadableSectors,
+  };
+}
+
+/**
+ * 卡包读卡：贴卡 → 密钥恢复 → 整卡 dump，**只读不写**（M1CardWallet 内闭环用）。
+ *
+ * ★ 与 m1RunRealCopy 的差别：没有写入段，也不需要换目标卡 —— 读完直接落卡包。
+ * ★ 密钥恢复/读块全走内核（m1RecoverSectorKeys / m1ReadDump），判定只有一份；
+ *   默认密码本只用内置公开默认值，卡包场景没有自定义密码本输入。
+ */
+export async function m1ReadCardDump(params: {
+  driver: M1NfcDriver;
+  keybook?: M1Keybook;
+  maxAttempts?: number;
+  onAttempt?: (attempt: number, sector: number, key: string, slot: M1KeySlot) => boolean | void;
+}): Promise<{ recovery: M1RecoverResult; dump: M1Dump }> {
+  const { driver } = params;
+  await driver.startSession();
+  try {
+    const meta = await driver.readCard();
+    const recovery = await m1RecoverSectorKeys(
+      { sectorCount: meta.sectorCount },
+      {
+        keybook: params.keybook ?? { useBuiltin: true, customKeys: [] },
+        maxAttempts: params.maxAttempts,
+        onAttempt: params.onAttempt,
+      },
+      (sector, key, slot) => driver.authenticate(sector, key, slot),
+    );
+    const dump = await m1ReadDump(meta, recovery, async (sector, block, key, slot) => {
+      const data = await driver.readBlock(sector, block, key, slot);
+      if (!data) throw new Error(`扇区 ${sector} 块 ${block} 读取失败`);
+      return data;
+    });
+    return { recovery, dump };
+  } finally {
     await driver.stopSession().catch(() => undefined);
   }
 }

@@ -5,8 +5,9 @@
  *   浏览器/桌面 WebView 也没有 MIFARE Classic API —— 这些平台保持「无驱动」，
  *   UI 自动走课程模拟器，绝不假装能读真卡。
  *
- * ★ 机型降级：MifareClassic.get(tag) 为 null 时插件返回 mifareClassic=false，
- *   这里抛明确错误，由 UI 提示「该机型不支持」并退回模拟器。
+ * ★ 机型降级：MifareClassic.get(tag) 为 null 时插件先走裸 NfcA 回退探测
+ *   （认证/读/写指令直接透传，Crypto1 由芯片硬件执行），探测失败才返回
+ *   mifareClassic=false；这里抛明确错误，由 UI 提示「该机型不支持」并退回模拟器。
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import {
@@ -32,6 +33,10 @@ type RawCard = {
   sectorCount?: number;
   blockCount?: number;
   mifareClassic: boolean;
+  /** 裸 NfcA 回退模式：机型没暴露 MifareClassic tech 但芯片能跑 MIFARE 指令 */
+  rawMode?: boolean;
+  /** tag.getTechList()，机型兼容性排查用 */
+  techList?: string;
   reason?: string;
 };
 

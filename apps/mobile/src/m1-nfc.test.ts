@@ -68,6 +68,17 @@ describe('原生插件接线契约', () => {
     expect(java).toContain('waiting.resolve(ready)');
     // 机型不支持时如实返回 false，不假装读到卡
     expect(java).toContain('out.put("mifareClassic", false)');
+    // ★ 裸 NfcA 回退：MifareClassic.get 为 null 时用 MIFARE 裸指令探测（60=认证 30=读 A0=写），
+    //   Crypto1 由芯片硬件执行——部分「未提供 MIFARE Classic 实现」的机型靠这条路径救回来
+    expect(java).toContain('resolveRawFallback');
+    expect(java).toContain('slotA ? 0x60 : 0x61');
+    expect(java).toContain('(byte) 0x30');
+    expect(java).toContain('(byte) 0xA0');
+    expect(java).toContain('rawReadBlock');
+    expect(java).toContain('rawWriteBlock');
+    // 诊断字段：失败分支也带 techList/sak/atqa，区分「芯片不支持」和「卡不是 M1」
+    expect(java).toContain('techListOf(currentTag)');
+    expect(java).toContain('isM1Sak');
     // 块 0 写不进时如实返回 ok=false
     expect(java).toContain('out.put("ok", false)');
   });

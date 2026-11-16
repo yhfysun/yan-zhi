@@ -19,6 +19,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.Locale;
 
 /**
@@ -35,10 +37,14 @@ import java.util.Locale;
  *   会丢弃当前连接并等下一次发现事件，readCard 再对新 tag 重新 connect。
  *   不换卡会把源卡内容写回源卡，既无意义也可能破坏原卡。
  *
- * ★ 机型兼容（high 风险）：MifareClassic 类是 Android 的可选实现，
- *   非 NXP NFC 芯片的机型 MifareClassic.get(tag) 会返回 null。
- *   此时 readCard 返回 mifareClassic=false，JS 侧必须降级到课程模拟器，
- *   绝不假装读到了卡。
+ * ★ 机型兼容（high 风险）：MifareClassic 是 Android 的可选实现，部分机型
+ *   MifareClassic.get(tag) 返回 null。此时不能直接判死——先用「裸 NfcA 回退」：
+ *   MIFARE Classic 的认证(60/61)/读(30)/写(A0) 指令走 NfcA.transceive 照样能发，
+ *   Crypto1 加解密由 NFC 芯片硬件执行。探测方式 = 用默认密钥 A 对 0 扇区认证：
+ *   - 返回 nt（4 字节）或 NAK（1 字节）都证明芯片能执行 MIFARE 指令
+ *     （NAK 只说明默认密钥不对，卡是活的）→ 进入裸帧模式，照常读写；
+ *   - 超时/异常才判定芯片真不支持 → 如实返回 mifareClassic=false。
+ *   一加这类芯片确实不支持的机型会在探测步失败，仍然如实报不支持。
  *
  * ★ 块 0：普通空白卡的卡号出厂后不可写。writeBlock 失败时如实返回 ok=false，
  *   不实现任何芯片私有后门指令；是否支持改写由目标卡与读卡器自行决定。
@@ -54,11 +60,19 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
     private static final int FLAGS =
         NfcAdapter.FLAG_READER_NFC_A | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK;
     private static final int DEFAULT_TAG_TIMEOUT_MS = 60000;
+    /** 出厂默认密钥，仅用于裸帧模式探测芯片是否支持 MIFARE 指令集 */
+    private static final byte[] PROBE_KEY = {
+        (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
+    };
+    private static final int RAW_AUTH_TIMEOUT_MS = 300;
 
     private NfcAdapter adapter;
     private Handler mainHandler;
     private Tag currentTag;
     private MifareClassic mifare;
+    /** 裸帧模式：MifareClassic tech 缺失但芯片能透传 MIFARE 指令时启用 */
+    private NfcA rawNfcA;
+    private boolean rawMode = false;
     private boolean sessionActive = false;
     /** 挂起中的「等待贴卡」调用，onTagDiscovered 或超时回调负责收口 */
     private PluginCall pendingTagWait;
@@ -97,6 +111,42 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         }
     }
 
+    private static String techListOf(Tag tag) {
+        String[] list = tag.getTechList();
+        if (list == null || list.length == 0) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String t : list) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(t);
+        }
+        return sb.toString();
+    }
+
+    /** SAK → 扇区数（裸帧模式没有 MifareClassic 帮我们算，只能按 SAK 映射） */
+    private static int sakSectorCount(int sak) {
+        switch (sak) {
+            case 0x09: return 5;            // MIFARE Classic 320B
+            case 0x18:
+            case 0x38: return 40;           // MIFARE Classic 4K
+            default: return 16;             // 1K（0x08 / 0x88 / 兼容卡）
+        }
+    }
+
+    private static int sakBlockCount(int sectors) {
+        int blocks = 0;
+        for (int s = 0; s < sectors; s++) blocks += (s < 32 ? 4 : 16);
+        return blocks;
+    }
+
+    private static boolean isM1Sak(int sak) {
+        return sak == 0x08 || sak == 0x09 || sak == 0x18 || sak == 0x38 || sak == 0x88;
+    }
+
+    /** 裸帧模式的扇区 → 起始块号（1K 每扇区 4 块，4K 后 8 扇区每扇区 16 块） */
+    private static int rawSectorToBlock(int sector) {
+        return sector < 32 ? sector * 4 : 128 + (sector - 32) * 16;
+    }
+
     private NfcAdapter nfcAdapter() {
         if (adapter == null) {
             NfcManager manager = (NfcManager) getContext().getSystemService(Context.NFC_SERVICE);
@@ -130,6 +180,11 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
             try { mifare.close(); } catch (Exception ignored) { /* 卡片已离开 */ }
             mifare = null;
         }
+        if (rawNfcA != null) {
+            try { rawNfcA.close(); } catch (Exception ignored) { }
+            rawNfcA = null;
+        }
+        rawMode = false;
     }
 
     @PluginMethod
@@ -262,14 +317,13 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         }
         JSObject out = new JSObject();
         out.put("uid", toHex(currentTag.getId()));
+        out.put("techList", techListOf(currentTag));
         // 换卡后的 readCard 是对新 tag 重连，先释放旧连接
         closeMifare();
         MifareClassic mc = MifareClassic.get(currentTag);
         if (mc == null) {
-            // ★ 机型不支持 M1：如实返回，JS 侧降级到课程模拟器
-            out.put("mifareClassic", false);
-            out.put("reason", "该机型 NFC 芯片未提供 MIFARE Classic 实现");
-            call.resolve(out);
+            // ★ MifareClassic tech 缺失不等于读不了：先走裸 NfcA 回退探测
+            resolveRawFallback(call, out);
             return;
         }
         try {
@@ -294,6 +348,109 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         }
     }
 
+    /**
+     * MifareClassic.get 为 null 时的回退判定。
+     * 用默认密钥 A 对 0 扇区发认证指令：芯片能执行 MIFARE 指令就进裸帧模式；
+     * NAK（1 字节应答）说明卡活着只是密钥不对，同样算支持；超时/异常才判不支持。
+     */
+    private void resolveRawFallback(PluginCall call, JSObject out) {
+        NfcA a = NfcA.get(currentTag);
+        if (a == null) {
+            out.put("mifareClassic", false);
+            out.put("reason", "这张卡不是 ISO 14443-A 卡，不是 M1 卡");
+            call.resolve(out);
+            return;
+        }
+        int sak = a.getSak() & 0xff;
+        out.put("sak", String.format(Locale.US, "%02X", sak));
+        out.put("atqa", toHex(a.getAtqa()));
+        try {
+            a.connect();
+            a.setTimeout(RAW_AUTH_TIMEOUT_MS);
+            int probe = rawAuth(a, 0, PROBE_KEY, true);
+            if (probe >= 0) {
+                // 芯片能跑 MIFARE 指令（NAK 也证明协议活着，只是默认密钥不对）
+                rawNfcA = a;
+                rawMode = true;
+                int sectors = sakSectorCount(sak);
+                out.put("mifareClassic", true);
+                out.put("rawMode", true);
+                out.put("sectorCount", sectors);
+                out.put("blockCount", sakBlockCount(sectors));
+                byte[] id = currentTag.getId();
+                int bcc = 0;
+                int take = Math.min(4, id.length);
+                for (int i = 0; i < take; i++) bcc ^= (id[i] & 0xff);
+                out.put("bcc", String.format(Locale.US, "%02X", bcc & 0xff));
+                call.resolve(out);
+                return;
+            }
+            try { a.close(); } catch (Exception ignored) { }
+            out.put("mifareClassic", false);
+            out.put("reason", isM1Sak(sak)
+                ? "该机型 NFC 芯片不支持 MIFARE Classic（认证指令被芯片拒绝）"
+                : "这张卡不是 MIFARE Classic（M1）卡");
+            call.resolve(out);
+        } catch (Exception e) {
+            try { a.close(); } catch (Exception ignored) { }
+            out.put("mifareClassic", false);
+            out.put("reason", "该机型 NFC 芯片未提供 MIFARE Classic 实现（MIFARE 裸指令也不支持）");
+            call.resolve(out);
+        }
+    }
+
+    /**
+     * 裸帧 MIFARE Classic 认证：60/61 + 块号 + 密钥 + UID，Crypto1 由芯片硬件执行。
+     *
+     * @return 1=认证成功（应答 4 字节 nt）；0=卡回 NAK（密钥不对，协议活着）；
+     *         -1=指令异常（芯片不支持 MIFARE 指令 / 卡已离开）
+     */
+    private int rawAuth(NfcA a, int sector, byte[] key, boolean slotA) {
+        byte[] cmd = new byte[12];
+        cmd[0] = (byte) (slotA ? 0x60 : 0x61);
+        cmd[1] = (byte) rawSectorToBlock(sector);
+        System.arraycopy(key, 0, cmd, 2, 6);
+        byte[] id = currentTag.getId();
+        for (int i = 0; i < 4; i++) cmd[8 + i] = i < id.length ? id[i] : (byte) 0;
+        try {
+            byte[] resp = a.transceive(cmd);
+            if (resp == null || resp.length == 1) return 0;
+            return 1;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private byte[] rawReadBlock(int absolute) throws IOException {
+        try {
+            byte[] resp = rawNfcA.transceive(new byte[]{(byte) 0x30, (byte) absolute});
+            if (resp == null || resp.length < 16) throw new IOException("读块数据不足 16 字节");
+            // 应答可能带 2 字节 CRC（18 字节），统一截取前 16 字节
+            return Arrays.copyOf(resp, 16);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException(e.getMessage() == null ? "读块失败" : e.getMessage());
+        }
+    }
+
+    private void rawWriteBlock(int absolute, byte[] data) throws IOException {
+        try {
+            byte[] ack = rawNfcA.transceive(new byte[]{(byte) 0xA0, (byte) absolute});
+            if (ack == null || ack.length != 1 || ack[0] != 0x0A) {
+                throw new IOException("写入指令未被卡片确认");
+            }
+            byte[] ack2 = rawNfcA.transceive(data);
+            if (ack2 == null || ack2.length != 1 || ack2[0] != 0x0A) {
+                throw new IOException("写入数据被卡片拒绝");
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException(e.getMessage() == null ? "写入失败" : e.getMessage());
+        }
+    }
+
     /** 认证失败（密钥不对）不是插件错误：返回 ok=false 让密码本继续试下一个候选。 */
     @PluginMethod
     public void authenticateSector(PluginCall call) {
@@ -301,24 +458,22 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         byte[] key = parseKey(call.getString("key"));
         String slot = call.getString("slot", "A");
         JSObject out = new JSObject();
-        if (sector < 0 || key == null || mifare == null) {
+        if (sector < 0 || key == null || (mifare == null && !rawMode)) {
             out.put("ok", false);
             call.resolve(out);
             return;
         }
-        try {
-            boolean ok = "B".equalsIgnoreCase(slot)
-                ? mifare.authenticateSectorWithKeyB(sector, key)
-                : mifare.authenticateSectorWithKeyA(sector, key);
-            out.put("ok", ok);
-        } catch (Exception e) {
-            out.put("ok", false);
-        }
+        out.put("ok", authenticate(sector, key, slot));
         call.resolve(out);
     }
 
     private boolean authenticate(int sector, byte[] key, String slot) {
-        if (mifare == null || key == null || sector < 0) return false;
+        if (key == null || sector < 0) return false;
+        if (rawMode) {
+            if (rawNfcA == null) return false;
+            return rawAuth(rawNfcA, sector, key, !"B".equalsIgnoreCase(slot)) == 1;
+        }
+        if (mifare == null) return false;
         try {
             return "B".equalsIgnoreCase(slot)
                 ? mifare.authenticateSectorWithKeyB(sector, key)
@@ -334,15 +489,18 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         int block = call.getInt("block", -1);
         String keyHex = call.getString("key");
         String slot = call.getString("slot", "A");
-        if (mifare == null || sector < 0 || block < 0 || !authenticate(sector, parseKey(keyHex), slot)) {
+        if ((mifare == null && !rawMode) || sector < 0 || block < 0
+                || !authenticate(sector, parseKey(keyHex), slot)) {
             call.reject("AUTH_FAILED", "扇区认证失败");
             return;
         }
         try {
-            int absolute = mifare.sectorToBlock(sector) + block;
+            int absolute = rawMode
+                ? rawSectorToBlock(sector) + block
+                : mifare.sectorToBlock(sector) + block;
             JSObject out = new JSObject();
             out.put("ok", true);
-            out.put("data", toHex(mifare.readBlock(absolute)));
+            out.put("data", toHex(rawMode ? rawReadBlock(absolute) : mifare.readBlock(absolute)));
             call.resolve(out);
         } catch (Exception e) {
             JSObject out = new JSObject();
@@ -360,14 +518,20 @@ public class M1NfcPlugin extends Plugin implements NfcAdapter.ReaderCallback {
         byte[] data = parseData(call.getString("data"));
         String keyHex = call.getString("key");
         String slot = call.getString("slot", "A");
-        if (mifare == null || sector < 0 || block < 0 || data == null
+        if ((mifare == null && !rawMode) || sector < 0 || block < 0 || data == null
                 || !authenticate(sector, parseKey(keyHex), slot)) {
             call.reject("AUTH_FAILED", "扇区认证失败或数据非法");
             return;
         }
         try {
-            int absolute = mifare.sectorToBlock(sector) + block;
-            mifare.writeBlock(absolute, data);
+            int absolute = rawMode
+                ? rawSectorToBlock(sector) + block
+                : mifare.sectorToBlock(sector) + block;
+            if (rawMode) {
+                rawWriteBlock(absolute, data);
+            } else {
+                mifare.writeBlock(absolute, data);
+            }
             JSObject out = new JSObject();
             out.put("ok", true);
             call.resolve(out);

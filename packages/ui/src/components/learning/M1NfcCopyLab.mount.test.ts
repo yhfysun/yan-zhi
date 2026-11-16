@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
 import { m1RegisterNfcDriver, type M1NfcDriver } from '@yan-zhi/shared';
 import M1NfcCopyLab from './M1NfcCopyLab.vue';
 
@@ -29,6 +30,8 @@ async function mountLab(): Promise<HTMLElement> {
   const el = document.createElement('div');
   document.body.appendChild(el);
   const app = createApp(M1NfcCopyLab, { lab: LAB });
+  // 卡包入口（存入卡包）依赖 pinia store
+  app.use(createPinia());
   mountedApps.push(app);
   app.mount(el);
   await nextTick();

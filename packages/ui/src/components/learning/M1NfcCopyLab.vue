@@ -13,6 +13,7 @@
  *   不让用户在读卡中途逐步点按钮把卡弄掉线。
  */
 import { computed, onMounted, ref } from 'vue';
+import { useM1WalletStore } from '../../stores/m1Wallet';
 import {
   M1_BLOCKS_PER_SECTOR,
   M1_DEFAULT_MAX_ATTEMPTS,
@@ -87,6 +88,15 @@ const written = ref<M1Dump | null>(null);
 const verify = ref<M1VerifyResult | null>(null);
 const reason = ref('');
 const attempts = ref(0);
+/** 卡包（2026-11-16）：真机复制成功后一键入库；同 UID 自动覆盖旧记录 */
+const wallet = useM1WalletStore();
+const savedToWallet = ref(false);
+
+function saveToWallet() {
+  if (!dump.value || savedToWallet.value) return;
+  wallet.add(dump.value, { source: 'real' });
+  savedToWallet.value = true;
+}
 
 const parsedKeybook = computed(() => m1ParseKeybook(keybookText.value));
 const realMode = computed(() =>
@@ -123,6 +133,7 @@ function resetResults() {
   verify.value = null;
   reason.value = '';
   attempts.value = 0;
+  savedToWallet.value = false;
 }
 
 /** 授权是「弹窗确认」，不是一个静默勾选框：真机与模拟走同一道闸。 */
@@ -507,6 +518,18 @@ function shortBlock(data: string | null): string {
           </div>
         </div>
 
+        <!-- 卡包入口（2026-11-16）：只有真机读到的卡才入库，教学模拟的 DEMO 数据不进卡包 -->
+        <div v-if="realMode && dump" class="m1-save-row" data-testid="m1-save-wallet">
+          <button
+            v-if="!savedToWallet"
+            type="button"
+            class="m1-primary"
+            data-testid="m1-save-wallet-btn"
+            @click="saveToWallet"
+          >存入卡包</button>
+          <span v-else class="m1-saved-tip">已存入卡包（设置 → M1 卡包），贴空白卡即可一键写卡</span>
+        </div>
+
         <h4>让复制失效（防护清单）</h4>
         <ul class="m1-defense">
           <li>一卡一密：按卡派生扇区密钥，不再全楼共用出厂默认值。</li>
@@ -689,6 +712,9 @@ function shortBlock(data: string | null): string {
 .m1-expected { margin: 0; padding: 10px 12px; border-left: 3px solid var(--m1-teal);
   background: color-mix(in srgb, #0f766e 6%, var(--m1-paper)); color: var(--m1-muted); font-size: 11px; line-height: 1.7; }
 .m1-expected b { display: block; margin-bottom: 4px; color: var(--m1-teal); }
+.m1-save-row { margin: 12px 0 4px; display: flex; align-items: center; gap: 10px; }
+.m1-save-row .m1-primary { min-height: 38px; padding: 0 16px; font-size: 12px; }
+.m1-saved-tip { color: var(--m1-teal); font-size: 12px; line-height: 1.6; }
 
 .m1-actions { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between;
   gap: 12px; padding: 9px 0 2px; background: var(--m1-paper); border-top: 1px solid var(--m1-line); }
