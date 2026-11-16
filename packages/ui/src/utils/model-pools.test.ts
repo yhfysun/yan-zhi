@@ -35,9 +35,11 @@ import path from 'node:path';
 import {
   POOL_SLOTS,
   POOL_LABELS,
+  MODEL_ROUTING_OPTIONS,
   isEffectiveModel,
   groupModelsForSlot,
   flatModelsForSlot,
+  poolOptionLabel,
 } from './model-pools';
 import type { Model, Platform } from '@yan-zhi/shared';
 
@@ -131,6 +133,35 @@ describe('POOL_SLOTS / POOL_LABELS · 元数据唯一实现', () => {
     // 保存必须走 store 的 agent-platform 出口（不是旧的 per-platform 出口）
     expect(src, '未调用 saveAgentPlatform').toMatch(/saveAgentPlatform\s*\(/);
     expect(src, '仍在使用已废弃的 savePlatform/loadPlatform').not.toMatch(/savePlatform\s*\(|loadPlatform\s*\(/);
+  });
+});
+
+describe('模型池路由策略 · 默认顺序优先，可选健康优先', () => {
+  it('策略取值稳定，默认行为不改变现有顺序语义', () => {
+    expect(MODEL_ROUTING_OPTIONS.map((option) => option.value)).toEqual(['priority', 'health']);
+  });
+
+  it('健康状态只作为模型选项后缀，不修改模型本身', () => {
+    const model = M({ id: 'm1', platformId: 'p1', alias: '主力模型' });
+    expect(poolOptionLabel(model, 'healthy')).toBe('主力模型');
+    expect(poolOptionLabel(model, 'degraded')).toContain('不稳定');
+    expect(poolOptionLabel(model, 'cooling')).toContain('冷却中');
+  });
+
+  it('三层候选池配置都提供同一组路由策略，并读取健康状态', () => {
+    for (const file of ['views/Settings.vue', 'views/Agents.vue', 'components/AgentEditForm.vue']) {
+      const src = read(file);
+      expect(src, `${file} 缺少路由策略入口`).toContain('MODEL_ROUTING_OPTIONS');
+      expect(src, `${file} 缺少健康状态标签`).toContain('poolOptionLabel');
+    }
+  });
+
+  it('候选池 store 单独拉取健康快照，保存结构保留 routing', () => {
+    const src = read('stores/model-pool.ts');
+    expect(src).toContain('/model-pools/health');
+    expect(src).toMatch(/healthByModelId/);
+    expect(src).toMatch(/v\.routing\s*===\s*'priority'/);
+    expect(src).toMatch(/v\.routing\s*===\s*'health'/);
   });
 });
 

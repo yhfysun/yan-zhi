@@ -22,8 +22,8 @@ import {
   readAgentPlatformPools,
   validateModelPools,
   selectSubAgentModelIdPriority,
-  type Slot,
 } from '../src/services/model-pools.js';
+import type { ModelPools } from '@yan-zhi/shared';
 
 async function mkDb() {
   const { db } = await openSqlite(':memory:');
@@ -59,6 +59,12 @@ async function mkDb() {
       model_pools_json TEXT
     );
     CREATE TABLE IF NOT EXISTS platform_api_key (id TEXT PRIMARY KEY, platform_id TEXT, user_id TEXT, api_key TEXT, label TEXT, fail_count INTEGER DEFAULT 0, last_fail_at INTEGER, enabled INTEGER DEFAULT 1, created_at INTEGER);
+    CREATE TABLE model_health (
+      user_id TEXT NOT NULL, model_id TEXT NOT NULL, platform_id TEXT NOT NULL,
+      fail_count INTEGER NOT NULL DEFAULT 0, last_fail_at INTEGER, last_success_at INTEGER,
+      cooldown_until INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, model_id)
+    );
     CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT);
   `);
   const insP = db.prepare('INSERT INTO platform (id, user_id, name, llm_enabled) VALUES (?, ?, ?, ?)');
@@ -90,19 +96,19 @@ async function mkDb() {
   return db;
 }
 
-function setAgentPools(db: YzSqliteDb, id: string, pools: Record<Slot, string[]>, userId = 'guest') {
+function setAgentPools(db: YzSqliteDb, id: string, pools: ModelPools, userId = 'guest') {
   db.prepare('INSERT OR REPLACE INTO agent (id, user_id, is_public, model_pools_json) VALUES (?, ?, 0, ?)').run(
     id, userId, JSON.stringify(pools),
   );
 }
 
-function setAgentPlatformPools(db: YzSqliteDb, pools: Record<Slot, string[]>) {
+function setAgentPlatformPools(db: YzSqliteDb, pools: ModelPools) {
   // ★ L2 是「智能体平台」层（所有智能体的默认池），存 app_config 单例，
   //   不是「模型平台」（platform 表）—— 后者是大模型供应商，语义不同（见 services/model-pools.ts 头注）。
   db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES ('agent_platform_model_pools', ?)").run(JSON.stringify(pools));
 }
 
-function setGlobalPools(db: YzSqliteDb, pools: Record<Slot, string[]>) {
+function setGlobalPools(db: YzSqliteDb, pools: ModelPools) {
   db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES ('model_pools', ?)").run(JSON.stringify(pools));
 }
 
@@ -196,6 +202,42 @@ describe('resolvePool · 三层回退', () => {
     const pool = resolvePool(db, ctx, 'llm');
     expect(pool.map((e) => e.model.id)).toEqual(['bailian-qwen-max', 'agens-guest-agnes-3.0-flash']);
     expect(pool.every((e) => e.source === 'agent')).toBe(true);
+  });
+
+  it('★ 健康优先：首选不变；其余候选把冷却/近期失败模型排到后面', () => {
+    setAgentPools(db, 'a1', {
+      llm: ['bailian-qwen-max', 'agens-guest-agnes-2.5-pro', 'agens-guest-agnes-3.0-flash'],
+      routing: 'health',
+    });
+    const now = Date.now();
+    const ins = db.prepare(
+      `INSERT INTO model_health
+        (user_id, model_id, platform_id, fail_count, last_fail_at, last_success_at, cooldown_until, last_error, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    ins.run('guest', 'bailian-qwen-max', 'bailian', 0, null, now, 0, null, now);
+    ins.run('guest', 'agens-guest-agnes-2.5-pro', 'agens-guest', 2, now, now - 1, now + 60_000, '429', now);
+    const pool = resolvePool(db, ctx, 'llm');
+    expect(pool.map((e) => e.model.id)).toEqual([
+      'bailian-qwen-max',
+      'agens-guest-agnes-3.0-flash', // 未知健康分数高于冷却中的模型
+      'agens-guest-agnes-2.5-pro',
+    ]);
+  });
+
+  it('顺序优先不受健康表影响，严格保持用户配置', () => {
+    setAgentPools(db, 'a1', {
+      llm: ['agens-guest-agnes-2.5-pro', 'bailian-qwen-max'],
+      routing: 'priority',
+    });
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO model_health
+        (user_id, model_id, platform_id, fail_count, last_fail_at, last_success_at, cooldown_until, last_error, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('guest', 'agens-guest-agnes-2.5-pro', 'agens-guest', 3, now, null, now + 60_000, '429', now);
+    expect(resolvePool(db, ctx, 'llm').map((e) => e.model.id))
+      .toEqual(['agens-guest-agnes-2.5-pro', 'bailian-qwen-max']);
   });
 
   it('★ 按槽位粒度回退：agent 只配 llm，vision 落到 autoPool（不整池放弃）', () => {
@@ -354,6 +396,13 @@ describe('validateModelPools · 写入口校验（读宽容、写必须挡住错
     });
     expect(v.ok).toBe(true);
     expect(v.pools!.llm).toEqual(['bailian-qwen-max', 'agens-guest-agnes-3.0-flash']);
+  });
+
+  it('合法 routing 原样保存，未知 routing 在写入口拒绝', () => {
+    const health = validateModelPools(db, 'guest', { llm: ['bailian-qwen-max'], routing: 'health' });
+    expect(health.ok).toBe(true);
+    expect(health.pools?.routing).toBe('health');
+    expect(validateModelPools(db, 'guest', { routing: 'random' }).ok).toBe(false);
   });
 
   it('★ 错槽位拒绝：image 模型进 llm 池 → 明确错误（不能到运行时才爆）', () => {

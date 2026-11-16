@@ -847,6 +847,25 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_platform_api_key_platform ON platform_api_key(platform_id, enabled, fail_count ASC);
 `);
 
+// 模型级健康窗口：同一平台下不同模型可能独立限流/下线，不能只靠平台 Token 失败计数判断。
+// 只记录成功/失败旁路状态，不参与模型是否存在；冷却到期后自动恢复候选资格。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_health (
+    user_id TEXT NOT NULL,
+    model_id TEXT NOT NULL REFERENCES model(id) ON DELETE CASCADE,
+    platform_id TEXT NOT NULL REFERENCES platform(id) ON DELETE CASCADE,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    last_fail_at INTEGER,
+    last_success_at INTEGER,
+    cooldown_until INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, model_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_model_health_user_cooldown
+    ON model_health(user_id, cooldown_until DESC, last_fail_at DESC);
+`);
+
 // 迁移：把 platform.api_key_enc 中的存量 Key 导入 platform_api_key 表（幂等，已存在则跳过）
 try {
   const rows = db.prepare("SELECT id, user_id, api_key_enc FROM platform WHERE api_key_enc IS NOT NULL AND api_key_enc != ''").all() as any[];

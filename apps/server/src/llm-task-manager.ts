@@ -20,6 +20,7 @@ import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceFo
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
+import { recordModelFailure, recordModelSuccess, resolveModelPrimaryId } from './services/model-health.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, parseToolAuthResult, type PermissionMode } from './tool-permission.js';
 import { checkLiveTool, isLiveMode } from './live-mode.js';
 // ★ 安装类资源强制确认（2026-10-22）：任何权限模式都要问，与只读授权闸分离
@@ -4410,6 +4411,7 @@ async function runReActLoop(task: LlmTask, params: {
             // ★ 候选池故障转移（model-candidate-pools P3）：长任务长时间打同一个模型
             //   会撞上游限流（429）或服务错误（5xx）—— 逐个换池中下一个候选重试本轮，
             //   换完仍失败才抛出（抛出的错误按原路径落库到助手占位消息）。
+            recordModelFailure(db, task.userId, platform.id, model.id, e?.message || e);
             const nextId = switchToNextModel();
             if (nextId) {
               logger.warn(
@@ -7914,6 +7916,7 @@ async function runSubAgentImpl(
           streamOk = true; // 文本模式重试成功（再抛错会冒泡）
         } else if (isPoolFailoverable(e)) {
           // ★ 候选池故障转移：父模型真失败 → 换池中下一个候选重跑本轮
+          recordModelFailure(db, task.userId, platform.id, model.id, e?.message || e);
           const nextId = switchSubModel();
           if (nextId) {
             logger.warn(
@@ -8265,6 +8268,8 @@ export function recordTaskUsage(
   try {
     const platformId = meta.platformId || task.platformId;
     const modelId = meta.modelId || task.modelId;
+    const healthModelId = resolveModelPrimaryId(db, task.userId, platformId, modelId);
+    if (healthModelId) recordModelSuccess(db, task.userId, platformId, healthModelId);
     let d = detail;
     let estimated = false;
     if (!d || isMissingUsage(d)) {

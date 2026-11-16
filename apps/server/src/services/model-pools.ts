@@ -35,8 +35,9 @@ import type { YzSqliteDb } from './sqlite-driver.js';
 import { createLogger } from './logger.js';
 import { rowToModel } from './model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
-import { matchesModelSlot } from '@yan-zhi/shared';
+import { matchesModelSlot, type ModelPoolRouting, type ModelPools as SharedModelPools } from '@yan-zhi/shared';
 import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
+import { loadModelHealthMap, modelHealthScoreAt, stableHealthOrder } from './model-health.js';
 
 const logger = createLogger('model-pools');
 
@@ -47,7 +48,7 @@ export const SLOTS: Slot[] = ['llm', 'vision', 'image', 'video'];
 /** 槽位匹配：判据唯一实现在 @yan-zhi/shared（前端选择器共用），这里 re-export 保持既有引用名 */
 export const matchesSlot = matchesModelSlot;
 
-export type ModelPools = Partial<Record<Slot, string[]>>;
+export type ModelPools = SharedModelPools;
 
 /** 解析结果条目：模型 + 所属平台 + 命中来源层（诊断与 list_models 打标用） */
 export interface PoolEntry {
@@ -71,6 +72,8 @@ export function parsePoolsJson(raw: string | null | undefined): ModelPools {
       const arr = (v as Record<string, unknown>)[slot];
       if (Array.isArray(arr)) out[slot] = sanitizeIds(arr);
     }
+    const routing = (v as Record<string, unknown>).routing;
+    if (routing === 'priority' || routing === 'health') out.routing = routing;
     return out;
   } catch {
     return {};
@@ -164,6 +167,22 @@ function mapPoolIds(
   return entries;
 }
 
+/**
+ * 按用户在候选池保存的策略排序。
+ * 健康优先只调整同一层的其余候选，不改变“当前模型永远排首位”的故障转移契约。
+ */
+export function orderPoolEntries(
+  db: YzSqliteDb,
+  userId: string,
+  entries: PoolEntry[],
+  routing: ModelPoolRouting | undefined,
+  now = Date.now(),
+): PoolEntry[] {
+  if (routing !== 'health' || entries.length < 2) return entries;
+  const health = loadModelHealthMap(db, userId, entries.map((entry) => entry.model.id));
+  return stableHealthOrder(entries, (entry) => modelHealthScoreAt(health.get(entry.model.id), now));
+}
+
 function readAgentPools(db: YzSqliteDb, agentId: string, userId: string): ModelPools {
   const row = db
     .prepare('SELECT model_pools_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
@@ -217,17 +236,20 @@ export function resolvePool(db: YzSqliteDb, opts: ResolvePoolOpts, slot: Slot): 
 
   // L1 智能体：跨平台选（用户在智能体配置里从全部可见模型里挑）
   if (agentId) {
-    const entries = mapPoolIds(db, userId, readAgentPools(db, agentId, userId)[slot] || [], slot, 'agent');
-    if (entries.length) return entries;
+    const pools = readAgentPools(db, agentId, userId);
+    const entries = mapPoolIds(db, userId, pools[slot] || [], slot, 'agent');
+    if (entries.length) return orderPoolEntries(db, userId, entries, pools.routing);
   }
 
   // L2 智能体平台：所有智能体的默认池，跨平台可选（不再限定单个供应商）
-  const apEntries = mapPoolIds(db, userId, readAgentPlatformPools(db)[slot] || [], slot, 'agentPlatform');
-  if (apEntries.length) return apEntries;
+  const agentPlatformPools = readAgentPlatformPools(db);
+  const apEntries = mapPoolIds(db, userId, agentPlatformPools[slot] || [], slot, 'agentPlatform');
+  if (apEntries.length) return orderPoolEntries(db, userId, apEntries, agentPlatformPools.routing);
 
   // L3 全局
-  const globalEntries = mapPoolIds(db, userId, readGlobalPools(db)[slot] || [], slot, 'global');
-  if (globalEntries.length) return globalEntries;
+  const globalPools = readGlobalPools(db);
+  const globalEntries = mapPoolIds(db, userId, globalPools[slot] || [], slot, 'global');
+  if (globalEntries.length) return orderPoolEntries(db, userId, globalEntries, globalPools.routing);
 
   // L4 自动兜底：全部生效模型按槽位筛，is_default 优先（等价「现状无池」行为，零配置可用）
   const rows = loadEffectiveModels(db, userId).filter((r) => matchesSlot(r.type, capsOf(r), slot));
@@ -309,6 +331,11 @@ export function validateModelPools(db: YzSqliteDb, userId: string, raw: unknown)
   }
   const src = raw as Record<string, unknown>;
   const pools: ModelPools = {};
+  if (src.routing === 'priority' || src.routing === 'health') {
+    pools.routing = src.routing;
+  } else if (src.routing !== undefined && src.routing !== null && src.routing !== '') {
+    return { ok: false, error: 'routing 只能是 priority 或 health' };
+  }
   for (const slot of SLOTS) {
     const arr = src[slot];
     if (arr === undefined || arr === null) continue;

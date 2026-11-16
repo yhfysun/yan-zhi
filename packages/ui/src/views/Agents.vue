@@ -259,6 +259,20 @@
         都没配再回退「设置 → 通用」的全局默认池。顺序即优先级，第一个是首选。
       </div>
       <el-form label-width="80px">
+        <el-form-item label="路由策略">
+          <div class="pool-routing-control">
+            <el-radio-group v-model="poolForm.routing" size="small">
+              <el-radio-button
+                v-for="option in MODEL_ROUTING_OPTIONS"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <span class="pool-routing-hint">{{ MODEL_ROUTING_OPTIONS.find(o => o.value === poolForm.routing)?.tip }}</span>
+          </div>
+        </el-form-item>
         <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
           <el-select
             v-model="poolForm[slot]"
@@ -266,7 +280,12 @@
             filterable clearable multiple collapse-tags style="width:100%"
           >
             <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
-              <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+              <el-option
+                v-for="m in g.models"
+                :key="m.id"
+                :label="poolOptionLabel(m, modelPoolStore.healthByModelId[m.id]?.state)"
+                :value="m.id"
+              />
             </el-option-group>
           </el-select>
         </el-form-item>
@@ -288,10 +307,12 @@ import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, A
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { useModelPoolStore, usePlatformStore } from '../stores';
-import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
+import {
+  POOL_SLOTS, POOL_LABELS, MODEL_ROUTING_OPTIONS, groupModelsForSlot, poolModelsOf, poolOptionLabel,
+} from '../utils/model-pools';
 import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
-import type { Agent } from '@yan-zhi/shared';
+import type { Agent, ModelPools } from '@yan-zhi/shared';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 import AgentEditForm from '../components/AgentEditForm.vue';
@@ -314,7 +335,7 @@ const modelPoolStore = useModelPoolStore();
 //   对所有智能体生效、跨供应商可选。见 services/model-pools.ts 文件头。
 const showPools = ref(false);
 const poolSaving = ref(false);
-const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
+const poolForm = ref<ModelPools>({ llm: [], vision: [], image: [], video: [], routing: 'priority' });
 /** 各槽位可选模型（跨所有平台，按平台分组）；数据源走 modelPoolStore 的独立全量清单
  *  （platformStore.models 会被 loadModels(pid) 整体替换成单平台清单而变空） */
 const poolSlotGroups = computed(() => {
@@ -328,6 +349,7 @@ const poolSlotGroups = computed(() => {
 async function openPools() {
   await Promise.all([
     modelPoolStore.ensureModels().catch(() => {}),
+    modelPoolStore.loadHealth().catch(() => {}),
     platformStore.platformsLoaded ? Promise.resolve() : platformStore.loadPlatforms().catch(() => {}),
   ]);
   await modelPoolStore.load().catch(() => {});
@@ -335,6 +357,7 @@ async function openPools() {
   poolForm.value = {
     llm: [...(p.llm || [])], vision: [...(p.vision || [])],
     image: [...(p.image || [])], video: [...(p.video || [])],
+    routing: p.routing || 'priority',
   };
   showPools.value = true;
 }
@@ -588,6 +611,8 @@ async function remove(agent: Agent) {
   background: var(--el-fill-color-light); color: var(--el-text-color-regular);
   font-size: 12px; line-height: 1.7;
 }
+.pool-routing-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.pool-routing-hint { font-size: 12px; line-height: 1.5; color: var(--el-text-color-secondary); }
 
 /* ===== 返回导航 ===== */
 .back-header { display: flex; align-items: flex-start; gap: 12px; }

@@ -137,6 +137,20 @@
           <!-- 模型候选池（model-candidate-pools）：全局默认层（第三层）。智能体未配 → 智能体平台默认池 → 这里；都没配自动兜底全部可见模型 -->
           <SettingRow label="全局模型候选池">
             <div class="pool-global-grid">
+              <div class="pool-global-row">
+                <span class="pool-global-label">策略</span>
+                <div class="pool-routing-control">
+                  <el-radio-group v-model="globalPools.routing" size="small">
+                    <el-radio-button
+                      v-for="option in MODEL_ROUTING_OPTIONS"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </el-radio-button>
+                  </el-radio-group>
+                </div>
+              </div>
               <div v-for="slot in POOL_SLOTS" :key="slot" class="pool-global-row">
                 <span class="pool-global-label">{{ POOL_LABELS[slot] }}</span>
                 <el-select
@@ -146,7 +160,12 @@
                   style="flex:1"
                 >
                   <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
-                    <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+                    <el-option
+                      v-for="m in g.models"
+                      :key="m.id"
+                      :label="poolOptionLabel(m, modelPoolStore.healthByModelId[m.id]?.state)"
+                      :value="m.id"
+                    />
                   </el-option-group>
                 </el-select>
               </div>
@@ -982,7 +1001,10 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase } from '../api/client';
 import { closeSettingsDialog } from '../composables/useSettingsDialog';
-import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
+import {
+  POOL_SLOTS, POOL_LABELS, MODEL_ROUTING_OPTIONS, groupModelsForSlot, poolModelsOf, poolOptionLabel,
+} from '../utils/model-pools';
+import type { ModelPools } from '@yan-zhi/shared';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
 import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, setPetSlot } from '../stores/pet';
@@ -1589,7 +1611,7 @@ const availableMemoryExtractModels = computed(() =>
 
 // ===== 全局模型候选池（model-candidate-pools）=====
 // POOL_SLOTS / POOL_LABELS / 分组口径统一取自 utils/model-pools.ts（唯一实现，避免各视图漂移）
-const globalPools = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
+const globalPools = ref<ModelPools>({ llm: [], vision: [], image: [], video: [], routing: 'priority' });
 const poolSaving = ref(false);
 /**
  * 各槽位可选模型。
@@ -1624,6 +1646,7 @@ onMounted(async () => {
   // 全局候选池：platformStore.loadPlatforms 只拉平台列表不带模型；候选池要跨所有平台选，
   // 先拉全量模型（独立清单，不受 loadModels(pid) 影响），再读已保存的全局池
   await modelPoolStore.ensureModels().catch(() => {});
+  await modelPoolStore.loadHealth().catch(() => {});
   void modelPoolStore.load().then(() => { globalPools.value = { ...modelPoolStore.globalPools } as any; });
   defaultPlatformId.value = settingsStore.settings.defaultPlatformId;
   defaultModelId.value = settingsStore.settings.defaultModelId;
@@ -2330,6 +2353,7 @@ onMounted(async () => {
 .pool-global-grid { display: flex; flex-direction: column; gap: 6px; width: 460px; max-width: 100%; }
 .pool-global-row { display: flex; align-items: center; gap: 8px; }
 .pool-global-label { width: 52px; flex-shrink: 0; font-size: 12px; color: var(--el-text-color-secondary); }
+.pool-routing-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 /* 提示独占一行、按钮右对齐 —— 挤在一行会互相压扁（截图实测） */
 .pool-global-actions { margin-top: 8px; }
 .pool-global-hint { display: block; font-size: 12px; line-height: 1.6; color: var(--el-text-color-secondary); }

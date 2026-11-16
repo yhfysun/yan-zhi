@@ -24,10 +24,10 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
-import type { Model, ModelPools } from '@yan-zhi/shared';
+import type { Model, ModelHealthView, ModelPools } from '@yan-zhi/shared';
 import { rowToModel } from './platform';
 
-const EMPTY_POOLS: ModelPools = { llm: [], vision: [], image: [], video: [] };
+const EMPTY_POOLS: ModelPools = { llm: [], vision: [], image: [], video: [], routing: 'priority' };
 
 /** 生效池条目（GET /api/model-pools 的 effective[slot] 最小面，2026-10-13） */
 export interface EffectivePoolEntry {
@@ -37,6 +37,8 @@ export interface EffectivePoolEntry {
   alias?: string;
   modelApiId?: string;
   source?: string;
+  health?: ModelHealthView['state'];
+  healthScore?: number;
 }
 
 function normalize(p: unknown): ModelPools {
@@ -46,6 +48,9 @@ function normalize(p: unknown): ModelPools {
     const arr = v[slot];
     out[slot] = Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
   }
+  if (v.routing === 'health') out.routing = 'health';
+  else if (v.routing === 'priority') out.routing = 'priority';
+  else out.routing = 'priority';
   return out;
 }
 
@@ -56,6 +61,8 @@ export const useModelPoolStore = defineStore('modelPool', () => {
   const agentPlatformPools = ref<ModelPools>({ ...EMPTY_POOLS });
   /** 生效池（后端解析的有序候选，load() 时随 GET /api/model-pools 一并返回） */
   const effectivePools = ref<Record<string, EffectivePoolEntry[]> | null>(null);
+  /** 模型主键 → 近期健康状态；仅用于候选池标签与服务端排序结果解释。 */
+  const healthByModelId = ref<Record<string, ModelHealthView>>({});
   const loaded = ref(false);
 
   /**
@@ -99,6 +106,16 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     loaded.value = true;
   }
 
+  async function loadHealth(): Promise<void> {
+    const r = await api.get<ModelHealthView[]>('/model-pools/health');
+    if ('error' in r || !Array.isArray(r.data)) return;
+    const next: Record<string, ModelHealthView> = {};
+    for (const row of r.data) {
+      if (row && typeof row.modelId === 'string') next[row.modelId] = row;
+    }
+    healthByModelId.value = next;
+  }
+
   async function saveGlobal(pools: ModelPools): Promise<string | null> {
     const r = await api.put<any>('/model-pools/global', { modelPools: pools });
     if (r && 'error' in r) return (r as any).error || '保存失败';
@@ -125,7 +142,8 @@ export const useModelPoolStore = defineStore('modelPool', () => {
 
   return {
     globalPools, agentPlatformPools, effectivePools, loaded, allModels, modelsLoaded,
-    load, saveGlobal, saveAgentPlatform, ensureModels,
+    healthByModelId,
+    load, loadHealth, saveGlobal, saveAgentPlatform, ensureModels,
     effectiveVision,
   };
 });

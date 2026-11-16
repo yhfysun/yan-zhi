@@ -19,6 +19,7 @@ import {
   normalizeResponsesUsage,
 } from '@yan-zhi/shared';
 import { recordStandaloneUsage } from '../services/usage-ledger.js';
+import { recordModelFailure, recordModelSuccess, resolveModelPrimaryId } from '../services/model-health.js';
 import {
   isDashscopePlatform,
   dashscopeNativeRoot,
@@ -197,6 +198,20 @@ function fallbackKeyOf(p: any): string {
   return hasTokenPool(p.id) ? '' : (p.api_key_enc || '');
 }
 
+function recordProxyModelSuccess(p: any, body: any): void {
+  const apiModel = String(body?.model || '');
+  if (!apiModel) return;
+  const modelId = resolveModelPrimaryId(db, p.user_id, p.id, apiModel);
+  if (modelId) recordModelSuccess(db, p.user_id, p.id, modelId);
+}
+
+function recordProxyModelFailure(p: any, body: any, error: unknown): void {
+  const apiModel = String(body?.model || '');
+  if (!apiModel) return;
+  const modelId = resolveModelPrimaryId(db, p.user_id, p.id, apiModel);
+  if (modelId) recordModelFailure(db, p.user_id, p.id, modelId, error);
+}
+
 /**
  * 带 Token 池重试的代理请求：每次选最优 Token → 停顿 → fetch，
  * 成功则转发；失败（401/403/429/5xx/网络错误）则记录并换 Token 重试，最多 MAX_RETRY 次。
@@ -235,12 +250,14 @@ async function proxyWithRetry(
     } catch (e: any) {
       if (token) recordFailure(token.id);
       if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
+      recordProxyModelFailure(p, body, e?.message || e);
       res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
       return;
     }
 
     if (upstream.ok) {
       if (token) recordSuccess(token.id);
+      recordProxyModelSuccess(p, body);
       // ★ probe 记账（2026-10-18）：非流式响应体里带 usage，此前这笔（UI 的连通性
       //   测试等）完全没进账本 ⇒ 账本对不上。路由传的 isStream 恒为 true 不可信，
       //   实际按响应 Content-Type 分流（SSE = 流式，代理是字节转发不解析，真实会话
@@ -255,6 +272,7 @@ async function proxyWithRetry(
         await upstream.text().catch(() => {});
         continue;
       }
+      recordProxyModelFailure(p, body, `HTTP ${upstream.status}`);
     }
 
     await forward(upstream, res);

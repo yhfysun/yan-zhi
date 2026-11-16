@@ -77,6 +77,20 @@
                   </el-option-group>
                 </el-select>
               </el-form-item>
+              <el-form-item label="路由策略">
+                <div class="pool-routing-control">
+                  <el-radio-group v-model="form.modelPools.routing" size="small">
+                    <el-radio-button
+                      v-for="option in MODEL_ROUTING_OPTIONS"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </el-radio-button>
+                  </el-radio-group>
+                  <span class="pool-routing-hint">{{ MODEL_ROUTING_OPTIONS.find(o => o.value === form.modelPools.routing)?.tip }}</span>
+                </div>
+              </el-form-item>
               <!-- 模型候选池（model-candidate-pools）：四槽位有序多选，顺序即优先级（第一个为首选）。
                    未配置的槽位按 智能体平台默认池 → 全局池 → 自动兜底 回退（判据 matchesModelSlot 与后端同源）。 -->
               <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
@@ -87,7 +101,12 @@
                     filterable clearable multiple collapse-tags style="width:100%"
                   >
                     <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
-                      <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+                      <el-option
+                        v-for="m in g.models"
+                        :key="m.id"
+                        :label="poolOptionLabel(m, modelPoolStore.healthByModelId[m.id]?.state)"
+                        :value="m.id"
+                      />
                     </el-option-group>
                   </el-select>
                   <span v-if="(form.modelPools[slot] || []).length" class="pool-first-tag">首选：{{ firstPoolName(slot) }}</span>
@@ -313,7 +332,9 @@ import type { Agent } from '@yan-zhi/shared';
 import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore, useModelPoolStore } from '../stores';
 import { api } from '../api/client';
-import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
+import {
+  POOL_SLOTS, POOL_LABELS, MODEL_ROUTING_OPTIONS, groupModelsForSlot, poolModelsOf, poolOptionLabel,
+} from '../utils/model-pools';
 import { AVATAR_KEY_PREFIX, agentInitial, isKnownAgentIconKey, resolveAgentIcon } from '../utils/agentIcon';
 import { agentAvatarGroups, isKnownAgentAvatarImage, resolveAgentAvatarImageByAgentId } from '../utils/agentAvatarImages';
 
@@ -359,7 +380,7 @@ const form = ref<any>({
   // avatar：内置图标库的 key，空 = 自动（按内置 id / 名称关键词判定，见 utils/agentIcon.ts）
   avatar: '',
   agentKind: 'main',
-  modelPools: { llm: [], vision: [], image: [], video: [] },
+  modelPools: { llm: [], vision: [], image: [], video: [], routing: 'priority' },
   temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: DEFAULT_AGENT_PARAMS.topP, frequencyPenalty: DEFAULT_AGENT_PARAMS.frequencyPenalty,
   presencePenalty: DEFAULT_AGENT_PARAMS.presencePenalty,
@@ -579,6 +600,7 @@ watch(() => props.agent, () => {
     void loadKbs();
     // 候选池 / 锁定模型要跨所有平台选：拉独立全量模型清单（幂等）+ 平台列表
     void modelPoolStore.ensureModels();
+    void modelPoolStore.loadHealth().catch(() => {});
     if (!platformStore.platformsLoaded) void platformStore.loadPlatforms();
     const a = props.agent;
     form.value = {
@@ -590,6 +612,7 @@ watch(() => props.agent, () => {
         vision: [...(a?.modelPools?.vision || [])],
         image: [...(a?.modelPools?.image || [])],
         video: [...(a?.modelPools?.video || [])],
+        routing: a?.modelPools?.routing || 'priority',
       },
       agentKind: a?.agentKind === 'sub' ? 'sub' : 'main',
       temperature: a?.temperature ?? DEFAULT_AGENT_PARAMS.temperature,
@@ -711,6 +734,8 @@ defineExpose({ save: handleSave, remove: handleDelete, reset: handleReset });
 /* 模型候选池：多选行 + 首选标记 */
 .pool-select-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 .pool-first-tag { flex-shrink: 0; font-size: 12px; color: var(--el-text-color-secondary); white-space: nowrap; }
+.pool-routing-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.pool-routing-hint { font-size: 12px; line-height: 1.5; color: var(--el-text-color-secondary); }
 .publish-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 
 .prompt-wrap { width: 100%; display: flex; flex-direction: column; }

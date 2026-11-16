@@ -477,12 +477,34 @@ export type AgentType = 'harness' | 'workflow';
 
 /** 模型候选池槽位（model-candidate-pools）：llm=对话 / vision=视觉理解 / image=生图 / video=生视频 */
 export type ModelPoolSlot = 'llm' | 'vision' | 'image' | 'video';
+/**
+ * 模型池路由策略：
+ * - priority：严格按用户排序，保持现有行为；
+ * - health：先保持首选，其余候选按近期成功率/冷却状态动态排序。
+ */
+export type ModelPoolRouting = 'priority' | 'health';
 /** 三层同构池结构：槽位 → 有序 model 主键数组（[0] 首选）；缺失槽位 = 未配置，回退下一层 */
 export interface ModelPools {
   llm?: string[];
   vision?: string[];
   image?: string[];
   video?: string[];
+  routing?: ModelPoolRouting;
+}
+
+/** 模型近期健康状态（服务端按成功/失败窗口计算，前端只读展示） */
+export type ModelHealthState = 'unknown' | 'healthy' | 'degraded' | 'cooling';
+
+export interface ModelHealthView {
+  modelId: string;
+  platformId: string;
+  state: ModelHealthState;
+  score: number;
+  failCount: number;
+  cooldownUntil: number;
+  lastFailAt: number | null;
+  lastSuccessAt: number | null;
+  lastError?: string;
 }
 
 /**

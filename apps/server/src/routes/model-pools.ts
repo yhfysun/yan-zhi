@@ -26,15 +26,17 @@ import {
   validateModelPools,
   type ModelPools,
 } from '../services/model-pools.js';
+import { healthStateAt, listModelHealth, loadModelHealthMap, modelHealthScoreAt } from '../services/model-health.js';
 
 const router = Router();
 router.use(authMiddleware);
 
 const userId = (req: Request) => req.user!.userId;
 
-function poolsToDto(p: ModelPools): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
+function poolsToDto(p: ModelPools): ModelPools {
+  const out: ModelPools = {};
   for (const s of SLOTS) out[s] = p[s] || [];
+  out.routing = p.routing || 'priority';
   return out;
 }
 
@@ -57,16 +59,23 @@ router.get('/', (req: Request, res: Response) => {
   // 生效池条目只回前端需要的最小面（id/别名/平台/来源），避免整行 Model 对象泄漏内部字段
   const effective: Record<string, unknown[]> = {};
   for (const slot of SLOTS) {
-    effective[slot] = resolvePool(db, { userId: uid, agentId }, slot).map((e) => ({
-      modelId: e.model.id,
-      platformId: e.platformId,
-      platformName: e.platformName,
-      alias: e.model.alias,
-      modelApiId: e.model.modelId,
-      type: e.model.type,
-      capabilities: e.model.capabilities,
-      source: e.source,
-    }));
+    const entries = resolvePool(db, { userId: uid, agentId }, slot);
+    const health = loadModelHealthMap(db, uid, entries.map((entry) => entry.model.id));
+    effective[slot] = entries.map((e) => {
+      const row = health.get(e.model.id);
+      return {
+        modelId: e.model.id,
+        platformId: e.platformId,
+        platformName: e.platformName,
+        alias: e.model.alias,
+        modelApiId: e.model.modelId,
+        type: e.model.type,
+        capabilities: e.model.capabilities,
+        source: e.source,
+        health: healthStateAt(row),
+        healthScore: modelHealthScoreAt(row),
+      };
+    });
   }
 
   res.json({
@@ -78,6 +87,11 @@ router.get('/', (req: Request, res: Response) => {
       effective,
     },
   });
+});
+
+// GET /api/model-pools/health —— 模型级近期健康状态（前端标注冷却/不稳定）
+router.get('/health', (req: Request, res: Response) => {
+  res.json({ data: listModelHealth(db, userId(req)) });
 });
 
 // PUT /api/model-pools/global —— 全局默认池（app_config）

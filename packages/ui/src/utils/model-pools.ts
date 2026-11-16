@@ -8,7 +8,7 @@
 //   共享缓存为单平台清单（设置页切平台、平台详情页进详情都会触发）→ 候选池下拉变空。
 //   候选池要跨所有平台选模型，所以由 useModelPoolStore 维护一份独立的全量清单。
 import { matchesModelSlot } from '@yan-zhi/shared';
-import type { ModelPoolSlot } from '@yan-zhi/shared';
+import type { ModelHealthState, ModelPoolRouting, ModelPoolSlot, ModelPools } from '@yan-zhi/shared';
 import type { Model, Platform } from '@yan-zhi/shared';
 
 /** 槽位顺序固定：llm → vision → image → video */
@@ -25,6 +25,21 @@ export const POOL_SLOTS: ModelPoolSlot[] = ['llm', 'vision', 'image', 'video'];
 export const POOL_LABELS: Record<ModelPoolSlot, string> = {
   llm: 'LLM', vision: '视觉', image: '生图', video: '生视频',
 };
+
+export const MODEL_ROUTING_OPTIONS: Array<{ value: ModelPoolRouting; label: string; tip: string }> = [
+  { value: 'priority', label: '顺序优先', tip: '严格按候选顺序尝试，保持现有行为' },
+  { value: 'health', label: '健康优先', tip: '首选不变；其余候选避开近期失败和冷却中的模型' },
+];
+
+export function modelHealthSuffix(state?: ModelHealthState): string {
+  if (state === 'cooling') return ' · 冷却中';
+  if (state === 'degraded') return ' · 不稳定';
+  return '';
+}
+
+export function poolOptionLabel(model: Model, state?: ModelHealthState): string {
+  return `${model.alias || model.modelId}${modelHealthSuffix(state)}`;
+}
 
 /** 生效模型口径（与后端 services/model-pools.ts loadEffectiveModels 一致）：
  *  模型 enabled 且 visible，且所属平台 llm_enabled !== false。 */
@@ -93,6 +108,6 @@ export function poolModelsOf(
 }
 
 /** 空池（llm/vision/image/video 全为空数组） */
-export function emptyPools(): Record<ModelPoolSlot, string[]> {
-  return { llm: [], vision: [], image: [], video: [] };
+export function emptyPools(): ModelPools {
+  return { llm: [], vision: [], image: [], video: [], routing: 'priority' };
 }
