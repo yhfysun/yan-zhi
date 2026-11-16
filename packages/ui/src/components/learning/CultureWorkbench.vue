@@ -36,6 +36,21 @@ const DEPTHS: Depth[] = ['初学', '进阶', '原文'];
 // ===== 总览层 =====
 const stages = ref<CulturePathStage[]>([]);
 const stageIndex = ref(0);
+// ★★ v1.1 移动端骨架（评审定稿 §6-2/§6-4）：阶下拉（44px 一行）+ 课时横滑单行；
+//    桌面手风琴逐字不变。
+const culCompact = ref(
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqCul = window.matchMedia('(max-width: 900px)');
+  const onMqCul = (e: MediaQueryListEvent) => { culCompact.value = e.matches; };
+  try { mqCul.addEventListener('change', onMqCul); } catch { mqCul.addListener(onMqCul); }
+}
+function onCulStageChange(event: Event) {
+  const level = (event.target as HTMLSelectElement).value;
+  const idx = stages.value.findIndex((s) => s.level === level);
+  if (idx >= 0) stageIndex.value = idx;
+}
 const loading = ref(true);
 const error = ref('');
 const completedIds = ref<string[]>([]);
@@ -409,6 +424,45 @@ onBeforeUnmount(() => {
     <p v-else-if="error" class="cul-hint cul-error">{{ error }}</p>
 
     <template v-else>
+      <!-- ★ v1.1 移动端：阶下拉 + 课时横滑单行（一屏放下）；桌面手风琴保持 -->
+      <select
+        v-if="culCompact"
+        class="cul-stage-select"
+        :value="stages[stageIndex]?.level ?? ''"
+        aria-label="选择学习阶段"
+        @change="onCulStageChange($event)"
+      >
+        <option v-for="(stage, si) in stages" :key="stage.level" :value="stage.level">
+          {{ String(si + 1).padStart(2, '0') }} · {{ stage.level }}（{{ stageDoneCount(stage) }}/{{ stage.lessons.length + stage.couplets.length }} 已完成）
+        </option>
+      </select>
+      <template v-if="culCompact">
+        <div class="cul-lesson-strip">
+          <button
+            v-for="l in stages[stageIndex]?.lessons ?? []"
+            :key="l.id"
+            type="button"
+            class="cul-lesson-btn"
+            :class="{ done: completedIds.includes(l.id) }"
+            @click="openLesson(stageIndex, l.id)"
+          >
+            <b>{{ l.title }}</b>
+            <small>{{ l.minutes }} 分钟 · {{ l.steps.length }} 步</small>
+          </button>
+          <button
+            v-for="c in stages[stageIndex]?.couplets ?? []"
+            :key="c.id"
+            type="button"
+            class="cul-lesson-btn cul-couplet-btn"
+            :class="{ done: completedIds.includes(c.id) }"
+            @click="openCouplet(stageIndex, c.id)"
+          >
+            <b>对句 · {{ c.title }}</b>
+            <small>点候选字填槽</small>
+          </button>
+        </div>
+      </template>
+      <template v-else>
       <div v-for="(stage, si) in stages" :key="stage.level" class="cul-stage" :class="{ open: si === stageIndex }">
         <button type="button" class="cul-stage-head" @click="stageIndex = si">
           <span>{{ String(si + 1).padStart(2, '0') }}</span>
@@ -445,6 +499,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+      </template>
     </template>
 
     <!-- 沉浸台：全屏覆盖、锁滚动；顶栏四项（返回 / 课程名 / 步骤 x/n / 退出） -->
@@ -884,5 +939,31 @@ onBeforeUnmount(() => {
   .cul-immersive-head { grid-template-columns: auto minmax(0, 1fr) auto auto; }
   .cul-step-count { display: none; }
   .cul-plain-pair { grid-template-columns: 1fr; }
+}
+/* ★★ v1.1 移动端骨架（评审定稿 §6-2/§6-4）：阶下拉（44px 一行）+ 课时横滑单行；
+   桌面手风琴逐字不变。 */
+@media (max-width: 900px) {
+  .cul-stage-select {
+    position: sticky; top: 64px; z-index: 5;
+    width: 100%;
+    min-height: 44px;
+    margin: 4px 0 10px;
+    border: 1px solid var(--cul-line, #d8d3c8);
+    border-radius: 10px;
+    background: var(--cul-panel, #fff);
+    color: var(--cul-ink, #33302a);
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  .cul-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .cul-lesson-strip .cul-lesson-btn { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }
+  .cul-lesson-strip .cul-lesson-btn p { display: none; }
+  .cul-lesson-strip .cul-lesson-btn b { font-size: 12px; }
+  .cul-lesson-strip .cul-lesson-btn small { white-space: normal; font-size: 9px; }
 }
 </style>

@@ -159,6 +159,11 @@ apps/mobile/nodejs/dist/
 apps/mobile/nodejs/node_modules/
 apps/mobile/nodejs/index.js
 
+# 内置离线 TTS 二进制（sherpa-onnx AAR + piper 英语模型，scripts/fetch-sherpa.cjs 下载，
+# 二进制 ~50MB 不入库；SherpaTts.java 等源码照常入库）
+apps/mobile/native/android-sherpa/libs/
+apps/mobile/native/android-sherpa/assets/
+
 # 服务端临时冒烟数据
 apps/server/tmp_*
 apps/server/tmp-*

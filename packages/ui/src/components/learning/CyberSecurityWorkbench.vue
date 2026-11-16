@@ -114,6 +114,8 @@ const activePath = computed(() =>
   paths.value.find((path) => path.id === props.pathId) || paths.value[0] || null,
 );
 const visiblePaths = computed(() => paths.value.filter((path) => path.level === activeLevel.value));
+// ★★ v1.1 移动端骨架（评审定稿 §6-4）：模块卡全部进横向滑动单行（CSS ≤900px），
+//    不再有「前 6 张 + 展开全部」切片；桌面网格逐字不变。
 const levelCounts = computed<Record<SecurityLevel, number>>(() => {
   const counts: Record<SecurityLevel, number> = { 入门: 0, 进阶: 0, 高级: 0 };
   for (const path of paths.value) counts[path.level] += 1;
@@ -1702,6 +1704,12 @@ onBeforeUnmount(() => {
   .sec-overview-head,
   .sec-module-browser { padding: 16px; }
   .sec-overview-title-row { gap: 16px; }
+  /* ★★ v1.1 模块卡=横向滑动单行（评审定稿 §6-4）：全量模块进一条横轨，单卡 170px；
+     次要文案隐藏；桌面网格逐字不变。 */
+  .sec-module-list { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .sec-module-card { flex: 0 0 170px; width: 170px; }
+  .sec-module-card p,
+  .sec-module-card .sec-module-topics { display: none; }
   .sec-module-card {
     grid-template-columns: 34px minmax(0, 1fr);
   }

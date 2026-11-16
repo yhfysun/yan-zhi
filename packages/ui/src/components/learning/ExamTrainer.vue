@@ -106,6 +106,8 @@ function questionKind(q: ExamQuestion) { return q.kind === 'practice' ? 'practic
 function examTypeClass(type: ExamType) {
   return type === '考研' ? 'postgrad' : type === '高考' ? 'gaokao' : 'ruankao';
 }
+// ★★ v1.1 移动端骨架（评审定稿 §6-4）：试卷卡全部进横向滑动单行（CSS ≤900px），
+//    不再有「前 6 套 + 展开全部」切片；桌面网格逐字不变。
 watch([filter, softLevel, softFormat], () => {
   if (softSpecialty.value !== '全部' && !softSpecialties.value.includes(softSpecialty.value)) {
     softSpecialty.value = '全部';
@@ -553,5 +555,11 @@ onBeforeUnmount(() => {
   .lp-exam-material { position: static; max-height: none; overflow: visible; }
   .lp-exam-head, .lp-exam-runner-head, .lp-exam-card-foot, .lp-exam-submit, .lp-exam-result-head { flex-wrap: wrap; }
   .lp-exam-submit { position: static; margin: 14px 0 0; padding: 10px 0 0; border-radius: 0; box-shadow: none; }
+  /* ★★ v1.1 试卷卡=横向滑动单行（评审定稿 §6-4）：全量试卷进一条横轨，单卡 210px；
+     次要文案隐藏；桌面网格逐字不变。 */
+  .lp-exam-grid { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .lp-exam-card { flex: 0 0 210px; width: 210px; }
+  .lp-exam-card .lp-exam-tags,
+  .lp-exam-card .lp-exam-points { display: none; }
 }
 </style>

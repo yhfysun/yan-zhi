@@ -119,6 +119,17 @@ const PHASES: Phase[] = [
 
 const stages = ref<PathStage[]>([]);
 const stageIndex = ref(0);
+// ★★ v1.1 移动端总览骨架（2026-11-16 用户评审定稿，docs/学习模式设计准则.md §6）：
+//    课件全部进横向滑动单行（CSS ≤900px），不再需要「前 6 张 + 展开全部」切片。
+//    isCompactViewport 用于「开始本节」按钮（继续学习主卡）的移动端渲染门控。
+const isCompactViewport = ref(
+  typeof window !== 'undefined' ? window.matchMedia('(max-width: 900px)').matches : false,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqCompact = window.matchMedia('(max-width: 900px)');
+  const onMqCompact = (e: MediaQueryListEvent) => { isCompactViewport.value = e.matches; };
+  try { mqCompact.addEventListener('change', onMqCompact); } catch { mqCompact.addListener(onMqCompact); }
+}
 const stepIndex = ref(0);
 const phaseIndex = ref(0);
 const track = ref('zero');
@@ -162,7 +173,25 @@ type Playback = {
 const activePlaybacks = new Set<Playback>();
 
 const stage = computed(() => stages.value[stageIndex.value] || null);
+// 继续学习主卡（v1.1 §6-3）：第一个未完成的课件 = 「接着学」的落点，全完成则回第一课
+const resumeStepIndex = computed(() => {
+  const list = stage.value?.steps ?? [];
+  const idx = list.findIndex((lesson) => !completedIds.value.includes(lesson.id));
+  return idx >= 0 ? idx : 0;
+});
 const step = computed(() => stage.value?.steps[stepIndex.value] || null);
+// ★ v1.1.1 移动端工具条（用户定稿「一个选课程、一个选小节，一行吸顶」）：
+//    小节下拉（optgroup=阶段，option=课）+ 开始按钮一行，替代阶段胶囊+课件卡（重复展示）。
+const compactLessonIdx = ref(0);
+/** 小节在全部课件中的全局序号（openFocus 按全局索引跳课）。 */
+function globalLessonIndex(si: number, li: number): number {
+  let base = 0;
+  for (let i = 0; i < si; i++) base += stages.value[i]?.steps.length ?? 0;
+  return base + li;
+}
+function onCompactLessonChange(event: Event) {
+  compactLessonIdx.value = Number((event.target as HTMLSelectElement).value);
+}
 const phase = computed(() => PHASES[phaseIndex.value] || PHASES[0]);
 const totalSteps = computed(() => stages.value.reduce((sum, item) => sum + item.steps.length, 0));
 const completedCount = computed(() => completedIds.value.length);
@@ -1222,18 +1251,54 @@ onBeforeUnmount(() => {
     <p v-else-if="error" class="lp-path-hint error">{{ error }}</p>
 
     <template v-else-if="stage">
-      <div class="lp-path-stage-head">
-        <div>
-          <span>{{ stage.level }}</span>
-          <h3>{{ stage.title }}</h3>
-          <p>{{ stage.subtitle }}</p>
-        </div>
-        <span class="lp-path-stage-progress">
-          {{ stage.steps.filter((lesson) => completedIds.includes(lesson.id)).length }} / {{ stage.steps.length }} 已完成
-        </span>
+      <!-- ★ v1.1.1 移动端工具条（用户定稿）：小节下拉 + 开始按钮，一行吸顶；
+           阶段胶囊与课件卡不再重复展示（选择都进下拉）。桌面保持原布局。 -->
+      <div v-if="isCompactViewport" class="lp-path-compact-bar">
+        <select
+          class="lp-lesson-select"
+          :value="compactLessonIdx"
+          aria-label="选择小节"
+          @change="onCompactLessonChange($event)"
+        >
+          <optgroup
+            v-for="(s, si) in stages"
+            :key="s.id"
+            :label="`${si + 1}. ${s.title}（${s.steps.filter((l) => completedIds.includes(l.id)).length}/${s.steps.length}）`"
+          >
+            <option
+              v-for="(l, li) in s.steps"
+              :key="l.id"
+              :value="globalLessonIndex(si, li)"
+            >
+              {{ completedIds.includes(l.id) ? '✓ ' : '' }}{{ li + 1 }}. {{ l.title }}
+            </option>
+          </optgroup>
+        </select>
+        <button type="button" class="lp-path-go" @click="openFocus(compactLessonIdx)">开始</button>
       </div>
+      <template v-else>
+        <div class="lp-path-stage-head">
+          <div>
+            <span>{{ stage.level }}</span>
+            <h3>{{ stage.title }}</h3>
+            <p>{{ stage.subtitle }}</p>
+          </div>
+          <span class="lp-path-stage-progress">
+            {{ stage.steps.filter((lesson) => completedIds.includes(lesson.id)).length }} / {{ stage.steps.length }} 已完成
+          </span>
+          <button
+            v-if="stage.steps[resumeStepIndex]"
+            type="button"
+            class="lp-path-resume"
+            @click="openFocus(resumeStepIndex)"
+          >
+            开始本节 · {{ stage.steps[resumeStepIndex].title }}
+            <ArrowRight :size="14" />
+          </button>
+        </div>
+      </template>
 
-      <div class="lp-path-step-list">
+      <div v-if="!isCompactViewport" class="lp-path-step-list">
         <button
           v-for="(item, index) in stage.steps"
           :key="item.id"
@@ -1832,6 +1897,17 @@ onBeforeUnmount(() => {
 .lp-path-stage-head h3 { margin: 2px 0; font-size: 16px; }
 .lp-path-stage-head p { margin: 0; color: var(--color-text-secondary); font-size: 11px; }
 .lp-path-stage-progress { color: var(--color-text-tertiary); font-size: 10px; }
+/* 继续本节按钮（桌面 stage-head 内；移动端被工具条替代） */
+.lp-path-resume {
+  width: 100%;
+  min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+  border: 0; border-radius: 10px;
+  background: var(--color-primary); color: #fff;
+  font-size: 13px; font-weight: 700; padding: 8px 14px;
+  cursor: pointer;
+}
+.lp-path-resume:active { opacity: .85; }
 .lp-path-step-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .lp-path-step-list > button {
   display: grid;
@@ -2225,14 +2301,44 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .lp-path-head,
   .lp-path-stage-head { align-items: flex-start; flex-direction: column; }
+  /* ★★ v1.1 装饰 hero 删除（评审定稿 §6-3）：大标语/副文案隐藏，只留行动按钮行 */
+  .lp-path-head > div:first-child { display: none; }
   .lp-path-actions { justify-content: flex-start; }
   .lp-path-stage-head > div { width: 100%; }
-  .lp-path-step-list { grid-template-columns: 1fr; }
-  /* ★★ 页面浓缩（2026-11-16 用户实报「布局还是长的很」）：7 张阶段卡从 auto-fit 网格
-     （手机两列 4 行 ≈ 300px）变**横向滑动胶囊**（一行 ≈ 64px）——用户明确接受
-     左右滑交互；选中阶段课件表保持竖排主内容。 */
-  .lp-path-stages { display: flex; overflow-x: auto; gap: 6px; padding-bottom: 4px; scrollbar-width: thin; }
-  .lp-path-stages button { flex: 0 0 172px; width: 172px; }
+  /* ★★ v1.1.1 移动端工具条（用户定稿）：小节下拉+开始按钮一行吸顶；
+     阶段胶囊与课件卡（与下拉重复）隐藏；桌面保持原布局。 */
+  .lp-path-stages { display: none; }
+  .lp-path-compact-bar {
+    position: sticky; top: 64px; z-index: 5;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px;
+    margin: 6px 0 10px;
+    padding: 6px;
+    border-radius: 12px;
+    background: var(--color-bg-elevated, #fff);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .10);
+  }
+  .lp-lesson-select {
+    min-height: 40px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--color-text);
+    padding: 6px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
+  .lp-path-go {
+    min-width: 64px; min-height: 40px;
+    border: 0; border-radius: 8px;
+    background: var(--color-primary); color: #fff;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .lp-path-go:active { opacity: .85; }
+  .lp-path-method { display: none; }
   .lp-path-immersive-head { grid-template-columns: auto minmax(0, 1fr) auto; padding: 0 12px; }
   .lp-path-crumb span,
   .lp-path-crumb i,

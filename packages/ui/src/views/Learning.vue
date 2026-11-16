@@ -469,6 +469,15 @@ function toggleStage(stage: string) {
 }
 /** 紧凑布局下「我的词单」面板是否展开。 */
 const booksOpen = ref(false);
+// ★ v1.1 移动端总览骨架（2026-11-16 用户评审定稿，docs/学习模式设计准则.md §6-2）：
+//   阶段+课程 = 一个分组下拉（optgroup=阶段，option=课程），一行 44px 替代 ~400px
+//   纵向手风琴。仅移动端渲染（isCompactLayout），桌面手风琴零改动。
+const compactCourseId = computed(() => activeCourseId.value || courses.value[0]?.courses[0]?.id || '');
+function onCompactCourseChange(event: Event) {
+  const id = (event.target as HTMLSelectElement).value;
+  const target = courses.value.flatMap((g) => g.courses).find((item) => item.id === id);
+  if (target) openCourse(target);
+}
 let stopColumnResize: (() => void) | null = null;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 function startColumnResize(side: 'left' | 'right', event: PointerEvent) {
@@ -642,6 +651,7 @@ if (typeof window !== 'undefined' && window.matchMedia) {
 }
 
 function openCourse(c: CourseView) {
+  activeCourseId.value = c.id; // 全科目记录当前选中课程（移动端分组下拉回显用）
   // 紧凑布局：选完课立刻收起阶段面板/词单面板（页面回到一屏内，符合「先选课再沉浸」）
   if (isCompactLayout.value) { openStage.value = ''; booksOpen.value = false; }
   if (c.kind === 'exam') {
@@ -804,20 +814,21 @@ async function loadLevelsForBook(book: Book) {
 // ── 词汇表（全量浏览：分页 + 中英搜索，修"看不全/不完整"）──
 type BookWordRow = { word: string; phonetic: string | null; gloss: string; example: string | null };
 type BookWordsPage = { total: number; page: number; size: number; words: BookWordRow[] };
-const WORD_PAGE_SIZE = 50;
+/** 移动端（≤900px）每页 20 词缩短页面，桌面 50 词不变 */
+const WORD_PAGE_SIZE = computed(() => (isCompactLayout.value ? 20 : 50));
 const wordRows = ref<BookWordRow[]>([]);
 const wordTotal = ref(0);
 const wordPage = ref(0);
 const wordQ = ref('');
 const wordLoading = ref(false);
-const wordPageCount = computed(() => Math.max(1, Math.ceil(wordTotal.value / WORD_PAGE_SIZE)));
+const wordPageCount = computed(() => Math.max(1, Math.ceil(wordTotal.value / WORD_PAGE_SIZE.value)));
 async function loadBookWords(reset = false) {
   if (!activeBook.value) return;
   if (reset) { wordPage.value = 0; }
   wordLoading.value = true;
   try {
     const r = await api.get<{ data: BookWordsPage }>(
-      `/learning/books/${activeBook.value.id}/words?page=${wordPage.value}&size=${WORD_PAGE_SIZE}&q=${encodeURIComponent(wordQ.value)}`,
+      `/learning/books/${activeBook.value.id}/words?page=${wordPage.value}&size=${WORD_PAGE_SIZE.value}&q=${encodeURIComponent(wordQ.value)}`,
     );
     const p = unwrap<BookWordsPage>(r);
     if (p) { wordRows.value = p.words; wordTotal.value = p.total; }
@@ -1077,6 +1088,8 @@ const sceneCourseOptions = computed(() =>
 );
 const sceneCourseName = computed(() => sceneCourseOptions.value.find((c) => c.id === sceneCourseId.value)?.name || '课程场景');
 const sceneLevelText = (level: SceneCard['level']) => (level === '热身' ? '简单' : level === '挑战' ? '中级' : '高级');
+// ★★ v1.1 移动端骨架（评审定稿 §6-4）：场景卡全部进横向滑动单行（CSS ≤900px）；
+//    桌面网格逐字不变。
 const sceneScriptMode = computed(() => {
   if (!activeScene.value) return '';
   return activeScene.value.level === '热身' ? 'simple' : activeScene.value.level === '挑战' ? 'medium' : 'advanced';
@@ -2151,8 +2164,22 @@ watch(softExamDate, (value) => {
           </div>
         </div>
         <div v-else class="lp-courses" :class="{ 'lp-courses-security-mobile': subject === '网络安全' }">
+          <!-- ★ v1.1 移动端骨架：阶段+课程=一个分组下拉（评审定稿），仅移动端渲染 -->
+          <select
+            v-if="isCompactLayout"
+            class="lp-stage-select"
+            :value="compactCourseId"
+            aria-label="选择阶段与课程"
+            @change="onCompactCourseChange($event)"
+          >
+            <option value="" disabled>选择阶段 · 课程</option>
+            <optgroup v-for="grp in groupedCourses" :key="grp.stage" :label="grp.stage">
+              <option v-for="c in grp.courses" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </optgroup>
+          </select>
           <!-- ★ 紧凑布局收口：阶段标题变折叠按钮（单开手风琴），点开才出该阶段课程，
-               选完课自动收起（openCourse）。桌面仍全量平铺。 -->
+               选完课自动收起（openCourse）。桌面仍全量平铺；v1.1 起移动端不再渲染手风琴。 -->
+          <template v-if="!isCompactLayout">
           <div v-for="grp in groupedCourses" :key="grp.stage" class="lp-stage">
             <button
               type="button"
@@ -2221,6 +2248,7 @@ watch(softExamDate, (value) => {
               </template>
             </div>
           </div>
+          </template>
           <p v-if="!courses.length && !loading" class="lp-hint">课程加载中…</p>
         </div>
       </section>
@@ -3563,6 +3591,13 @@ watch(softExamDate, (value) => {
 .lp-scene-action:hover { background: #2861d9; }
 .lp-scene-action:disabled { opacity: .65; cursor: default; }
 @media (max-width: 900px) {
+  /* ★★ v1.1 场景卡=横向滑动单行（评审定稿 §6-4）：全量场景进一条横轨，单卡 200px；
+     次要文案（任务/短语）隐藏，保留标题/角色/CTA；桌面网格逐字不变。 */
+  .lp-scene-grid { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .lp-scene-grid > .lp-scene { flex: 0 0 200px; width: 200px; min-width: 200px; }
+  .lp-scene-grid .lp-scene-desc,
+  .lp-scene-grid .lp-scene-missions,
+  .lp-scene-grid .lp-scene-phrases { display: none; }
   /* ★ 双口径（2026-11-15 Redmi 9 实报）：旧 WebView 不支持 :has()（Chromium 105+），
      原 `:has(.learning-page)` 整条规则静默失效 ⇒ main-content overflow:hidden ⇒
      触摸滚动死、页面滑不动（相册正常 = 触摸硬件没问题）。类名由 Learning.vue
@@ -3578,6 +3613,36 @@ watch(softExamDate, (value) => {
   .lp-grid { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: auto; flex: none; }
   .lp-column-resizer { display: none; }
   .lp-col-left, .lp-col-mid, .lp-col-right { width: 100%; height: auto; max-height: none; overflow: visible; }
+  /* ★★ v1.1 总览骨架（评审定稿，docs/学习模式设计准则.md §6）：科目选择行只剩选择器，
+     状态/引导文案整行隐藏（设置项不占首屏）；顶栏 padding 收紧。 */
+  .lp-top-status { display: none; }
+  /* ★★ v1.1：阶段+课程=一个分组下拉，一行 44px 替代 ~400px 手风琴（手风琴已不渲染） */
+  .lp-stage-select {
+    width: 100%;
+    min-height: 44px;
+    margin: 2px 0 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--color-text);
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  .lp-stage-select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  /* ★★ v1.1.1（用户定稿）：课程下拉吸顶——左栏卡片压缩成一行下拉，随页面固定；
+     卡片头（课程/自定义词单/收起）隐藏，词单折叠入口保留（booksOpen 展开）。 */
+  .lp-col-left { position: sticky; top: 6px; z-index: 6; padding: 8px 12px; }
+  .lp-col-left .lp-card-head { display: none; }
+  .lp-stage-select { margin: 0; }
+  /* ★★ 关卡卡按钮化（用户实报「一个按钮就可以」）：竖排大方块 → 横排紧凑按钮条 */
+  .lp-level-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .lp-level { flex-direction: row; align-items: center; gap: 8px; padding: 7px 10px; min-height: 44px; }
+  .lp-no { font-size: 14px; }
   /* ★★ 页面浓缩（2026-11-16「全部平铺页面很长很丑」）：阶段手风琴行收紧——
      收起时每个阶段只占一行（~36px），整张课程地图从几百 px 塌到 6×36px；
      展开的面板内容才出现（选完课自动收起，见 openCourse）。 */
@@ -3587,13 +3652,16 @@ watch(softExamDate, (value) => {
   .lp-stage-toggle { min-height: 44px; margin: 0; letter-spacing: 1px; }
   .lp-custom-books { margin-top: 6px; padding-top: 6px; }
   /* 右栏收起后的展开轨：移动端从「贴边 26px 细条」（单列下几乎看不见）变通栏按钮，
-     带文字说明——这是移动端复习/口语/软考资料的唯一入口，必须显眼。 */
+     带文字说明——这是移动端复习/口语/软考资料的唯一入口，必须显眼。
+     ★ v1.1（评审定稿）：改为 sticky 吸底——常驻视口底部（TabBar 上方拇指热区），
+     不再埋在页面末尾。 */
   .lp-expand-rail.right {
-    position: static; transform: none;
+    position: sticky; bottom: 6px; transform: none; z-index: 6;
     width: 100%; height: 44px;
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     border: 1px dashed var(--color-border); border-radius: 8px;
-    margin: 4px 0 10px; box-shadow: none;
+    margin: 4px 0 10px; box-shadow: 0 4px 14px rgba(0,0,0,.10);
+    background: var(--color-bg-elevated, #fff);
   }
   .lp-rail-label { font-size: 12px; color: inherit; }
   .lp-courses-security-mobile { flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }

@@ -60,6 +60,19 @@ const openStage = ref('');
 function toggleStage(level: string) {
   openStage.value = openStage.value === level ? '' : level;
 }
+// ★★ v1.1 移动端骨架（评审定稿 §6-2/§6-4）：阶段下拉 + 课件横滑单行；桌面手风琴不动。
+const mwCompact = ref(
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqMw = window.matchMedia('(max-width: 900px)');
+  const onMqMw = (e: MediaQueryListEvent) => { mwCompact.value = e.matches; };
+  try { mqMw.addEventListener('change', onMqMw); } catch { mqMw.addListener(onMqMw); }
+}
+const mwStripStage = computed(() => openStage.value || stages.value[0]?.level || '');
+const stripLessons = computed(() =>
+  stages.value.find((stage) => stage.level === mwStripStage.value)?.lessons ?? [],
+);
 const isCompactViewport = () =>
   typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches;
 const loading = ref(true);
@@ -421,6 +434,30 @@ onBeforeUnmount(() => {
       <div v-if="loading" class="mw-loading">加载中…</div>
       <div v-else-if="error" class="mw-error">{{ error }}</div>
       <div v-else class="mw-stage-list">
+        <!-- ★ v1.1 移动端：阶段下拉 + 课件横滑单行（一屏放下）；桌面手风琴保持 -->
+        <select
+          v-if="mwCompact"
+          class="mw-stage-select"
+          :value="mwStripStage"
+          aria-label="选择学习阶段"
+          @change="openStage = ($event.target as HTMLSelectElement).value"
+        >
+          <option v-for="stage in stages" :key="stage.level" :value="stage.level">
+            {{ stage.level }}（{{ stage.lessons.length }} 课）
+          </option>
+        </select>
+        <template v-if="mwCompact">
+          <div class="mw-lesson-strip">
+            <button
+              v-for="l in stripLessons" :key="l.id" class="mw-lesson"
+              :class="{ done: completed[l.id] }" @click="openLesson(l.id)"
+            >
+              <b>{{ l.title }}</b>
+              <small>约 {{ l.minutes }} 分钟</small>
+            </button>
+          </div>
+        </template>
+        <template v-else>
         <section v-for="stage in stages" :key="stage.level" class="mw-stage">
           <!-- ★ 手风琴头（与文化/周易同款交互）：点开才出该阶段课程，页面不再被
                全部阶段×全部课程撑长；移动端默认全收起，桌面默认第一阶展开 -->
@@ -443,6 +480,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </section>
+        </template>
       </div>
     </div>
 
@@ -839,4 +877,29 @@ onBeforeUnmount(() => {
 }
 .mw-footer button.primary, .mw-footer button.mw-step-next { border-color: var(--score-accent); background: color-mix(in srgb, var(--score-accent) 16%, var(--score-panel)); color: var(--score-accent); }
 .mw-footer button:disabled { opacity: .45; cursor: default; }
+/* ★★ v1.1 移动端骨架（评审定稿 §6-2/§6-4）：阶段下拉（44px 一行）+ 课件横滑单行；
+   桌面手风琴逐字不变。 */
+@media (max-width: 900px) {
+  .mw-stage-select {
+    position: sticky; top: 64px; z-index: 5;
+    width: 100%;
+    min-height: 44px;
+    margin: 4px 0 10px;
+    border: 1px solid var(--mw-line, #d8d3c8);
+    border-radius: 10px;
+    background: var(--mw-panel, #fff);
+    color: var(--mw-ink, #33302a);
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  .mw-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .mw-lesson-strip .mw-lesson { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }
+  .mw-lesson-strip .mw-lesson b { font-size: 12px; }
+  .mw-lesson-strip .mw-lesson small { white-space: normal; font-size: 9px; }
+}
 </style>

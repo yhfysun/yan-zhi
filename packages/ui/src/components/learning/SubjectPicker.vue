@@ -210,7 +210,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 .subject-picker-option.disabled { color: var(--color-text-tertiary); opacity: .55; cursor: not-allowed; }
 .subject-picker-option.disabled:hover { background: transparent; }
 @media (max-width: 900px) {
-  .subject-picker-trigger { min-width: 138px; max-width: min(210px, calc(100vw - 82px)); }
+  /* ★ v1.1 骨架 §6-1：科目收进顶栏——去掉「科目」文字标签，触发器变大成 App 药丸 */
+  .subject-picker-label { display: none; }
+  .subject-picker-trigger { height: 40px; min-width: 118px; font-size: 14px; font-weight: 700; }
+  .subject-picker-trigger svg { width: 16px; height: 16px; }
   .subject-picker-menu { left: 0; }
 }
 </style>

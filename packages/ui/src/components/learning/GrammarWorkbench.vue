@@ -29,6 +29,8 @@ let lastFocusTrigger: HTMLElement | null = null;
 
 const groups = computed(() => ['全部', ...new Set(list.value.map((item) => item.group))]);
 const visible = computed(() => group.value === '全部' ? list.value : list.value.filter((item) => item.group === group.value));
+// ★★ v1.1 移动端骨架（评审定稿 §6-4）：语法卡全部进横向滑动单行（CSS ≤900px），
+//    不再有「前 6 张 + 展开全部」切片；桌面网格逐字不变。
 const phase = computed(() => PHASES[phaseIndex.value] || PHASES[0]);
 
 function unwrap<T>(response: unknown): T | null {
@@ -298,7 +300,11 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .grammar-head { flex-direction: column; }
   .grammar-filters { justify-content: flex-start; }
-  .grammar-grid { grid-template-columns: 1fr 1fr; }
+  /* ★★ v1.1 语法卡=横向滑动单行（评审定稿 §6-4）：全量语法点进一条横轨，单卡 160px；
+     次要文案隐藏；桌面网格逐字不变。 */
+  .grammar-grid { grid-template-columns: none; display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .grammar-card { flex: 0 0 160px; width: 160px; min-width: 160px; }
+  .grammar-card p { display: none; }
   .grammar-focus-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .grammar-focus-rail { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 9px 12px; border-right: 0; border-bottom: 1px solid var(--g-line); }
   .grammar-focus-rail > span { display: none; }

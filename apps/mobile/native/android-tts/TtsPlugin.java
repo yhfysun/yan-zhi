@@ -63,6 +63,48 @@ public class TtsPlugin extends Plugin {
     /** utteranceId → 等待完成回调的 call（speak 提交后保存，done/error/stop 时释放） */
     private final Map<String, PluginCall> active = new HashMap<>();
 
+    // ★★ 内置离线引擎兜底（2026-11-16 用户拍板「没有 TTS 引擎可以打包自带一个」）：
+    //    一加等 ROM 整机无 TTS 引擎（tts_default_synth=null）⇒ 系统链路必死。
+    //    sherpa-onnx + piper 英语模型随 APK 打包（SherpaTts），所有安卓机统一出声。
+    //    只兜英语（学习模式朗读主体）；中文仍走系统链路/前端降级。
+
+    /** 系统链路失败后转内置引擎（后台线程合成+播放，完成 resolve）。 */
+    private void fallbackToBundled(final PendingSpeak pending, String why) {
+        final Context ctx = getContext();
+        Log.w(TAG, "系统链路不可用(" + why + ")，尝试内置离线引擎: lang=" + pending.lang);
+        if (!pending.lang.toLowerCase(Locale.ROOT).startsWith("en")) {
+            Log.w(TAG, "内置引擎仅带英语模型，中文不兜底");
+            pending.call.reject("TTS_INIT_FAILED", "系统语音引擎不可用且内置引擎仅支持英语");
+            return;
+        }
+        if (!SherpaTts.isAvailable(ctx)) {
+            pending.call.reject("TTS_INIT_FAILED", "系统语音引擎不可用且未打包内置模型");
+            return;
+        }
+        final String text = pending.text;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                SherpaTts.SpeakResult r = SherpaTts.speak(ctx, text, 1.0f);
+                if (r.ok) {
+                    Log.i(TAG, "内置引擎朗读完成");
+                    JSObject out = new JSObject();
+                    out.put("ok", true);
+                    out.put("engine", "bundled");
+                    pending.call.resolve(out);
+                } else if ("STOPPED".equals(r.reason)) {
+                    JSObject out = new JSObject();
+                    out.put("ok", false);
+                    out.put("reason", "STOPPED");
+                    pending.call.resolve(out);
+                } else {
+                    Log.w(TAG, "内置引擎失败: " + r.reason);
+                    pending.call.reject("BUNDLED_TTS_FAILED", "内置离线引擎朗读失败（" + r.reason + "）");
+                }
+            }
+        }, "yz-sherpa-tts").start();
+    }
+
     @Override
     public void load() {
         // 挂载即预热：用户首次点读时引擎通常已就绪（init 约 100-400ms）
@@ -83,8 +125,8 @@ public class TtsPlugin extends Plugin {
             return;
         }
         if (initFailed) {
-            Log.w(TAG, "引擎此前已初始化失败，直接 fail-fast");
-            if (pending != null) pending.call.reject("TTS_INIT_FAILED", "系统语音引擎初始化失败（此前已失败）");
+            Log.w(TAG, "引擎此前已初始化失败，直接 fail-fast → 内置引擎兜底");
+            if (pending != null) fallbackToBundled(pending, "TTS_INIT_FAILED(此前已失败)");
             return;
         }
         final Context ctx = getContext();
@@ -116,12 +158,12 @@ public class TtsPlugin extends Plugin {
                 } else {
                     initFailed = true;
                     tts = null;
-                    Log.w(TAG, "onInit 失败 status=" + status);
+                    Log.w(TAG, "onInit 失败 status=" + status + " → 内置引擎兜底");
                     if (pending != null) {
-                        pending.call.reject("TTS_INIT_FAILED", "系统语音引擎初始化失败（status=" + status + "）");
+                        fallbackToBundled(pending, "onInit status=" + status);
                     }
                     if (initPending != null) {
-                        initPending.call.reject("TTS_INIT_FAILED", "系统语音引擎初始化失败（status=" + status + "）");
+                        fallbackToBundled(initPending, "onInit status=" + status);
                         initPending = null;
                     }
                 }
@@ -135,12 +177,12 @@ public class TtsPlugin extends Plugin {
                 initFailed = true;
                 try { tts.shutdown(); } catch (Exception e) { /* ignore */ }
                 tts = null;
-                Log.w(TAG, "init 超时（" + INIT_TIMEOUT_MS + "ms 内 onInit 未回调）⇒ 设备无可用 TTS 引擎");
+                Log.w(TAG, "init 超时（" + INIT_TIMEOUT_MS + "ms 内 onInit 未回调）⇒ 设备无可用 TTS 引擎 → 内置引擎兜底");
                 if (pending != null) {
-                    pending.call.reject("TTS_INIT_TIMEOUT", "设备没有可用的系统语音引擎（请在系统设置→文字转语音 安装/启用）");
+                    fallbackToBundled(pending, "TTS_INIT_TIMEOUT");
                 }
                 if (initPending != null) {
-                    initPending.call.reject("TTS_INIT_TIMEOUT", "设备没有可用的系统语音引擎（请在系统设置→文字转语音 安装/启用）");
+                    fallbackToBundled(initPending, "TTS_INIT_TIMEOUT");
                     initPending = null;
                 }
             }
@@ -177,8 +219,12 @@ public class TtsPlugin extends Plugin {
         }
         int set = tts.setLanguage(locale);
         if (set == TextToSpeech.LANG_MISSING_DATA || set == TextToSpeech.LANG_NOT_SUPPORTED) {
-            // 引擎不带目标语言：如实返回，JS 侧回落系统 speechSynthesis 或提示
+            // 引擎不带目标语言：英语转内置引擎兜底，其余如实回落
             Log.w(TAG, "setLanguage 不支持: lang=" + pending.lang + " set=" + set + "（引擎缺该语言语音包）");
+            if (pending.lang.toLowerCase(Locale.ROOT).startsWith("en")) {
+                fallbackToBundled(pending, "LANG_NOT_SUPPORTED");
+                return;
+            }
             JSObject out = new JSObject();
             out.put("ok", false);
             out.put("reason", "LANG_NOT_SUPPORTED");
@@ -192,13 +238,14 @@ public class TtsPlugin extends Plugin {
         if (r == TextToSpeech.SUCCESS) {
             active.put(id, pending.call);
         } else {
-            Log.w(TAG, "speak 提交失败 code=" + r);
-            pending.call.reject("TTS_SUBMIT_FAILED", "朗读提交失败（code=" + r + "）");
+            Log.w(TAG, "speak 提交失败 code=" + r + " → 内置引擎兜底");
+            fallbackToBundled(pending, "SUBMIT_FAILED code=" + r);
         }
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
+        SherpaTts.stop(); // 内置引擎播放一并打断（原生 stop 必须同步停内置，见 SKILL 音频铁律）
         if (tts != null) tts.stop();
         for (PluginCall c : active.values()) {
             JSObject out = new JSObject();

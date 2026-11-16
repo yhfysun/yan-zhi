@@ -75,6 +75,23 @@ const kindFilter = ref<'all' | 'read' | 'lecture'>('all');
 const expandedTrack = ref('');
 const listRef = ref<HTMLElement | null>(null);
 
+// ★★ v1.1 移动端骨架（2026-11-16 评审定稿，docs/学习模式设计准则.md §6）：
+//    ≤900px 总览 = 路径下拉（一行 44px）+ 课时横滑单行，替代 8 条纵向手风琴；
+//    桌面手风琴零改动（zyCompact=false 不渲染下拉/横滑）。
+const zyCompact = ref(
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
+);
+if (typeof window !== 'undefined' && window.matchMedia) {
+  const mqZy = window.matchMedia('(max-width: 900px)');
+  const onMqZy = (e: MediaQueryListEvent) => { zyCompact.value = e.matches; };
+  try { mqZy.addEventListener('change', onMqZy); } catch { mqZy.addListener(onMqZy); }
+}
+/** 横滑轨道：未选过路径时回落第一条（桌面不受影响，仍走手风琴展开态）。 */
+const zyStripTrack = computed(() => expandedTrack.value || tracks.value[0]?.id || '');
+function onZyCompactTrackChange(event: Event) {
+  expandedTrack.value = (event.target as HTMLSelectElement).value;
+}
+
 // focusTrack / 上次学到的课时 → 展开对应路径并滚到可视区。
 // ★ 两个「点了没反应」的洞都在这：① watch 只盯 focusTrack，同一路径的第二张课卡
 //   点击时值不变不触发（配合 focusNonce 强制响应）；② 只展开不滚动，列表深处点了
@@ -495,6 +512,36 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else ref="listRef" v-show="overviewTab === 'lessons'" class="zy-list">
+      <!-- ★ v1.1 移动端：路径下拉 + 课时横滑单行（一屏放下）；桌面手风琴保持 -->
+      <select
+        v-if="zyCompact"
+        class="zy-track-select"
+        :value="zyStripTrack"
+        aria-label="选择学习路径"
+        @change="onZyCompactTrackChange($event)"
+      >
+        <option v-for="t in tracks" :key="t.id" :value="t.id">
+          {{ t.id }} · {{ t.name }}（{{ doneCountOf(t.id) }}/{{ courseCountOf(t.id) }} 已完成）
+        </option>
+      </select>
+      <template v-if="zyCompact">
+        <div class="zy-course-strip">
+          <button
+            v-for="c in coursesOf(zyStripTrack)"
+            :key="c.id"
+            type="button"
+            class="zy-course-btn"
+            :class="{ done: completedIds.includes(c.id), locked: !c.ready }"
+            :disabled="!c.ready"
+            @click="openLesson(c, zyStripTrack)"
+          >
+            <b>{{ c.name }} <span v-if="!c.ready" class="zy-badge-locked">建设中</span></b>
+            <small>{{ c.minutes }} 分钟 · {{ c.kind === 'read' ? '原文精读' : '概念讲义' }}</small>
+          </button>
+        </div>
+        <p class="zy-disclaimer">{{ disclaimerText }}</p>
+      </template>
+      <template v-else>
       <article
         v-for="t in tracks"
         :key="t.id"
@@ -527,6 +574,7 @@ onBeforeUnmount(() => {
         </div>
       </article>
       <p class="zy-disclaimer">{{ disclaimerText }}</p>
+      </template>
     </div>
 
     <!-- 沉浸台：全屏覆盖、锁滚动；顶栏四项（返回路线 / 课程名 / 步骤 x/n / 退出） -->
@@ -1089,6 +1137,30 @@ onBeforeUnmount(() => {
     overflow-y: visible;
     overscroll-behavior: auto;
   }
+  /* ★★ v1.1 路径下拉（44px 一行，替代 8 条纵向手风琴）；吸顶在课程条下方 */
+  .zy-track-select {
+    position: sticky; top: 64px; z-index: 5;
+    width: 100%;
+    min-height: 44px;
+    margin: 4px 0 10px;
+    border: 1px solid var(--zy-line, #d8d3c8);
+    border-radius: 10px;
+    background: var(--zy-panel, #fff);
+    color: var(--zy-ink, #33302a);
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a08d7c' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  /* ★★ v1.1 课时横滑单行（评审定稿 §6-4）：单卡 160px，隐藏 goal 长文 */
+  .zy-course-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .zy-course-strip .zy-course-btn { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }
+  .zy-course-strip .zy-course-btn p { display: none; }
+  .zy-course-strip .zy-course-btn b { font-size: 12px; }
+  .zy-course-strip .zy-course-btn small { white-space: normal; font-size: 9px; }
 }
 
 /* 总览资料切换（课程主线 / 术语索引 / 参考书目） */
