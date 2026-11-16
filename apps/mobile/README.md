@@ -119,7 +119,10 @@ plugins: {
 - 装机**只认本仓库** `pnpm --filter @yan-zhi/mobile build:android`（普通包
   ~368MB，三 ABI）或 `build:android:slim`（精简包 ~155MB，仅 arm64-v8a）
   的产物（`copy-apk.cjs` 会复制到 `dist-release/android/<版本>/`）。
-  装前可用 zip 工具抽查 APK 内 `lib/arm64-v8a/libnode.so` 是否存在。
+  ★ `copy-apk.cjs` 已加**闪退包硬闸**：拷贝前检查 APK 内必须含
+  `lib/arm64-v8a/libnode.so`，缺了构建直接失败（exit 3）——缺 libnode 的
+  155MB 级闪退包**不可能再从本构建链流出**；手工拷贝的旧包不受此保护，
+  装机前请自行抽查。
 - **微信传 APK 会被改名 `xxx.apk.1` 且可能被压缩/拦截**：接收后必须重命名
   回 `.apk` 才能安装；跨机传包建议走网盘/局域网，不走微信。
 - 装机前先卸载旧包（`adb uninstall com.yanzhi.mobile`）或
