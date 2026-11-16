@@ -1006,7 +1006,7 @@ function askAboutResult() {
   padding: 22px clamp(16px, 4vw, 56px) 40px;
 }
 .dv-paper {
-  width: min(720px, 100%);
+  width: min(860px, 100%);
   margin: 0 auto;
   border: 1px solid rgba(255, 255, 255, .1);
   border-radius: 8px;
@@ -1035,7 +1035,7 @@ function askAboutResult() {
 
 /* ===== 对话测算（玄机先生） ===== */
 .dv-chat {
-  width: min(720px, 100%);
+  width: min(860px, 100%);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -1394,5 +1394,19 @@ function askAboutResult() {
   .dv-tosses { grid-template-columns: repeat(3, 1fr); }
   .dv-actions, .dv-actions-split { flex-direction: column; }
   .dv-actions button { width: 100%; }
+}
+
+/* ★★ 窄屏（≤900px，与 Learning.vue 单列断点同口径）：测算台交出高度链，内容自然撑开。
+   根因（2026-11-16 真机实报「周易课程页面无法滑动」）：
+     移动端学习页单列布局下 .lp-col-mid 变 height:auto ⇒ .dv-root 的 height:100% 解析为
+     auto ⇒ 其内 .dv-main(flex:1 + min-height:0) 在无确定高度的 flex 容器里自由空间为 0
+     ⇒ 主区高度塌成 0 ⇒ 内容被裁掉、页面也不长高 ⇒ 滑不动。
+   改法：窄屏下 .dv-root 交出高度、.dv-main 不再是滚动容器（overflow 可见），
+     交由页面级滚动承担。断点取 900px（不是 560px）—— 761~900px 区间学习页已是单列，
+   按桌面高度链走同样会塌陷。 */
+@media (max-width: 900px) {
+  .dv-root { height: auto; min-height: 0; overflow: visible; }
+  .dv-main { flex: 0 0 auto; overflow-y: visible; }
+  .dv-chat-msgs { flex: 0 0 auto; min-height: 0; max-height: none; overflow-y: visible; }
 }
 </style>

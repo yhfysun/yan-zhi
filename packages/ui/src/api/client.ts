@@ -249,6 +249,27 @@ export interface ApiError {
   details?: unknown;
 }
 
+/**
+ * GET 请求在「后端不可达」时的退避重试延迟（毫秒）。
+ *
+ * ★ 为什么 GET 需要重试而 POST 不需要（2026-11-16）：
+ *   移动端内嵌 Node 后端是**异步拉起**的，且已知存在「启动即死/静默死亡」的窗口
+ *   （见 docs/移动端遗留问题与设备信息-2026-11-16.md 的 P0 条目）。
+ *   这段时间里任何 GET 都会拿到 `status: 0`（连接被拒）。
+ *   而**学习各科目页面全是裸 api.get**（无重试）⇒ 一进课程页就弹
+ *   「学习路线加载失败」「课时加载失败」，用户看到的就是**课程页面读取异常**
+ *   （重进页面也未必好 —— 后端可能仍在起）。
+ *   GET 幂等，重试绝对安全；POST 重试会重复写入 ⇒ **只对 GET/HEAD 重试**。
+ *   退避总预算 ~2.4s，覆盖内嵌后端实测 1~3s 的冷启动窗口。
+ */
+const GET_RETRY_DELAYS_MS = [400, 800, 1200];
+
+/** 该请求是否幂等（可安全重试）。未指定 method 的 api.get 视为 GET。 */
+function isIdempotentMethod(method?: string): boolean {
+  const m = String(method || 'GET').toUpperCase();
+  return m === 'GET' || m === 'HEAD';
+}
+
 export async function apiFetch<T = any>(
   path: string,
   options: RequestInit = {},
@@ -265,6 +286,24 @@ export async function apiFetch<T = any>(
   const licenseCode = getLicenseCode();
   if (licenseCode) headers['x-license'] = licenseCode;
 
+  // ★ 后端不可达时的退避重试（仅幂等方法）。理由见 GET_RETRY_DELAYS_MS 注释。
+  const maxAttempts = isIdempotentMethod(options.method) ? GET_RETRY_DELAYS_MS.length : 0;
+
+  for (let attempt = 0; ; attempt++) {
+    const outcome = await fetchOnce<T>(path, options, headers);
+    // 只有「压根没拿到 HTTP 响应」（连接被拒 / 后端还没监听）才重试；
+    // 4xx/5xx 是后端明确答复，重试无意义，直接返回。
+    if (outcome.status !== 0 || attempt >= maxAttempts) return outcome.result;
+    await new Promise((r) => setTimeout(r, GET_RETRY_DELAYS_MS[attempt]));
+  }
+}
+
+/** 单次请求：返回归一化结果。status 0 = 未拿到 HTTP 响应（网络层失败，可重试）。 */
+async function fetchOnce<T>(
+  path: string,
+  options: RequestInit,
+  headers: Record<string, string>,
+): Promise<{ result: { data: T } | ApiError; status: number }> {
   const res = await fetch(BASE_URL + path, { ...options, headers }).catch((e: unknown) => {
     // ★★★ 网络层错误**必须转成 ApiError 返回，绝不能抛出去**。
     //
@@ -287,25 +326,33 @@ export async function apiFetch<T = any>(
     return null;
   });
   if (!res) {
-    return { error: 'NETWORK_UNREACHABLE', status: 0 };
+    return { result: { error: 'NETWORK_UNREACHABLE', status: 0 }, status: 0 };
   }
   const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok) {
     // 本地模式已屏蔽鉴权，401 不再清 token 跳登录
     return {
-      error: (json as any).error || `请求失败 (${res.status})`,
+      result: {
+        error: (json as any).error || `请求失败 (${res.status})`,
+        status: res.status,
+        details: (json as any).data,
+      },
       status: res.status,
-      details: (json as any).data,
     };
   }
-  if (json.error) return { error: json.error, status: res.status, details: (json as any).data };
+  if (json.error) {
+    return {
+      result: { error: json.error, status: res.status, details: (json as any).data },
+      status: res.status,
+    };
+  }
   // 认证接口返回 { token, user }，其他接口返回 { data: ... }
-  if (json.token) return { data: json as T };
+  if (json.token) return { result: { data: json as T }, status: res.status };
   // ★ 2026-10-11：透传 data 之外的顶层字段（如消息分页的 hasMore / oldestCursor）。
   //   此前只返回 { data }，分页元数据被静默丢弃 → 前端 hasMore 恒 false，懒加载永不触发。
   //   ★ 向后兼容：调用方不读这些字段则行为不变；json.data 缺失时回落整个 json（原语义）。
   const { data: payload, ...meta } = json;
-  return { data: payload ?? json, ...meta } as { data: T };
+  return { result: { data: payload ?? json, ...meta } as { data: T }, status: res.status };
 }
 
 export const api = {

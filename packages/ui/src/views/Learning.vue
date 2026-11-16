@@ -2108,7 +2108,14 @@ watch(softExamDate, (value) => {
       <div v-if="subject !== '网络安全' && !leftCollapsed" class="lp-column-resizer" title="拖动调整左侧宽度" @pointerdown="startColumnResize('left', $event)"></div>
 
       <!-- 中：工作区（Tab 只切这里） -->
-      <section class="lp-card lp-col-mid" :class="{ 'lp-security-stage': subject === '网络安全' }">
+      <section
+        class="lp-card lp-col-mid"
+        :class="{
+          'lp-security-stage': subject === '网络安全',
+          'lp-col-mid--coach': tab === 'coach',
+          'lp-col-mid--dv': tab === 'divination',
+        }"
+      >
         <div v-if="tabDefs.length > 1" class="lp-tabs">
           <button
             v-for="t in tabDefs" :key="t.key"
@@ -3066,9 +3073,17 @@ watch(softExamDate, (value) => {
 .lp-empty-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 /* 陪练对话（内嵌）：气泡列表 + 底部输入条 */
 /* 中栏在陪练 Tab 下改为纵向 flex（tabs 固定 + 对话区吃满剩余），关闭外层滚动让气泡区独立滚 */
-.lp-col-mid:has(> .lp-coach-chat) { overflow: hidden; display: flex; flex-direction: column; }
-/* 测算实践台是中栏内嵌工作台（深色 dv-root），高度链由这里供足（非弹窗） */
-.lp-col-mid:has(> .dv-root) { overflow: hidden; display: flex; flex-direction: column; }
+/* ★★ 改为**类名驱动**（2026-11-16）：原实现用 `:has(> .lp-coach-chat)` / `:has(> .dv-root)`。
+   两个硬伤：
+     ① 特异性 `:has()` 版本(0,2,0) 高于媒体查询里的 `.lp-col-mid`(0,1,0) ⇒ **移动端单列
+        布局下 overflow:hidden 依然生效** ⇒ 中栏裁掉溢出内容且不给滚动条 ⇒
+        用户实报「周易课程页面无法滑动」（测算实践/陪练 Tab 全中）。
+     ② 老 WebView（Redmi 9 / Chromium<105）不认 :has()，整条规则被丢弃 ⇒
+        同一个页面在两台机器上表现完全不同（一个裁切、一个正常滚）。
+   类名由模板按当前 tab 挂上（lp-col-mid--coach / --dv），所有 WebView 一致命中，
+   且媒体查询里能用同特异性的类名规则覆盖移动端。 */
+.lp-col-mid--coach { overflow: hidden; display: flex; flex-direction: column; }
+.lp-col-mid--dv { overflow: hidden; display: flex; flex-direction: column; }
 .lp-coach-chat { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lp-live-scene { flex-shrink: 0; border: 1px solid #dbe5f5; background: linear-gradient(180deg, #f8fbff 0%, var(--glass-bg) 100%); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .lp-live-scene-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
@@ -3420,6 +3435,14 @@ watch(softExamDate, (value) => {
   .lp-courses-security-mobile .lp-course-security { flex: 0 0 188px; }
   .lp-courses-security-mobile .lp-course-meta { display: none; }
   .lp-col-mid:has(> .lp-coach-chat) { overflow: visible; min-height: 70vh; }
+  /* ★★ 类名版覆盖（2026-11-16）：桌面态的 .lp-col-mid--coach/--dv 是 overflow:hidden
+     （中栏内嵌工作台要自己控滚动），移动端单列必须交回 overflow:visible —— 否则内容
+     被裁掉且不给滚动条（用户实报「课程页面无法滑动」）。
+     之前这两条覆盖只写了 :has() 版本 ⇒ 老 WebView（不认 :has）整条丢弃 ⇒ 桌面态的
+     基础规则若也换成类名就会在老 WebView 上同样裁切 ⇒ 覆盖必须**类名 + :has 两份**，
+     且 :has 那份放在前面、类名那份放后面（后者同特异性且后写，稳赢）。 */
+  .lp-col-mid--coach { overflow: visible; min-height: 70vh; }
+  .lp-col-mid--dv { overflow: visible; height: auto; }
   .lp-coach-chat { min-height: 70vh; }
   .lp-chat-msgs { min-height: 260px; max-height: 50vh; }
   .lp-practice-head { flex-direction: column; }
