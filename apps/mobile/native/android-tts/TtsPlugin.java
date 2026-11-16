@@ -64,7 +64,7 @@ public class TtsPlugin extends Plugin {
             return;
         }
         final Context ctx = getContext();
-        tts = new TextToSpeech(ctx.getApplicationContext(), new TextToSpeech.InitListener() {
+        tts = new TextToSpeech(ctx.getApplicationContext(), new TextToSpeech.OnInitListener() {
             @Override
             public void onInit(int status) {
                 if (status == TextToSpeech.SUCCESS) {
