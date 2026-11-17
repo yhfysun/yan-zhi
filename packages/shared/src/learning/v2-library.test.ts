@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LEARNING_V2_READING_CATEGORIES,
+  LEARNING_V2_READING_COLLECTIONS,
   getLearningV2BookSources,
   getLearningV2ReadingCatalog,
 } from './v2-library.js';
@@ -15,7 +16,7 @@ describe('Learning V2 reading library', () => {
       'course',
     ]);
     expect(new Set(getLearningV2ReadingCatalog().map((entry) => entry.category))).toEqual(
-      new Set(['classics', 'zhiguai', 'web-novel', 'comics']),
+      new Set(['classics', 'zhiguai', 'web-novel', 'comics', 'course']),
     );
   });
 
@@ -52,5 +53,31 @@ describe('Learning V2 reading library', () => {
       expect(source.access, source.name).toBe('authorized-platform');
       expect(officialHosts.has(new URL(source.url).hostname), source.name).toBe(true);
     }
+  });
+
+  it('curates youth, adult and subject reading lists across all learning subjects', () => {
+    const catalog = getLearningV2ReadingCatalog();
+    const collectionKeys = LEARNING_V2_READING_COLLECTIONS.map((collection) => collection.key);
+    const subjectKeys = new Set(catalog.flatMap((entry) => entry.subjects));
+
+    expect(collectionKeys).toEqual(expect.arrayContaining(['youth', 'adult', 'subject']));
+    expect(catalog.filter((entry) => entry.collections.includes('youth')).length).toBeGreaterThanOrEqual(10);
+    expect(catalog.filter((entry) => entry.collections.includes('adult')).length).toBeGreaterThanOrEqual(10);
+    expect(subjectKeys).toEqual(new Set([
+      'party', 'politics', 'economics', 'military', 'history', 'calligraphy',
+      'memory', 'thinking', 'math', 'physics', 'schools', 'english', 'japanese',
+      'soft', 'security', 'culture', 'music', 'zhouyi', 'divination',
+    ]));
+  });
+
+  it('ships built-in, annotated full-text editions instead of source-only cards', () => {
+    const catalog = getLearningV2ReadingCatalog();
+    const builtin = catalog.filter((entry) => entry.readingMode === 'builtin');
+
+    expect(builtin.length).toBeGreaterThanOrEqual(10);
+    expect(builtin.some((entry) => entry.language === 'zh-Hant')).toBe(true);
+    expect(builtin.some((entry) => entry.language === 'en')).toBe(true);
+    expect(builtin.every((entry) => !!entry.assetKey)).toBe(true);
+    expect(builtin.every((entry) => entry.annotations.length > 0)).toBe(true);
   });
 });

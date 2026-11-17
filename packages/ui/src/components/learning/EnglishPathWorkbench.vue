@@ -27,15 +27,6 @@ import LearningSelect from './LearningSelect.vue';
 
 type PathStepKind = 'phonics' | 'roots' | 'grammar' | 'fable' | 'story' | 'long-story' | 'speaking' | 'translate';
 
-/** 窄视口判定（沉浸台 Teleport 的 disabled 开关，767px 与移动端全屏 CSS 同断点） */
-const isNarrowViewport = ref(
-  typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false,
-);
-if (typeof window !== 'undefined' && window.matchMedia) {
-  const mqNarrow = window.matchMedia('(max-width: 767px)');
-  const onMqNarrow = (e: MediaQueryListEvent) => { isNarrowViewport.value = e.matches; };
-  try { mqNarrow.addEventListener('change', onMqNarrow); } catch { mqNarrow.addListener(onMqNarrow); }
-}
 type QuickCheck = { question: string; options: string[]; answer: number; explanation: string };
 type PathSound = { letter: string; ipa: string; word: string; gloss: string; mouth?: string };
 type PathBlendGroup = { parts: Array<{ text: string; ipa: string }>; word: string };
@@ -1320,12 +1311,8 @@ onBeforeUnmount(() => {
       每个知识点按“理解 → 例句 → 练习 → 自测”展开；故事课程使用原创改写和公版寓言，不复制付费课程原文。
     </p>
 
-    <!-- ★ Teleport 到 body（仅窄视口生效，2026-11-15 真机实报）：沉浸台 fixed z3000 在
-         .main-content（z-index:1 的层叠上下文）内对外整体只有 z=1 ⇒ 被顶栏(50)/
-         TabBar(100) 盖住——头部与顶栏重叠、底部前进按钮被 TabBar 截断（用户截图实锤）；
-         祖先 transform 还会劫持 fixed 包含块。Teleport 直挂 body 双问题一次解决；
-         桌面 disabled 保持原 DOM 位置，布局逐字不变。 -->
-    <Teleport to="body" :disabled="!isNarrowViewport">
+    <!-- 沉浸台固定直挂 body：任何祖先的层叠上下文、transform 或 filter 都不能再劫持 fixed 包含块。 -->
+    <Teleport to="body">
       <section
         v-if="focusing && stage && step"
         ref="dialogRef"
@@ -1708,7 +1695,9 @@ onBeforeUnmount(() => {
                     <span>{{ String(index + 1).padStart(2, '0') }}</span>
                     <div>
                       <p>{{ example.en }}</p>
-                      <small>{{ example.zh }}</small>
+                      <small class="lp-example-translation">
+                        <b>中文</b><span>{{ example.zh }}</span>
+                      </small>
                     </div>
                     <button
                       type="button"
@@ -2218,7 +2207,26 @@ onBeforeUnmount(() => {
 .lp-path-examples article { display: grid; grid-template-columns: 34px minmax(0, 1fr) 30px; gap: 12px; align-items: start; padding: 15px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: var(--path-paper); }
 .lp-path-examples article > span { color: #0f766e; font-size: 10px; font-weight: 700; }
 .lp-path-examples p { margin: 0; color: #1f3036; font-size: 15px; line-height: 1.75; }
-.lp-path-examples small { display: block; margin-top: 5px; color: var(--path-paper-muted); font-size: 11px; line-height: 1.65; }
+.lp-example-translation {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: baseline;
+  margin-top: 8px !important;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(24, 37, 43, .12);
+  color: #40534f !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+}
+.lp-example-translation b {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 118, 110, .1);
+  color: #0f766e;
+  font-size: 10px;
+  font-weight: 700;
+}
 .lp-path-examples button { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid rgba(24,37,43,.15); border-radius: 6px; background: var(--path-paper); color: #0f766e; cursor: pointer; }
 .lp-path-examples button.playing { border-color: #0f766e; background: #0f766e; color: #fff; }
 .lp-translate { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid rgba(24,37,43,.12); border-radius: 7px; background: var(--path-paper); }

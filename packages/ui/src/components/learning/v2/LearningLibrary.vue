@@ -1,16 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import {
-  BookOpen, Bookmark, BookmarkCheck, Check, ExternalLink, Library, Plus, Search, Trash2, X,
+  BookMarked, BookOpen, Bookmark, BookmarkCheck, Check, ChevronRight, ExternalLink, Library,
+  Plus, Search, Trash2, Upload, X,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_READING_CATEGORIES,
+  LEARNING_V2_READING_COLLECTIONS,
   getLearningV2BookSources,
   getLearningV2ReadingCatalog,
   type LearningV2BookSource,
   type LearningV2LibraryEntry,
   type LearningV2ReadingCategoryKey,
+  type LearningV2ReadingCollectionKey,
+  type LearningV2ReadingEntry,
+  type LearningV2ReaderBook,
 } from '@yan-zhi/shared';
+import { decodeBookBytes, parseBookText } from './library-import';
+import {
+  listImportedBooks,
+  saveImportedBook,
+  type ImportedBookMeta,
+} from './library-storage';
 
 const props = defineProps<{
   records: readonly LearningV2LibraryEntry[];
@@ -21,6 +32,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   openBook: [entry: LearningV2LibraryEntry];
+  readBook: [book: LearningV2ReaderBook];
 }>();
 
 const SHELF_KEY = 'yz.learning.v2.library.shelf.v1';
@@ -29,6 +41,7 @@ const DISABLED_SOURCES_KEY = 'yz.learning.v2.library.disabled-sources.v1';
 
 type LibraryView = 'discover' | 'shelf' | 'sources';
 type CategoryFilter = LearningV2ReadingCategoryKey | 'all';
+type CollectionFilter = LearningV2ReadingCollectionKey | 'all';
 
 type LibraryCard = {
   id: string;
@@ -41,6 +54,10 @@ type LibraryCard = {
   license: string;
   description: string;
   learningEntry?: LearningV2LibraryEntry;
+  readingEntry?: LearningV2ReadingEntry;
+  importedBookId?: string;
+  readingMode?: LearningV2ReadingEntry['readingMode'];
+  collections?: readonly LearningV2ReadingCollectionKey[];
 };
 
 type SourceForm = {
@@ -52,6 +69,7 @@ type SourceForm = {
 
 const activeView = ref<LibraryView>('discover');
 const categoryFilter = ref<CategoryFilter>('all');
+const collectionFilter = ref<CollectionFilter>('all');
 const query = ref('');
 const selectedCardId = ref('');
 const selectedSourceId = ref('');
@@ -68,6 +86,10 @@ const sourceForm = ref<SourceForm>({
   license: '用户自行添加；仅用于打开授权或公版阅读页面',
 });
 const searchInput = ref<HTMLInputElement | null>(null);
+const importInput = ref<HTMLInputElement | null>(null);
+const importedBooks = ref<ImportedBookMeta[]>([]);
+const importing = ref(false);
+const importError = ref('');
 
 const builtInSources = getLearningV2BookSources();
 const readingEntries = getLearningV2ReadingCatalog();
@@ -86,6 +108,7 @@ const cards = computed<LibraryCard[]>(() => {
     license: entry.source,
     description: entry.readable ? entry.original : '课程书目登记；原文与版本状态待核验。',
     learningEntry: entry,
+    readingMode: 'external',
   }));
   const readingCards: LibraryCard[] = readingEntries.map((entry) => ({
     id: `reading:${entry.id}`,
@@ -97,6 +120,22 @@ const cards = computed<LibraryCard[]>(() => {
     url: entry.url,
     license: entry.license,
     description: entry.description,
+    readingEntry: entry,
+    readingMode: entry.readingMode,
+    collections: entry.collections,
+  }));
+  const importedCards: LibraryCard[] = importedBooks.value.map((book) => ({
+    id: `imported:${book.id}`,
+    title: book.title,
+    author: book.author,
+    category: 'web-novel',
+    sourceId: 'local-import',
+    sourceName: '本地导入',
+    license: '用户本地导入；仅保存在当前设备，不上传正文',
+    description: `${book.chapters} 章 · ${book.characterCount.toLocaleString()} 字 · 支持继续阅读`,
+    importedBookId: book.id,
+    readingMode: 'import',
+    collections: ['youth', 'adult'],
   }));
   const customCards: LibraryCard[] = customSources.value.map((source) => ({
     id: `custom-source:${source.id}`,
@@ -108,16 +147,22 @@ const cards = computed<LibraryCard[]>(() => {
     url: source.url,
     license: source.license,
     description: source.description,
+    readingMode: 'external',
   }));
   const enabledSourceIds = new Set(enabledSources.value.map((source) => source.id));
-  return [...readingCards, ...customCards, ...courseCards]
-    .filter((card) => card.category === 'course' || enabledSourceIds.has(card.sourceId));
+  return [...importedCards, ...readingCards, ...customCards, ...courseCards]
+    .filter((card) =>
+      card.category === 'course'
+      || card.sourceId === 'local-import'
+      || enabledSourceIds.has(card.sourceId),
+    );
 });
 const visibleCards = computed(() => {
   const keyword = query.value.trim().toLowerCase();
   return cards.value.filter((card) => {
     if (activeView.value === 'shelf' && !shelfIds.value.includes(card.id)) return false;
     if (categoryFilter.value !== 'all' && card.category !== categoryFilter.value) return false;
+    if (collectionFilter.value !== 'all' && !card.collections?.includes(collectionFilter.value)) return false;
     if (!keyword) return true;
     return [card.title, card.author, card.sourceName, card.description, card.license]
       .join(' ')
@@ -140,6 +185,12 @@ const categoryCounts = computed(() => Object.fromEntries(
     cards.value.filter((card) => card.category === category.key).length,
   ]),
 ) as Record<LearningV2ReadingCategoryKey, number>);
+const collectionCounts = computed(() => Object.fromEntries(
+  LEARNING_V2_READING_COLLECTIONS.map((collection) => [
+    collection.key,
+    cards.value.filter((card) => card.collections?.includes(collection.key)).length,
+  ]),
+) as Record<LearningV2ReadingCollectionKey, number>);
 
 function categoryLabel(key: LearningV2ReadingCategoryKey): string {
   return LEARNING_V2_READING_CATEGORIES.find((category) => category.key === key)?.label || key;
@@ -197,6 +248,7 @@ function selectView(view: LibraryView) {
   sourceError.value = '';
   selectedCardId.value = '';
   detailOpen.value = false;
+  if (view === 'discover') collectionFilter.value = 'all';
   if (view === 'sources') selectedSourceId.value = enabledSources.value[0]?.id || '';
 }
 
@@ -226,7 +278,116 @@ function openBook(card: LibraryCard) {
     emit('openBook', card.learningEntry);
     return;
   }
-  if (card.url) window.open(card.url, '_blank', 'noopener,noreferrer');
+  if (card.readingEntry) {
+    emit('readBook', readerBookFor(card.readingEntry));
+    return;
+  }
+  const imported = importedBooks.value.find((book) => book.id === card.importedBookId);
+  if (imported) {
+    emit('readBook', {
+      id: `imported:${imported.id}`,
+      title: imported.title,
+      author: imported.author,
+      language: 'mixed',
+      readingMode: 'import',
+      importedBookId: imported.id,
+      sourceName: '本地导入',
+      license: card.license,
+      annotations: [],
+      collectionLabels: ['网络小说', '本地书架'],
+    });
+    return;
+  }
+  if (card.url) {
+    emit('readBook', {
+      id: card.id,
+      title: card.title,
+      author: card.author,
+      language: 'zh-Hans',
+      readingMode: 'external',
+      url: card.url,
+      sourceName: card.sourceName,
+      license: card.license,
+      annotations: [],
+      collectionLabels: card.collections?.map(collectionLabel) || [],
+    });
+  }
+}
+
+function readerBookFor(entry: LearningV2ReadingEntry): LearningV2ReaderBook {
+  return {
+    id: entry.id,
+    title: entry.title,
+    author: entry.author,
+    language: entry.language,
+    readingMode: entry.readingMode,
+    assetKey: entry.assetKey,
+    url: entry.url,
+    sourceName: entry.sourceName,
+    license: entry.license,
+    annotations: entry.annotations,
+    collectionLabels: entry.collections.map(collectionLabel),
+  };
+}
+
+function collectionLabel(key: LearningV2ReadingCollectionKey): string {
+  return LEARNING_V2_READING_COLLECTIONS.find((collection) => collection.key === key)?.label || key;
+}
+
+function readLabel(card: LibraryCard): string {
+  if (card.learningEntry) return card.learningEntry.readable ? '开始研读' : '仅书目';
+  if (card.readingMode === 'builtin') return '开始阅读';
+  if (card.readingMode === 'import') return '继续阅读';
+  if (card.readingMode === 'platform') return '应用内打开';
+  return '阅读导读';
+}
+
+function chooseImport() {
+  importError.value = '';
+  importInput.value?.click();
+}
+
+async function importLocalBook(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  if (!/\.(txt|md|markdown)$/i.test(file.name)) {
+    importError.value = '当前支持导入 TXT、MD 文本；EPUB 阅读器仍在后续任务中。';
+    return;
+  }
+  importing.value = true;
+  importError.value = '';
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const raw = decodeBookBytes(bytes);
+    const parsed = parseBookText(raw, file.name);
+    if (!parsed.chapters.length) throw new Error('没有识别到可阅读正文。');
+    const saved = await saveImportedBook(parsed, raw);
+    const meta: ImportedBookMeta = {
+      id: saved.id,
+      title: saved.title,
+      author: saved.author,
+      chapters: saved.chapters,
+      characterCount: saved.characterCount,
+      createdAt: saved.createdAt,
+      updatedAt: saved.updatedAt,
+    };
+    importedBooks.value = [meta, ...importedBooks.value];
+    if (!shelfIds.value.includes(`imported:${meta.id}`)) {
+      shelfIds.value = [...shelfIds.value, `imported:${meta.id}`];
+    }
+    activeView.value = 'discover';
+    collectionFilter.value = 'all';
+    categoryFilter.value = 'web-novel';
+    query.value = '';
+    const card = cards.value.find((item) => item.importedBookId === meta.id);
+    if (card) openBook(card);
+  } catch (e) {
+    importError.value = e instanceof Error ? e.message : '导入失败，请检查文件内容。';
+  } finally {
+    importing.value = false;
+  }
 }
 
 function toggleSource(source: LearningV2BookSource) {
@@ -286,8 +447,13 @@ function submitCustomSource() {
 }
 
 watch([shelfIds, customSources, disabledSourceIds], persistPreferences, { deep: true });
-onMounted(() => {
+onMounted(async () => {
   restorePreferences();
+  try {
+    importedBooks.value = await listImportedBooks();
+  } catch {
+    importedBooks.value = [];
+  }
   searchInput.value?.focus();
 });
 </script>
@@ -335,6 +501,18 @@ onMounted(() => {
             <span>{{ category.label }}</span><small>{{ categoryCounts[category.key] }}</small>
           </button>
         </div>
+        <div v-if="activeView !== 'sources'" class="ll-collections">
+          <header><span>精选书单</span></header>
+          <button
+            v-for="collection in LEARNING_V2_READING_COLLECTIONS"
+            :key="collection.key"
+            type="button"
+            :class="{ active: collectionFilter === collection.key }"
+            @click="collectionFilter = collectionFilter === collection.key ? 'all' : collection.key"
+          >
+            <span>{{ collection.label }}</span><small>{{ collectionCounts[collection.key] }}</small>
+          </button>
+        </div>
         <div v-else class="ll-source-note">
           <b>书源规则</b>
           <p>只登记公版、开放许可或官方授权平台。应用不抓取正文，不绕过登录、付费或地区限制。</p>
@@ -355,22 +533,45 @@ onMounted(() => {
               />
             </label>
             <span>{{ visibleCards.length }} 条</span>
+            <button type="button" class="ll-import" :disabled="importing" @click="chooseImport">
+              <Upload :size="15" />{{ importing ? '正在导入' : '导入本地小说' }}
+            </button>
+            <input
+              ref="importInput"
+              data-import-book-input
+              class="ll-import-input"
+              type="file"
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              @change="importLocalBook"
+            />
           </div>
+          <p v-if="importError" class="ll-import-error" role="alert">{{ importError }}</p>
           <div v-if="visibleCards.length" class="ll-card-grid">
-            <button
+            <article
               v-for="card in visibleCards"
               :key="card.id"
-              type="button"
               class="ll-book-card"
               :class="{ selected: selectedCard?.id === card.id }"
-              @click="selectCard(card)"
             >
-              <span class="ll-book-kind">{{ categoryLabel(card.category) }} · {{ card.sourceName }}</span>
-              <b>{{ card.title }}</b>
-              <small>{{ card.author }}</small>
-              <p>{{ card.description }}</p>
-              <i>{{ isOnShelf(card) ? '已在书架' : card.learningEntry ? (card.learningEntry.readable ? '原文可读' : '仅书目登记') : '来源可打开' }}</i>
-            </button>
+              <button type="button" class="ll-book-main" @click="selectCard(card)">
+                <span class="ll-book-cover" :data-category="card.category" aria-hidden="true">
+                  <BookMarked :size="20" />
+                  <small>{{ categoryLabel(card.category) }}</small>
+                </span>
+                <span class="ll-book-copy">
+                  <span class="ll-book-kind">{{ card.sourceName }}</span>
+                  <b>{{ card.title }}</b>
+                  <small>{{ card.author }}</small>
+                  <p>{{ card.description }}</p>
+                </span>
+              </button>
+              <span class="ll-book-foot">
+                <span>{{ isOnShelf(card) ? '已在书架' : card.readingMode === 'builtin' ? '离线全文' : '应用内阅读' }}</span>
+                <button type="button" data-read-book :disabled="!!card.learningEntry && !card.learningEntry.readable" @click="openBook(card)">
+                  {{ readLabel(card) }}<ChevronRight :size="14" />
+                </button>
+              </span>
+            </article>
           </div>
           <div v-else class="ll-empty">
             <BookOpen :size="28" />
@@ -442,11 +643,11 @@ onMounted(() => {
             </button>
             <button type="button" @click="openBook(selectedCard)">
               <BookOpen v-if="selectedCard.learningEntry" :size="15" />
-              <ExternalLink v-else :size="15" />
-              {{ selectedCard.learningEntry ? '打开书籍研读' : '去来源阅读' }}
+              <BookMarked v-else :size="15" />
+              {{ readLabel(selectedCard) }}
             </button>
           </div>
-          <small v-if="!selectedCard.learningEntry">外部来源将在新窗口打开；账号、付费和地区限制由来源平台处理。</small>
+          <small v-if="!selectedCard.learningEntry">阅读在应用内完成；来源、账号和许可边界会显示在阅读器顶栏。</small>
         </template>
 
         <template v-else-if="activeView === 'sources' && selectedSource">

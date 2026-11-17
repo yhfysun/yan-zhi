@@ -8,13 +8,14 @@ import LearningLibrary from './LearningLibrary.vue';
 
 let app: App | null = null;
 
-async function mountLibrary(): Promise<HTMLElement> {
+async function mountLibrary(onReadBook?: (entry: unknown) => void): Promise<HTMLElement> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   app = createApp(LearningLibrary, {
     records: getLearningV2Library(),
     accent: '#8d4638',
     tint: '#f7ece8',
+    onReadBook,
   });
   app.mount(host);
   await nextTick();
@@ -37,7 +38,7 @@ describe('LearningLibrary', () => {
     const css = readFileSync(resolve(__dirname, 'learning-library.css'), 'utf8');
 
     expect(css).toMatch(/\.ll-nav nav button\.active \{[^}]*background: #f1f4f2;[^}]*color: #26352f;/);
-    expect(css).toMatch(/\.ll-categories button\.active \{[^}]*background: #f7f8f7;[^}]*color: #26352f;/);
+    expect(css).toMatch(/\.ll-categories button\.active,\s*\.ll-collections button\.active \{[^}]*background: #f7f8f7;[^}]*color: #26352f;/);
     expect(css).toMatch(/\.ll-book-card\.selected \{[^}]*background: #f7f8f7;/);
     expect(css).toMatch(/\.ll-detail-actions button:last-child[^{]*\{[^}]*background: #17211e;/);
   });
@@ -53,6 +54,34 @@ describe('LearningLibrary', () => {
     expect(host.textContent).toContain('聊斋志异');
     expect(host.textContent).toContain('番茄小说官方书库');
     expect(host.textContent).toContain('公版漫画阅览室');
+  });
+
+  it('opens a built-in book in the in-app reader instead of leaving the app', async () => {
+    const onReadBook = vi.fn();
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const host = await mountLibrary(onReadBook);
+
+    const card = [...host.querySelectorAll('.ll-book-card')]
+      .find((item) => item.textContent?.includes('三国演义')) as HTMLElement;
+    const read = card.querySelector('[data-read-book]') as HTMLButtonElement;
+    read.click();
+    await nextTick();
+
+    expect(onReadBook).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'classics-three-kingdoms',
+      readingMode: 'builtin',
+      assetKey: expect.any(String),
+    }));
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('offers a local TXT import path for authorized web novels', async () => {
+    const host = await mountLibrary();
+
+    const input = host.querySelector('[data-import-book-input]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.accept).toContain('.txt');
+    expect(host.textContent).toContain('导入本地小说');
   });
 
   it('filters the catalog and persists bookshelf choices locally', async () => {

@@ -168,6 +168,42 @@ export type LearningV2ReadingCategoryKey =
   | 'comics'
   | 'course';
 
+export type LearningV2ReadingCollectionKey =
+  | 'youth'
+  | 'adult'
+  | 'subject'
+  | 'red'
+  | 'history'
+  | 'vision'
+  | 'knowledge'
+  | 'science'
+  | 'trivia';
+
+export type LearningV2ReadingMode = 'builtin' | 'external' | 'platform' | 'import';
+
+export type LearningV2ReadingLanguage = 'zh-Hant' | 'zh-Hans' | 'en' | 'ja' | 'mixed';
+
+export type LearningV2ReadingAnnotation = {
+  readonly term: string;
+  readonly gloss: string;
+  readonly kind?: 'term' | 'person' | 'place' | 'concept';
+};
+
+export type LearningV2ReaderBook = {
+  readonly id: string;
+  readonly title: string;
+  readonly author: string;
+  readonly language: LearningV2ReadingLanguage;
+  readonly readingMode: LearningV2ReadingMode;
+  readonly assetKey?: string;
+  readonly importedBookId?: string;
+  readonly url?: string;
+  readonly sourceName: string;
+  readonly license: string;
+  readonly annotations: readonly LearningV2ReadingAnnotation[];
+  readonly collectionLabels?: readonly string[];
+};
+
 export type LearningV2BookSourceAccess =
   | 'public-domain'
   | 'library'
@@ -193,4 +229,12 @@ export type LearningV2ReadingEntry = {
   readonly url: string;
   readonly license: string;
   readonly description: string;
+  readonly collections: readonly LearningV2ReadingCollectionKey[];
+  readonly subjects: readonly string[];
+  readonly readingMode: LearningV2ReadingMode;
+  readonly language: LearningV2ReadingLanguage;
+  readonly assetKey?: string;
+  readonly annotations: readonly LearningV2ReadingAnnotation[];
+  readonly chapterCount?: number;
+  readonly edition?: string;
 };

@@ -21,11 +21,13 @@ import {
   isLearningV2CourseReady,
   type LearningV2LibraryEntry,
   type LearningV2PageKey,
+  type LearningV2ReaderBook,
 } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import NoteQuickCreateDialog from '../components/notes/NoteQuickCreateDialog.vue';
 import LearningCoachPanel from '../components/learning/v2/LearningCoachPanel.vue';
 import LearningLibrary from '../components/learning/v2/LearningLibrary.vue';
+import LearningBookReader from '../components/learning/v2/LearningBookReader.vue';
 import LearningPracticeStudio from '../components/learning/v2/LearningPracticeStudio.vue';
 import LearningSpeechButton from '../components/learning/v2/LearningSpeechButton.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
@@ -54,6 +56,8 @@ const practiceAnswer = ref<number | null>(null);
 const practiceSubmitted = ref(false);
 const completedCourseIds = ref<string[]>([]);
 const libraryOpen = ref(false);
+const readerOpen = ref(false);
+const readerBook = ref<LearningV2ReaderBook | null>(null);
 const mobileSubjectsOpen = ref(false);
 const libraryDialog = ref<HTMLElement | null>(null);
 const workspaceRoot = ref<HTMLElement | null>(null);
@@ -547,6 +551,17 @@ function openLibraryBook(entry: LearningV2LibraryEntry) {
   activePage.value = 'books';
   bookLayer.value = 'notes';
   libraryOpen.value = false;
+}
+
+function openReadingBook(book: LearningV2ReaderBook) {
+  readerBook.value = book;
+  readerOpen.value = true;
+  libraryOpen.value = false;
+}
+
+function closeReadingBook() {
+  readerOpen.value = false;
+  readerBook.value = null;
 }
 
 function selectMobileCourse(name: string) {
@@ -1269,9 +1284,19 @@ onBeforeUnmount(() => {
             :tint="subject.tint"
             @close="closeLibrary"
             @open-book="openLibraryBook"
+            @read-book="openReadingBook"
           />
         </div>
       </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <LearningBookReader
+        v-if="readerOpen && readerBook"
+        :key="readerBook.id"
+        :book="readerBook"
+        @close="closeReadingBook"
+      />
     </Teleport>
 
     <Teleport to="body">

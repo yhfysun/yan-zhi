@@ -88,10 +88,12 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2-workspace \{[^}]*min-height: 0;[^}]*flex: 1;[^}]*overflow-y: auto;/);
     expect(css).toMatch(/\.lv2-studio-immersive \{[^}]*position: fixed;[^}]*bottom: var\(--app-statusbar-h, 0px\);[^}]*overflow: hidden;/);
     expect(css).toMatch(/\.lv2-studio-immersive-body \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
+    expect(css).toMatch(/\.lv2-specialized-study \{[^}]*background: var\(--skin-panel-bg-strong/);
+    expect(css).not.toMatch(/\.lv2-specialized-study-surface \{[^}]*backdrop-filter/);
     expect(css).toMatch(/\.lv2-subject-list \{[^}]*scrollbar-width: thin;/);
     expect(css).toMatch(/\.lv2-subject-list::-webkit-scrollbar \{[^}]*width: 8px;/);
     expect(css).toMatch(/\.lv2-library-shell \{[^}]*width: 100%;[^}]*justify-content: center;/);
-    expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: min\(1120px, calc\(100vw - 64px\)\);/);
+    expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: min\(1320px, calc\(100vw - 40px\)\);/);
   });
 
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
@@ -116,6 +118,9 @@ describe('LearningV2', () => {
       const source = readFileSync(resolve(__dirname, file), 'utf8');
       expect(source, file).toContain('bottom: var(--app-statusbar-h, 0px);');
     }
+    const english = readFileSync(resolve(__dirname, '../components/learning/EnglishPathWorkbench.vue'), 'utf8');
+    expect(english).toContain('<Teleport to="body">');
+    expect(english).not.toContain(':disabled="!isNarrowViewport"');
   });
 
   it('resets the workspace scroll position when switching learning surfaces', async () => {

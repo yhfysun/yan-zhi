@@ -416,15 +416,16 @@ onBeforeUnmount(() => {
         </footer>
       </div>
 
-      <div
-        v-if="focusedModule"
-        ref="focusStageRef"
-        class="sec-focus"
-        role="dialog"
-        aria-modal="true"
-        :aria-labelledby="`sec-focus-title-${focusedModule.id}`"
-        tabindex="-1"
-      >
+      <Teleport to="body">
+        <div
+          v-if="focusedModule"
+          ref="focusStageRef"
+          class="sec-focus"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="`sec-focus-title-${focusedModule.id}`"
+          tabindex="-1"
+        >
         <header class="sec-focus-header">
           <button type="button" class="sec-focus-back" aria-label="返回安全路线" @click="closeFocus">
             <ChevronLeft :size="16" />
@@ -661,7 +662,8 @@ onBeforeUnmount(() => {
             </footer>
           </main>
         </div>
-      </div>
+        </div>
+      </Teleport>
     </template>
   </section>
 </template>

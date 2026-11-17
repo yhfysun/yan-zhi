@@ -77,6 +77,28 @@ export async function aiLookupWord(userId: string, word: string): Promise<Builti
   throw new Error('词典查询失败，请稍后重试或手动填写释义');
 }
 
+/** 英文阅读器：按当前章节生成简体中文对照，保持与输入段落一一对应。 */
+export async function aiTranslateParagraphs(userId: string, paragraphs: string[]): Promise<string[]> {
+  const cleaned = paragraphs.map((item) => String(item || '').trim()).filter(Boolean);
+  if (!cleaned.length) return [];
+  const model = pickModel(userId);
+  const { content } = await chatViaRow(model, [
+    {
+      role: 'system',
+      content: '你是英语文学翻译编辑。把每个英文段落译为自然、准确的简体中文，保留人物、术语和语气；只输出 JSON，不要解释。',
+    },
+    {
+      role: 'user',
+      content: `请保持数组长度和顺序不变，逐段翻译：\n${JSON.stringify(cleaned)}`,
+    },
+  ], { maxTokens: 6000, signal: AbortSignal.timeout(180_000) });
+  const parsed = extractJsonArray(content);
+  if (!parsed || parsed.length !== cleaned.length) {
+    throw new Error('AI 返回的对照译文不完整，请重试');
+  }
+  return parsed.map((item) => String(item || '').trim());
+}
+
 /** 会话结束后抽取错误本（P1 预留接口：给任务完成钩子调用；本期先只提供服务函数） */
 export function collectDb(userId: string) {
   return db.prepare('SELECT COUNT(*) AS c FROM learning_error WHERE user_id = ?').get(userId) as { c: number };

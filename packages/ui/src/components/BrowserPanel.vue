@@ -1,5 +1,10 @@
 <template>
-  <div class="browser-shell" :class="{ 'shell-expanded': browserExpanded }" @keydown="onShellKeydown" @click="hideTabCtx">
+  <div
+    class="browser-shell"
+    :class="{ 'shell-expanded': browserExpanded, 'reader-mode': readerMode }"
+    @keydown="onShellKeydown"
+    @click="hideTabCtx"
+  >
     <!-- E12: 移动端不支持内置浏览器——整面板占位提示 -->
     <div v-if="!supportsBrowser" class="browser-unsupported">
       <p class="bu-title">当前平台不支持内置浏览器</p>
@@ -698,8 +703,13 @@ const isWebviewEngine = computed(() => isElectron && browserEngine.value === 'we
 // 两边 tab 列表完全隔离（各自独立的 browser store 实例）。
 // 多会话隔离：preview 后可追加 :<convId>（ChatPreviewPane 传 preview:<currentConvId>），
 // 不同会话的 tab/激活/历史互不串台，浏览器工具的 get_page_content/click 等都路由到对应会话的 tab。
-const props = defineProps<{ scope?: string }>();
+const props = defineProps<{
+  scope?: string;
+  initialUrl?: string;
+  readerMode?: boolean;
+}>();
 const browserScope = (props.scope || 'page');
+const readerMode = computed(() => props.readerMode === true);
 
 // ── 多标签页管理（Electron 桌面端）──
 // tabs/激活 tab/视图状态按空间存对应 browser store：路由切换组件卸载不丢，
@@ -3493,7 +3503,7 @@ onMounted(async () => {
   // 恢复式挂载：store 中已有 tabs（路由 /browser ↔ /chat 切换、预览面板重开）时
   // 恢复激活原 tab，绝不新建空 tab —— 否则每次挂载累积空白 tab 并把真实 tab 挤出
   // 主进程 MAX_TABS=8 的 LRU 窗口（切回来"变回初始"的根因）。
-  const initUrl = route.query.url;
+  const initUrl = props.initialUrl || route.query.url;
   // ★★★ 2026-10-11 修复（`wc=NULL` 第二根因）：`await newTab()`/`switchTab()` 内部有
   //   `await api.browserView.createTab(scope)` 等 IPC 调用，**任一步失败/超时都会抛异常**
   //   ⇒ `onMounted` 在此中断 ⇒ **后面所有 `on*` 监听器注册全部跳过** ⇒ `onTabCreated`
@@ -3609,7 +3619,11 @@ onUnmounted(() => {
     // scope 固定 'preview'（不再按会话分）。这里只在面板真正卸载
     //（离开对话页路由 / 移动端不支持）时清理本空间的 tab，避免 tab 长期占主进程
     // MAX_TABS 窗口。page（/browser 独立浏览器页）不主动清——用户离开再回来还要恢复。
-    if (browserScope === 'preview' || browserScope.startsWith('preview:')) {
+    if (
+      browserScope === 'preview'
+      || browserScope.startsWith('preview:')
+      || browserScope.startsWith('learning-reader')
+    ) {
       try { (window as any).electronAPI?.browserView?.closeAllTabs?.(browserScope, true); } catch { /* ignore */ }
     }
   }
@@ -3623,6 +3637,16 @@ onUnmounted(() => {
      窗口却是 1200+px —— 用 @media(max-width) 永远不触发，一排固定宽控件会被裁掉右缘。
      见下方 @container browser-panel。 */
   container-type: inline-size; container-name: browser-panel; }
+
+.browser-shell.reader-mode > .browser-tabbar,
+.browser-shell.reader-mode > .browser-toolbar {
+  display: none;
+}
+
+.browser-shell.reader-mode > .browser-viewport {
+  flex: 1;
+  min-height: 0;
+}
 
 /* ── 全屏实况（原地放大）：纯样式切换，DOM 节点不动。
    ⚠️ 禁用 Teleport：<webview>（iframe 同理）DOM 被搬动 → guest 重挂载 → 页面重载、

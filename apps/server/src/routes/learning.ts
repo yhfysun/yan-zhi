@@ -19,7 +19,7 @@ import { ENGLISH_TRACKS, getEnglishPath, normalizeEnglishTrack } from '../learni
 import { LEARNING_EDGE_VOICE, LEARNING_TTS_SPEEDS, normalizeEnglishTtsText, normalizeLearningTtsSpeed, resolveBundledEdgeTts, resolveBundledPython, synthesizeBundledEnglishEdge } from '../learning/english-tts.js';
 import { ENGLISH_PHONIC_CHART } from '../learning/phonics-chart.js';
 import { previewTtsPack } from '../services/tts-packs.js';
-import { aiExtractWords, aiLookupWord } from '../learning/ai.js';
+import { aiExtractWords, aiLookupWord, aiTranslateParagraphs } from '../learning/ai.js';
 import { listExamPapers, getExamPaper, submitExamPaper, type ExamType } from '../learning/exams.js';
 import { SOFT_MATERIALS, getSoftMaterial } from '../learning/exam-papers-extra.js';
 import { SOFT_EXAM_REGIONS, getSoftExamLiveInfo } from '../learning/soft-exam-live.js';
@@ -405,6 +405,23 @@ router.get('/readings/:id', (req, res) => {
   const r = READING_PASSAGES.find((x) => x.id === req.params.id);
   if (!r) { res.status(404).json({ error: '范文不存在' }); return; }
   res.json({ data: r });
+});
+
+// POST /api/learning/library/translate —— 英文原著当前章节生成简体中文对照（按需、前端本地缓存）
+router.post('/library/translate', async (req, res) => {
+  try {
+    const paragraphs = Array.isArray(req.body?.paragraphs)
+      ? req.body.paragraphs.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const total = paragraphs.reduce((sum: number, item: string) => sum + item.length, 0);
+    if (!paragraphs.length || paragraphs.length > 30 || total > 16_000) {
+      res.status(400).json({ error: '每章最多翻译 30 段、16000 字符' });
+      return;
+    }
+    res.json({ data: { translations: await aiTranslateParagraphs(userIdOf(req), paragraphs) } });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // POST /api/learning/words/extract —— AI 收词（粘贴导入：文章/词列表 → 词条数组）
