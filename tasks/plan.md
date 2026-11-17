@@ -375,3 +375,153 @@
 **Verification:** Playwright 截图矩阵、computed style 断言、console/network 检查。
 
 **Dependencies:** Task 1-3
+
+---
+
+# Implementation Plan: 桌面与移动应用化重构
+
+## Overview
+
+本计划把言智从“共享 Web 壳的响应式后台”推进为“桌面专业工作台 + 移动任务助手”。
+完整规格见 `docs/桌面与移动应用化重构方案-2026-11-17.md`，壳层决策见
+`docs/decisions/0001-desktop-mobile-app-shell.md`。本轮先评审，不直接改产品代码。
+
+## Architecture Decisions
+
+- Vue/Electron/Capacitor 技术栈不变，只重组壳层、信息架构和交互。
+- Desktop、Web、Mobile 共享业务组件和 Token，不共享一级导航形态。
+- 店铺工作区是唯一业务真相，AI 通过变更单和检查器协作。
+- 剪贴板拆为快贴态与管理态；宠物保持独立窗口但一次只开一个弹层。
+- 先改设计地基与壳层，再按店铺、剪贴板、宠物逐块迁移。
+
+## Task 1: 桌面应用壳与设计地基
+
+**Description:** 增加桌面标题栏、模式栏、上下文栏、检查器和状态栏语义；补充桌面尺寸、表格密度、触控目标和动效 Token。
+
+**Acceptance criteria:**
+- 桌面一级导航与真实模式一致：AI、办公、店铺、开发、运维、安全、工作流、自动化、剪辑、学习。
+- “工作台”只作为模式内的工作区概念，不作为一级模式名称。
+- 上下文栏与检查器支持拖动调宽、双击收起，并在收起后保留始终可见的恢复入口。
+- 当前模式、工作区和全局搜索在标题栏可见。
+- 上下文栏、检查器和状态栏支持折叠/持久化。
+- Web/Mobile 不误用桌面壳。
+
+**Verification:** UI typecheck、壳层挂载测试、1440/1024 截图。
+
+**Dependencies:** None
+
+**Estimated scope:** Medium
+
+## Task 2: 店铺桌面运营台
+
+**Description:** 将店铺页签骨架改为“看板 + 待办 + 表格 + 右检查器”，保留现有商品/订单/发货/库存 API。
+
+**Acceptance criteria:**
+- 今日 KPI、待办和最近订单首屏可见。
+- 表格支持密度、固定表头、键盘导航和批量操作。
+- AI 变更单固定在检查器，不修改对话区数据真相。
+- 人工/AI 工作台开关位于运营台工具条。
+
+**Verification:** 店铺相关 UI 测试、真实截图、关键操作回归。
+
+**Dependencies:** Task 1
+
+**Estimated scope:** Large，拆成看板、表格、检查器三条任务。
+
+## Task 3: 店铺移动运营流
+
+**Description:** 为 Capacitor 和窄屏提供总览、待办、商品、订单、发货的移动专用布局。
+
+**Acceptance criteria:**
+- 底部主导航最多 4 项。
+- 主要触控目标 ≥44px。
+- 订单可从总览两次点击进入发货。
+- 表单单列，底部固定主操作，无横向溢出。
+
+**Verification:** 320/375/390/428px 截图、触控检查、Web 窄屏回归。
+
+**Dependencies:** Task 2
+
+**Estimated scope:** Medium
+
+## Task 3b: 移动模式白名单与沉浸层阻断项
+
+**Description:** 将移动一级模式收敛为日常办公、运维、安全、学习和店铺；开发、工作流、剪辑、RPA 仅保留桌面入口。
+
+**Acceptance criteria:**
+- 移动端模式选择器不得出现开发、工作流、剪辑、RPA。
+- 运维/安全仅开放监控、告警、审批、止损和报告，不开放编辑器或编排器。
+- 沉浸学习层完全覆盖底层页面和全局导航。
+- 沉浸层退出后恢复原滚动位置和课程定位。
+
+**Verification:** 320/390/428px 截图、沉浸层前后截图、Tab 焦点遍历、真机返回键检查。
+
+**Dependencies:** Task 3
+
+**Estimated scope:** Small
+
+## Task 4: 剪贴板快贴态与管理态
+
+**Description:** 重构剪贴板为搜索优先的快贴窗和独立管理窗，加入敏感内容遮罩和键盘主路径。
+
+**Acceptance criteria:**
+- 快贴态 420×520，管理态 1040×700。
+- 召唤到可输入 <250ms。
+- 默认遮蔽敏感内容，显式显示后自动复位。
+- 原生图标统一，1000 条记录滚动无卡顿。
+
+**Verification:** 桌面真实窗口测试、键盘路径测试、敏感内容测试。
+
+**Dependencies:** Task 1
+
+**Estimated scope:** Medium
+
+## Task 5: 宠物与桌面助手收口
+
+**Description:** 宠物改为单弹层、任务优先；桌面状态栏接入运行中任务、同步和错误。
+
+**Acceptance criteria:**
+- 同一时刻最多一个宠物弹层。
+- needs-input 1 秒内可见。
+- 任务面板仅三层信息且无 emoji 操作图标。
+- 静音、减少动作、安静时段有效。
+
+**Verification:** 桌面真机交互、状态优先级单测、减少动态检查。
+
+**Dependencies:** Task 1
+
+**Estimated scope:** Medium
+
+## Task 6: 命令面板与全模式回归
+
+**Description:** 让 `Ctrl+K` 同时检索动作、页面和实体；完成桌面/Web/移动关键页面回归。
+
+**Acceptance criteria:**
+- 管理页从主顶栏下沉后仍可通过命令面板和头像菜单到达。
+- 快捷键与现有聊天/侧栏快捷键不冲突。
+- 控制台、网络、A11y、截图和构建检查通过。
+
+**Verification:** UI tests、typecheck、build、Playwright 截图矩阵。
+
+**Dependencies:** Task 1-5
+
+**Estimated scope:** Medium
+
+## Checkpoint: After Task 1
+
+- [ ] 设计 Token 和桌面壳通过评审。
+- [ ] Web 与 Capacitor 壳未被破坏。
+- [ ] 桌面与移动截图通过首轮检查。
+
+## Checkpoint: After Task 2-3
+
+- [ ] 店铺桌面主流程可用。
+- [ ] 店铺移动发货流程可用。
+- [ ] 人工/AI 模式共享同一数据和变更单。
+- [ ] 移动模式白名单与沉浸层阻断项通过。
+
+## Checkpoint: After Task 4-6
+
+- [ ] 剪贴板、宠物和命令面板达到验收标准。
+- [ ] 三端回归和构建通过。
+- [ ] 更新 `tasks/todo.md` 与交付说明。

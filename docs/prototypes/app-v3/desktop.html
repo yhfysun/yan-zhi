@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>言智 App 化重构 · 桌面端全模式原型</title>
+  <link rel="stylesheet" href="./prototype.css">
+</head>
+<body>
+  <header class="review-bar">
+    <div class="review-brand">
+      <span class="review-logo">言</span>
+      <div>
+        <strong>桌面端应用化原型</strong>
+        <span>模式、菜单、状态全部可点击</span>
+      </div>
+    </div>
+    <nav class="review-nav" aria-label="原型页面">
+      <a class="active" href="./desktop.html">桌面</a>
+      <a href="./mobile.html">移动</a>
+    </nav>
+    <div class="review-modes" aria-label="桌面模式">
+      <button data-mode="ai">AI</button>
+      <button data-mode="office">办公</button>
+      <button data-mode="shop">店铺运营</button>
+      <button data-mode="dev">开发</button>
+      <button data-mode="ops">运维</button>
+      <button data-mode="sec">安全</button>
+      <button data-mode="wf">工作流</button>
+      <button data-mode="rpa">自动化</button>
+      <button data-mode="clip">剪辑</button>
+      <button data-mode="learning">学习</button>
+    </div>
+    <div class="review-menus" aria-label="菜单目录">
+      <button data-menu="mode">模式菜单</button>
+      <button data-menu="command">命令面板</button>
+      <button data-menu="notifications">通知</button>
+      <button data-menu="profile">账号菜单</button>
+      <button data-menu="workspace">工作区右键</button>
+      <button data-menu="row">表格行菜单</button>
+      <button data-menu="clipboard">剪贴板管理</button>
+      <button data-menu="pet-radial">宠物半圆</button>
+      <button data-menu="pet-panel">宠物任务</button>
+      <button data-action="learning-immersive">沉浸学习</button>
+    </div>
+    <div class="review-spacer"></div>
+    <div class="review-actions">
+      <button data-action="theme" aria-label="切换主题"></button>
+      <button data-action="clean">清屏预览</button>
+    </div>
+  </header>
+
+  <main id="desktop-root" class="desktop-stage" aria-label="言智桌面端原型"></main>
+
+  <script src="./desktop.js"></script>
+</body>
+</html>

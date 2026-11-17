@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>言智 App 化重构 · 移动端全流程原型</title>
+  <link rel="stylesheet" href="./prototype.css">
+</head>
+<body class="mobile-prototype">
+  <header class="review-bar">
+    <div class="review-brand">
+      <span class="review-logo">言</span>
+      <div>
+        <strong>移动端应用化原型</strong>
+        <span>390px 真机布局 · 全抽屉可点击</span>
+      </div>
+    </div>
+    <nav class="review-nav" aria-label="原型页面">
+      <a href="./desktop.html">桌面</a>
+      <a class="active" href="./mobile.html">移动</a>
+    </nav>
+    <div class="review-spacer"></div>
+    <div class="review-actions">
+      <button data-action="theme"></button>
+      <button data-action="clean">清屏预览</button>
+    </div>
+  </header>
+
+  <main class="mobile-stage">
+    <aside class="mobile-review-panel">
+      <h2>页面与状态目录</h2>
+      <p>在宽屏下用它快速跳转；缩到 390px 后会自动隐藏，只保留真实手机界面。</p>
+      <div class="mobile-review-section">
+        <div class="mobile-review-label">主导航</div>
+        <div class="mobile-review-grid">
+          <button data-tab="work">工作</button>
+          <button data-tab="shop">店铺</button>
+          <button data-tab="files">文件</button>
+          <button data-tab="mine">我的</button>
+        </div>
+      </div>
+      <div class="mobile-review-section">
+        <div class="mobile-review-label">移动工作模式</div>
+        <div class="mobile-review-grid">
+          <button data-work-mode="office">日常办公</button>
+          <button data-work-mode="ops">运维</button>
+          <button data-work-mode="sec">安全</button>
+          <button data-work-mode="learning">学习</button>
+          <button data-work-mode="shop">店铺运营</button>
+        </div>
+      </div>
+      <div class="mobile-review-section">
+        <div class="mobile-review-label">店铺页面</div>
+        <div class="mobile-review-grid">
+          <button data-shop-page="overview">总览</button>
+          <button data-shop-page="products">商品</button>
+          <button data-shop-page="orders">订单</button>
+          <button data-shop-page="shipments">发货</button>
+          <button data-shop-page="inventory">库存</button>
+          <button data-shop-page="more">更多</button>
+        </div>
+      </div>
+      <div class="mobile-review-section">
+        <div class="mobile-review-label">抽屉与菜单</div>
+        <div class="mobile-review-grid">
+          <button data-sheet="mode">模式切换</button>
+          <button data-sheet="store">店铺切换</button>
+          <button data-sheet="filter">筛选</button>
+          <button data-sheet="product">商品详情</button>
+          <button data-sheet="order">订单详情</button>
+          <button data-sheet="shipment">创建发货</button>
+          <button data-sheet="inventory">库存调整</button>
+          <button data-sheet="ai">AI 指令</button>
+          <button data-sheet="notifications">通知</button>
+          <button data-sheet="actions">操作菜单</button>
+        </div>
+      </div>
+      <div class="mobile-review-section">
+        <div class="mobile-review-label">沉浸学习</div>
+        <div class="mobile-review-grid">
+          <button data-action="open-library">图书馆</button>
+          <button data-subject="英语">英语</button>
+          <button data-subject="网络安全">网络安全</button>
+          <button data-action="learning-immersive">进入单步学习</button>
+        </div>
+      </div>
+    </aside>
+
+    <section id="mobile-root" class="mobile-phone" aria-label="言智移动端原型"></section>
+  </main>
+
+  <script src="./mobile.js"></script>
+</body>
+</html>
