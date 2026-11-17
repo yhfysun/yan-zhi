@@ -484,7 +484,11 @@ for (const edition of editions) {
   //   顺序颠倒会打出「产物名与内容档位不一致」的包。
   //   YZ_BUILD_PLUGINS 逐档下发：edition.json.plugins 决定该档插件内容与 mode 交集。
   const pluginsCsv = pluginsCsvFor(edition);
-  run(process.execPath, ['./scripts/set-edition.cjs', edition], { YZ_ARTIFACT_SUFFIX: suffix, YZ_BUILD_PLUGINS: pluginsCsv });
+  run(process.execPath, ['./scripts/set-edition.cjs', edition], {
+    YZ_ARTIFACT_SUFFIX: suffix,
+    YZ_BUILD_PLUGINS: pluginsCsv,
+    YZ_DEFAULT_AUTH_MODE: process.env.YZ_DEFAULT_AUTH_MODE || 'guest',
+  });
   clearOutputDir(outDir);
 
   // 显式传 YZ_OUTPUT_DIR + YZ_ARTIFACT_SUFFIX：

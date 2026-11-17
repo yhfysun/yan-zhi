@@ -308,7 +308,8 @@ ipcMain.handle('shared-server:info', async () => {
     isPackaged: app.isPackaged,
     version: app.getVersion(),
     apiPort: API_PORT,
-    authMode: readHostConfig().authMode === 'multi' ? 'multi' : 'guest',
+    authMode: effectiveAuthMode(),
+    authModeLocked: editionDefaultAuthMode === 'multi',
     lanIps: collectLanIps(),
     serverBase: `http://127.0.0.1:${API_PORT}`,
   };
@@ -316,6 +317,9 @@ ipcMain.handle('shared-server:info', async () => {
 
 ipcMain.handle('shared-server:set-mode', async (_event, mode) => {
   if (SHELL_MODE) return { ok: false, error: '轻量壳没有本地后端，不能当共享主机' };
+  if (editionDefaultAuthMode === 'multi') {
+    return { ok: false, error: '当前安装包固定为多用户发行版，不能切换回本机单机模式' };
+  }
   const next = mode === 'multi' ? 'multi' : 'guest';
   try {
     writeHostConfig({ authMode: next });
@@ -1443,6 +1447,8 @@ function ensureServerDataDir() {
  * 文件缺失（如打包产物未登记 edition.json）时返回空对象：后端会用自己的默认档兜底，
  * 不因读不到档位而启动失败。
  */
+let editionDefaultAuthMode = 'guest';
+
 function readEditionEnv() {
   if (!app.isPackaged) {
     console.log('[版本档] 开发模式 → 高级版全量（pro，构建档与预置码档均为 pro）');
@@ -1456,6 +1462,7 @@ function readEditionEnv() {
     }
     const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (!cfg || typeof cfg.edition !== 'string') return {};
+    editionDefaultAuthMode = cfg.authMode === 'multi' ? 'multi' : 'guest';
     const env = { YZ_EDITION: cfg.edition };
     // 预置码档位与构建档是两件事（高级包带基础版码），故单独传，不合并。
     if (typeof cfg.defaultEdition === 'string') env.YZ_DEFAULT_EDITION = cfg.defaultEdition;
@@ -1472,7 +1479,8 @@ function readEditionEnv() {
       '[版本档] 构建档=' + cfg.edition
       + ' 预置码档=' + (cfg.defaultEdition || '(默认)')
       + ' 模式=' + (Array.isArray(cfg.modes) ? cfg.modes.join(',') : '(全量)')
-      + ' 插件=' + (Array.isArray(cfg.plugins) ? cfg.plugins.length + ' 个' : '(全量)'),
+      + ' 插件=' + (Array.isArray(cfg.plugins) ? cfg.plugins.length + ' 个' : '(全量)')
+      + ' 鉴权=' + editionDefaultAuthMode,
     );
     return env;
   } catch (e) {
@@ -1554,12 +1562,17 @@ function writeHostConfig(patch) {
  * ★ 函数而非常量：startServer 每次（重）启动都要现读，设置页切完档重启即生效。
  */
 function sharedModeEnv() {
-  const mode = readHostConfig().authMode;
+  const mode = effectiveAuthMode();
   if (mode === 'multi') {
     console.log('[共享服务] multi 模式：后端将以 YZ_AUTH_MODE=multi 启动（同事需账号登录）');
-    return { YZ_AUTH_MODE: 'multi' };
+    return { YZ_AUTH_MODE: mode };
   }
   return {};
+}
+
+function effectiveAuthMode() {
+  if (editionDefaultAuthMode === 'multi') return 'multi';
+  return readHostConfig().authMode === 'multi' ? 'multi' : 'guest';
 }
 
 /** 探测 127.0.0.1:API_PORT 上是否已有健康后端在跑（上次的 detached 守护进程、或手动起的 dev server）。

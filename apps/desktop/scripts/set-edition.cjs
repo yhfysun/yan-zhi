@@ -46,6 +46,12 @@ const LABEL = {
   pro: '高级版',
 };
 
+const AUTH_MODE = String(process.env.YZ_DEFAULT_AUTH_MODE || 'guest').trim().toLowerCase();
+if (AUTH_MODE !== 'guest' && AUTH_MODE !== 'multi') {
+  console.error(`[set-edition] YZ_DEFAULT_AUTH_MODE 非法: ${AUTH_MODE}（可选 guest / multi）`);
+  process.exit(1);
+}
+
 const edition = process.argv[2];
 if (!EDITIONS.includes(edition)) {
   console.error(`[set-edition] 用法: node scripts/set-edition.cjs <${EDITIONS.join('|')}>`);
@@ -133,6 +139,8 @@ const payload = {
   pets: petSelection.ids,
   /** 产物名后缀，与 electron-builder.full.yml 的 artifactName 对应。 */
   artifactSuffix: customSuffix,
+  /** 发行版默认鉴权模式；multi 发行包固定多用户，普通包可由 host-config 覆盖。 */
+  authMode: AUTH_MODE,
 };
 
 fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
@@ -148,4 +156,5 @@ console.log(
     (petSelection.excluded.length ? `，排除 ${petSelection.excluded.join(', ')}` : ''),
 );
 console.log(`[set-edition] 预置码档: ${DEFAULT_EDITION[edition]}`);
+console.log(`[set-edition] 默认鉴权模式: ${AUTH_MODE}`);
 console.log(`[set-edition] 产物后缀: ${customSuffix}`);

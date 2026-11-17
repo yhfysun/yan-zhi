@@ -24,7 +24,7 @@
         </el-form-item>
       </el-form>
 
-      <div class="server-field">
+      <div v-if="showServerBase" class="server-field">
         <el-divider content-position="left">服务器地址</el-divider>
         <div class="server-row">
           <el-input v-model="serverBase" placeholder="http://192.168.1.100:3001（本机可留空）" clearable />
@@ -42,7 +42,7 @@ import { useRouter } from 'vue-router';
 import { User, Lock } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
-import { getEffectiveServerBase, setServerBase } from '../api/client';
+import { getEffectiveServerBase, setServerBase, isShellMode } from '../api/client';
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -51,6 +51,7 @@ const password = ref('');
 const password2 = ref('');
 // 显示"生效地址"（打包内置的或用户改过的），可直接改成新地址保存
 const serverBase = ref(getEffectiveServerBase());
+const showServerBase = isShellMode;
 
 function saveServerBase() {
   try {

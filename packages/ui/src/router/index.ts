@@ -9,6 +9,7 @@ import { isCapacitor } from '../api/client';
 import { useAuthStore } from '../stores/auth';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
 import { barePathHashTarget } from './barePathHash';
+import { guestAuthEntryRedirect } from './authEntryGuard';
 
 /**
  * 裸路径引导：远控邀请/二维码给的是裸路径（见 barePathHash.ts 的说明），
@@ -480,10 +481,11 @@ router.beforeEach(async (to) => {
   }
   // multi 模式登录门禁：未初始化 → /setup 首次管理员创建；未登录 → /login。
   // /license、/login、/setup、meta.guest 页面放行。
-  // ★ guest 本地单机不再拦截 /login（2026-11-01）：设置页提供「登录远程账号」入口，
-  //   本地用户经 /login 配服务器地址 + 登录 multi 后端（login 成功后自动带走 authRequired）。
+  // guest 本地单机没有登录概念：即使手输 /login 或 /setup，也必须回应用主页。
   const authStore = useAuthStore();
   if (!authStore.statusLoaded) await authStore.fetchStatus();
+  const guestAuthRedirect = guestAuthEntryRedirect(to.path, authStore.authRequired);
+  if (guestAuthRedirect) return { path: guestAuthRedirect };
   if (authStore.authRequired) {
     // 带着合法 token 刷新页面时，权限可能还没加载（模式过滤/管理页判定都依赖它）
     if (!authStore.user && localStorage.getItem('auth_token')) {

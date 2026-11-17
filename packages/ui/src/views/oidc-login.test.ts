@@ -33,6 +33,10 @@ describe('OIDC 登录入口', () => {
     expect(LOGIN).toContain('@submit.prevent="submit"');
     expect(LOGIN).toContain('authStore.login(username.value, password.value)');
     expect(LOGIN).toContain('if (!authStore.statusLoaded) await authStore.fetchStatus();');
+    expect(LOGIN, '★ guest 模式进入登录页时必须立即退出登录页')
+      .toContain("if (!authStore.authRequired)");
+    expect(LOGIN, '★ 完整安装版仍显示服务器地址输入框')
+      .toContain('v-if="showServerBase"');
   });
 });
 

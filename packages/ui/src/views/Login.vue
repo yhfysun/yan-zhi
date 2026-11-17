@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="auth-page">
+  <div v-if="authReady" class="auth-page">
     <!-- 返回上一页（桌面端无侧栏可点，进入登录页后需手动返回入口） -->
     <button class="auth-back" type="button" @click="goBack" aria-label="返回">
       <el-icon :size="18"><ArrowLeft /></el-icon>
@@ -111,7 +111,7 @@
       </div>
 
       <!-- 服务器地址：轻量壳连远程后端（打包内置地址在此显示，可修改；保存后刷新生效） -->
-      <div class="server-field">
+      <div v-if="showServerBase" class="server-field">
         <el-divider content-position="left">服务器地址</el-divider>
         <div class="server-row">
           <el-input v-model="serverBase" placeholder="http://192.168.1.100:3001" clearable size="small" />
@@ -130,7 +130,14 @@ import { useRouter } from 'vue-router';
 import { User, Lock, Message, ArrowLeft, Check } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
-import { getEffectiveServerBase, getBakedServerBase, setServerBase, setToken, API_BASE } from '../api/client';
+import {
+  getEffectiveServerBase,
+  getBakedServerBase,
+  setServerBase,
+  setToken,
+  API_BASE,
+  isShellMode,
+} from '../api/client';
 import { api } from '../api/client';
 
 const router = useRouter();
@@ -138,8 +145,10 @@ const authStore = useAuthStore();
 // 显示"生效地址"（打包内置的或用户改过的），可直接改成新地址保存
 const serverBase = ref(getEffectiveServerBase());
 const bakedBase = getBakedServerBase();
+const showServerBase = isShellMode;
+const authReady = ref(false);
 /** multi 模式（后端要求登录）下不开放自助注册：账号由管理员创建 */
-const hideRegister = ref(false);
+const hideRegister = ref(true);
 const oidcEnabled = ref(false);
 const oidcError = ref('');
 
@@ -152,14 +161,19 @@ onMounted(async () => {
     window.location.replace(window.location.pathname + window.location.hash);
     return;
   }
+  if (!authStore.statusLoaded) await authStore.fetchStatus();
+  // 路由守卫已经拦 guest；组件内再兜底，避免 HMR/直接挂载时闪现登录表单。
+  if (!authStore.authRequired) {
+    await router.replace('/chat');
+    return;
+  }
+  authReady.value = true;
   try {
     const r = await api.get<{ enabled: boolean }>('/auth/oidc/config');
     if ('data' in r) oidcEnabled.value = !!r.data?.enabled;
   } catch {
     // 配置端点不可用不阻塞内置账号登录（该模式本来就不需要 OIDC）。
   }
-  if (!authStore.statusLoaded) await authStore.fetchStatus();
-  hideRegister.value = authStore.authRequired;
 });
 
 /**

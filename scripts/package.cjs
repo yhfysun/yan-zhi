@@ -54,6 +54,7 @@
  *   --fast                         # 只出免安装目录（electron-builder --dir），不打 NSIS：
  *                                  #   迭代验证用，省掉打安装器+压缩的时间，直接跑 win-unpacked 里的 exe
  *   --no-compress                  # 仍然出安装包，但 NSIS 用 store（不压缩）：打包/安装都快，包体翻倍
+ *   --auth-mode=multi              # 多用户发行版：后端默认启用登录与账号隔离
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -151,6 +152,22 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const VERIFY = !flags.has('--no-verify');
 const KEEP_TMP = flags.has('--keep-tmp');
+
+// ── 发行鉴权模式（--auth-mode=guest|multi）──
+// 写进 edition.json 并随 app.asar 固化，不能依赖用户机器上残留的 host-config。
+const AUTH_MODE_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--auth-mode='));
+  if (hit) return hit.slice('--auth-mode='.length);
+  const i = argv.indexOf('--auth-mode');
+  const v = i >= 0 ? argv[i + 1] : null;
+  return v && !v.startsWith('-') ? v : null;
+})();
+const DEFAULT_AUTH_MODE = String(AUTH_MODE_FLAG || process.env.YZ_DEFAULT_AUTH_MODE || 'guest').trim().toLowerCase();
+if (DEFAULT_AUTH_MODE !== 'guest' && DEFAULT_AUTH_MODE !== 'multi') {
+  console.error(`\x1b[31m[ERROR]\x1b[0m --auth-mode 非法: ${DEFAULT_AUTH_MODE}（可选 guest / multi）`);
+  process.exit(1);
+}
+process.env.YZ_DEFAULT_AUTH_MODE = DEFAULT_AUTH_MODE;
 
 // ── 快打包（迭代验证用，不下发）──
 // --fast      只出免安装目录（electron-builder --dir）：跳过 NSIS 打安装包与压缩，
@@ -1210,6 +1227,7 @@ function buildDesktop(editions) {
         ...(PLUGIN_SELECTION ? { YZ_BUILD_PLUGINS: PLUGIN_SELECTION.ids.join(',') } : {}),
         ...(petsEnvValue() ? { YZ_BUILD_PETS: petsEnvValue() } : {}),
         ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
+        YZ_DEFAULT_AUTH_MODE: DEFAULT_AUTH_MODE,
       },
     });
     ok('桌面构建完成');

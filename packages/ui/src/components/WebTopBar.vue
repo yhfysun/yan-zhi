@@ -143,8 +143,7 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <!-- 桌面端：本机身份头像。RBAC 后（2026-11-01）登录页可配远程地址 + 登录 multi 真实账号，
-           "本地端登录入口是死的"的前提不再成立 → 菜单补「登录 / 切换账号」。 -->
+      <!-- 桌面端：本机身份头像。guest 不是登录账号，只保留设置与记忆入口。 -->
       <el-dropdown v-else-if="!modeLocked && isElectron" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar is-local" :title="localIdentityTitle">
           {{ localIdentityInitial }}
@@ -161,10 +160,6 @@
             <el-dropdown-item command="/memory">
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
-            </el-dropdown-item>
-            <el-dropdown-item divided command="__login__">
-              <el-icon><User /></el-icon>
-              <span>登录 / 切换账号</span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
@@ -589,10 +584,6 @@ function onAvatarCommand(cmd: string) {
   // 账号切换（2026-11-01 RBAC）：退出清 token 回登录页；未登录直接去登录页
   if (cmd === '__logout__') {
     authStore.logout();
-    router.push('/login');
-    return;
-  }
-  if (cmd === '__login__') {
     router.push('/login');
     return;
   }

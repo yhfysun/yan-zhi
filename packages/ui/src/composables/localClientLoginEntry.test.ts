@@ -73,8 +73,10 @@ describe('三处身份区：本机单机端不得渲染「登录入口」', () =
       APP.indexOf('v-else-if="isLocalClient"'),
       APP.indexOf('<button v-else class="mobile-user-avatar"'),
     );
-    expect(localBranch, '★★ 本机身份分支缺少「登录 / 切换账号」入口（连接远程 multi 后端时无法切换）')
-      .toMatch(/登录 \/ 切换账号/);
+    expect(localBranch, '★★ 本机身份分支仍渲染「登录 / 切换账号」入口')
+      .not.toMatch(/登录 \/ 切换账号/);
+    expect(localBranch, '★★ 本机身份分支仍可跳转 /login')
+      .not.toMatch(/'\/login'/);
     expect(localBranch, '★ 本机身份分支直接显示了 guest（内部数据归属身份，不该暴露）')
       .not.toMatch(/'guest'|>\s*guest\s*</);
   });
@@ -99,5 +101,14 @@ describe('三处身份区：本机单机端不得渲染「登录入口」', () =
     // 旧写法（isElectron ? undefined : push) 必须已消失 —— 它在移动端渲染成死入口
     expect(SIDENAV, '★★ 仍有 isElectron ? undefined : push(\'/login\')（移动端会渲染登录入口）')
       .not.toMatch(/isElectron \? undefined/);
+  });
+});
+
+describe('完整桌面版后端地址', () => {
+  it('★ 有内置后端的 Electron 完整版必须忽略遗留远程地址', () => {
+    expect(CLIENT, '★★ API_BASE 未优先锁定本机后端（旧壳包地址会劫持 Pro 包）')
+      .toMatch(/hasLocalBackend\s*\?\s*LOCAL_API_BASE/);
+    expect(CLIENT, '★ getEffectiveServerBase 未对完整桌面版返回空地址')
+      .toMatch(/if\s*\(hasLocalBackend\)\s*return\s*['"]{2}/);
   });
 });

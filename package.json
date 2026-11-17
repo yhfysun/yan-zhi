@@ -33,6 +33,7 @@
     "package:desktop:lite": "node scripts/package-desktop-lite.cjs",
     "package:desktop:basic": "node scripts/package-desktop-basic.cjs",
     "package:desktop:pro": "node scripts/package-desktop-pro.cjs",
+    "package:desktop:pro:multi": "node scripts/package-desktop-pro.cjs --auth-mode=multi --name=pro-multi --yes",
     "package:desktop:shell": "node scripts/package-desktop-shell.cjs",
     "package:server:linux": "node scripts/package-server-linux.cjs",
     "package:android": "node scripts/package-android.cjs",

@@ -5,6 +5,10 @@ import { getLicenseCodeSync } from './license-code';
 
 export const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 export const isCapacitor = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
+/** 完整桌面版有随包后端；轻量壳没有，只能连远程后端。 */
+export const hasLocalBackend = isElectron && !!(window as any).electronAPI?.hasLocalBackend;
+/** 只允许轻量壳显示/修改远程服务器地址。 */
+export const isShellMode = isElectron && !!(window as any).electronAPI?.isShellMode;
 
 /**
  * 本机单机端的内嵌后端基址。
@@ -86,6 +90,9 @@ export function setViewAs(v: { id: string; username: string } | null): void {
 
 /** 生效后端地址：用户页面配置 > 打包内置 > ''（未配置，走各端默认）。 */
 export function getEffectiveServerBase(): string {
+  // 完整桌面版必须使用随包后端。旧壳包可能在同一用户目录留下 yz_server_base，
+  // 若不隔离会把 Pro 包静默劫持到另一台服务器，表现得像“打错包/模式不对”。
+  if (hasLocalBackend) return '';
   return getServerBase() || getBakedServerBase();
 }
 
@@ -95,12 +102,14 @@ function serverBaseApi(): string {
   return base ? base + '/api' : '';
 }
 
-export const API_BASE = serverBaseApi()
-  || (isElectron
-    ? LOCAL_API_BASE
-    : isCapacitor
-      ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : LOCAL_API_BASE)
-      : '/api');
+export const API_BASE = hasLocalBackend
+  ? LOCAL_API_BASE
+  : serverBaseApi()
+    || (isElectron
+      ? LOCAL_API_BASE
+      : isCapacitor
+        ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : LOCAL_API_BASE)
+        : '/api');
 const BASE_URL = API_BASE;
 
 /**

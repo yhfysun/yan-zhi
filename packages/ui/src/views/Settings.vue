@@ -45,19 +45,15 @@
       <el-tabs v-model="tab" class="glass-tabs" :class="{ 'is-pane': isPaneMode || (pageShell && !!mobileGroup) }">
       <el-tab-pane label="通用" name="general" lazy>
         <div class="settings-form">
-          <!-- 账号 / 切换账号（2026-11-01 RBAC）：★ 恒显示 —— 之前挂在 showServerBase 条件下，
-               guest 本地模式两行全被藏掉（用户拍桌"退出登录也没有"的根因）。
-               multi 登录 → 用户名+退出登录；本地 guest → 登录/切换账号入口。 -->
-          <SettingRow label="账号" tip="退出后回到登录页，可用其它账号重新登录">
+          <!-- 账号区只在 multi 显示。guest 是内部数据归属身份，不是登录账号。 -->
+          <SettingRow v-if="authStore.authRequired" label="账号" tip="退出后可切换其它多用户账号">
             <div class="server-base-row">
               <span class="account-name">{{ accountLabel }}</span>
               <el-button v-if="authStore.isLoggedIn" size="small" type="warning" plain @click="logoutAccount">退出登录</el-button>
-              <el-button v-else size="small" type="primary" plain @click="goLogin">登录 / 切换账号</el-button>
             </div>
           </SettingRow>
-          <!-- 服务器地址：本地模式填远程后端地址（连公司服务器）、multi 模式可改目标后端。
-               改的是 localStorage yz_server_base（优先级高于打包内置地址），保存后刷新生效。 -->
-          <SettingRow label="服务器地址" tip="连接的 yan-zhi 后端服务；本地单机留空即可，连远程服务器时填写。修改后保存并自动刷新生效" tip-after>
+          <!-- 远程服务器地址只属于轻量壳；完整桌面版必须连接随包后端。 -->
+          <SettingRow v-if="isShellMode" label="服务器地址" tip="轻量壳连接的 yan-zhi 后端服务，修改后保存并自动刷新生效" tip-after>
             <div class="server-base-row">
               <el-input v-model="serverBaseDraft" placeholder="http://192.168.1.100:3001（本地可留空）" clearable style="width: 280px" />
               <el-button size="small" :type="serverBaseDirty ? 'primary' : 'default'" :disabled="!serverBaseDirty" @click="saveServerBaseSetting">保存</el-button>
@@ -646,7 +642,11 @@
               <div>共享服务模式</div>
               <div class="shared-muted">{{ sharedAuthMulti ? 'multi：多用户模式，同事需账号登录' : 'guest：本地单机（默认，无登录）' }}</div>
             </div>
-            <el-switch :model-value="sharedAuthMulti" @change="toggleSharedMode" />
+            <el-switch
+              :model-value="sharedAuthMulti"
+              :disabled="sharedInfo?.authModeLocked"
+              @change="toggleSharedMode"
+            />
           </div>
           <div v-if="sharedAuthMulti" class="shared-row">
             <el-button size="small" type="primary" plain @click="goAdminUsers">管理用户</el-button>
@@ -1002,7 +1002,7 @@ async function pickPetVrm() {
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor, CreditCard } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
-import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase } from '../api/client';
+import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase, isShellMode } from '../api/client';
 import { closeSettingsDialog } from '../composables/useSettingsDialog';
 import {
   POOL_SLOTS, POOL_LABELS, MODEL_ROUTING_OPTIONS, groupModelsForSlot, poolModelsOf, poolOptionLabel,
@@ -1284,13 +1284,6 @@ function logoutAccount() {
     })
     .catch(() => {});
 }
-function goLogin() {
-  // ★ 先关设置弹窗再跳转（2026-11-01 用户拍桌）：弹窗是高 z-index 浮层，
-  //   不关的话登录页渲染在弹窗**后面**，看着像"点了没反应"。
-  closeSettingsDialog();
-  router.push('/login');
-}
-
 /** 低内存模式开关（B5，2026-10-13）：本地 ref + 即时生效（applyLiteMode 由 store.update 触发） */
 const liteMode = ref(settingsStore.settings.liteMode);
 function toggleLiteMode(v: boolean | string | number) {
@@ -1915,7 +1908,7 @@ const isDesktopHost = computed(() =>
   !!((window as any).electronAPI?.hasLocalBackend) && !isCapacitor,
 );
 const sharedInfo = ref<{
-  authMode?: string; isPackaged?: boolean; version?: string; apiPort?: number;
+  authMode?: string; authModeLocked?: boolean; isPackaged?: boolean; version?: string; apiPort?: number;
   lanIps?: Array<{ name: string; address: string }>;
 } | null>(null);
 const firewallKnown = ref(false);

@@ -69,11 +69,7 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <!-- ★ 本机单机端（Capacitor 移动端 / 桌面移动布局）→ 中性「本机」头像。
-                 2026-09-27 用户：「移动端不应该也是默认登录？」——当时本地端登录页
-                 登不进任何账号，入口是死的；**RBAC 之后语义已变**（2026-11-01）：
-                 登录页可配远程服务器地址 + 登录 multi 后端真实账号，入口不再是死的。
-                 所以菜单按登录态分流：已登录 → 退出登录；本地 guest → 登录/切换账号。 -->
+            <!-- 本机单机端使用中性「本机」身份；guest 不渲染登录或切换账号入口。 -->
             <el-dropdown v-else-if="isLocalClient" trigger="click">
               <span class="mobile-user-avatar is-local" title="本机">{{ localIdentityInitial }}</span>
               <template #dropdown>
@@ -92,10 +88,6 @@
                   <el-dropdown-item v-if="authStore.isLoggedIn" divided @click="logoutFromMenu">
                     <el-icon><SwitchButton /></el-icon>
                     <span>退出登录</span>
-                  </el-dropdown-item>
-                  <el-dropdown-item v-else divided @click="$router.push('/login')">
-                    <el-icon><Avatar /></el-icon>
-                    <span>登录 / 切换账号</span>
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
