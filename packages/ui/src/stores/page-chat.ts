@@ -35,6 +35,8 @@ export interface PageChatSendInput {
   /** 当前 tab（只取 url/title） */
   tab: ContextTabLike;
   question: string;
+  /** 面板里展示的文字；缺省与 question 相同。用于批注等机器可读上下文。 */
+  displayText?: string;
   /**
    * 已存在的会话 id（preview 空间传当前会话；page 空间留空 ⇒ 自建专用会话）。
    * 传了 = 共用会话（不覆盖本地消息）；留空 = 自建（收尾按服务端对齐）。
@@ -290,7 +292,7 @@ export const usePageChatStore = defineStore('page-chat', () => {
     state.conversationId = convId;
     state.ownConversation = own;
 
-    addUserEcho(state, text);
+    addUserEcho(state, String(input.displayText || '').trim() || text);
     state.streaming = true;
     state.lastError = '';
     // P0.1 漂移检测的基线：这条消息是**对哪一页**说的

@@ -6120,7 +6120,8 @@ const DESKTOP_BROWSER_ACTIONS = [
   'extract_list', 'visual_locate', 'download', 'downloads', 'download_control', 'scroll_into_view', 'is_visible', 'drag',
   'run_script', 'highlight', 'takeover',
   // 批注三动作（面板直连 IPC 调用，不派生 browser_* 工具名；2026-10-28 补进清单修复 parity 守门）
-  'annotation_begin', 'annotation_end', 'annotation_drain',
+  'annotation_begin', 'annotation_end', 'annotation_drain', 'annotation_set_mode',
+  'annotation_remove', 'annotation_clear', 'annotation_focus',
   // 代玩网页游戏三动作（游戏窗直连调用，不派生 browser_* 工具名；2026-10-29 补进清单修复 parity 守门）
   'dismiss_overlays', 'observe', 'run_loop',
 ];
@@ -7196,8 +7197,9 @@ const ANNOTATION_HOST_ID = '__yz_annotation_host';
 /** 哪些 webContents 上正开着批注层 —— 供 agent 抢到页面时静默撤层（WeakSet：wc 回收即失效） */
 const annotationWebContents = new WeakSet();
 
-function yzAnnotationBootstrap() {
+function yzAnnotationBootstrap(config) {
   var HOST_ID = '__yz_annotation_host';
+  config = config || {};
 
   var prev = document.getElementById(HOST_ID);
   if (prev) {
@@ -7206,11 +7208,15 @@ function yzAnnotationBootstrap() {
   }
 
   var items = [];   // { rec, el, docX, docY, w, h, sent }
+  var multiAnchors = [];
   var pending = null;
   var drag = null;
   var modeActive = true;
+  var mode = config.mode === 'text' ? 'text' : 'element';
   var raf = 0;
   var prevCursor = '';
+  var wiredDocs = [];
+  var docObserver = null;
 
   /* ---------- DOM 骨架（Shadow DOM 隔离，避免被站点样式污染） ---------- */
   var host = document.createElement('div');
@@ -7281,17 +7287,67 @@ function yzAnnotationBootstrap() {
     return path.indexOf(cmpEl) !== -1;
   }
 
-  // 命中测试：跳过我们自己的 shadow 层
-  function hitAt(x, y) {
-    var els;
-    try { els = document.elementsFromPoint(x, y); } catch (e) { return null; }
+  function isOurs(el) {
+    if (!el) return true;
+    if (el === host) return true;
+    try { if (el.getRootNode && el.getRootNode() === shadow) return true; } catch (e) {}
+    return false;
+  }
+
+  // Shadow DOM 穿透命中。elementsFromPoint 在 Shadow 外只返回 host，
+  // 必须沿 shadowRoot.elementsFromPoint 继续下钻。
+  function deepElementsFromPoint(doc, x, y, out, depth) {
+    if (!doc || depth > 8) return;
+    var els = [];
+    try { els = doc.elementsFromPoint(x, y); } catch (e) { return; }
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
-      if (el === host) continue;
-      if (el.getRootNode && el.getRootNode() === shadow) continue;
-      return el;
+      if (isOurs(el)) continue;
+      var before = out.length;
+      if (el.shadowRoot) {
+        try {
+          var inner = el.shadowRoot.elementsFromPoint(x, y);
+          for (var j = 0; j < inner.length; j++) if (!isOurs(inner[j])) out.push(inner[j]);
+          deepElementsFromPoint(el.shadowRoot, x, y, out, depth + 1);
+        } catch (e2) { /* closed / unsupported */ }
+      }
+      if (el.tagName === 'IFRAME') {
+        try {
+          var r = el.getBoundingClientRect();
+          var cd = el.contentDocument;
+          if (cd) deepElementsFromPoint(cd, x - r.left, y - r.top, out, depth + 1);
+        } catch (e3) { /* cross-origin */ }
+      }
+      if (out.length === before) out.push(el);
     }
-    return null;
+  }
+
+  function hitAt(x, y) {
+    var els = [];
+    deepElementsFromPoint(document, x, y, els, 0);
+    return els.length ? els[0] : null;
+  }
+
+  function deepQueryAll(selector) {
+    var out = [];
+    function walk(root) {
+      if (!root || !root.querySelectorAll) return;
+      try {
+        var found = root.querySelectorAll(selector);
+        for (var i = 0; i < found.length; i++) out.push(found[i]);
+      } catch (e) {}
+      if (root.shadowRoot) walk(root.shadowRoot);
+      var all = [];
+      try { all = root.querySelectorAll('*'); } catch (e4) {}
+      for (var j = 0; j < all.length; j++) {
+        if (all[j].shadowRoot) walk(all[j].shadowRoot);
+        if (all[j].tagName === 'IFRAME') {
+          try { if (all[j].contentDocument) walk(all[j].contentDocument); } catch (e5) {}
+        }
+      }
+    }
+    walk(document);
+    return out;
   }
 
   // 组件反查：dev 构建下 Vue 会给元素挂 __vueParentComponent / __vnode.ctx
@@ -7305,6 +7361,67 @@ function yzAnnotationBootstrap() {
     m = s.match(/(?:^|\/)src\/(.+)$/);
     if (m) return 'src/' + m[1];
     return s;
+  }
+
+  function closestDeep(start, selector) {
+    var cur = start;
+    var hops = 0;
+    while (cur && hops < 32) {
+      try {
+        var hit = cur.closest ? cur.closest(selector) : null;
+        if (hit) return hit;
+      } catch (e) {}
+      var root = cur.getRootNode && cur.getRootNode();
+      cur = root && root.host ? root.host : (cur.parentElement || null);
+      hops++;
+    }
+    return null;
+  }
+
+  function targetMeta(el) {
+    var target = closestDeep(el, '[data-yz-annotate-id],[data-comp]');
+    if (!target) return null;
+    var id = target.getAttribute('data-yz-annotate-id') || target.getAttribute('data-comp') || '';
+    if (!id) return null;
+    return {
+      el: target,
+      targetId: id,
+      label: target.getAttribute('data-yz-annotate-label') || target.getAttribute('data-comp') || '',
+    };
+  }
+
+  function shadowPathOf(el) {
+    var out = [];
+    var cur = el;
+    while (cur && out.length < 12) {
+      var root = cur.getRootNode && cur.getRootNode();
+      if (!root || root === document || !root.host) break;
+      var host = root.host;
+      out.unshift(selectorOf(host));
+      cur = host;
+    }
+    return out;
+  }
+
+  function frameNodesOf(el) {
+    var out = [];
+    try {
+      var win = el.ownerDocument && el.ownerDocument.defaultView;
+      while (win && win !== window) {
+        var frame = win.frameElement;
+        if (!frame) break;
+        out.unshift(frame);
+        win = frame.ownerDocument && frame.ownerDocument.defaultView;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function framePathOf(el) {
+    var frames = frameNodesOf(el);
+    var out = [];
+    for (var i = 0; i < frames.length; i++) out.push(selectorOf(frames[i]));
+    return out;
   }
 
   function compOf(node) {
@@ -7338,6 +7455,10 @@ function yzAnnotationBootstrap() {
   }
 
   function selectorOf(el) {
+    var meta = targetMeta(el);
+    if (meta && meta.targetId) {
+      return '[data-yz-annotate-id="' + String(meta.targetId).replace(/"/g, '\\"') + '"]';
+    }
     var parts = [];
     var cur = el;
     var depth = 0;
@@ -7370,6 +7491,8 @@ function yzAnnotationBootstrap() {
   }
 
   function labelOf(el) {
+    var meta = targetMeta(el);
+    if (meta && meta.label) return meta.label;
     var tag = el.tagName.toLowerCase();
     var name = el.getAttribute('data-name') || el.getAttribute('aria-label') || '';
     var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -7379,7 +7502,166 @@ function yzAnnotationBootstrap() {
 
   function rectOf(el) {
     var b = el.getBoundingClientRect();
-    return { x: b.left, y: b.top, w: b.width, h: b.height };
+    var x = b.left;
+    var y = b.top;
+    try {
+      var frames = frameNodesOf(el);
+      for (var i = frames.length - 1; i >= 0; i--) {
+        var fr = frames[i].getBoundingClientRect();
+        x += fr.left;
+        y += fr.top;
+      }
+    } catch (e) {}
+    return { x: x, y: y, w: b.width, h: b.height };
+  }
+
+  function anchorFor(el, rect) {
+    var meta = targetMeta(el);
+    var c = compOf(el);
+    return {
+      targetId: meta && meta.targetId ? meta.targetId : '',
+      selector: selectorOf(el),
+      componentFile: c.file,
+      componentName: c.name,
+      framePath: framePathOf(el),
+      shadowPath: shadowPathOf(el),
+      rect: rect || rectOf(el),
+    };
+  }
+
+  function textOffsetIn(block, node, offset) {
+    try {
+      var r = document.createRange();
+      r.selectNodeContents(block);
+      r.setEnd(node, offset);
+      return r.toString().length;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  function selectionSnapshot(win, depth) {
+    if (!win || depth > 8) return null;
+    try {
+      var sel = win.getSelection && win.getSelection();
+      if (sel && sel.rangeCount) {
+        var range = sel.getRangeAt(0);
+        var quote = String(range.toString() || '');
+        var visible = false;
+        try {
+          var rects = range.getClientRects();
+          for (var ri = 0; ri < rects.length; ri++) {
+            if (rects[ri].width > 0 && rects[ri].height > 0) { visible = true; break; }
+          }
+        } catch (e) {}
+        if (quote.trim() && visible) {
+          var node = range.commonAncestorContainer;
+          var el = node.nodeType === 1 ? node : node.parentElement;
+          var block = closestDeep(el, 'p,li,article,section,blockquote,pre,code,td,th,h1,h2,h3,h4,h5,h6') || el;
+          if (block) {
+            var text = String(block.textContent || '');
+            var start = textOffsetIn(block, range.startContainer, range.startOffset);
+            var end = textOffsetIn(block, range.endContainer, range.endOffset);
+            if (end < start) { var tmp = start; start = end; end = tmp; }
+            if (start < 0) start = Math.max(0, text.indexOf(quote));
+            if (end < 0) end = start + quote.length;
+            var rect = rectOf(block);
+            try {
+              var rr = range.getBoundingClientRect();
+              if (rr && rr.width > 0 && rr.height > 0) {
+                rect = { x: rr.left, y: rr.top, w: rr.width, h: rr.height };
+                var frames = frameNodesOf(el);
+                for (var fi = frames.length - 1; fi >= 0; fi--) {
+                  var fr = frames[fi].getBoundingClientRect();
+                  rect.x += fr.left;
+                  rect.y += fr.top;
+                }
+              }
+            } catch (e2) {}
+            var anchor = anchorFor(el, rect);
+            anchor.text = {
+              quote: quote,
+              prefix: text.slice(Math.max(0, start - 48), Math.max(0, start)),
+              suffix: text.slice(Math.min(text.length, end), Math.min(text.length, end + 48)),
+              start: start,
+              end: end,
+              direction: sel.direction === 'backward' ? 'backward' : 'forward',
+            };
+            return {
+              type: 'text',
+              label: '文本「' + quote.replace(/\s+/g, ' ').trim().slice(0, 36) + '」',
+              selector: anchor.selector,
+              componentFile: anchor.componentFile,
+              componentName: anchor.componentName,
+              rect: anchor.rect,
+              anchor: anchor,
+            };
+          }
+        }
+      }
+      var frames = win.document ? win.document.querySelectorAll('iframe') : [];
+      for (var i = 0; i < frames.length; i++) {
+        try {
+          if (frames[i].contentWindow) {
+            var found = selectionSnapshot(frames[i].contentWindow, depth + 1);
+            if (found) return found;
+          }
+        } catch (e3) {}
+      }
+    } catch (e4) {}
+    return null;
+  }
+
+  function findTextRange(textAnchor) {
+    if (!textAnchor || !textAnchor.quote) return null;
+    var nodes = deepQueryAll('p,li,article,section,blockquote,pre,code,td,th,h1,h2,h3,h4,h5,h6,span,div');
+    var best = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var content = String(nodes[i].textContent || '');
+      if (content.indexOf(textAnchor.quote) < 0) continue;
+      if (textAnchor.prefix && content.indexOf(textAnchor.prefix + textAnchor.quote) < 0) continue;
+      if (textAnchor.suffix && content.indexOf(textAnchor.quote + textAnchor.suffix) < 0) continue;
+      best = nodes[i];
+      if (textAnchor.prefix && textAnchor.suffix) break;
+    }
+    if (!best) return null;
+    var raw = String(best.textContent || '');
+    var at = raw.indexOf(textAnchor.quote);
+    if (at < 0) return null;
+    var ownerDoc = best.ownerDocument || document;
+    var walker = ownerDoc.createTreeWalker(best, ownerDoc.defaultView.NodeFilter.SHOW_TEXT);
+    var remaining = at;
+    var startNode = null;
+    var startOffset = 0;
+    var n;
+    while ((n = walker.nextNode())) {
+      var len = n.nodeValue ? n.nodeValue.length : 0;
+      if (remaining <= len) { startNode = n; startOffset = remaining; break; }
+      remaining -= len;
+    }
+    if (!startNode) return null;
+    var range = ownerDoc.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(startNode, Math.min(startOffset + textAnchor.quote.length, startNode.nodeValue.length));
+    return { el: best, range: range };
+  }
+
+  function resolveStoredAnchor(rec) {
+    var anchor = rec && rec.anchor ? rec.anchor : rec;
+    if (!anchor) return null;
+    if (anchor.targetId) {
+      var byTarget = deepQueryAll('[data-yz-annotate-id="' + String(anchor.targetId).replace(/"/g, '\\"') + '"]');
+      if (byTarget[0]) return { el: byTarget[0], range: null };
+    }
+    if (anchor.selector) {
+      var bySelector = deepQueryAll(anchor.selector);
+      if (bySelector[0]) return { el: bySelector[0], range: null };
+    }
+    if (anchor.text) {
+      var found = findTextRange(anchor.text);
+      if (found) return found;
+    }
+    return null;
   }
 
   /* ---------- 绘制 ---------- */
@@ -7428,6 +7710,24 @@ function yzAnnotationBootstrap() {
       marksEl.appendChild(box);
       marksEl.appendChild(num);
     }
+    for (var m = 0; m < multiAnchors.length; m++) {
+      var ma = multiAnchors[m];
+      var mr = ma.el && ma.el.isConnected ? rectOf(ma.el) : ma.rect;
+      if (!mr || mr.w < 1 || mr.h < 1) continue;
+      var mb = document.createElement('div');
+      mb.className = 'box region';
+      mb.style.left = mr.x + 'px';
+      mb.style.top = mr.y + 'px';
+      mb.style.width = mr.w + 'px';
+      mb.style.height = mr.h + 'px';
+      var mn = document.createElement('div');
+      mn.className = 'num';
+      mn.textContent = items.length + m + 1;
+      mn.style.left = Math.max(0, mr.x) + 'px';
+      mn.style.top = Math.max(0, mr.y - 16) + 'px';
+      marksEl.appendChild(mb);
+      marksEl.appendChild(mn);
+    }
   }
 
   /* ---------- 评论框 ---------- */
@@ -7438,9 +7738,14 @@ function yzAnnotationBootstrap() {
       tgtEl.textContent = sel.componentFile
         ? sel.componentFile + ' — ' + sel.label
         : sel.label;
+    } else if (sel.type === 'text') {
+      tgtEl.textContent = (sel.componentFile ? sel.componentFile + ' — ' : '') + sel.label;
     } else {
       tgtEl.textContent = '区域 ' + Math.round(sel.rect.w) + '×' + Math.round(sel.rect.h)
         + ' @ (' + Math.round(sel.rect.x) + ', ' + Math.round(sel.rect.y) + ')';
+    }
+    if (sel.additionalAnchors && sel.additionalAnchors.length) {
+      tgtEl.textContent += ' · 另选 ' + sel.additionalAnchors.length + ' 处';
     }
     var cx = Math.min(Math.max(8, sel.rect.x), Math.max(8, window.innerWidth - 312));
     var cy = sel.rect.y + sel.rect.h + 8;
@@ -7455,6 +7760,8 @@ function yzAnnotationBootstrap() {
   function closeComposer() {
     cmpEl.classList.remove('on');
     pending = null;
+    multiAnchors = [];
+    paint();
   }
 
   function saveComposer() {
@@ -7463,15 +7770,19 @@ function yzAnnotationBootstrap() {
     if (!text) { try { taEl.focus(); } catch (e) { /* ignore */ } return; }
     var s = pending;
     var rec = {
+      id: 'anno-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
       type: s.type,
       label: s.label,
       selector: s.selector || '',
       componentFile: s.componentFile || '',
       componentName: s.componentName || '',
       rect: s.rect,
+      anchor: s.anchor || null,
+      additionalAnchors: s.additionalAnchors || [],
       comment: text,
       pageUrl: location.href,
       createdAt: Date.now(),
+      updatedAt: Date.now(),
     };
     items.push({
       rec: rec,
@@ -7483,43 +7794,76 @@ function yzAnnotationBootstrap() {
       sent: false,
     });
     closeComposer();
+    multiAnchors = [];
     paint();
   }
 
   /* ---------- 事件 ---------- */
+  function eventPoint(e) {
+    var x = Number(e.clientX) || 0;
+    var y = Number(e.clientY) || 0;
+    try {
+      var win = e.target && e.target.ownerDocument && e.target.ownerDocument.defaultView;
+      while (win && win !== window) {
+        var frame = win.frameElement;
+        if (!frame) break;
+        var fr = frame.getBoundingClientRect();
+        x += fr.left;
+        y += fr.top;
+        win = frame.ownerDocument && frame.ownerDocument.defaultView;
+      }
+    } catch (err) {}
+    return { x: x, y: y };
+  }
+
   function onMouseMove(e) {
     if (!modeActive || inComposer(e)) return;
+    var p = eventPoint(e);
     if (drag) {
-      var dw = Math.abs(e.clientX - drag.sx);
-      var dh = Math.abs(e.clientY - drag.sy);
+      var dw = Math.abs(p.x - drag.sx);
+      var dh = Math.abs(p.y - drag.sy);
       if (dw > 6 || dh > 6) drag.moved = true;
       if (drag.moved) {
         selEl.style.display = 'block';
-        selEl.style.left = Math.min(drag.sx, e.clientX) + 'px';
-        selEl.style.top = Math.min(drag.sy, e.clientY) + 'px';
+        selEl.style.left = Math.min(drag.sx, p.x) + 'px';
+        selEl.style.top = Math.min(drag.sy, p.y) + 'px';
         selEl.style.width = dw + 'px';
         selEl.style.height = dh + 'px';
         clearHover();
       }
       return;
     }
+    if (mode === 'text') { clearHover(); return; }
     if (pending) return;
-    var el = hitAt(e.clientX, e.clientY);
+    var el = hitAt(p.x, p.y);
     if (!el) { clearHover(); return; }
     showHover(el);
   }
 
   function onMouseDown(e) {
     if (!modeActive || inComposer(e)) return;
+    if (mode === 'text') {
+      drag = null;
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (pending) return;
-    drag = { sx: e.clientX, sy: e.clientY, moved: false };
+    var p = eventPoint(e);
+    drag = { sx: p.x, sy: p.y, moved: false, shift: !!e.shiftKey };
   }
 
   function onMouseUp(e) {
     if (!modeActive || inComposer(e)) return;
+    if (mode === 'text') {
+      setTimeout(function () {
+        var snapshot = selectionSnapshot(window, 0);
+        if (snapshot) openComposer(snapshot);
+      }, 0);
+      return;
+    }
     if (!drag) return;
+    var p = eventPoint(e);
     e.preventDefault();
     e.stopPropagation();
     var d = drag;
@@ -7527,10 +7871,10 @@ function yzAnnotationBootstrap() {
     selEl.style.display = 'none';
 
     if (d.moved) {
-      var x = Math.min(d.sx, e.clientX);
-      var y = Math.min(d.sy, e.clientY);
-      var w = Math.abs(e.clientX - d.sx);
-      var h = Math.abs(e.clientY - d.sy);
+      var x = Math.min(d.sx, p.x);
+      var y = Math.min(d.sy, p.y);
+      var w = Math.abs(p.x - d.sx);
+      var h = Math.abs(p.y - d.sy);
       if (w >= 12 && h >= 12) {
         openComposer({ type: 'region', label: '区域框选', rect: { x: x, y: y, w: w, h: h } });
       }
@@ -7543,19 +7887,28 @@ function yzAnnotationBootstrap() {
     try {
       // 点到按钮里的 span/图标时，用户的本意是那个按钮 —— 贴到最近的可点击祖先。
       // 页面自己声明了 data-comp 分组则优先用分组（我们自己的预览页会这么标）。
-      var groupEl = el.closest ? el.closest('[data-comp]') : null;
-      var actEl = el.closest ? el.closest('button,a[href],[role=button],[role=link],input,select,textarea') : null;
+      var groupEl = closestDeep(el, '[data-yz-annotate-id],[data-comp]');
+      var actEl = closestDeep(el, 'button,a[href],[role=button],[role=link],input,select,textarea');
       target = groupEl || actEl || el;
     } catch (e2) { target = el; }
+    var anchor = anchorFor(target, rectOf(target));
+    if (d.shift) {
+      multiAnchors.push({ el: target, rect: anchor.rect, anchor: anchor });
+      clearHover();
+      paint();
+      return;
+    }
     var c = compOf(target);
     openComposer({
       type: 'element',
       el: target,
       label: labelOf(target),
-      selector: selectorOf(target),
+      selector: anchor.selector,
       componentFile: c.file,
       componentName: c.name,
-      rect: rectOf(target),
+      rect: anchor.rect,
+      anchor: anchor,
+      additionalAnchors: multiAnchors.map(function (x) { return x.anchor; }),
     });
   }
 
@@ -7567,6 +7920,7 @@ function yzAnnotationBootstrap() {
 
   function onSelectStart(e) {
     if (inComposer(e)) return;
+    if (mode === 'text') return;
     e.preventDefault();
   }
 
@@ -7620,39 +7974,168 @@ function yzAnnotationBootstrap() {
 
   function clear() {
     items = [];
+    multiAnchors = [];
+    paint();
+  }
+
+  function removeItem(id) {
+    items = items.filter(function (it) { return it.rec && it.rec.id !== id; });
+    paint();
+    return true;
+  }
+
+  function setMode(nextMode) {
+    mode = nextMode === 'text' ? 'text' : 'element';
+    drag = null;
+    selEl.style.display = 'none';
+    clearHover();
+    if (pending) closeComposer();
+    try { document.documentElement.style.cursor = mode === 'text' ? 'text' : 'crosshair'; } catch (e) {}
+    return { ok: true, mode: mode };
+  }
+
+  function suspend() {
+    host.style.display = 'none';
+    try { document.documentElement.style.cursor = prevCursor; } catch (e) {}
+    return true;
+  }
+
+  function resume() {
+    host.style.display = '';
+    try { document.documentElement.style.cursor = mode === 'text' ? 'text' : 'crosshair'; } catch (e) {}
+    return true;
+  }
+
+  function focusItem(rec) {
+    var found = resolveStoredAnchor(rec);
+    if (!found || !found.el) return { ok: false, error: '批注目标已无法定位' };
+    try { found.el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+    var r = found.range ? (function () {
+      try {
+        var br = found.range.getBoundingClientRect();
+        return { x: br.left, y: br.top, w: br.width, h: br.height };
+      } catch (e) { return rectOf(found.el); }
+    })() : rectOf(found.el);
+    var box = document.createElement('div');
+    box.className = 'box';
+    box.style.left = r.x + 'px';
+    box.style.top = r.y + 'px';
+    box.style.width = r.w + 'px';
+    box.style.height = r.h + 'px';
+    marksEl.appendChild(box);
+    setTimeout(function () { try { box.remove(); } catch (e) {} }, 1800);
+    return { ok: true, rect: r };
+  }
+
+  function restoreInitialItems(list) {
+    if (!Array.isArray(list)) return;
+    for (var i = 0; i < list.length; i++) {
+      var rec = list[i];
+      if (!rec || !rec.id) continue;
+      var found = resolveStoredAnchor(rec);
+      var r = found ? (found.range ? (function () {
+        try {
+          var br = found.range.getBoundingClientRect();
+          return { x: br.left, y: br.top, w: br.width, h: br.height };
+        } catch (e) { return rectOf(found.el); }
+      })() : rectOf(found.el)) : (rec.rect || null);
+      if (!r) continue;
+      items.push({
+        rec: rec,
+        el: found && found.el ? found.el : null,
+        docX: r.x + window.scrollX,
+        docY: r.y + window.scrollY,
+        w: r.w,
+        h: r.h,
+        sent: true,
+      });
+    }
     paint();
   }
 
   function teardown() {
     modeActive = false;
-    document.removeEventListener('mousemove', onMouseMove, true);
-    document.removeEventListener('mousedown', onMouseDown, true);
-    document.removeEventListener('mouseup', onMouseUp, true);
-    document.removeEventListener('click', onClick, true);
-    document.removeEventListener('selectstart', onSelectStart, true);
-    document.removeEventListener('keydown', onKeyDown, true);
+    for (var i = 0; i < wiredDocs.length; i++) {
+      try {
+        wiredDocs[i].removeEventListener('mousemove', onMouseMove, true);
+        wiredDocs[i].removeEventListener('mousedown', onMouseDown, true);
+        wiredDocs[i].removeEventListener('mouseup', onMouseUp, true);
+        wiredDocs[i].removeEventListener('click', onClick, true);
+        wiredDocs[i].removeEventListener('selectstart', onSelectStart, true);
+        wiredDocs[i].removeEventListener('keydown', onKeyDown, true);
+      } catch (e) {}
+    }
+    if (docObserver) { try { docObserver.disconnect(); } catch (e2) {} }
     window.removeEventListener('scroll', onScroll, true);
     try { document.documentElement.style.cursor = prevCursor; } catch (e) { /* ignore */ }
   }
 
+  function wireDocument(doc) {
+    if (!doc || wiredDocs.indexOf(doc) >= 0) return;
+    wiredDocs.push(doc);
+    doc.addEventListener('mousemove', onMouseMove, true);
+    doc.addEventListener('mousedown', onMouseDown, true);
+    doc.addEventListener('mouseup', onMouseUp, true);
+    doc.addEventListener('click', onClick, true);
+    doc.addEventListener('selectstart', onSelectStart, true);
+    doc.addEventListener('keydown', onKeyDown, true);
+    var frames = [];
+    try { frames = doc.querySelectorAll('iframe'); } catch (e) {}
+    for (var i = 0; i < frames.length; i++) {
+      (function (frame) {
+        try { if (frame.contentDocument) wireDocument(frame.contentDocument); } catch (e2) {}
+        frame.addEventListener('load', function () {
+          try { if (frame.contentDocument) wireDocument(frame.contentDocument); } catch (e3) {}
+        });
+      })(frames[i]);
+    }
+  }
+
   try { prevCursor = document.documentElement.style.cursor; } catch (e) { prevCursor = ''; }
-  document.addEventListener('mousemove', onMouseMove, true);
-  document.addEventListener('mousedown', onMouseDown, true);
-  document.addEventListener('mouseup', onMouseUp, true);
-  document.addEventListener('click', onClick, true);
-  document.addEventListener('selectstart', onSelectStart, true);
-  document.addEventListener('keydown', onKeyDown, true);
+  wireDocument(document);
   window.addEventListener('scroll', onScroll, true);
-  try { document.documentElement.style.cursor = 'crosshair'; } catch (e) { /* ignore */ }
+  try {
+    docObserver = new MutationObserver(function () { wireDocument(document); });
+    docObserver.observe(document.documentElement, { childList: true, subtree: true });
+  } catch (e) {}
+  try { document.documentElement.style.cursor = mode === 'text' ? 'text' : 'crosshair'; } catch (e) { /* ignore */ }
 
   host.__yzTeardown = teardown;
   document.documentElement.appendChild(host);
 
-  window.__yzAnnotation = { active: true, take: take, clear: clear, teardown: teardown };
-  return { ok: true, version: 1 };
+  restoreInitialItems(config.items || []);
+  window.__yzAnnotation = {
+    active: true,
+    take: take,
+    clear: clear,
+    teardown: teardown,
+    setMode: setMode,
+    suspend: suspend,
+    resume: resume,
+    focus: focusItem,
+    remove: removeItem,
+    getMode: function () { return mode; },
+  };
+  return { ok: true, version: 2, mode: mode, restored: items.length };
 }
 
-/** 静默撤掉某个 webContents 上的批注层（agent 抢到页面时用；不返回批注内容，已 drain 的不会丢） */
+async function suspendAnnotationOn(wc) {
+  if (!wc || !annotationWebContents.has(wc)) return false;
+  try {
+    await wc.executeJavaScript(`(function(){ if(window.__yzAnnotation&&window.__yzAnnotation.suspend) return window.__yzAnnotation.suspend(); return false; })()`);
+  } catch { /* page may be navigating */ }
+  return true;
+}
+
+async function resumeAnnotationOn(wc) {
+  if (!wc || !annotationWebContents.has(wc)) return false;
+  try {
+    await wc.executeJavaScript(`(function(){ if(window.__yzAnnotation&&window.__yzAnnotation.resume) return window.__yzAnnotation.resume(); return false; })()`);
+  } catch { /* page may be navigating */ }
+  return true;
+}
+
+/** 静默撤掉某个 webContents 上的批注层（保留给显式退出/导航清理）。 */
 async function endAnnotationOn(wc) {
   if (!wc || !annotationWebContents.has(wc)) return false;
   annotationWebContents.delete(wc);
@@ -8024,6 +8507,10 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       NO_SETTLE_ACTIONS.add('annotation_begin');
       NO_SETTLE_ACTIONS.add('annotation_end');
       NO_SETTLE_ACTIONS.add('annotation_drain');
+      NO_SETTLE_ACTIONS.add('annotation_set_mode');
+      NO_SETTLE_ACTIONS.add('annotation_remove');
+      NO_SETTLE_ACTIONS.add('annotation_clear');
+      NO_SETTLE_ACTIONS.add('annotation_focus');
       // ★ P0（2026-10-29）：fast 动作（实时/游戏场景）不进闸 —— 闸最多白等 8s，
       //   而游戏每一步都要毫秒级；节奏由调用方（循环）自己掌握。
       if (!NO_SETTLE_ACTIONS.has(action) && !args?.fast) {
@@ -8195,14 +8682,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     }
     // ===RUNLOOP-END===
 
-    const doAction = async () => {
-    // ★ agent 抢到页面：先静默撤掉用户的批注层（两者互斥，见 yzAnnotationBootstrap 头注）。
-    //   · 只对 agent 路径（convId 非空）生效 —— 用户自己点工具栏（convId=null）不该撤自己的层；
-    //   · `annotationWebContents` 为空时这一步零开销（WeakSet.has，不发 executeJavaScript）；
-    //   · 已 drain 过的批注在渲染层手里，撤层不会丢。
-    if (convId && wc && annotationWebContents.has(wc)) {
-      await endAnnotationOn(wc);
-    }
+    const doActionInner = async () => {
     switch (action) {
       case 'list_upload_inputs': {
         if (!wc) return { error: '浏览器未就绪（无 webContents）' };
@@ -9430,6 +9910,24 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             }
           }
         };
+        const cropForAnnotation = (image) => {
+          const crop = args && args.crop;
+          if (!crop || !(Number(crop.w) > 0) || !(Number(crop.h) > 0)) return image;
+          try {
+            const size = image.getSize();
+            const viewportW = Number(crop.viewportWidth) || size.width;
+            const viewportH = Number(crop.viewportHeight) || size.height;
+            const sx = size.width / Math.max(1, viewportW);
+            const sy = size.height / Math.max(1, viewportH);
+            const x = Math.max(0, Math.min(size.width - 1, Math.round(Number(crop.x || 0) * sx)));
+            const y = Math.max(0, Math.min(size.height - 1, Math.round(Number(crop.y || 0) * sy)));
+            const width = Math.max(1, Math.min(size.width - x, Math.round(Number(crop.w) * sx)));
+            const height = Math.max(1, Math.min(size.height - y, Math.round(Number(crop.h) * sy)));
+            return image.crop({ x, y, width, height });
+          } catch {
+            return image;
+          }
+        };
         const restoreCaptureVisibility = await revealWebviewForCapture(tabId);
         try {
           if (args.annotate) {
@@ -9462,7 +9960,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               return true;
             })()`);
             try {
-              const image = await capturePageWithRetry();
+              const image = cropForAnnotation(await capturePageWithRetry());
               const archivedFile = await saveShotArchive(image);
               return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
             } finally {
@@ -9472,7 +9970,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
             }
           }
-          const image = await capturePageWithRetry();
+          const image = cropForAnnotation(await capturePageWithRetry());
           const archivedFile = await saveShotArchive(image);
           return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
         } finally {
@@ -10886,10 +11384,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       // ============================================================
       // 浏览器批注（P0，2026-10-28）—— 见 yzAnnotationBootstrap 头注
       //
-      // ★ 这三条**刻意不加入 DESKTOP_BROWSER_ACTIONS**：那份清单是给 agent 的
-      //   动作白名单（桥的 allowedActions / 渲染层的映射真相源）。批注是**人**
-      //   的操作，不该出现在模型的工具面上。
-      //   渲染层走 `browserView:action` IPC 直调 runBrowserAction，不经白名单。
+      // ★ 批注动作只通过 `browserView:action` IPC 供**渲染层的批注 UI**调用；
+      //   它们虽在桌面能力清单里做 parity 守门，但不在 packages/core 的 browser_*
+      //   工具面上，模型无法把“批注”当浏览器工具调用。
       // ============================================================
       case 'annotation_begin': {
         if (!wc) return { error: '浏览器未就绪（无 webContents）' };
@@ -10905,9 +11402,42 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           highlightPersist = false;
           try { await runHighlight(wc, false); } catch { /* 清不掉不影响批注 */ }
         }
-        const injected = await wc.executeJavaScript(`(${yzAnnotationBootstrap.toString()})()`);
+        const injected = await wc.executeJavaScript(
+          `(${yzAnnotationBootstrap.toString()})(${JSON.stringify({
+            mode: args.mode === 'text' ? 'text' : 'element',
+            items: Array.isArray(args.items) ? args.items : [],
+          })})`,
+        );
         annotationWebContents.add(wc);
         return injected || { ok: true };
+      }
+      case 'annotation_set_mode': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        return await wc.executeJavaScript(`(function(){
+          if(!window.__yzAnnotation||!window.__yzAnnotation.setMode)return{error:'批注模式尚未开启'};
+          return window.__yzAnnotation.setMode(${JSON.stringify(args.mode === 'text' ? 'text' : 'element')});
+        })()`);
+      }
+      case 'annotation_remove': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        return await wc.executeJavaScript(`(function(){
+          if(!window.__yzAnnotation||!window.__yzAnnotation.remove)return{error:'批注模式尚未开启'};
+          return window.__yzAnnotation.remove(${JSON.stringify(String(args.id || ''))});
+        })()`);
+      }
+      case 'annotation_clear': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        return await wc.executeJavaScript(`(function(){
+          if(!window.__yzAnnotation||!window.__yzAnnotation.clear)return{error:'批注模式尚未开启'};
+          window.__yzAnnotation.clear();return{ok:true};
+        })()`);
+      }
+      case 'annotation_focus': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        return await wc.executeJavaScript(`(function(){
+          if(!window.__yzAnnotation||!window.__yzAnnotation.focus)return{error:'先开启批注模式，再定位历史批注'};
+          return window.__yzAnnotation.focus(${JSON.stringify(args.item || null)});
+        })()`);
       }
       case 'annotation_end': {
         if (!wc) return { error: '浏览器未就绪（无 webContents）' };
@@ -10938,6 +11468,17 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       default:
         return { error: '未知操作: ' + action };
     }
+    };
+
+    const doAction = async () => {
+      // agent 操作期间只挂起批注层，不清掉用户的未发送内容；动作结束自动恢复。
+      const suspended = !!(convId && wc && annotationWebContents.has(wc));
+      if (suspended) await suspendAnnotationOn(wc);
+      try {
+        return await doActionInner();
+      } finally {
+        if (suspended) await resumeAnnotationOn(wc);
+      }
     };
 
     // 变化检测：对可能改变页面的操作做前后快照对比，为模型提供 pageChanged / noChangeStreak 反馈

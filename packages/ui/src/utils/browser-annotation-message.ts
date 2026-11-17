@@ -43,7 +43,25 @@ export function takeStashedAnnotations(): AnnotationStash | null {
   return v;
 }
 
-/** 把批注序列化成随用户消息发送的文本块；没有批注时返回空串 */export function formatAnnotationBlock(items: BrowserAnnotation[], screenshotPath?: string): string {
+export interface AnnotationScreenshotOptions {
+  fullPage?: string;
+  perItem?: Record<string, string>;
+}
+
+function fullPageOf(shots?: string | AnnotationScreenshotOptions): string | undefined {
+  return typeof shots === 'string' ? shots : shots?.fullPage;
+}
+
+function itemShotOf(item: BrowserAnnotation, shots?: string | AnnotationScreenshotOptions): string | undefined {
+  return item.screenshotPath
+    || (typeof shots === 'object' ? shots?.perItem?.[item.id] : undefined);
+}
+
+/** 把批注序列化成随用户消息发送的文本块；没有批注时返回空串 */
+export function formatAnnotationBlock(
+  items: BrowserAnnotation[],
+  shots?: string | AnnotationScreenshotOptions,
+): string {
   if (!Array.isArray(items) || items.length === 0) return '';
 
   const pageUrl = items.find((it) => it.pageUrl)?.pageUrl || '';
@@ -56,6 +74,18 @@ export function takeStashedAnnotations(): AnnotationStash | null {
       const r = a.rect || { x: 0, y: 0, w: 0, h: 0 };
       // 区域拿不到 DOM 目标，只能给尺寸与位置 —— 靠截图理解
       lines.push(`[${i + 1}] 区域框选 ${r.w}×${r.h} @ (${r.x}, ${r.y})`);
+    } else if (a.type === 'text') {
+      const quote = a.anchor?.text?.quote || a.label.replace(/^文本「|」$/g, '');
+      lines.push(`[${i + 1}] 文本引用「${quote}」`);
+      if (a.componentFile) lines.push(`    组件：${a.componentFile}`);
+      if (a.selector) lines.push(`    选择器：${a.selector}`);
+      const text = a.anchor?.text;
+      if (text && (text.start != null || text.end != null)) {
+        lines.push(`    文本偏移：${text.start ?? '?'}-${text.end ?? '?'}${text.direction ? ` · ${text.direction}` : ''}`);
+      }
+      if (text && (text.prefix || text.suffix)) {
+        lines.push(`    上下文：${text.prefix || ''}[[${text.quote}]]${text.suffix || ''}`);
+      }
     } else {
       lines.push(`[${i + 1}] ${a.label || '元素'}`);
       // 组件路径只有 dev 构建能反查（Vue 的 __file 仅 dev 注入）—— 没有就整行省略，不留空字段
@@ -63,11 +93,21 @@ export function takeStashedAnnotations(): AnnotationStash | null {
       if (a.selector) lines.push(`    选择器：${a.selector}`);
     }
     lines.push(`    评论：${a.comment}`);
+    if (a.additionalAnchors?.length) {
+      const extras = a.additionalAnchors
+        .map((anchor) => anchor.targetId || anchor.selector || (anchor.text?.quote ? `文本「${anchor.text.quote}」` : ''))
+        .filter(Boolean)
+        .slice(0, 8);
+      if (extras.length) lines.push(`    另选：${extras.join('；')}`);
+    }
+    const itemShot = itemShotOf(a, shots);
+    if (itemShot) lines.push(`    已存档: ${itemShot}`);
   });
 
-  if (screenshotPath) {
+  const fullPage = fullPageOf(shots);
+  if (fullPage) {
     lines.push('');
-    lines.push(`${ARCHIVE_PREFIX} ${screenshotPath}`);
+    lines.push(`${ARCHIVE_PREFIX} ${fullPage}`);
   }
 
   return lines.join('\n');
@@ -80,12 +120,18 @@ export function takeStashedAnnotations(): AnnotationStash | null {
  * （见 main.cjs screenshot 分支的 `panelReallyHidden` 闸）。这里**不抛错**，
  * 让调用方降级成「只发文字批注」，不要把整条消息卡住。
  */
-export async function captureAnnotationScreenshot(tabId: string): Promise<{ path?: string; error?: string }> {
+export async function captureAnnotationScreenshot(
+  tabId: string,
+  rect?: BrowserAnnotation['rect'],
+  viewport?: { width: number; height: number },
+): Promise<{ path?: string; error?: string }> {
   const api = typeof window !== 'undefined' ? (window as any).electronAPI?.browserView : null;
   if (!api?.action) return { error: '仅桌面端支持截图' };
   if (!tabId) return { error: '没有可截图的标签页' };
   try {
-    const r: any = await api.action(tabId, 'screenshot', {});
+    const r: any = await api.action(tabId, 'screenshot', rect?.w && rect?.h
+      ? { crop: { ...rect, viewportWidth: viewport?.width || 0, viewportHeight: viewport?.height || 0 } }
+      : {});
     if (r && r.error) return { error: String(r.error) };
     return typeof r?.file === 'string' && r.file ? { path: r.file } : {};
   } catch (e: any) {

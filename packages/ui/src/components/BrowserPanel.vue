@@ -405,15 +405,41 @@
 
       <!-- 批注队列（P0，2026-10-28）：标了几条 / 清空 / 发送。
            空队列时退化成一行模式提示，避免用户开了批注却不知道下一步做什么。 -->
-      <div v-if="annotationActive || annotationCount > 0" class="anno-dock">
+      <div v-if="annotationActive || currentAnnotations.length > 0" class="anno-dock">
+        <div class="anno-modes" role="group" aria-label="批注选择方式">
+          <button
+            type="button"
+            :class="{ active: annotationMode === 'element' }"
+            @click="setAnnotationMode('element')"
+          >元素/区域</button>
+          <button
+            type="button"
+            :class="{ active: annotationMode === 'text' }"
+            @click="setAnnotationMode('text')"
+          >选中文字</button>
+        </div>
         <template v-if="annotationCount > 0">
           <span class="anno-dock-n">{{ annotationCount }}</span>
           <span class="anno-dock-txt">条批注待发送</span>
         </template>
-        <span v-else class="anno-dock-txt">批注模式 · 点选元素或拖拽框选</span>
+        <span v-else class="anno-dock-txt">
+          {{ annotationMode === 'text' ? '选中文字后写批注' : '点选元素、Shift 多选或拖拽框选' }}
+        </span>
         <span class="anno-dock-grow"></span>
-        <button v-if="annotationCount > 0" class="anno-dock-ghost" @click="clearAnnotations">全部清除</button>
-        <button v-if="annotationCount > 0" class="anno-dock-send" @click="sendAnnotations">发送到对话</button>
+        <button
+          v-if="allAnnotations.length > currentAnnotations.length"
+          class="anno-dock-ghost"
+          :class="{ active: annotationPanelAll }"
+          @click="annotationPanelAll = !annotationPanelAll; annotationPanelOpen = true"
+        >
+          全部 {{ allAnnotations.length }}
+        </button>
+        <button v-if="currentAnnotations.length" class="anno-dock-ghost" @click="annotationPanelOpen = !annotationPanelOpen">
+          {{ annotationPanelOpen ? '收起列表' : '管理' }}
+        </button>
+        <button v-if="annotationCount > 0" class="anno-dock-ghost" @click="clearAnnotations">清除待发送</button>
+        <button v-if="annotationCount > 0" class="anno-dock-ghost" @click="sendAnnotationsToPageChat">问这页</button>
+        <button v-if="annotationCount > 0" class="anno-dock-send" @click="sendAnnotations">交给智能体</button>
         <button v-else class="anno-dock-ghost" @click="toggleAnnotation">退出</button>
       </div>
 
@@ -455,6 +481,18 @@
       </div>
 
     </div>
+
+    <BrowserAnnotationPanel
+      v-if="annotationPanelOpen && !showHome"
+      :annotations="panelAnnotations"
+      @close="annotationPanelOpen = false"
+      @focus="focusAnnotation"
+      @update="updateAnnotation"
+      @remove="(item) => annotation.remove(item.id)"
+      @resolve="resolveAnnotation"
+      @clear-draft="clearAnnotations"
+      @clear-page="clearPageAnnotations"
+    />
 
     <!-- 页面对话（P0）：轻任务就地做，重任务走上方 AI 菜单的「移交给主智能体」。
          状态按 tab 隔离（stores/page-chat.ts），关 tab 即清；面板卸载只中止不烧 token。
@@ -601,11 +639,17 @@ import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
 import { useBrowserAnnotation } from '../composables/useBrowserAnnotation';
-import { stashAnnotations } from '../utils/browser-annotation-message';
+import {
+  captureAnnotationScreenshot,
+  formatAnnotationBlock,
+  stashAnnotations,
+} from '../utils/browser-annotation-message';
+import { annotationsForPage } from '../utils/browser-annotation';
 import { usePageChatStore } from '../stores/page-chat';
 import { usePageCommandsStore } from '../stores/page-commands';
 import { useSettingsStore } from '../stores/settings';
 import PageChatDock from './browser/PageChatDock.vue';
+import BrowserAnnotationPanel from './browser/BrowserAnnotationPanel.vue';
 import PageCommandsDialog from './browser/PageCommandsDialog.vue';
 import BookmarkTreeNode from './browser/BookmarkTreeNode.vue';
 import BookmarkEditorDialog from './browser/BookmarkEditorDialog.vue';
@@ -1151,7 +1195,22 @@ const {
 // ============================================================
 const annotation = useBrowserAnnotation(browserScope, (text) => ElMessage.info(text));
 const annotationActive = annotation.active;
-const annotationCount = computed(() => annotation.annotations.value.length);
+const annotationMode = annotation.mode;
+const allAnnotations = annotation.annotations;
+const annotationPanelOpen = ref(false);
+const annotationPanelAll = ref(false);
+const currentAnnotations = computed(() => annotationsForPage(
+  annotation.annotations.value,
+  activeTabId.value,
+  currentUrl.value,
+));
+const panelAnnotations = computed(() => annotationPanelAll.value
+  ? [...allAnnotations.value].sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
+  : currentAnnotations.value);
+const draftAnnotations = computed(() => currentAnnotations.value.filter(
+  (item) => (item.status || 'draft') === 'draft',
+));
+const annotationCount = computed(() => draftAnnotations.value.length);
 /** agent 正在驱动页面（实况锁定 / 编号层自动开启的同一判据）时不许开批注 */
 const annotationBlocked = computed(() => inputLocked.value || agentOperating.value);
 
@@ -1167,16 +1226,71 @@ async function toggleAnnotation() {
   }
   if (annotationActive.value) {
     await annotation.stop();
+    annotationPanelOpen.value = true;
     return;
   }
   // 和编号层互斥：两套全屏覆盖层叠在一起会变成两套编号
   if (highlightOn.value) await applyHighlight(false, true);
-  const r = await annotation.start(tabId);
+  const r = await annotation.start(tabId, currentUrl.value, annotationMode.value);
   if (!r.ok) ElMessage.warning(r.error || '批注模式开启失败');
+  else annotationPanelOpen.value = true;
 }
 
 function clearAnnotations() {
-  annotation.clear();
+  if (!activeTabId.value || !draftAnnotations.value.length) return;
+  for (const item of draftAnnotations.value) annotation.remove(item.id);
+}
+
+function clearPageAnnotations() {
+  annotation.clear(activeTabId.value, currentUrl.value);
+}
+
+function updateAnnotation(item: any, comment: string) {
+  annotation.update(item.id, { comment });
+}
+
+function resolveAnnotation(item: any) {
+  annotation.markStatus([item.id], 'resolved');
+  void annotation.hideMarker(item.id);
+}
+
+async function focusAnnotation(item: any) {
+  const itemTabId = String(item.tabId || activeTabId.value);
+  if (!itemTabId) return;
+  if (itemTabId !== activeTabId.value && tabs.value.some((tab) => tab.id === itemTabId)) {
+    await switchTab(itemTabId);
+    await nextTick();
+  }
+  if (!annotationActive.value) {
+    const r = await annotation.start(itemTabId, item.pageUrl || currentUrl.value, annotationMode.value);
+    if (!r.ok) { ElMessage.warning(r.error || '定位失败'); return; }
+  }
+  const r = await annotation.focus(itemTabId, item);
+  if (!r.ok) ElMessage.warning(r.error || '当前页面已找不到这条批注');
+}
+
+async function setAnnotationMode(nextMode: 'element' | 'text') {
+  await annotation.setMode(nextMode);
+  annotationPanelOpen.value = true;
+}
+
+async function prepareAnnotationBlock(items: any[]): Promise<string> {
+  const viewport = viewportRef.value
+    ? { width: viewportRef.value.clientWidth, height: viewportRef.value.clientHeight }
+    : undefined;
+  const perItem: Record<string, string> = {};
+  const prepared = items.map((item) => ({ ...item }));
+  for (const item of prepared.slice(0, 5)) {
+    if (item.type === 'region' || item.rect?.w > 0) {
+      const shot = await captureAnnotationScreenshot(activeTabId.value, item.rect, viewport);
+      if (shot.path) {
+        item.screenshotPath = shot.path;
+        perItem[item.id] = shot.path;
+      }
+    }
+  }
+  const full = await captureAnnotationScreenshot(activeTabId.value);
+  return formatAnnotationBlock(prepared, { fullPage: full.path, perItem });
 }
 
 // 发送：把批注交给聊天链路（useChat.sendInner 会拼成消息块 + 自动带截图）。
@@ -1185,21 +1299,42 @@ async function sendAnnotations() {
   if (!annotationCount.value) return;
   // 先关批注模式：stop() 会把未 drain 的残留合并进队列，之后读到的才是完整的
   if (annotationActive.value) await annotation.stop();
-  const items = [...annotation.annotations.value];
+  const items = [...draftAnnotations.value];
   const tabId = activeTabId.value || '';
   // ★ /browser 独立页用的是 page scope，而发消息的 useChat 只认 preview 那份队列 ——
   //   不交接到一次性槽里，点「发送到对话」会静默什么都不发（实测踩到过）。
   if (!isPreviewScope) {
     stashAnnotations({ items, tabId });
-    annotation.clear();
+    annotation.markStatus(items.map((item) => item.id), 'sent');
   }
   await sendChatMessage();
+}
+
+async function sendAnnotationsToPageChat() {
+  if (!annotationCount.value || !activeTabId.value || !activeTab.value) return;
+  const items = [...draftAnnotations.value];
+  const question = await prepareAnnotationBlock(items);
+  if (!question) return;
+  setPageChatOpen(true);
+  const r = await pageChat.send({
+    tabId: activeTabId.value,
+    tab: { url: currentUrl.value, title: activeTab.value.title || '' },
+    question,
+    displayText: `请结合这 ${items.length} 条页面批注处理当前页面。`,
+    convId: pageChatConvId.value,
+    agentId: pageChatAgentId.value,
+    tabCount: tabs.value.length,
+  });
+  if (r.ok) annotation.markStatus(items.map((item) => item.id), 'sent');
+  else if (r.msg) ElMessage.warning(r.msg);
 }
 
 // 切 tab 就收掉批注层：注入层只存在于它被注入的那一页，
 // 跟着切页会让光标停在旧页、用户以为自己还在批注。
 watch(activeTabId, () => {
   if (annotationActive.value) void annotation.stop();
+  annotationPanelOpen.value = false;
+  annotationPanelAll.value = false;
 });
 
 
@@ -4073,6 +4208,7 @@ onUnmounted(() => {
   z-index: 40;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -4096,8 +4232,28 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 700;
 }
-.anno-dock-txt { color: #b9c6d8; }
+.anno-dock-txt { color: #b9c6d8; min-width: 0; }
 .anno-dock-grow { flex: 1; }
+.anno-modes {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.anno-modes button {
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 6px;
+  background: transparent;
+  color: #8b98ab;
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.anno-modes button:hover { color: #cfd9e6; }
+.anno-modes button.active { background: rgba(249, 115, 22, 0.18); color: #ffb27a; }
 .anno-dock-ghost {
   border: 0;
   background: none;

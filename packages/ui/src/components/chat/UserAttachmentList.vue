@@ -21,6 +21,16 @@
         <div v-if="a.componentFile" class="ual-anno-comp">{{ a.componentFile }}</div>
         <div v-if="a.selector" class="ual-anno-sel">{{ a.selector }}</div>
         <div v-if="a.comment" class="ual-anno-comment">{{ a.comment }}</div>
+        <img
+          v-if="a.shotPath && !itemShotBroken[a.index]"
+          class="ual-anno-thumb"
+          :src="shotSrcOfPath(a.shotPath)"
+          alt="该条批注截图"
+          loading="lazy"
+          draggable="false"
+          @error="itemShotBroken = { ...itemShotBroken, [a.index]: true }"
+          @click="openItemShot(a.shotPath)"
+        />
         <!-- 截图：能取到就直出缩略图（点开大图），取不到才退回一个「截图」小胶囊 -->
         <img
           v-if="annotationShot && a.index === 1 && !shotBroken"
@@ -155,6 +165,7 @@ const annotations = computed(() => props.annotations || []);
 const hasFilesOrLinks = computed(() => props.attachments.length > 0 || links.value.length > 0);
 /** 截图取不到时（老消息指向 userData 路径 → file-stream 403）退回胶囊按钮 */
 const shotBroken = ref(false);
+const itemShotBroken = ref<Record<number, boolean>>({});
 const shotSrc = computed(() =>
   props.annotationShot
     ? srcOf({ name: '批注截图.png', path: props.annotationShot, kind: 'image' })
@@ -166,6 +177,21 @@ function openAnnotationShot() {
   const path = props.annotationShot;
   if (!path) return;
   onOpen({ name: '批注截图.png', path, kind: 'image' });
+}
+
+function shotSrcOfPath(path?: string): string {
+  if (!path) return '';
+  return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(path)}${mediaAuthQuery()}`;
+}
+
+function openItemShot(path?: string) {
+  if (!path) return;
+  openMediaViewer({
+    src: shotSrcOfPath(path),
+    path,
+    name: '批注截图.png',
+    kind: 'image',
+  });
 }
 
 /** 默认展开：附件只在真有内容时出现，收起来是用户主动动作（收起后仍留概览计数） */

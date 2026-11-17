@@ -79,4 +79,21 @@ describe('splitUserContent · 浏览器批注', () => {
     expect(r.annotations).toEqual([]);
     expect(r.text).toBe('已存档: C:\\x.png');
   });
+
+  it('文字批注和逐条裁剪截图可解析', () => {
+    const r = splitUserContent(`浏览器批注（1 条，页面：https://example.com/lesson）
+
+[1] 文本引用「位置、速度与加速度」
+    选择器：article > p:nth-of-type(2)
+    评论：这里需要补一张图
+    已存档: C:\\shots\\item-1.png
+
+已存档: C:\\shots\\page.png`);
+    expect(r.annotations[0]).toMatchObject({
+      kind: 'text',
+      shotPath: 'C:\\shots\\item-1.png',
+      comment: '这里需要补一张图',
+    });
+    expect(r.annotationShot).toBe('C:\\shots\\page.png');
+  });
 });

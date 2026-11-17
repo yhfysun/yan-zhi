@@ -30,6 +30,7 @@ import { useTaskTypeStore } from '../../stores/taskType';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { useBrowserStore } from '../../stores/browser';
 import { formatAnnotationBlock, captureAnnotationScreenshot, hasStashedAnnotations, takeStashedAnnotations } from '../../utils/browser-annotation-message';
+import { annotationsForPage, withAnnotationStatus } from '../../utils/browser-annotation';
 import { activeMode } from '../../stores/mode';
 import { useIsMobile } from '../useIsMobile';
 import { usePlatform } from '../usePlatform';
@@ -3245,29 +3246,49 @@ async function healStalePlatform() {
       // 动态/静态 store 的类型都暴露为 Ref（见 stores/browser 的 BrowserStore 定义），
       // 运行时实例上取到的是解包后的值 —— 按 any 读，避免为一行访问拉一套类型体操。
       const annoStore = useBrowserStore('preview') as any;
-      const items: BrowserAnnotation[] = stashed ? stashed.items : (annoStore.annotations || []);
-      if (!items.length) return '';
       const tabId = stashed ? stashed.tabId : (annoStore.activeTabId || '');
-      const shot = await captureAnnotationScreenshot(tabId);
+      const tab = Array.isArray(annoStore.tabs) ? annoStore.tabs.find((it: any) => it.id === tabId) : null;
+      const pageUrl = String(tab?.url || annoStore.urlInput || '');
+      const draftItems: BrowserAnnotation[] = stashed
+        ? stashed.items
+        : annotationsForPage(annoStore.annotations || [], tabId, pageUrl, 'draft');
+      const items = draftItems.map((item) => ({ ...item }));
+      if (!items.length) return '';
       // ★ 截图先复制进**会话产物目录**再用它的路径：主进程存的是 userData/screenshots，
       //   而前端取图只有 /api/workspace/file-stream（只认工作区内的路径）—— 实测该接口对
       //   userData 路径返回 403，卡片上点「截图」什么也看不到。复制失败就退回原路径，
       //   模型仍读得到图，只是前端出不了缩略图。
-      let shotPath = shot.path;
-      if (shotPath) {
+      const copyShot = async (path: string | undefined, suffix: string): Promise<string | undefined> => {
+        if (!path) return undefined;
         try {
           const { getPlatformAdapter } = await import('@yan-zhi/core');
           const adapter = getPlatformAdapter();
           const dir = await resolveArtifactDirFor('upload');
           try { await adapter.fs.mkdir(dir); } catch { /* 已存在 */ }
-          const dest = `${dir}/annotation-${Date.now()}.png`;
-          await adapter.fs.writeFileBase64(dest, await adapter.fs.readFileBase64(shotPath));
-          shotPath = dest;
-        } catch { /* 保持原路径 */ }
+          const dest = `${dir}/annotation-${Date.now()}-${suffix}.png`;
+          await adapter.fs.writeFileBase64(dest, await adapter.fs.readFileBase64(path));
+          return dest;
+        } catch {
+          return path;
+        }
+      };
+      const perItem: Record<string, string> = {};
+      for (let i = 0; i < items.length && i < 5; i++) {
+        const shot = await captureAnnotationScreenshot(tabId, items[i].rect);
+        perItem[items[i].id] = (await copyShot(shot.path, `item-${i + 1}`)) || '';
+        if (shot.path) items[i].screenshotPath = perItem[items[i].id] || shot.path;
       }
-      const block = formatAnnotationBlock(items, shotPath);
-      if (!stashed) annoStore.annotations = [];
-      if (shot.error) ElMessage.warning('批注截图不可用（' + shot.error + '），本次只发送了批注文字');
+      const fullShot = await captureAnnotationScreenshot(tabId);
+      const fullPage = await copyShot(fullShot.path, 'page');
+      const block = formatAnnotationBlock(items, { fullPage, perItem });
+      if (!stashed) {
+        annoStore.annotations = withAnnotationStatus(
+          annoStore.annotations || [],
+          items.map((item) => item.id),
+          'sent',
+        );
+      }
+      if (fullShot.error) ElMessage.warning('批注截图不可用（' + fullShot.error + '），本次只发送了批注文字');
       return block;
     } catch (e: any) {
       console.warn('[browser-annotation] 拼装批注失败', e);
@@ -3278,7 +3299,17 @@ async function healStalePlatform() {
   async function sendInner() {
     // ★ 批注本身可以**单独**作为一条消息发出（在预览面板里标几处直接点「发送到对话」），
     //   所以它也是"有内容可发"的判据之一 —— 漏掉这条，空输入 + 有批注会被静默 return。
-    const annoCountForGuard = (useBrowserStore('preview') as any).annotations.length;
+    const previewBrowserStore = useBrowserStore('preview') as any;
+    const previewTabId = String(previewBrowserStore.activeTabId || '');
+    const previewTab = Array.isArray(previewBrowserStore.tabs)
+      ? previewBrowserStore.tabs.find((it: any) => it.id === previewTabId)
+      : null;
+    const annoCountForGuard = annotationsForPage(
+      previewBrowserStore.annotations || [],
+      previewTabId,
+      String(previewTab?.url || previewBrowserStore.urlInput || ''),
+      'draft',
+    ).length;
     if (!input.value.trim() && uploadedFiles.value.length === 0 && allQuotedUrls.value.length === 0 && quotedMessages.value.length === 0
       && annoCountForGuard === 0 && !hasStashedAnnotations()) return;
     // 内容已确定要发出：清掉该会话草稿，避免切走再切回把已发送的内容又填回输入框

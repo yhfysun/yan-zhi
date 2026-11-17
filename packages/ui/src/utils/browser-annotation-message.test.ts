@@ -52,6 +52,29 @@ describe('formatAnnotationBlock', () => {
     expect(text).not.toContain('选择器：');
   });
 
+  it('文字批注带引用、偏移和上下文', () => {
+    const text = formatAnnotationBlock([anno({
+      type: 'text',
+      label: '文本「位置、速度与加速度」',
+      selector: 'article.physics > p:nth-of-type(2)',
+      anchor: {
+        selector: 'article.physics > p:nth-of-type(2)',
+        rect: { x: 10, y: 20, w: 120, h: 20 },
+        text: {
+          quote: '位置、速度与加速度',
+          prefix: '本节学习',
+          suffix: '三个概念。',
+          start: 12,
+          end: 21,
+          direction: 'forward',
+        },
+      },
+    })]);
+    expect(text).toContain('[1] 文本引用「位置、速度与加速度」');
+    expect(text).toContain('文本偏移：12-21 · forward');
+    expect(text).toContain('上下文：本节学习[[位置、速度与加速度]]三个概念。');
+  });
+
   it('有截图时以「已存档:」前缀写入 —— 服务端靠这个锚点挂多模态输入，措辞不能改', () => {
     const text = formatAnnotationBlock([anno()], 'C:\\shots\\annotated-1.png');
     expect(text).toContain('已存档: C:\\shots\\annotated-1.png');
@@ -61,6 +84,14 @@ describe('formatAnnotationBlock', () => {
 
   it('没有截图时不写「已存档」行（避免指向不存在文件）', () => {
     expect(formatAnnotationBlock([anno()])).not.toContain('已存档');
+  });
+
+  it('单条裁剪图和整页图可以同时附上', () => {
+    const text = formatAnnotationBlock([anno({ id: 'a1', screenshotPath: 'C:\\shots\\item-1.png' })], {
+      fullPage: 'C:\\shots\\page.png',
+    });
+    expect(text).toContain('    已存档: C:\\shots\\item-1.png');
+    expect(text).toContain('已存档: C:\\shots\\page.png');
   });
 
   it('多条批注按序号排列，且只出现一次页头', () => {

@@ -9,15 +9,25 @@
 //   在页面内即时渲染），用户感知不到。详见 main.cjs 同一段注释。
 //
 // ★ 轮询只在批注模式开启时跑；`stop()` / 组件卸载 / 页面导航（active:false）都会停。
-import { onBeforeUnmount, type Ref } from 'vue';
+import { onBeforeUnmount, ref, watch, type Ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import type { BrowserAnnotation } from '@yan-zhi/shared';
+import type { BrowserAnnotation, BrowserAnnotationStatus } from '@yan-zhi/shared';
 import { useBrowserStore } from '../stores/browser';
+import {
+  annotationPageKey,
+  annotationsForPage,
+  browserLocalStorage,
+  loadAnnotationHistory,
+  mergeAnnotationHistory,
+  saveAnnotationHistory,
+  withAnnotationStatus,
+} from '../utils/browser-annotation';
 
 /** drain 间隔。低于 100ms 收益不大，高于 200ms 队列计数会明显滞后于用户操作 */
 const DRAIN_INTERVAL_MS = 120;
 
 type Notify = (text: string) => void;
+export type BrowserAnnotationMode = 'element' | 'text';
 
 function browserApi(): any {
   return typeof window !== 'undefined' ? (window as any).electronAPI?.browserView : null;
@@ -30,12 +40,22 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
   const refs = storeToRefs(store) as any;
   const annotations = refs.annotations as Ref<BrowserAnnotation[]>;
   const annotationActive = refs.annotationActive as Ref<boolean>;
+  const mode = ref<BrowserAnnotationMode>('element');
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let draining = false;
   let seq = 0;
   /** 批注层所在的那个 tab —— 轮询与收尾都必须打回**同一页**（用户中途切 tab 不该串台） */
   let currentTabId: string | null = null;
+  let currentPageKey = '';
+
+  annotations.value = mergeAnnotationHistory(
+    annotations.value,
+    loadAnnotationHistory(scope, browserLocalStorage()),
+  );
+  watch(annotations, (value) => {
+    saveAnnotationHistory(scope, value, browserLocalStorage());
+  }, { deep: true });
 
   function newId(): string {
     seq += 1;
@@ -47,8 +67,11 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
     const incoming: BrowserAnnotation[] = items
       .filter((it) => it && typeof it.comment === 'string' && it.comment.trim())
       .map((it) => ({
-        id: newId(),
-        type: it.type === 'region' ? 'region' : 'element',
+        id: String(it.id || newId()),
+        tabId: currentTabId || String(it.tabId || ''),
+        pageKey: currentPageKey || annotationPageKey(String(it.pageUrl || '')),
+        status: 'draft' as BrowserAnnotationStatus,
+        type: it.type === 'region' || it.type === 'text' ? it.type : 'element',
         label: String(it.label || ''),
         selector: it.selector || undefined,
         componentFile: it.componentFile || undefined,
@@ -64,9 +87,12 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
         comment: String(it.comment).trim(),
         pageUrl: String(it.pageUrl || ''),
         createdAt: Number(it.createdAt) || Date.now(),
+        updatedAt: Number(it.updatedAt) || Date.now(),
+        anchor: it.anchor && typeof it.anchor === 'object' ? it.anchor : undefined,
+        additionalAnchors: Array.isArray(it.additionalAnchors) ? it.additionalAnchors : undefined,
       }));
     if (!incoming.length) return;
-    annotations.value = [...annotations.value, ...incoming];
+    annotations.value = mergeAnnotationHistory(annotations.value, incoming);
   }
 
   function stopPolling() {
@@ -123,13 +149,21 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
     } catch { /* 页面已销毁 */ }
   }
 
-  async function start(tabId: string): Promise<{ ok: boolean; error?: string }> {
+  async function start(
+    tabId: string,
+    pageUrl: string,
+    nextMode: BrowserAnnotationMode = mode.value,
+  ): Promise<{ ok: boolean; error?: string }> {
     const api = browserApi();
     if (!api?.action) return { ok: false, error: '仅桌面端支持页面批注' };
     try {
-      const r: any = await api.action(tabId, 'annotation_begin');
-      if (!r || r.error) return { ok: false, error: (r && r.error) || '批注模式开启失败' };
       currentTabId = tabId;
+      currentPageKey = annotationPageKey(pageUrl);
+      mode.value = nextMode;
+      const restored = annotationsForPage(annotations.value, tabId, pageUrl)
+        .filter((item) => item.status !== 'resolved');
+      const r: any = await api.action(tabId, 'annotation_begin', { mode: nextMode, items: restored });
+      if (!r || r.error) return { ok: false, error: (r && r.error) || '批注模式开启失败' };
       annotationActive.value = true;
       startPolling();
       return { ok: true };
@@ -145,12 +179,66 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
     annotationActive.value = false;
   }
 
-  function remove(id: string) {
-    annotations.value = annotations.value.filter((a) => a.id !== id);
+  async function setMode(nextMode: BrowserAnnotationMode) {
+    mode.value = nextMode;
+    if (!annotationActive.value || !currentTabId) return;
+    const api = browserApi();
+    if (!api?.action) return;
+    await api.action(currentTabId, 'annotation_set_mode', { mode: nextMode }).catch(() => null);
   }
 
-  function clear() {
-    annotations.value = [];
+  function remove(id: string) {
+    annotations.value = annotations.value.filter((a) => a.id !== id);
+    void hideMarker(id);
+  }
+
+  async function hideMarker(id: string): Promise<{ ok: boolean; error?: string }> {
+    if (annotationActive.value && currentTabId) {
+      try {
+        const r: any = await browserApi()?.action(currentTabId, 'annotation_remove', { id });
+        return r?.error ? { ok: false, error: String(r.error) } : { ok: true };
+      } catch (e: any) {
+        return { ok: false, error: e?.message || String(e) };
+      }
+    }
+    return { ok: true };
+  }
+
+  function update(id: string, patch: Partial<BrowserAnnotation>) {
+    const now = Date.now();
+    annotations.value = annotations.value.map((item) => item.id === id
+      ? { ...item, ...patch, id: item.id, updatedAt: now }
+      : item);
+  }
+
+  function markStatus(ids: Iterable<string>, status: BrowserAnnotationStatus) {
+    annotations.value = withAnnotationStatus(annotations.value, ids, status);
+  }
+
+  function clear(tabId = currentTabId || '', pageUrl = currentPageKey) {
+    if (!tabId && !pageUrl) {
+      annotations.value = [];
+      return;
+    }
+    annotations.value = annotations.value.filter((item) => !annotationsForPage([item], tabId, pageUrl).length);
+    if (annotationActive.value && currentTabId) {
+      void browserApi()?.action(currentTabId, 'annotation_clear').catch(() => null);
+    }
+  }
+
+  function itemsFor(tabId: string, pageUrl: string, status?: BrowserAnnotationStatus): BrowserAnnotation[] {
+    return annotationsForPage(annotations.value, tabId, pageUrl, status);
+  }
+
+  async function focus(tabId: string, item: BrowserAnnotation): Promise<{ ok: boolean; error?: string }> {
+    const api = browserApi();
+    if (!api?.action) return { ok: false, error: '仅桌面端支持批注定位' };
+    try {
+      const r: any = await api.action(tabId, 'annotation_focus', { item });
+      return r?.error ? { ok: false, error: String(r.error) } : { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
   }
 
   onBeforeUnmount(() => {
@@ -161,9 +249,16 @@ export function useBrowserAnnotation(scope: string, notify?: Notify) {
   return {
     annotations,
     active: annotationActive,
+    mode,
     start,
     stop,
+    setMode,
     remove,
+    hideMarker,
+    update,
+    markStatus,
     clear,
+    itemsFor,
+    focus,
   };
 }

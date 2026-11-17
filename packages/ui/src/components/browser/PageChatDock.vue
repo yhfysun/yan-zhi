@@ -12,7 +12,11 @@
        browser_navigate 原地建绑定），见 utils/pageContext.ts 的 buildPageTaskPrompt。
 -->
 <template>
-  <div class="page-chat-dock">
+  <div
+    class="page-chat-dock"
+    data-yz-annotate-id="browser-page-chat"
+    data-yz-annotate-label="页面对话"
+  >
     <!-- 头部：归属 + 历史/技能 + 指令入口 + 清空/收起 -->
     <div class="pcd-head">
       <span class="pcd-title">💬 页面对话</span>

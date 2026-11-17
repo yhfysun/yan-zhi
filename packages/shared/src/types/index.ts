@@ -796,19 +796,54 @@ export interface ChatChunk {
   terminated?: boolean;
 }
 
+export type BrowserAnnotationStatus = 'draft' | 'sent' | 'resolved';
+
+export interface BrowserAnnotationRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface BrowserAnnotationTextAnchor {
+  quote: string;
+  prefix?: string;
+  suffix?: string;
+  start?: number;
+  end?: number;
+  direction?: 'forward' | 'backward';
+}
+
 /**
- * 浏览器批注（P0，2026-10-28）—— 用户在渲染好的页面上点选/框选 + 写的一句话。
+ * 可重定位锚点。旧字段仍保留在 BrowserAnnotation 顶层，兼容已经落库/正在发送的消息。
+ * 优先级：targetId > selector > text > rect。
+ */
+export interface BrowserAnnotationAnchor {
+  targetId?: string;
+  selector?: string;
+  componentFile?: string;
+  componentName?: string;
+  framePath?: string[];
+  shadowPath?: string[];
+  text?: BrowserAnnotationTextAnchor;
+  rect: BrowserAnnotationRect;
+}
+
+/**
+ * 浏览器批注（V2，2026-11-17）—— 元素 / 区域 / 文字选区 + 可恢复锚点。
  *
- * ★ 为什么不是"自由涂鸦"：模型要能**定位到代码**。所以每条批注要么带 CSS 选择器，
- *   要么带组件路径（dev 构建下从 `el.__vueParentComponent.type.__file` 反查）。
- *   `rect` 只是给多模态截图做方位参考，不是定位依据。
- * ★ `componentFile` / `componentName` 在**生产构建里拿不到**（Vue 的 `__file`
- *   仅 dev 注入）——它们是可选字段，拼消息时缺就省略该行，不要填空串。
+ * ★ 模型定位优先级：显式语义 targetId > CSS selector > 文本 quote + 偏移 > 截图坐标。
+ * ★ componentFile 只在 dev 构建可由 Vue 实例反查；生产构建缺省是正常情况。
+ * ★ status 让批注在发送后仍可保留、编辑和回看，不再是一发即清的临时数组。
  */
 export interface BrowserAnnotation {
   id: string;
-  /** element = 点选具体元素；region = 拖拽框选一块区域（拿不到 DOM 时的兜底） */
-  type: 'element' | 'region';
+  /** 旧消息可能没有 tabId/pageKey；新批注必须带上，用于按标签页和页面隔离/恢复。 */
+  tabId?: string;
+  pageKey?: string;
+  status?: BrowserAnnotationStatus;
+  /** element = 点选具体元素；region = 拖拽框选；text = 选中一段正文 */
+  type: 'element' | 'region' | 'text';
   /** 人读标签，如 `button「卡片 CTA · Growth」` */
   label: string;
   /** CSS 选择器（仅 element） */
@@ -818,12 +853,19 @@ export interface BrowserAnnotation {
   /** 组件名，如 `PricingCard` */
   componentName?: string;
   /** 屏幕坐标（批注保存那一刻的视口坐标），给截图做方位参考 */
-  rect: { x: number; y: number; w: number; h: number };
+  rect: BrowserAnnotationRect;
+  /** V2 可恢复锚点；旧数据可按顶层 selector/componentFile/rect 降级。 */
+  anchor?: BrowserAnnotationAnchor;
+  /** Shift 多选时，除了主锚点外一起标注的其它目标。 */
+  additionalAnchors?: BrowserAnnotationAnchor[];
   /** 用户写的评论 */
   comment: string;
   /** 批注时的页面地址 */
   pageUrl: string;
   createdAt: number;
+  updatedAt?: number;
+  /** 单条批注截图（裁剪图）；整页截图仍由消息级字段携带。 */
+  screenshotPath?: string;
 }
 
 /** 目标模式：跨批次、跨重启持续执行的目标状态。 */

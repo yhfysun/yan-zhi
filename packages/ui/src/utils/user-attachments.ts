@@ -33,11 +33,13 @@ export interface UserQuotedLink {
  */
 export interface UserAnnotation {
   index: number;
-  kind: 'element' | 'region';
+  kind: 'element' | 'region' | 'text';
   label: string;
   componentFile?: string;
   selector?: string;
   comment: string;
+  /** 单条批注裁剪图（正文里紧随该条的缩进 `已存档:` 行）。 */
+  shotPath?: string;
 }
 
 export interface ParsedUserContent {
@@ -231,7 +233,9 @@ function parseAnnotationBlock(block: string): { items: UserAnnotation[]; shotPat
 
     const shot = ANNO_SHOT_RE.exec(line.trim());
     if (shot) {
-      shotPath = shot[1].trim();
+      const path = shot[1].trim();
+      if (cur && /^\s+已存档:/.test(line)) cur.shotPath = path;
+      else shotPath = path;
       continue;
     }
 
@@ -240,7 +244,7 @@ function parseAnnotationBlock(block: string): { items: UserAnnotation[]; shotPat
       const body = item[2].trim();
       cur = {
         index: Number(item[1]),
-        kind: /^区域框选/.test(body) ? 'region' : 'element',
+        kind: /^区域框选/.test(body) ? 'region' : /^文本引用/.test(body) ? 'text' : 'element',
         label: body,
         comment: '',
       };
