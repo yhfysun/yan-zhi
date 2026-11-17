@@ -68,7 +68,7 @@ function onPick(key: string | number | object) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 28px;
+  min-height: 40px;
   padding: 0 10px;
   border-radius: 14px;
   border: 1px solid var(--el-border-color, #dcdfe6);

@@ -8,6 +8,9 @@ export * from './page-assets/runtime';
 export * from './page-agent';
 export * from './automation/types';
 export * from './automation/validate';
+export * from './learning/v2';
+export * from './learning/v2-library';
+export type * from './learning/v2-types';
 
 // 内置模型价格参考表（纯数据，与厂商目录同层）
 // ★ P0 必备：没有价格数据 ⇒ 费用恒 ¥0 ⇒ 阈值永不触发（见 model-pricing-presets.ts 文件头）

@@ -227,7 +227,7 @@ describe('MusicWorkbench v2 · 挂载契约', () => {
     expect(document.body.style.overflow).toBe('hidden')
     const source = readFileSync(resolve(process.cwd(), 'src/components/learning/MusicWorkbench.vue'), 'utf8')
     expect(source).toMatch(/\.mw-focus\s*\{[^}]*position: fixed/)
-    expect(source).toMatch(/\.mw-focus\s*\{[^}]*inset: 0/)
+    expect(source).toMatch(/\.mw-focus\s*\{[^}]*bottom: var\(--app-statusbar-h, 0px\)/)
     expect(source).toMatch(/\.mw-focus\s*\{[^}]*z-index: 3000/)
     expect(focusSpy).toHaveBeenCalledWith(true)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))

@@ -24,6 +24,8 @@ const modules = import.meta.glob(
     '!./api/*.test.ts',
     './utils/*.ts',
     '!./utils/*.test.ts',
+    './utils/**/*.ts',
+    '!./utils/**/*.test.ts',
   ],
   { eager: true },
 ) as Record<string, unknown>;

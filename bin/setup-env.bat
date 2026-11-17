@@ -11,9 +11,9 @@ echo.
 
 :: ========== Step 1: Check Node.js ==========
 echo [1/5] Checking Node.js...
-where node >nul 2>&1
-if %errorlevel% neq 0 (
-    echo   [ERROR] Node.js not found. Install Node.js >= 20
+call "%~dp0resolve-node.bat"
+if errorlevel 1 (
+    echo   [ERROR] Node.js >= 20 not found. Install Node.js or check fnm / nvm.
     echo   Download: https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/
     pause
     exit /b 1

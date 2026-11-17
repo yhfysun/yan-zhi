@@ -71,7 +71,7 @@
     <div class="track"><div id="bar" class="bar pending"></div></div>
     <div class="meta">
       <span id="phase" class="phase">正在准备运行环境…</span>
-      <span id="pct" class="pct">0%</span>
+    <span id="pct" class="pct">准备中</span>
     </div>
     <div id="detail" class="detail"></div>
   </div>
@@ -86,6 +86,7 @@
       var lastPct = 0;
       // splash-preload.cjs 暴露 window.splashAPI；直接 file:// 调试时无 api，展示默认态
       var api = window.splashAPI;
+      pctEl.textContent = '准备中';
 
       function apply(u) {
         if (!u || typeof u !== 'object' || terminated) return;
@@ -102,11 +103,19 @@
         }
         if (typeof u.pct === 'number' && isFinite(u.pct)) {
           // 前端也钳一次单调，防止下层把进度抵消回去
-          var pct = Math.max(lastPct, Math.min(100, Math.round(u.pct)));
-          lastPct = pct;
-          bar.classList.remove('pending');
-          bar.style.width = pct + '%';
-          pctEl.textContent = pct + '%';
+          var rawPct = Math.max(0, Math.min(100, u.pct));
+          var pct = Math.max(lastPct, Math.min(100, Math.round(rawPct)));
+          if (pct <= 0) {
+            bar.classList.add('pending');
+            bar.style.width = '';
+            pctEl.textContent = '准备中';
+            lastPct = 0;
+          } else {
+            lastPct = pct;
+            bar.classList.remove('pending');
+            bar.style.width = pct + '%';
+            pctEl.textContent = pct + '%';
+          }
         }
         if (typeof u.caption === 'string') phaseEl.textContent = u.caption;
         if (typeof u.detail === 'string') detailEl.textContent = u.detail;

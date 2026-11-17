@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>全课程全页面覆盖清单</title>
+  <link rel="stylesheet" href="./prototype.css" />
+  <style>
+    .coverage-page { width: min(1460px, calc(100vw - 32px)); margin: 20px auto 64px; }
+    .coverage-toolbar { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 14px; align-items: center; margin: 20px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .coverage-toolbar input { min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .coverage-toolbar b { color: var(--muted); font-size: 10px; font-weight: 500; }
+    .coverage-groups { display: flex; flex-direction: column; gap: 12px; }
+    .coverage-group { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .coverage-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); background: var(--tint); }
+    .coverage-group-head b { font-size: 14px; }
+    .coverage-group-head span { color: var(--muted); font-size: 10px; }
+    .course-coverage { display: grid; grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr); gap: 12px; align-items: center; padding: 11px 14px; border-top: 1px solid var(--line); }
+    .course-coverage:first-of-type { border-top: 0; }
+    .course-coverage h3 { margin: 0; font-size: 12px; }
+    .course-coverage p { margin: 2px 0 0; color: var(--muted); font-size: 9px; }
+    .coverage-links { display: flex; flex-wrap: wrap; gap: 5px; }
+    .coverage-link { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; font-size: 9px; }
+    .coverage-link:hover { border-color: var(--accent); background: var(--tint); }
+    .coverage-link i { color: var(--muted); font-style: normal; }
+    .empty-state { padding: 35px; border: 1px dashed var(--line-strong); color: var(--muted); text-align: center; }
+    @media (max-width: 760px) {
+      .coverage-toolbar { grid-template-columns: 1fr; }
+      .course-coverage { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="coverage-page">
+    <header class="index-head">
+      <div>
+        <span class="eyebrow">Coverage Matrix</span>
+        <h1>全课程全页面</h1>
+        <p>最新代码的 95 个课程与精读单元全部保留，新方案首批 232 门课程全部登记。每门课程都提供桌面端与移动端的书籍研读、实践、练习、复习等完整入口。</p>
+      </div>
+      <div class="index-meta"><span id="subject-count">19 个科目</span><span id="course-count">327 门课程</span><span id="link-count">5232 个直达链接</span><a class="btn small" href="./index.html">返回方案索引</a></div>
+    </header>
+    <div class="coverage-toolbar">
+      <input id="coverage-search" type="search" placeholder="搜索科目或课程，例如：书法 / 遵义 / 乾卦" aria-label="搜索课程" />
+      <b>每个页面名称后面的“桌 / 移”分别打开桌面与移动原型，并带入当前科目与课程。</b>
+    </div>
+    <div class="coverage-groups" id="coverage-groups"></div>
+  </main>
+  <script src="./prototype-data.js"></script>
+  <script src="./prototype-render.js"></script>
+  <script>
+    (function () {
+      const data = window.LEARNING_PROTOTYPE;
+      const proto = window.LearningProto;
+      const host = document.querySelector('#coverage-groups');
+      const search = document.querySelector('#coverage-search');
+      const groups = data.subjects.map((subject) => ({
+        subject,
+        courses: proto.allCourses(subject),
+      }));
+      const courseCount = groups.reduce((sum, group) => sum + group.courses.length, 0);
+      document.querySelector('#subject-count').textContent = `${data.subjects.length} 个科目`;
+      document.querySelector('#course-count').textContent = `${courseCount} 门课程`;
+      document.querySelector('#link-count').textContent = `${courseCount * data.pages.length * 2} 个直达链接`;
+
+      function href(platform, subject, page, course) {
+        return `./${platform}.html?subject=${encodeURIComponent(subject.key)}&page=${encodeURIComponent(page.key)}&course=${encodeURIComponent(course.name)}`;
+      }
+
+      function render(keyword) {
+        const query = keyword.trim().toLowerCase();
+        const filtered = groups
+          .map((group) => ({
+            ...group,
+            courses: group.courses.filter((course) => {
+              const haystack = `${group.subject.name} ${course.stage} ${course.name}`.toLowerCase();
+              return !query || haystack.includes(query);
+            }),
+          }))
+          .filter((group) => group.courses.length);
+
+        if (!filtered.length) {
+          host.innerHTML = '<div class="empty-state">没有匹配的课程</div>';
+          return;
+        }
+
+        host.innerHTML = filtered
+          .map(
+            (group) => `
+              <section class="coverage-group" style="${proto.subjectStyle(group.subject)}">
+                <div class="coverage-group-head"><b>${group.subject.name}</b><span>${group.courses.length} 门课程 · ${group.subject.lesson.labels.join(' → ')}</span></div>
+                ${group.courses
+                  .map(
+                    (course) => `
+                      <article class="course-coverage">
+                        <div><h3>${course.name}</h3><p>${course.stage} · ${course.meta || '首版课程'}</p></div>
+                        <div class="coverage-links">
+                          ${data.pages
+                            .map(
+                              (page) => `
+                                <span class="coverage-link">
+                                  <span>${page.label}</span>
+                                  <a href="${href('desktop', group.subject, page, course)}" title="桌面端 ${page.label}"><i>桌</i></a>
+                                  <a href="${href('mobile', group.subject, page, course)}" title="移动端 ${page.label}"><i>移</i></a>
+                                </span>`,
+                            )
+                            .join('')}
+                        </div>
+                      </article>`,
+                  )
+                  .join('')}
+              </section>`,
+          )
+          .join('');
+      }
+
+      search.addEventListener('input', () => render(search.value));
+      render('');
+    })();
+  </script>
+</body>
+</html>

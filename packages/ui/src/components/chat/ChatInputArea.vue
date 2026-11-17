@@ -257,7 +257,25 @@
           <span class="queue-head-text">{{ queuedList.length }} 条追加消息 · 任务本轮结束后自动发送</span>
         </div>
         <div class="queue-list">
-          <div v-for="(q, i) in queuedList" :key="q.id" class="queue-item">
+          <div
+            v-for="(q, i) in queuedList"
+            :key="q.id"
+            class="queue-item"
+            :class="{
+              dragging: queueDragId === q.id,
+              'queue-drop-before': queueDropIndex === i,
+              'queue-drop-after': queueDropIndex === queuedList.length && i === queuedList.length - 1,
+            }"
+            draggable="true"
+            @dragstart="startQueueDrag($event, q.id)"
+            @dragenter.prevent.stop
+            @dragover.prevent.stop="onQueueDragOver($event, i)"
+            @drop.prevent.stop="dropQueueItem($event, i)"
+            @dragend="endQueueDrag"
+          >
+            <span class="queue-drag-handle" title="拖动调整发送顺序" aria-hidden="true">
+              <el-icon :size="13"><Operation /></el-icon>
+            </span>
             <span class="queue-idx">{{ i + 1 }}</span>
             <div class="queue-text">{{ q.content }}</div>
             <div class="queue-actions">
@@ -1026,7 +1044,7 @@ const {
   triggerFileUpload, input, inputRef, send, sending, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
-  queuedList, sendQueuedNow, editQueued, removeQueued,
+  queuedList, sendQueuedNow, editQueued, removeQueued, reorderQueued,
   formatSize, removeFile, fileInputRef, handleFileChange, addFiles,
   workspaceFiles, selectedFilePaths, pinnedFilePaths, toggleFileSelect, toggleFilePin, previewFile,
   quotedUrls, allQuotedUrls, removeQuotedUrl, toggleUrlPin,
@@ -1045,6 +1063,35 @@ const {
 const compactCount = computed(() =>
   messageRounds.value.reduce((n, r) => n + (r.compactMarkers?.length || 0), 0),
 );
+
+const queueDragId = ref('');
+const queueDropIndex = ref(-1);
+
+function startQueueDrag(event: DragEvent, id: string) {
+  queueDragId.value = id;
+  queueDropIndex.value = -1;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-yanzhi-queue', id);
+  }
+}
+
+function onQueueDragOver(event: DragEvent, index: number) {
+  if (!queueDragId.value) return;
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  queueDropIndex.value = event.clientY >= rect.top + rect.height / 2 ? index + 1 : index;
+}
+
+function dropQueueItem(event: DragEvent, fallbackIndex: number) {
+  const id = queueDragId.value || event.dataTransfer?.getData('application/x-yanzhi-queue') || '';
+  if (id) reorderQueued(id, queueDropIndex.value >= 0 ? queueDropIndex.value : fallbackIndex);
+  endQueueDrag();
+}
+
+function endQueueDrag() {
+  queueDragId.value = '';
+  queueDropIndex.value = -1;
+}
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
@@ -3134,6 +3181,7 @@ onBeforeUnmount(() => {
 .queue-list::-webkit-scrollbar-thumb:hover { background: rgba(127, 127, 127, 0.45); }
 
 .queue-item {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 7px;
@@ -3141,6 +3189,30 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: var(--color-bg-subtle, rgba(127, 127, 127, 0.05));
   border: 1px solid var(--color-border, rgba(0, 0, 0, 0.06));
+  cursor: grab;
+}
+.queue-item:active { cursor: grabbing; }
+.queue-item.dragging { opacity: .42; }
+.queue-item.queue-drop-before::before,
+.queue-item.queue-drop-after::after {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-primary, #c2410c);
+  content: "";
+}
+.queue-item.queue-drop-before::before { top: -4px; }
+.queue-item.queue-drop-after::after { bottom: -4px; }
+.queue-drag-handle {
+  flex: 0 0 auto;
+  display: inline-grid;
+  width: 14px;
+  min-height: 17px;
+  margin-top: 0;
+  place-items: center;
+  color: var(--color-text-tertiary, #9aa0a6);
 }
 .queue-idx {
   flex: 0 0 auto;

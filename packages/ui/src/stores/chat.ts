@@ -1026,6 +1026,18 @@ export const useChatStore = defineStore('chat', () => {
     arr.unshift(item);
   }
 
+  /** 拖动排序：targetIndex 是该条目移动后的 0-based 队内位置。 */
+  function reorderQueuedMessage(convId: string, id: string, targetIndex: number) {
+    const arr = queuedByConv.value[convId];
+    if (!arr || !Number.isFinite(targetIndex)) return;
+    const from = arr.findIndex((q) => q.id === id);
+    if (from < 0) return;
+    const finalIndex = Math.max(0, Math.min(Math.floor(targetIndex), arr.length - 1));
+    if (from === finalIndex) return;
+    const [item] = arr.splice(from, 1);
+    arr.splice(finalIndex, 0, item);
+  }
+
   /** 取出并清空某会话的全部待发消息（保留给需要一次性排空的场景） */
   function takeQueuedMessages(convId: string): QueuedMessage[] {
     const arr = queuedByConv.value[convId] || [];
@@ -4597,7 +4609,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask, injectTaskNote,
     compactNow,
-    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
+    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, reorderQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,

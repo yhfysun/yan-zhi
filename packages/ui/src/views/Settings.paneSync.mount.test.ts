@@ -50,7 +50,7 @@ vi.mock('../stores', () => {
     globalPools: { llm: [], vision: [], image: [], video: [] },
     platformPools: {}, agentPlatformPools: {}, effectivePools: {},
     loaded: true, allModels: [], modelsLoaded: true,
-    load: vi.fn(async () => {}), ensureModels: vi.fn(async () => {}),
+    load: vi.fn(async () => {}), ensureModels: vi.fn(async () => {}), loadHealth: vi.fn(async () => {}),
     saveGlobal: vi.fn(async () => null), savePlatform: vi.fn(async () => null),
     loadPlatform: vi.fn(async () => ({ llm: [], vision: [], image: [], video: [] })),
     platformPoolOf: () => ({ llm: [], vision: [], image: [], video: [] }),

@@ -81,7 +81,7 @@ export function buildPageTaskPrompt(input: { question: string; ctx: PageContext 
   lines.push('【执行面约束（务必遵守）】');
   lines.push('1. 上面这一页**已经打开**，就是用户正在看的页。不要新开标签页（不要 browser_new_tab），不要改变地址。');
   lines.push('2. 调用浏览器工具时**不要传 tabId**：页面内对话的操作目标已绑定为当前页，显式传 tabId 会被判成"访问其它会话的页面"而被拒绝。');
-  lines.push('3. 若工具提示「该会话尚未绑定浏览器页面」：**不要用 browser_navigate 处理游戏/带登录态的页面** —— 重新导航会丢失入口 referrer，直接 404 并杀掉用户正开着的游戏。正确做法：让用户在面板里**再发一条消息**（发送时会自动钉住当前页完成绑定），然后继续读取/点击。普通文档页才允许 navigate 同地址重建绑定。');
+  lines.push('3. 若工具提示「该会话尚未绑定浏览器页面」：**不要用 browser_navigate 处理游戏/带登录态的页面** —— 重新导航会丢失入口 referrer，直接 404 并杀掉用户正开着的游戏。正确做法：让用户在面板里**再发一条消息**（发送时会自动钉住当前页完成绑定），然后继续读取/点击。普通文档页才允许 navigate 同一个地址重建绑定。');
   lines.push('4. 只做用户要求的这件事；做完给结论，不要把页面留在别的地址上。');
   return lines.join('\n');
 }

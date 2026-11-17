@@ -37,6 +37,7 @@
           :to="m.path"
           class="title-nav-item"
           :class="{ active: isActive(m.path) }"
+          :aria-label="m.label"
         >
           <el-icon :size="15"><component :is="m.icon" /></el-icon>
           <span>{{ m.label }}</span>
@@ -67,7 +68,7 @@
           popper-class="yz-menu-popper more-menu-popper"
         >
           <template #reference>
-            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button">
+            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button" aria-label="更多">
               <el-icon :size="15"><More /></el-icon>
               <span>更多</span>
             </button>
@@ -800,6 +801,18 @@ onUnmounted(() => {
   .title-nav-item { padding: 0 8px; gap: 4px; }
   .title-spacer { min-width: 4px; }
   .title-quick { margin-right: 2px; }
+}
+
+/* 320px 实机宽度：当前页、更多、刷新、登录、主题五项带文字会超出 34px。
+   导航项保留图标并写 aria-label，文字只在视觉层收起；登录与主题仍完整可见。 */
+@media (max-width: 420px) {
+  .brand { padding: 0 6px; }
+  .title-nav { margin-left: 2px; gap: 2px; }
+  .title-nav-item { padding: 0 7px; }
+  .title-nav-item > span { display: none; }
+  .title-spacer { min-width: 2px; }
+  .title-login-btn { min-width: 40px; padding: 0 9px; }
+  .title-theme-btn { width: 40px; flex-shrink: 0; }
 }
 
 .title-nav-item {

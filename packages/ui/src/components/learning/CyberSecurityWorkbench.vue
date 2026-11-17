@@ -1000,7 +1000,10 @@ onBeforeUnmount(() => {
   --focus-paper-ink: #18232b;
   --focus-paper-muted: #56676c;
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: var(--app-statusbar-h, 0px);
+  left: 0;
   z-index: 3000;
   display: flex;
   flex-direction: column;

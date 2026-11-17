@@ -155,7 +155,7 @@ const routes: RouteRecordRaw[] = [
     path: '/office',
     name: 'office-workbench',
     component: () => import('../views/office/OfficeWorkbench.vue'),
-    meta: { title: '办公工作台' },
+    meta: { title: '办公工作台', mobilePageShell: true },
   },
   {
     path: '/chat-hub',
@@ -381,6 +381,8 @@ const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/ops': 'ops',
   '/sec': 'sec',
   '/shop': 'shop',
+  '/learning': 'learning',
+  '/learning-v2': 'learning',
 };
 
 /** 未授权模式的重定向落点：第一个可见模式的路由（阉割版 = /chat）。 */

@@ -51,9 +51,11 @@ function createBootProgress(options) {
   const state = {
     phaseIndex: -1,
     pct: 0,
+    lastEmitPct: 0,
     phaseStartAt: now(),
     detail: '',
     terminated: false,
+    failure: null,
   };
 
   function baseOf(i) {
@@ -101,12 +103,14 @@ function createBootProgress(options) {
     const nextPct = Math.max(state.pct, stagePct(i, t - state.phaseStartAt));
     const nextDetail = typeof o.detail === 'string' ? o.detail : state.detail;
     const shouldEmit = phaseChanged
-      || nextPct - state.pct >= MIN_EMIT_DELTA_PCT
+      || nextPct - state.lastEmitPct >= MIN_EMIT_DELTA_PCT
       || nextDetail !== state.detail;
 
     state.pct = nextPct;
     state.detail = nextDetail;
-    return shouldEmit ? snapshot() : null;
+    if (!shouldEmit) return null;
+    state.lastEmitPct = nextPct;
+    return snapshot();
   }
 
   /** 只更新「当前动作」一行，不推进阶段（Vite 就绪、后端就绪等旁路信号用）。 */
@@ -116,6 +120,20 @@ function createBootProgress(options) {
     if (state.phaseIndex === PHASES.length - 1) return null;
     if (typeof text !== 'string' || text === state.detail) return null;
     state.detail = text;
+    state.lastEmitPct = state.pct;
+    return snapshot();
+  }
+
+  /** 阶段内定时刷新：不切换阶段，只按当前阶段耗时推进衰减进度。 */
+  function refresh() {
+    if (state.terminated || state.phaseIndex < 0) return null;
+    const nextPct = Math.max(
+      state.pct,
+      stagePct(state.phaseIndex, now() - state.phaseStartAt),
+    );
+    state.pct = nextPct;
+    if (nextPct - state.lastEmitPct < MIN_EMIT_DELTA_PCT) return null;
+    state.lastEmitPct = nextPct;
     return snapshot();
   }
 
@@ -123,21 +141,22 @@ function createBootProgress(options) {
   function fail(caption) {
     if (state.terminated) return null;
     state.terminated = true;
-    return {
+    state.failure = {
       phase: state.phaseIndex < 0 ? PHASES[0].id : PHASES[state.phaseIndex].id,
       pct: rounded(state.pct),
       caption: '启动失败',
       detail: typeof caption === 'string' ? caption : '',
       failed: true,
     };
+    return state.failure;
   }
 
   /** splash 创建后主动重放当前状态，避免只依赖渲染层的异步 getLastUpdate。 */
   function current() {
-    return snapshot();
+    return state.failure || snapshot();
   }
 
-  return { advance, fail, detail, current, state };
+  return { advance, fail, detail, refresh, current, state };
 }
 
 module.exports = {

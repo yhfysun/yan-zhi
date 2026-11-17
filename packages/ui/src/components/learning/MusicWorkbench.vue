@@ -751,7 +751,10 @@ onBeforeUnmount(() => {
 /* ── 沉浸台：fixed 全屏（骨架契约同 EnglishPathWorkbench） ────────────────────── */
 .mw-focus {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: var(--app-statusbar-h, 0px);
+  left: 0;
   z-index: 3000;
   display: grid;
   grid-template-rows: auto auto auto 1fr auto;

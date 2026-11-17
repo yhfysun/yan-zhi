@@ -14,6 +14,8 @@
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 vi.mock('../api/client', () => ({
   api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), put: vi.fn(), delete: vi.fn() },
@@ -141,6 +143,30 @@ describe('追加消息 · 立即发送的幂等与回显', () => {
     // flush 每次取队首 → 先取到 C
     const first = st.takeFirstQueuedMessage('conv_q4');
     expect(first?.content).toBe('C');
+  });
+
+  it('reorders queued messages for drag-and-drop without dropping any item', async () => {
+    const st = await freshStore();
+    const a = st.enqueueMessage('conv_drag', 'A');
+    const b = st.enqueueMessage('conv_drag', 'B');
+    const c = st.enqueueMessage('conv_drag', 'C');
+
+    st.reorderQueuedMessage('conv_drag', a.id, 3);
+    expect(st.queuedOf('conv_drag').map((q) => q.content)).toEqual(['B', 'C', 'A']);
+
+    st.reorderQueuedMessage('conv_drag', c.id, 0);
+    expect(st.queuedOf('conv_drag').map((q) => q.content)).toEqual(['C', 'B', 'A']);
+
+    st.reorderQueuedMessage('conv_drag', b.id, 1);
+    expect(st.queuedOf('conv_drag').map((q) => q.content)).toEqual(['C', 'B', 'A']);
+  });
+
+  it('wires a visible drag handle and insertion indicator into the queued-message list', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components/chat/ChatInputArea.vue'), 'utf8');
+    expect(source).toContain('class="queue-drag-handle"');
+    expect(source).toContain('draggable="true"');
+    expect(source).toContain('@dragstart="startQueueDrag');
+    expect(source).toContain("'queue-drop-before'");
   });
 
   it('★ 本地回显按 id 去重：SSE 的 message:added 后到不会产生重复气泡', async () => {

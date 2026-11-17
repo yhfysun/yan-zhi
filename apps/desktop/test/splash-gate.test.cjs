@@ -184,6 +184,16 @@ describe('splash：真实进度上报链路', () => {
     assert.ok(fs.existsSync(path.join(DESKTOP, 'splash-progress.cjs')));
   });
 
+  test('★ splash 存活期间必须有阶段内定时刷新，销毁时停止', () => {
+    assert.ok(MAIN.includes('SPLASH_PROGRESS_TICK_MS'), '缺少阶段内刷新间隔');
+    assert.ok(MAIN.includes('splashBoot.refresh()'), '进度心跳未调用纯函数 refresh');
+    const create = mainCode.indexOf('function createSplashWindow()');
+    const destroy = mainCode.indexOf('function destroySplashWindow()');
+    assert.ok(create > 0 && destroy > create);
+    assert.ok(mainCode.slice(create, destroy).includes('startSplashProgressTicker()'));
+    assert.ok(mainCode.slice(destroy, destroy + 500).includes('stopSplashProgressTicker()'));
+  });
+
   test('★ 六个阶段都在真实启动事件上打点', () => {
     for (const phase of ['prepare', 'backend', 'connect', 'window', 'render', 'done']) {
       assert.ok(

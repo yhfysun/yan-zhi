@@ -474,8 +474,14 @@ function resolveNode() {
 }
 
 function resolvePnpm() {
+  const nodeDir = path.dirname(process.execPath);
+  const adjacent = path.join(nodeDir, IS_WIN ? 'pnpm.cmd' : 'pnpm');
+  if (fs.existsSync(adjacent)) return { cmd: adjacent, args: [] };
   const inPath = IS_WIN ? capture('where', ['pnpm']) : capture('which', ['pnpm']);
   if (inPath.trim()) return { cmd: 'pnpm', args: [] };
+  const pnpmHome = process.env.PNPM_HOME || '';
+  const pnpmHomeBin = pnpmHome ? path.join(pnpmHome, IS_WIN ? 'pnpm.cmd' : 'pnpm') : '';
+  if (pnpmHomeBin && fs.existsSync(pnpmHomeBin)) return { cmd: pnpmHomeBin, args: [] };
   const local = path.join(
     process.env.USERPROFILE || process.env.HOME || '',
     '.workbuddy/binaries/node/workspace/node_modules/pnpm/bin/pnpm.cjs'

@@ -3896,6 +3896,12 @@ ${q.text}
     store.removeQueuedMessage(convId, id);
   }
 
+  function reorderQueued(id: string, targetIndex: number) {
+    const convId = store.currentConvId;
+    if (!convId) return;
+    store.reorderQueuedMessage(convId, id, targetIndex);
+  }
+
   // 任务收尾（完成/中止/失败）→ 自动把该会话排队的追加消息发出去
   store.onTaskFinished((convId) => { void flushQueuedAfterTask(convId); });
 
@@ -4955,7 +4961,7 @@ ${q.text}
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
-    queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
+    queuedList, sendQueuedNow, editQueued, removeQueued, reorderQueued, flushQueuedAfterTask,
     startNewChat, continueTaskAsNew, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     // 费用账单（2026-10-17）：会话头金额 / 提醒条 / 「新开会话继续」
     costStore, startContinuedConversation,

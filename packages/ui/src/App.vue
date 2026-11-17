@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': isMobilePlatform, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute }">
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': isMobilePlatform, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute, 'has-statusbar': showStatusBar, 'is-learning': activeMode === 'learning' }">
 
     <!-- 独立子窗口（如差异窗口）：不套任何应用外壳，整窗交由页面自绘标题栏 -->
     <template v-if="isBareRoute">
@@ -929,7 +929,8 @@ body {
 }
 
 
-.app-shell { display: flex; flex-direction: column; height: 100%; position: relative; overflow: hidden; }
+.app-shell { --app-statusbar-h: 0px; display: flex; flex-direction: column; height: 100%; position: relative; overflow: hidden; }
+.app-shell.has-statusbar { --app-statusbar-h: 26px; }
 .app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 
 /* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
@@ -937,6 +938,9 @@ body {
 .platform-desktop.app-shell {
   font-size: 14px;                /* 覆盖 body 的 clamp 流体字号，桌面端固定 */
   background: var(--color-bg);    /* 实色背景，确保无玻璃透出 */
+}
+.app-shell.is-learning {
+  background: transparent !important;
 }
 .platform-desktop .main-content {
   margin-left: 0;                 /* 桌面端竖排 SideNav 已退役（导航上移标题栏），主区全宽 */
@@ -1023,8 +1027,8 @@ body {
 
 /* 顶栏图标按钮：44×44 触控区（视觉 30px 图标底），与 TabBar 项观感一致 */
 .mobile-icon-btn {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   border: none;
   border-radius: 10px;
@@ -1042,8 +1046,8 @@ body {
 }
 
 .mobile-user-avatar {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border: none;
   border-radius: 10px;
   display: flex;

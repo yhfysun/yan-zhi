@@ -9,6 +9,9 @@
  *   把 projectDir 指回 pnpm 长路径。排在它之前等于白做。
  * ★ 只同步原生源码（CMakeLists.txt / build.gradle / src / ios assets）到短真实路径，
  *   不复制也不删除 .cxx / build 缓存；避免触发批量删除，也让 Gradle 自行按新 hash 重建。
+ * ★ 必须把复制后的 build.gradle 改为真正配置 externalNativeBuild。历史补丁曾把
+ *   jniLibs 指向原深路径中的固定 CMake 产物；工程换到短路径后该目录不存在，
+ *   Gradle 仍会“构建成功”，但 APK 只剩 Web/Sherpa，缺 libnode.so 后启动闪退。
  */
 const fs = require('fs');
 const path = require('path');
@@ -64,8 +67,46 @@ copied += copyTree(
   path.join(srcAndroid, '..', 'ios', 'Plugin', 'Assets'),
   path.join(shortRoot, 'ios', 'Plugin', 'Assets'),
 );
+copied += copyTree(
+  path.join(srcAndroid, '..', 'ios', 'PluginNative'),
+  path.join(shortRoot, 'ios', 'PluginNative'),
+);
 
-// 3) 把 gradle 模块指向短路径（幂等）
+// 3) 修正复制后的 build.gradle：从短路径 CMake 实际编译，不再引用深路径固定产物
+const shortBuildFile = path.join(shortAndroid, 'build.gradle');
+let buildGradle = fs.readFileSync(shortBuildFile, 'utf8');
+const legacyJniLine = /\s*jniLibs\.srcDirs \+= \['build\/intermediates\/cxx\/Debug\/[^']+'\]\r?\n/;
+buildGradle = buildGradle.replace(legacyJniLine, '\n');
+
+if (!buildGradle.includes('path "CMakeLists.txt"')) {
+  const sourceSetsMarker = '    sourceSets {';
+  if (!buildGradle.includes(sourceSetsMarker)) {
+    throw new Error('capacitor-nodejs build.gradle 缺少 sourceSets 配置');
+  }
+  buildGradle = buildGradle.replace(sourceSetsMarker, `    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+${sourceSetsMarker}`);
+}
+
+if (!buildGradle.includes('-DLIBNODE_DIR=')) {
+  const runnerMarker = '        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"';
+  if (!buildGradle.includes(runnerMarker)) {
+    throw new Error('capacitor-nodejs build.gradle 缺少 defaultConfig 标记');
+  }
+  const cmakeArguments = `        externalNativeBuild {
+            cmake {
+                arguments "-DLIBNODE_DIR=\${libnodeDir.absolutePath.replace('\\\\', '/')}"
+            }
+        }`;
+  buildGradle = buildGradle.replace(runnerMarker, `${runnerMarker}\n${cmakeArguments}`);
+}
+fs.writeFileSync(shortBuildFile, buildGradle);
+
+// 4) 把 gradle 模块指向短路径（幂等）
 if (!fs.existsSync(settingsFile)) throw new Error('未找到 ' + settingsFile + '，请先 cap sync android');
 let text = fs.readFileSync(settingsFile, 'utf8');
 const marker = /project\(':capawesome-capacitor-nodejs'\)\.projectDir = new File\([^\r\n]*\)/;
@@ -80,3 +121,4 @@ if (text.includes(replacement)) {
   console.log('[nodejs-shortpath] 已重写 projectDir -> ' + shortPosix);
 }
 console.log(`[nodejs-shortpath] 已同步 ${copied} 个原生源码文件（不清理 .cxx 缓存）`);
+console.log('[nodejs-shortpath] CMake 构建已启用（libnode.so 将进入 APK）');

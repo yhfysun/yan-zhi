@@ -1,0 +1,590 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import LearningV2 from './LearningV2.vue';
+
+const apiState = vi.hoisted(() => ({
+  get: vi.fn(async (): Promise<{ data: { lessonIds: string[] } }> => ({ data: { lessonIds: [] } })),
+  post: vi.fn(async () => ({ data: { ok: true } })),
+}));
+
+vi.mock('../api/client', () => ({
+  api: {
+    get: apiState.get,
+    post: apiState.post,
+  },
+}));
+
+vi.mock('../components/notes/NoteQuickCreateDialog.vue', () => ({
+  default: {
+    name: 'NoteQuickCreateDialog',
+    props: ['visible', 'title', 'content', 'categoryName'],
+    template: '<div data-test="note-dialog"></div>',
+  },
+}));
+
+vi.mock('../components/learning/CyberSecurityWorkbench.vue', () => ({
+  default: {
+    name: 'CyberSecurityWorkbench',
+    props: ['pathId'],
+    emits: ['select-path'],
+    template: '<div data-specialized-security>网络安全完整课程</div>',
+  },
+}));
+
+let app: App | null = null;
+
+beforeEach(() => {
+  localStorage.clear();
+  document.body.style.overflow = '';
+  apiState.get.mockClear();
+  apiState.post.mockClear();
+  apiState.get.mockResolvedValue({ data: { lessonIds: [] } });
+  apiState.post.mockResolvedValue({ data: { ok: true } });
+});
+
+async function mountPage(): Promise<HTMLElement> {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  app = createApp(LearningV2);
+  app.use(createPinia());
+  app.mount(host);
+  await nextTick();
+  return host;
+}
+
+afterEach(() => {
+  app?.unmount();
+  app = null;
+  localStorage.clear();
+  document.body.style.overflow = '';
+  document.body.innerHTML = '';
+  vi.unstubAllGlobals();
+});
+
+describe('LearningV2', () => {
+  it('fills the shell content height and scrolls above the global status bar', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+    const libraryCss = readFileSync(resolve(__dirname, '../components/learning/v2/learning-library.css'), 'utf8');
+    const appSource = readFileSync(resolve(__dirname, '../App.vue'), 'utf8');
+
+    expect(css).toMatch(/\.lv2 \{[^}]*height: 100%;[^}]*min-height: 0;/);
+    expect(appSource).toContain("'has-statusbar': showStatusBar");
+    expect(appSource).toMatch(/\.app-shell\.has-statusbar \{ --app-statusbar-h: 26px; \}/);
+    for (const selector of ['.lv2-lesson', '.lv2-specialized-study', '.lv2-studio-immersive']) {
+      expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*bottom: var\\(--app-statusbar-h, 0px\\);`));
+    }
+    expect(css).toMatch(/\.lv2 \{[^}]*background: transparent;/);
+    expect(css).toMatch(/\.lv2-subjects \{[^}]*backdrop-filter: blur\(18px\)/);
+    expect(css).toMatch(/\.lv2-workspace \{[^}]*background: transparent;/);
+    expect(appSource).toMatch(/\.app-shell\.is-learning \{[^}]*background: transparent !important;/);
+    expect(css).toMatch(/\.lv2 \{[^}]*grid-template-rows: minmax\(0, 1fr\);/);
+    expect(css).toMatch(/\.lv2-subjects \{[^}]*height: 100%;[^}]*min-height: 0;[^}]*overflow: hidden;/);
+    expect(css).toMatch(/\.lv2-subject-list \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
+    expect(css).toMatch(/\.lv2-main \{[^}]*min-height: 0;[^}]*display: flex;/);
+    expect(css).toMatch(/\.lv2-workspace \{[^}]*min-height: 0;[^}]*flex: 1;[^}]*overflow-y: auto;/);
+    expect(css).toMatch(/\.lv2-studio-immersive \{[^}]*position: fixed;[^}]*bottom: var\(--app-statusbar-h, 0px\);[^}]*overflow: hidden;/);
+    expect(css).toMatch(/\.lv2-studio-immersive-body \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
+    expect(css).toMatch(/\.lv2-subject-list \{[^}]*scrollbar-width: thin;/);
+    expect(css).toMatch(/\.lv2-subject-list::-webkit-scrollbar \{[^}]*width: 8px;/);
+    expect(css).toMatch(/\.lv2-library-shell \{[^}]*width: 100%;[^}]*justify-content: center;/);
+    expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: min\(1120px, calc\(100vw - 64px\)\);/);
+  });
+
+  it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+    const libraryCss = readFileSync(resolve(__dirname, '../components/learning/v2/learning-library.css'), 'utf8');
+
+    expect(css).toMatch(/\.lv2-subject:hover, \.lv2-subject\.active \{[^}]*background: #f2f4f2;/);
+    expect(css).toMatch(/\.lv2-roadmap-track \{[^}]*background: color-mix/);
+    expect(css).toMatch(/\.lv2-roadmap-list > button\.active \{[^}]*background: color-mix/);
+    expect(libraryCss).toMatch(/\.ll-nav nav button\.active \{[^}]*background: #f1f4f2;[^}]*color: #26352f;/);
+    expect(libraryCss).toMatch(/\.ll-detail-actions button:last-child[^{]*\{[^}]*background: #17211e;/);
+  });
+
+  it('keeps every specialized immersive workbench above the global status bar', () => {
+    for (const file of [
+      '../components/learning/EnglishPathWorkbench.vue',
+      '../components/learning/CyberSecurityWorkbench.vue',
+      '../components/learning/CultureWorkbench.vue',
+      '../components/learning/MusicWorkbench.vue',
+      '../components/learning/zhouyi/ZhouyiWorkbench.vue',
+    ]) {
+      const source = readFileSync(resolve(__dirname, file), 'utf8');
+      expect(source, file).toContain('bottom: var(--app-statusbar-h, 0px);');
+    }
+  });
+
+  it('resets the workspace scroll position when switching learning surfaces', async () => {
+    const host = await mountPage();
+    const workspace = host.querySelector('.lv2-workspace') as HTMLElement;
+    workspace.scrollTop = 240;
+
+    (host.querySelector('.lv2-pages [data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+
+    expect(workspace.scrollTop).toBe(0);
+  });
+
+  it('opens the selected course in one click from the up-next strip', async () => {
+    const host = await mountPage();
+    const course = host.querySelector('.lv2-upnext button') as HTMLButtonElement;
+    const title = course.querySelector('b')?.textContent || '';
+
+    course.click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson')).toBeTruthy();
+    expect(host.querySelector('.lv2-lesson > header b')?.textContent).toContain(title);
+    expect(host.querySelector('[data-page="lesson"]')).toBeNull();
+  });
+
+  it('numbers the current course and every upcoming course so order is unambiguous', async () => {
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2-continue span em')?.textContent).toContain('第 2 / 13 课');
+    const orders = [...host.querySelectorAll('.lv2-upnext .lv2-course-order')]
+      .map((item) => item.textContent?.trim());
+    expect(orders).toEqual(['第 01 课', '第 03 课', '第 04 课', '第 05 课']);
+
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-roadmap .lv2-course-order')?.textContent?.trim()).toBe('第 01 课');
+  });
+
+  it('collapses and restores the desktop subject sidebar from a persistent preference', async () => {
+    localStorage.setItem('yz.learning.v2.subjects-collapsed.v1', '1');
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2')?.classList.contains('subjects-collapsed')).toBe(true);
+    const expand = host.querySelector('[aria-label="展开学习科目栏"]') as HTMLButtonElement;
+    expect(expand).toBeTruthy();
+
+    expand.click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2')?.classList.contains('subjects-collapsed')).toBe(false);
+    expect(localStorage.getItem('yz.learning.v2.subjects-collapsed.v1')).toBe('0');
+    expect(host.querySelector('[aria-label="收起学习科目栏"]')).toBeTruthy();
+  });
+
+  it('collapses roadmap stages and keeps the selected stage visible', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-depth')).toBeNull();
+    expect(host.textContent).not.toContain('零基础 → 基础 → 进阶 → 实战与专题');
+    const stages = [...host.querySelectorAll('.lv2-roadmap-track')] as HTMLButtonElement[];
+    expect(stages.length).toBeGreaterThan(1);
+    expect(stages[0].getAttribute('aria-expanded')).toBe('true');
+
+    stages[0].click();
+    await nextTick();
+    expect(stages[0].getAttribute('aria-expanded')).toBe('false');
+    expect((host.querySelector('.lv2-roadmap section .lv2-roadmap-list') as HTMLElement).style.display).toBe('none');
+
+    stages[1].click();
+    await nextTick();
+    expect(stages[1].getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('renders all 19 zero-base subjects and eight surfaces', async () => {
+    const host = await mountPage();
+    expect(host.querySelectorAll('[data-subject]')).toHaveLength(19);
+    expect(host.querySelectorAll('[data-page]')).toHaveLength(8);
+    expect(host.textContent).toContain('党史');
+    expect(host.textContent).toContain('学科总览');
+    expect(host.textContent).not.toContain('返回旧版学习');
+  });
+
+  it('keeps original text visible and exposes source and note actions', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="books"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-original')?.textContent).toContain('会议集中');
+    expect(host.querySelector('.lv2-source')?.textContent).toContain('来源');
+    expect(host.querySelector('[data-exemplary-annotation]')?.textContent).toContain('五层阅读卡');
+    expect(host.querySelector('[data-exemplary-annotation]')?.textContent).toContain('字词注释');
+    expect(host.textContent).toContain('套用优秀读书笔记');
+  });
+
+  it('switches to the selected course practice and keeps subject-specific tools', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="studio"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.textContent).toContain('Web 漏洞与攻击防御');
+    expect(host.textContent).toContain('卡/NFC安全');
+    expect(host.textContent).toContain('仅限授权靶场');
+  });
+
+  it('renders an explicitly reviewed zero-base plan instead of a generated draft', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="physics"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    const nextCourse = [...host.querySelectorAll('.lv2-roadmap button')]
+      .find((button) => button.textContent?.includes('力与牛顿运动定律')) as HTMLButtonElement | undefined;
+    nextCourse?.click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('力与牛顿运动定律');
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('受力图');
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('前置知识');
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('常见错误');
+  });
+
+  it('opens a generated completion plan instead of leaving the course under construction', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const draft = [...host.querySelectorAll('.lv2-roadmap button')]
+      .find((button) => button.textContent?.includes('多语言安全编码')) as HTMLButtonElement;
+    expect(draft.disabled).toBe(false);
+    expect(draft.textContent).not.toContain('建设中');
+
+    draft.click();
+    await nextTick();
+    expect(host.querySelector('[data-specialized-security]')).toBeTruthy();
+    expect(host.querySelector('.lv2-specialized-study-bar')?.textContent).toContain('多语言安全编码');
+  });
+
+  it('derives course progress labels from actual completion instead of catalog sample text', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const first = [...host.querySelectorAll('.lv2-roadmap button')]
+      .find((button) => button.textContent?.includes('建党与初心')) as HTMLButtonElement;
+    expect(first.querySelector('small')?.textContent).not.toBe('已完成');
+    expect(first.querySelector('small')?.textContent).toBe('未开始');
+  });
+
+  it('shows guided practice, independent output and traceable sources in the lesson surface', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="physics"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    const course = [...host.querySelectorAll('.lv2-roadmap button')]
+      .find((button) => button.textContent?.includes('力与牛顿运动定律')) as HTMLButtonElement;
+    course.click();
+    await nextTick();
+    const stepButtons = host.querySelectorAll('.lv2-lesson > nav button');
+    (stepButtons[stepButtons.length - 1] as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson-practice')?.textContent).toContain('把一本书放在桌面');
+    expect(host.querySelector('.lv2-lesson-practice')?.textContent).toContain('滑梯或电梯');
+    expect(host.querySelector('.lv2-lesson-sources')?.textContent).toContain('OpenStax');
+    expect(host.querySelector('.lv2-lesson-sources')?.textContent).toContain('https://');
+  });
+
+  it('renders every reviewed lesson step as a complete teach-practice-check unit', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelectorAll('.lv2-lesson-copy p').length).toBeGreaterThanOrEqual(1);
+    expect(host.querySelector('.lv2-step-objective')?.textContent).toContain('本步目标');
+    expect(host.querySelector('.lv2-step-lab')?.textContent).toContain('跟做与记录');
+    expect(host.querySelector('.lv2-step-check')?.textContent).toContain('合上提示再回答');
+    expect(host.querySelector('.lv2-errors')?.textContent).toContain('常见错误');
+    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('优秀笔记示范');
+    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('套用示范');
+    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('完成产出');
+  });
+
+  it('opens step-level scholar notes with traps, recall and chapter index', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    (host.querySelector('[data-action="open-scholar-note"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const panel = document.body.querySelector('[data-scholar-note-panel]');
+    expect(panel?.textContent).toContain('一句话结论');
+    expect(panel?.textContent).toContain('解题与操作模板');
+    expect(panel?.textContent).toContain('高频坑');
+    expect(panel?.textContent).toContain('闭卷自测');
+    expect(panel?.textContent).toContain('整章索引');
+    expect(panel?.querySelectorAll('.lv2-scholar-chapter li').length).toBeGreaterThanOrEqual(4);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(document.body.querySelector('[data-scholar-note-panel]')).toBeNull();
+    expect(host.querySelector('.lv2-lesson')).toBeTruthy();
+  });
+
+  it('renders the reviewed Party founding lesson as subject content, not writing commentary', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    const first = [...host.querySelectorAll('.lv2-roadmap-list > button')]
+      .find((button) => button.textContent?.includes('建党与初心')) as HTMLButtonElement;
+
+    first.click();
+    await nextTick();
+
+    const copy = host.querySelector('.lv2-lesson-copy')?.textContent || '';
+    expect(host.querySelectorAll('.lv2-lesson-copy p').length).toBeGreaterThanOrEqual(3);
+    expect(copy).toContain('1919 年爆发的五四运动');
+    expect(copy).toContain('1921 年 7 月');
+    expect(copy).not.toContain('党史不是一串孤立结论');
+    expect(copy).not.toContain('时间轴的任务');
+  });
+
+  it('opens the shared library and filters across all subjects', async () => {
+    const host = await mountPage();
+    expect(host.querySelector('[aria-label="打开公共图书馆"]')?.textContent).toContain('图书馆');
+    (host.querySelector('[aria-label="打开公共图书馆"]') as HTMLButtonElement).click();
+    await nextTick();
+    const input = document.body.querySelector('[data-library-search]') as HTMLInputElement;
+    input.value = '星图';
+    input.dispatchEvent(new Event('input'));
+    await nextTick();
+
+    expect(document.body.querySelector('.ll-library')?.textContent).toContain('星图与历法入门');
+    expect(document.body.querySelector('.ll-library')?.textContent).toContain('仅书目登记');
+  });
+
+  it('reports completed lessons to the existing progress API', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    for (let index = 0; index < 4; index += 1) {
+      (host.querySelector('.lv2-lesson > footer button:last-child') as HTMLButtonElement).click();
+      await nextTick();
+    }
+    (host.querySelector('.lv2-lesson > footer button:last-child') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(apiState.post).toHaveBeenCalledWith('/learning/lesson-progress', {
+        subject: '党史',
+        lessonIds: ['party:0:1'],
+      });
+    });
+    expect(JSON.parse(localStorage.getItem('yz.learning.v2.progress.v1') || '{}').party).toContain('party:0:1');
+  });
+
+  it('keeps progress responses scoped when the learner changes subject before loading finishes', async () => {
+    let resolveParty!: (value: { data: { lessonIds: string[] } }) => void;
+    apiState.get.mockImplementationOnce(() => new Promise<{ data: { lessonIds: string[] } }>((resolve) => {
+      resolveParty = resolve;
+    }));
+    const host = await mountPage();
+
+    (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
+    await nextTick();
+    await vi.waitFor(() => expect(apiState.get).toHaveBeenCalledTimes(2));
+
+    resolveParty({ data: { lessonIds: ['party:0:1'] } });
+    await vi.waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('yz.learning.v2.progress.v1') || '{}');
+      expect(saved.security || []).not.toContain('party:0:1');
+    });
+  });
+
+  it('restores the saved immersive step for the same course', async () => {
+    localStorage.setItem('yz.learning.v2.session.v1', JSON.stringify({
+      subject: 'party',
+      page: 'lesson',
+      step: 2,
+    }));
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2-lesson > header span')?.textContent).toContain('3/5');
+  });
+
+  it('exits the immersive lesson with Escape and restores the overview', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson')).toBeTruthy();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+    expect(host.textContent).toContain('零基础起点');
+  });
+
+  it('exits the immersive lesson from both header controls', async () => {
+    const host = await mountPage();
+    (host.querySelector('.lv2-pages [data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    (host.querySelector('.lv2-lesson [data-action="exit-lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+
+    (host.querySelector('.lv2-pages [data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('.lv2-lesson [aria-label="关闭课程"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+  });
+
+  it('keeps an explicit return-to-subject action on books and practice pages', async () => {
+    const host = await mountPage();
+
+    (host.querySelector('[data-page="books"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-action="back-to-subject"]')?.textContent).toContain('返回学科');
+
+    (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-action="back-to-subject"]')?.textContent).toContain('返回学科');
+  });
+
+  it('opens metadata-only library records instead of routing to an unrelated sample book', async () => {
+    const host = await mountPage();
+    (host.querySelector('[aria-label="打开公共图书馆"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const input = document.body.querySelector('[data-library-search]') as HTMLInputElement;
+    input.value = '星图与历法入门';
+    input.dispatchEvent(new Event('input'));
+    await nextTick();
+    const metadata = [...document.body.querySelectorAll('.ll-book-card')]
+      .find((button) => button.textContent?.includes('星图与历法入门')) as HTMLButtonElement;
+    metadata.click();
+    await nextTick();
+
+    expect(document.body.querySelector('.ll-detail')?.textContent).toContain('版本与许可信息待核验');
+    expect(document.body.querySelector('.ll-detail')?.textContent).toContain('仅书目登记');
+  });
+
+  it('keeps the prototype desktop study rail with real progress and review cues', async () => {
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2-brand')?.textContent).not.toContain('Learning V2');
+    expect(host.querySelector('.lv2-study-rail')?.textContent).toContain('今日目标');
+    expect(host.querySelector('.lv2-study-rail')?.textContent).toContain('掌握度');
+    expect(host.querySelector('.lv2-study-rail')?.textContent).toContain('最近记录');
+    expect(host.querySelectorAll('.lv2-study-rail .lv2-rail-plan button')).toHaveLength(3);
+  });
+
+  it('collapses and resizes the desktop study rail while remembering the choice', async () => {
+    const host = await mountPage();
+    const workspace = host.querySelector('.lv2-workspace') as HTMLElement;
+    const resizeHandle = host.querySelector('[role="separator"]') as HTMLElement;
+
+    expect(workspace.style.getPropertyValue('--lv2-study-rail-width')).toBe('216px');
+    resizeHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    await nextTick();
+    expect(workspace.style.getPropertyValue('--lv2-study-rail-width')).toBe('232px');
+
+    (host.querySelector('[aria-label="收起今日学习侧栏"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(workspace.style.getPropertyValue('--lv2-study-rail-width')).toBe('42px');
+    expect(host.querySelector('[aria-label="展开今日学习侧栏"]')).toBeTruthy();
+    expect(localStorage.getItem('yz.learning.v2.study-rail.v1')).toContain('"collapsed":true');
+  });
+
+  it('uses a distinct mobile overview with one course picker, five tools and one primary action', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query.includes('max-width: 900px'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2-mobile-overview')).toBeTruthy();
+    expect(host.querySelector('.lv2-mobile-course-select')).toBeTruthy();
+    expect(host.querySelector('.lv2-mobile-overview-head')).toBeNull();
+    expect(host.querySelector('.lv2-mobile-primary')).toBeNull();
+    expect(host.querySelectorAll('.lv2-mobile-tools button')).toHaveLength(5);
+    expect(host.querySelector('.lv2-mobile-continue')?.textContent).toContain('开始本节');
+    expect(host.querySelector('.lv2-mobile-continue')?.textContent).toContain('第 2 / 13 课');
+    expect(host.querySelector('.lv2-mobile-course-strip .lv2-course-order')).toBeTruthy();
+
+    (host.querySelector('.lv2-mobile-tools [data-page="books"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-mobile-pagebar')?.textContent).toContain('书籍研读');
+    (host.querySelector('.lv2-mobile-pagebar [data-action="back-to-subject"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-mobile-overview')).toBeTruthy();
+  });
+
+  it('renders executable security and Zhouyi practice surfaces instead of feature labels alone', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="studio"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.textContent).toContain('发送到隔离靶场');
+    expect(host.textContent).toContain('权限矩阵');
+    expect(host.textContent).toContain('修复与回归');
+
+    (host.querySelector('[data-subject="zhouyi"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.dv-root')).toBeTruthy();
+    expect(host.textContent).toContain('梅花易数');
+    expect(host.textContent).toContain('大衍筮法');
+    expect(host.textContent).toContain('民俗文化体验 · 教学演示');
+  });
+
+  it('opens practice in a full-screen immersive workspace with its own scroll and Escape exit', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="studio"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+
+    const shell = host.querySelector('.lv2-studio-immersive') as HTMLElement;
+    const body = host.querySelector('.lv2-studio-immersive-body') as HTMLElement;
+    expect(shell).toBeTruthy();
+    expect(body).toBeTruthy();
+    expect(host.querySelector('.lv2-study-rail')).toBeNull();
+    expect(document.body.style.overflow).toBe('hidden');
+
+    body.scrollTop = 320;
+    expect(body.scrollTop).toBe(320);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.lv2-studio-immersive')).toBeNull();
+    expect(document.body.style.overflow).toBe('');
+  });
+
+  it('reuses the complete specialized workbenches for English and Zhouyi course study', async () => {
+    const host = await mountPage();
+
+    (host.querySelector('[data-subject="english"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.lv2-specialized-study')).toBeTruthy();
+    expect(host.querySelector('.lp-path')).toBeTruthy();
+    expect(host.querySelector('[data-action="open-scholar-note"]')).toBeTruthy();
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    await nextTick();
+    (host.querySelector('[data-subject="zhouyi"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.zy-root')).toBeTruthy();
+  });
+});

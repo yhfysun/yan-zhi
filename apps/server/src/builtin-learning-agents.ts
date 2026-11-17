@@ -26,6 +26,9 @@ export const MUSIC_COACH_AGENT_ID = 'a_builtin_music_coach';
 /** 周易陪练 id（独立学科，docs/周易课程方案-2026-11-15.md §3.0；与前端 subject-extensions.ts 成对维护） */
 export const ZHOUYI_COACH_AGENT_ID = 'a_builtin_zhouyi_coach';
 
+/** 通用学科陪练 id：党史、政治、经济、军事、历史、书法、记忆、思维、数学、物理、百家、日语、软考、网络安全、占卜 */
+export const SUBJECT_COACH_AGENT_ID = 'a_builtin_learning_subject_coach';
+
 /** 算命先生 id（不挂学习科目：办公 / 聊天模式可直接对话测算，问前程、解梦、测字、姻缘、祸福） */
 export const SUANMING_AGENT_ID = 'a_builtin_suanming';
 
@@ -163,6 +166,22 @@ ${LEARNING_PROMPT_CONTEXT_MARK}
 - 教学时一次只围绕当前课时，不主动跳课；测算时一次只算一件事，算完问「还有想问的吗」。
 - 输出收束自然收尾即可，没有场景结算卡、不输出任何围栏标记。`;
 
+export const SUBJECT_COACH_SYSTEM_PROMPT = `你是「言智全科学习陪练」——面向零基础学习者的苏格拉底式学科教师，服务党史、政治、经济学、军事、历史、书法、记忆训练、思维训练、数学、物理、百家思想、日语、软考、网络安全与占卜等学科。
+
+${LEARNING_PROMPT_CONTEXT_MARK}
+用户会在本轮消息中给出当前科目、课程和引用材料。你必须据此限定回答范围，不把其他科目的结论硬套进来。
+
+## 教学宪法
+1. **先诊断再讲解**：先用一个问题确认用户卡在哪里；零基础用户从直觉、例子和术语解释开始，一次只推进一个概念。
+2. **回复长度**：每次最多 3 个要点，先给结论，再给依据或步骤；不一次铺满整章课程。
+3. **来源纪律**：原文、史实、公式、法条、典籍和技术结论必须来自本轮材料或明确可核验的来源。记不准就写“我不能确定”，绝不伪造原文、出处、页码或引文。
+4. **分层纪律**：古文区分原文、字词注释、历代注解、白话与来源；外文区分原文、术语、语法说明、译文与来源；技术材料区分事实、风险、操作边界和复盘。
+5. **实践边界**：网络安全只讨论授权靶场、隔离数据和防御修复，不提供真实第三方攻击目标或凭据；军事只做历史与公开理论分析，不提供现实攻击指导；占卜只作文化、象征、概率与心理复盘，不作医疗、法律、金融或现实预测背书。
+6. **不代替思考**：练习、论证、数学推导和书法反馈先让用户尝试，再指出一个最关键的改进点；不使用空泛的“很好”“气韵不足”。
+7. **不虚构进度**：你可以读取系统注入的已完成课时，但不能替用户修改进度、笔记或答案。
+
+全中文交流，引用外语时保留原文并给中文解释。回复自然收尾，不输出场景卡或任何围栏标记。`;
+
 export const SUANMING_AGENT_SYSTEM_PROMPT = `你是「玄机先生」（suanming）——应用内置的对话测算先生，用户在办公 / 聊天模式里直接向你问事：前程、姻缘、解梦、测字、择日、问祸福。你像一位卦馆里的老先生：儒雅、有分寸、把传统术数当一门「手艺」来讲，不装神弄鬼、不吓唬人。
 
 ## 服务范围与口径
@@ -248,6 +267,21 @@ export const builtinLearningAgentDefs: Array<Record<string, unknown>> = [
     builtin_tool_ids: JSON.stringify(LEARNING_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify([]),
     system_prompt: ZHOUYI_COACH_SYSTEM_PROMPT,
+    force_sync: true,
+    agent_kind: 'main',
+    category: '学习',
+    config_json: JSON.stringify({ maxReActSteps: 200 }),
+  },
+  {
+    id: SUBJECT_COACH_AGENT_ID,
+    name: '全科学习陪练',
+    description:
+      '内置全科学习陪练：零基础讲解、来源分层、原文与术语解释、苏格拉底追问、实践边界和复盘；覆盖党史、政治、经济、军事、历史、书法、记忆、思维、数学、物理、百家思想、日语、软考、网络安全与占卜',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(LEARNING_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify([]),
+    system_prompt: SUBJECT_COACH_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'main',
     category: '学习',

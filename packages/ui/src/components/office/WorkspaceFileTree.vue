@@ -192,6 +192,8 @@ import { useWorkspaceFiles, dirOfNode, type WsNode, type OfficeDocKind, type Wor
 import { api } from '../../api/client';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
 
+const emit = defineEmits<{ select: [path: string] }>();
+
 const {
   rootDir, loading, error, selectedPath, flatNodes, expanded, childrenByDir,
   loadRoot, toggleDir, refresh, select, revealPath, createDoc, renameNode, duplicateNode, deleteNode,
@@ -253,6 +255,7 @@ function toggleInMulti(node: WsNode) {
   lastAnchorPath.value = node.path;
   select(node.path);
   officeSelectedFile.value = node.path;
+  emit('select', node.path);
 }
 
 function onRowClick(node: WsNode, e?: MouseEvent) {
@@ -284,6 +287,7 @@ function onRowClick(node: WsNode, e?: MouseEvent) {
   }
   select(node.path);
   officeSelectedFile.value = node.path;
+  emit('select', node.path);
 }
 
 // ===== 键盘操作：F2 改名 / Del 删除 / Ctrl+Z 撤销 =====
@@ -886,4 +890,48 @@ defineExpose({ doCreate });
 .ws-menu-item span { margin-left: auto; font-size: 10.5px; color: var(--color-text-tertiary); }
 .ws-menu-item.danger { color: #b91c1c; }
 .ws-menu-sep { height: 1px; margin: 4px 6px; background: var(--color-border); }
+
+@media (max-width: 900px) {
+  .ws-tree { border-right: 0; }
+  .ws-head { min-height: 52px; padding: 4px 8px 4px 12px; }
+  .ws-title { font-size: 14px; }
+  .ws-sub { max-width: 190px; font-size: 10px; }
+  .ws-head-actions { gap: 4px; }
+  .ws-icon-btn { width: 44px; height: 44px; }
+  .ws-search { min-height: 52px; padding: 4px 8px; }
+  .ws-search-input { height: 44px; font-size: 14px; }
+  .ws-search-clear,
+  .ws-search-close { min-width: 44px; min-height: 44px; font-size: 12px; }
+  .ws-body { padding: 4px 6px 16px; }
+  .ws-row {
+    min-height: 48px;
+    height: auto;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    font-size: 14px;
+    touch-action: manipulation;
+  }
+  .ws-size { font-size: 10px; }
+  .ws-hit-row { min-height: 52px; padding: 8px; }
+  .ws-hit-name { font-size: 14px; }
+  .ws-hit-preview { font-size: 12px; }
+  .ws-undo,
+  .ws-batch { min-height: 52px; padding: 6px 8px; }
+  .ws-batch-btn,
+  .ws-undo-btn { min-height: 40px; padding: 7px 11px; font-size: 12px; }
+  .ws-batch-x,
+  .ws-undo-x { min-width: 44px; min-height: 44px; }
+  .ws-menu {
+    right: 10px !important;
+    bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    left: 10px !important;
+    top: auto !important;
+    min-width: 0;
+    padding: 8px;
+    border-radius: 14px;
+    box-shadow: 0 -18px 48px rgba(15, 24, 20, .2);
+    overscroll-behavior: contain;
+  }
+  .ws-menu-item { min-height: 48px; padding: 10px 12px; font-size: 14px; }
+}
 </style>

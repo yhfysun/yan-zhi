@@ -9,10 +9,12 @@ import {
   LEARNING_AGENT_ID,
   CULTURE_COACH_AGENT_ID,
   MUSIC_COACH_AGENT_ID,
+  SUBJECT_COACH_AGENT_ID,
   LEARNING_AGENT_BUILTIN_TOOLS,
   LEARNING_AGENT_SYSTEM_PROMPT,
   CULTURE_COACH_SYSTEM_PROMPT,
   MUSIC_COACH_SYSTEM_PROMPT,
+  SUBJECT_COACH_SYSTEM_PROMPT,
   LEARNING_PROMPT_CONTEXT_MARK,
   builtinLearningAgentDefs,
   learningSubjectOfAgentId,
@@ -23,7 +25,7 @@ describe('英语学习陪练 · id 与 seed 结构', () => {
     expect(LEARNING_AGENT_ID).toBe('a_builtin_learning_coach');
   });
 
-  it('三个条目（英语/传统文化/音乐），id 互不冲突且不占既有内置 id', () => {
+  it('学习类内置条目 id 互不冲突且不占既有内置 id', () => {
     const ids = builtinLearningAgentDefs.map((d) => d.id);
     expect(ids).toContain(LEARNING_AGENT_ID);
     expect(new Set(ids).size).toBe(ids.length);
@@ -57,6 +59,25 @@ describe('英语学习陪练 · id 与 seed 结构', () => {
     expect(String(def.name).length).toBeGreaterThan(0);
     expect(String(def.description).length).toBeGreaterThan(20);
     expect(String(def.system_prompt).length).toBeGreaterThan(600);
+  });
+});
+
+describe('全科学习陪练 · 19 科通用入口', () => {
+  it('注册通用陪练 id，且使用同一套只读学习工具', () => {
+    expect(SUBJECT_COACH_AGENT_ID).toBe('a_builtin_learning_subject_coach');
+    const def = builtinLearningAgentDefs.find((item) => item.id === SUBJECT_COACH_AGENT_ID);
+    expect(def).toBeTruthy();
+    expect(JSON.parse(String(def?.builtin_tool_ids))).toEqual(LEARNING_AGENT_BUILTIN_TOOLS);
+    expect(def?.force_sync).toBe(true);
+    expect(String(def?.system_prompt)).toContain(LEARNING_PROMPT_CONTEXT_MARK);
+  });
+
+  it('提示词钉住零基础、不伪造来源与高风险实践边界', () => {
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('零基础');
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('绝不伪造原文');
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('网络安全只讨论授权靶场');
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('占卜只作文化、象征、概率与心理复盘');
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('不能替用户修改进度');
   });
 });
 

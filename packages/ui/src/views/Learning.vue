@@ -2057,6 +2057,7 @@ watch(softExamDate, (value) => {
   <div class="learning-page" @contextmenu="onLearningContextmenu">
     <div class="lp-topbar" :inert="securityFocusing || pathFocusing || grammarFocusing || cultureFocusing || musicFocusing || zhouyiFocusing || undefined">
       <SubjectPicker class="lp-subject-picker" :value="subject" :options="SUBJECTS" @select="switchSubject" />
+      <a class="lp-v2-entry" href="#/learning-v2">新版学习台</a>
       <LearningSelect
         v-if="isCompactLayout && compactCourseGroups.length"
         class="lp-stage-select lp-top-course-select"
@@ -3131,6 +3132,11 @@ watch(softExamDate, (value) => {
    100vh 是视口全高，会把学习页底部压到状态栏底下（用户实报：左栏最后一项永远被裁一半）。 */
 .learning-page { padding: 10px 16px 14px; max-width: none; width: 100%; margin: 0; color: #1f2329; flex: 1; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; }
 .lp-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-shrink: 0; min-height: 32px; }
+.lp-v2-entry {
+  flex: 0 0 auto; padding: 5px 10px; border: 1px solid var(--lp-border); border-radius: 999px;
+  color: var(--lp-primary); font-size: 10px; font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.lp-v2-entry:hover { background: var(--lp-primary-soft); }
 .lp-top-status { color: var(--color-text-secondary); font-size: 12px; text-align: right; }
 .lp-top-status b { color: var(--color-text); }
 .lp-streak { margin-left: 10px; color: #e8590c; font-weight: 600; }

@@ -92,11 +92,11 @@
     "learning": {
       "label": "学习模式",
       "icon": "Reading",
-      "desc": "英语闯关陪练 · 课程进度",
-      "route": "/learning",
-      "entry": "views/Learning.vue",
+      "desc": "19 科零基础课程 · 原文出处 · 实践 · 公共图书馆",
+      "route": "/learning-v2",
+      "entry": "views/LearningV2.vue",
       "pluginId": "learning-mode",
-      "views": ["views/Learning.vue", "components/learning/LearnStage.vue"],
+      "views": ["views/Learning.vue", "views/LearningV2.vue", "components/learning/LearnStage.vue"],
       "markers": ["Learning"]
     }
   },

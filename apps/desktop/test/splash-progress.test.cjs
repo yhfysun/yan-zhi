@@ -105,6 +105,33 @@ describe('启动进度：单调与满格判据', () => {
     assert.ok(p.advance('connect'), '首次进入阶段应发一次');
     assert.strictEqual(p.advance('connect'), null, '同一时刻重复调用不该刷屏');
   });
+
+  test('★ 细小增量按“上次已发送值”累计，不能被逐次状态更新吞掉', () => {
+    const c = clock();
+    const p = createBootProgress({ now: c.now, tauMs: 6000 });
+    assert.strictEqual(p.advance('prepare').pct, 0);
+    c.tick(250);
+    assert.strictEqual(p.advance('prepare'), null, '单次增量不足阈值时不发 IPC');
+    c.tick(250);
+    const u = p.advance('prepare');
+    assert.ok(u, '累计变化超过阈值后必须发送，否则会永久停在 0%');
+    assert.ok(u.pct > 0, `累计后的进度应大于 0，实际 ${u.pct}`);
+  });
+
+  test('refresh() 在当前阶段内持续推进，不依赖再次上报阶段名', () => {
+    const c = clock();
+    const p = createBootProgress({ now: c.now, tauMs: 6000 });
+    p.advance('backend');
+    c.tick(500);
+    const first = p.refresh();
+    assert.ok(first, '阶段内刷新应产生进度');
+    assert.strictEqual(first.phase, 'backend');
+    const before = first.pct;
+    c.tick(1500);
+    const second = p.refresh();
+    assert.ok(second, '继续刷新应产生新进度');
+    assert.ok(second.pct > before, '同一阶段内百分比必须持续增长');
+  });
 });
 
 describe('启动进度：当前动作与失败态', () => {
@@ -151,6 +178,15 @@ describe('启动进度：当前动作与失败态', () => {
     assert.strictEqual(p.fail('又一次失败'), null, '失败态只能发一次');
   });
 
+  test('★ current() 在失败后仍返回失败态，不能在 splash 重放时复活', () => {
+    const c = clock();
+    const p = createBootProgress({ now: c.now });
+    p.advance('backend');
+    p.fail('后端启动失败');
+    assert.strictEqual(p.current().failed, true);
+    assert.match(p.current().detail, /后端启动失败/);
+  });
+
   test('current() 在尚未打点时返回 null（渲染层保留 indeterminate 兜底）', () => {
     const c = clock();
     const p = createBootProgress({ now: c.now });
@@ -158,6 +194,16 @@ describe('启动进度：当前动作与失败态', () => {
     p.advance('backend');
     assert.strictEqual(p.current().phase, 'backend');
     assert.strictEqual(p.current().failed, false);
+  });
+
+  test('refresh() 在尚未进入阶段或失败终止后返回 null', () => {
+    const c = clock();
+    const p = createBootProgress({ now: c.now });
+    assert.strictEqual(p.refresh(), null);
+    p.advance('connect');
+    p.fail('启动失败');
+    c.tick(5000);
+    assert.strictEqual(p.refresh(), null);
   });
 
   test('未知阶段名被忽略，不产生更新', () => {

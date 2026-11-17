@@ -10,17 +10,13 @@ set ELECTRON_CUSTOM_DIR={{ version }}
 
 cd /d "%~dp0.."
 
-:: 解析 node
-set "NODE_BIN=node"
-where node >nul 2>&1
+:: 解析 node（兼容 fnm / nvm / WorkBuddy 及普通安装）
+call "%~dp0resolve-node.bat"
 if errorlevel 1 (
-    if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2\node.exe" (
-        set "NODE_BIN=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2\node.exe"
-    ) else (
-        echo [ERROR] 未找到 node
-        pause
-        exit /b 1
-    )
+    echo [ERROR] 未找到可用的 Node.js 20+
+    echo         请安装 Node.js，或确认 fnm / nvm / WorkBuddy 的 Node 已安装。
+    pause
+    exit /b 1
 )
 
 if "%1"=="" (

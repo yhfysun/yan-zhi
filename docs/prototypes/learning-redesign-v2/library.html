@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>公共图书馆 · 学习模式全科目重构</title>
+  <link rel="stylesheet" href="./prototype.css" />
+  <style>
+    .library-shell { width: min(1480px, calc(100vw - 32px)); margin: 18px auto 64px; }
+    .library-hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: end; padding: 28px 0 22px; border-bottom: 1px solid var(--line); }
+    .library-hero h1 { margin: 4px 0 8px; font-family: "Noto Serif CJK SC", "Songti SC", Georgia, serif; font-size: clamp(32px, 5vw, 64px); line-height: 1.05; }
+    .library-hero p { max-width: 760px; margin: 0; color: var(--ink-soft); font-size: 13px; }
+    .library-stats { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .library-stats span { padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); font-size: 10px; }
+    .library-toolbar { position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 12px; align-items: center; margin: 16px 0; padding: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.97); backdrop-filter: blur(10px); }
+    .library-search { min-height: 44px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .library-filters { display: flex; gap: 5px; overflow-x: auto; }
+    .library-filter { min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; white-space: nowrap; cursor: pointer; }
+    .library-filter.active { border-color: var(--brand); background: var(--ink); color: #fff; }
+    .library-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .library-book { display: flex; min-height: 220px; flex-direction: column; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .library-book-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .library-book h2 { margin: 4px 0 0; font-size: 16px; line-height: 1.4; }
+    .library-book .subject-mark { display: inline-block; padding: 3px 7px; border-radius: 999px; background: var(--tint); color: var(--accent); font-size: 9px; font-weight: 700; }
+    .library-original { display: -webkit-box; overflow: hidden; margin: 14px 0 0; font-family: "Noto Serif CJK SC", "Songti SC", Georgia, serif; font-size: 13px; line-height: 1.7; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+    .library-meta { margin-top: auto; padding-top: 14px; color: var(--muted); font-size: 9px; line-height: 1.65; }
+    .library-book-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+    .library-empty { grid-column: 1 / -1; padding: 40px; border: 1px dashed var(--line-strong); color: var(--muted); text-align: center; }
+    @media (max-width: 980px) { .library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 680px) {
+      .library-shell { width: calc(100vw - 20px); }
+      .library-hero { grid-template-columns: 1fr; }
+      .library-stats { justify-content: flex-start; }
+      .library-toolbar { grid-template-columns: 1fr; }
+      .library-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="library-shell">
+    <header class="library-hero">
+      <div>
+        <span class="eyebrow">Shared Library</span>
+        <h1>公共图书馆</h1>
+        <p>全部科目共用一座索引库。这里能看到书目、原文、译文、注释、版本、出处和许可状态；进入条目后回到对应科目的书籍研读页。</p>
+      </div>
+      <div class="library-stats" id="library-stats"></div>
+    </header>
+    <section class="library-toolbar" aria-label="图书馆筛选">
+      <input class="library-search" id="library-search" type="search" placeholder="搜索书名、原文、译者、概念或出处" />
+      <div class="library-filters" id="library-filters"></div>
+    </section>
+    <section class="library-grid" id="library-grid" aria-live="polite"></section>
+  </main>
+  <script src="./prototype-data.js"></script>
+  <script src="./prototype-render.js"></script>
+  <script>
+    (function () {
+      const data = window.LEARNING_PROTOTYPE;
+      const proto = window.LearningProto;
+      const grid = document.querySelector('#library-grid');
+      const search = document.querySelector('#library-search');
+      const filters = document.querySelector('#library-filters');
+      let activeSubject = 'all';
+
+      const records = data.subjects.flatMap((subject) =>
+        subject.book.shelf.map((title, index) => {
+          const current = index === 0 ? subject.book : null;
+          return {
+            subject,
+            title,
+            current: Boolean(current),
+            kind: current?.kind || '书目登记',
+            original: current?.original || '该书目已登记，原文与版本按许可状态接入。',
+            translation: current?.translation || '',
+            notes: current?.notes || [],
+            source: current?.source || '版本与许可信息待核验',
+          };
+        }),
+      );
+
+      document.querySelector('#library-stats').innerHTML = `
+        <span>${data.subjects.length} 个科目</span>
+        <span>${records.length} 条书目</span>
+        <span>${records.filter((item) => item.current).length} 条原文可读</span>
+        <span>跨学科统一检索</span>
+      `;
+      filters.innerHTML = [
+        `<button class="library-filter active" type="button" data-filter="all">全部学科</button>`,
+        ...data.subjects.map((subject) => `<button class="library-filter" type="button" data-filter="${subject.key}">${subject.name}</button>`),
+      ].join('');
+
+      function render() {
+        const keyword = search.value.trim().toLowerCase();
+        const visible = records.filter((item) => {
+          if (activeSubject !== 'all' && item.subject.key !== activeSubject) return false;
+          const haystack = [
+            item.subject.name,
+            item.title,
+            item.kind,
+            item.original,
+            item.translation,
+            item.source,
+            ...item.notes.map((note) => `${note.term} ${note.text}`),
+          ].join(' ').toLowerCase();
+          return !keyword || haystack.includes(keyword);
+        });
+
+        grid.innerHTML = visible.length
+          ? visible.map((item) => `
+              <article class="library-book" style="${proto.subjectStyle(item.subject)}">
+                <div class="library-book-head">
+                  <div><span class="subject-mark">${item.subject.name}</span><h2>${item.title}</h2></div>
+                  <span class="platform-badge">${item.current ? '原文可读' : '书目登记'}</span>
+                </div>
+                <blockquote class="library-original">${item.original}</blockquote>
+                <div class="library-meta"><b>${item.kind}</b><br />${item.source}</div>
+                <div class="library-book-foot">
+                  <span class="meta-line">${item.notes.length} 条注释</span>
+                  <a class="btn small" href="./desktop.html?subject=${item.subject.key}&page=books">进入书籍研读</a>
+                </div>
+              </article>
+            `).join('')
+          : '<div class="library-empty">没有匹配的书目</div>';
+      }
+
+      filters.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-filter]');
+        if (!button) return;
+        activeSubject = button.dataset.filter;
+        filters.querySelectorAll('.library-filter').forEach((item) => item.classList.toggle('active', item === button));
+        render();
+      });
+      search.addEventListener('input', render);
+      render();
+    })();
+  </script>
+</body>
+</html>

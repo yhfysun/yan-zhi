@@ -19,6 +19,24 @@ test('根脚本提供 dev:backend 与 dev:shell', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'bin', 'dev-shell.bat')));
 });
 
+test('Windows 开发启动器统一解析 fnm / nvm / WorkBuddy Node', () => {
+  const launchers = [
+    'bin/dev.bat',
+    'bin/dev-desktop.bat',
+    'bin/dev-desktop-multi.bat',
+    'bin/dev-backend.bat',
+    'bin/dev-shell.bat',
+  ];
+
+  for (const launcher of launchers) {
+    const bat = read(launcher);
+    assert.match(bat, /call "%~dp0resolve-node\.bat"/, launcher);
+    assert.doesNotMatch(bat, /22\.22\.2\\node\.exe/, launcher);
+  }
+  assert.ok(fs.existsSync(path.join(ROOT, 'bin', 'resolve-node.bat')));
+  assert.ok(fs.existsSync(path.join(ROOT, 'bin', 'resolve-node.ps1')));
+});
+
 test('纯后端入口只转 server，并标记为本地完整执行端', () => {
   const src = read('bin/dev-backend.mjs');
   const bat = read('bin/dev-backend.bat');

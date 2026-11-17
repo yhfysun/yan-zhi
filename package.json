@@ -15,6 +15,7 @@
     "dev:mobile": "pnpm --filter @yan-zhi/mobile dev",
     "build:web": "pnpm --filter @yan-zhi/web build",
     "sync:brand-icons": "node scripts/sync-yanzhi-icons.cjs",
+    "generate:learning-v2": "node scripts/generate-learning-v2-catalog.cjs",
     "build:desktop": "pnpm --filter @yan-zhi/desktop electron:build",
     "build:desktop:full": "pnpm --filter @yan-zhi/desktop electron:build:full",
     "build:desktop:lite": "pnpm --filter @yan-zhi/desktop electron:build:lite",

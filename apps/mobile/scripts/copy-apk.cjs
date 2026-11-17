@@ -29,19 +29,29 @@ let count = 0;
 /**
  * ★★ 闪退包硬闸（2026-11-16 真机实锤复盘）：曾有人把旧目录构建的 155.3MB APK
  *   （缺 nodejs-mobile 原生库）传进手机，启动即 `UnsatisfiedLinkError: libnode.so
- *   not found` 闪退。这里在拷贝前检查 APK 内必须含 arm64 的 libnode.so —— 缺了
- *   直接构建失败，绝不把闪退包放出 dist-release。检查原理：APK 是 zip，所有
- *   文件名以明文存在文件尾的 central directory 里，扫尾部 2MB 即可。
+ *   not found` 闪退。这里在拷贝前检查 APK 内必须含 Node.js 双原生库与内嵌后端入口，
+ *   并要求完整包达到 300MB 下限 —— 任一不满足都直接失败，绝不放出残缺包。
+ *   检查原理：APK 是 zip，所有文件名以明文存在文件尾的 central directory 里，
+ *   扫尾部 2MB 即可。
  */
-function assertHasLibnode(apkPath) {
+function assertCompleteApk(apkPath) {
   const fd = fs.openSync(apkPath, 'r');
   try {
     const size = fs.fstatSync(fd).size;
     const tailLen = Math.min(size, 2 * 1024 * 1024);
     const buf = Buffer.alloc(tailLen);
     fs.readSync(fd, buf, 0, tailLen, size - tailLen);
-    if (!buf.includes('lib/arm64-v8a/libnode.so')) {
-      console.error(`[copy-apk] ✗ 闪退包拦截：${path.basename(apkPath)} 内没有 lib/arm64-v8a/libnode.so`);
+    const required = [
+      'lib/arm64-v8a/libnode.so',
+      'lib/arm64-v8a/libcapacitor-nodejs.so',
+      'assets/public/nodejs/dist/apps/server/src/index.js',
+    ];
+    const missing = required.filter((name) => !buf.includes(name));
+    if (missing.length || size < 300 * 1024 * 1024) {
+      const sizeMb = (size / 1024 / 1024).toFixed(2);
+      console.error(`[copy-apk] ✗ 闪退包拦截：${path.basename(apkPath)}（${sizeMb} MB）`);
+      for (const name of missing) console.error(`[copy-apk]   缺少 ${name}`);
+      if (size < 300 * 1024 * 1024) console.error('[copy-apk]   完整包小于 300MB，疑似退回了缺原生库/内嵌资源的残缺产物');
       console.error('[copy-apk]   这份 APK 启动必崩（UnsatisfiedLinkError），禁止分发/安装。');
       console.error('[copy-apk]   请检查 capacitor.settings.gradle 的 nodejs 短路径补丁与 nodejs-mobile 构建是否成功。');
       process.exit(3);
@@ -58,7 +68,7 @@ function walk(dir) {
     if (stat.isDirectory()) {
       walk(full);
     } else if (/\.apk$/i.test(name)) {
-      assertHasLibnode(full);
+      assertCompleteApk(full);
       const dest = path.join(outDir, name);
       fs.copyFileSync(full, dest);
       console.log(`[copy-apk] ${path.relative(mobileDir, full)} -> ${path.relative(mobileDir, dest)}`);

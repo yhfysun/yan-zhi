@@ -2735,6 +2735,10 @@ const AGENT_MODE_BY_ID: Record<string, string> = {
   a_builtin_sec_report_agent: 'sec',
   a_builtin_workflow_assistant: 'workflow',
   a_builtin_learning_coach: 'learning',
+  a_builtin_culture_coach: 'learning',
+  a_builtin_music_coach: 'learning',
+  a_builtin_zhouyi_coach: 'learning',
+  a_builtin_learning_subject_coach: 'learning',
 };
 function mergeAgentMode(id: string, mode: string): void {
   const row = db.prepare('SELECT config_json FROM agent WHERE id = ?').get(id) as { config_json?: string | null } | undefined;

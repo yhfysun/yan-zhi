@@ -13,17 +13,18 @@ export const learningModeManifest: PluginManifest = {
   name: '学习模式',
   version: '0.1.0',
   category: '学习',
-  description: '英语闯关、词汇复习、AI 陪练、软考、网络安全、传统文化、音乐与周易课程。仅 Pro 档默认包含。',
+  description: '19 科零基础课程、原文与出处、实践工作台、AI 陪练与公共图书馆。仅 Pro 档默认包含。',
   contributes: {
     mode: {
       key: 'learning',
       label: '学习模式',
       icon: 'Reading',
-      route: '/learning',
+      route: '/learning-v2',
       fallbackAgent: 'a_builtin_learning_coach',
     },
     routes: [
       { path: '/learning', name: 'learning', component: 'views/Learning.vue' },
+      { path: '/learning-v2', name: 'learning-v2', component: 'views/LearningV2.vue' },
     ],
   },
 };

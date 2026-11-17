@@ -569,7 +569,23 @@ const MAIN_REVEAL_TIMEOUT_MS = 15000;
 // 满格那一帧：show() 后先推 100%，留给用户看一眼再销毁（仍在首屏闸门内）
 // 必须大于 splash.html 里 .bar 的 width 过渡（260ms），否则进度条还没滑到 100% 就被销毁
 const SPLASH_FINISH_HOLD_MS = 360;
+const SPLASH_PROGRESS_TICK_MS = 250;
 const splashBoot = createBootProgress();
+let splashProgressTimer = null;
+
+function startSplashProgressTicker() {
+  if (splashProgressTimer) return;
+  splashProgressTimer = setInterval(() => {
+    pushSplashUpdate(splashBoot.refresh());
+  }, SPLASH_PROGRESS_TICK_MS);
+  if (typeof splashProgressTimer.unref === 'function') splashProgressTimer.unref();
+}
+
+function stopSplashProgressTicker() {
+  if (!splashProgressTimer) return;
+  clearInterval(splashProgressTimer);
+  splashProgressTimer = null;
+}
 
 // ★ 进度上报唯一出口：所有阶段与失败态都必须经这里，避免各处直接 send 绕过单调钳制。
 function pushSplashUpdate(update) {
@@ -587,6 +603,7 @@ function reportBootDetail(text) {
 }
 function reportBootFailure(caption) {
   pushSplashUpdate(splashBoot.fail(caption));
+  stopSplashProgressTicker();
 }
 function createSplashWindow() {
   if (splashWindow && !splashWindow.isDestroyed()) return;
@@ -614,9 +631,11 @@ function createSplashWindow() {
   // startServer() 在本函数之前已打点，splash 打开就能看到真实阶段而不是空转圈；
   // 渲染层此时可能尚未加载完，getLastUpdate() 会再回拉一次 splashLastUpdate 兜底。
   if (splashBoot.state.phaseIndex < 0) reportBootPhase('prepare');
+  if (!splashBoot.state.terminated) startSplashProgressTicker();
   pushSplashUpdate(splashBoot.current());
 }
 function destroySplashWindow() {
+  stopSplashProgressTicker();
   if (splashWindow && !splashWindow.isDestroyed()) {
     try { splashWindow.destroy(); } catch { /* 已销毁则忽略 */ }
   }

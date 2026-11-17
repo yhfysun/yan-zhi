@@ -59,6 +59,19 @@ describe('splash 渲染层：真实进度绑定', () => {
     const { els } = boot();
     assert.ok(els.bar.classList.contains('pending'), '未收到数据时应保留兜底动画');
     assert.strictEqual(els.bar.style.width, '', '未收到数据时不该写死宽度');
+    assert.strictEqual(els.pct.textContent, '准备中', '初始不应显示静止的 0%');
+  });
+
+  test('★ 首个 0% 更新仍保留 indeterminate，正进度出现后才切成实条', () => {
+    const { els, emit } = boot();
+    emit({ phase: 'prepare', pct: 0, caption: '正在准备运行环境…', detail: '', failed: false });
+    assert.ok(els.bar.classList.contains('pending'), '0% 时应继续用滑动动画表示未完成');
+    assert.strictEqual(els.bar.style.width, '');
+    assert.strictEqual(els.pct.textContent, '准备中');
+    emit({ phase: 'prepare', pct: 0.6, caption: '正在准备运行环境…', detail: '', failed: false });
+    assert.ok(!els.bar.classList.contains('pending'));
+    assert.strictEqual(els.bar.style.width, '1%');
+    assert.strictEqual(els.pct.textContent, '1%');
   });
 
   test('★ 收到 pct 后进度条真的按百分比改写，且切离兜底动画', () => {

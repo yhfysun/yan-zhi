@@ -28,6 +28,7 @@ const read = (p: string) => readFileSync(resolve(UI_SRC, p), 'utf8');
 
 const APP = read('App.vue');
 const SIDE_NAV = read('components/SideNav.vue');
+const WEB_TOPBAR = read('components/WebTopBar.vue');
 
 /** 去掉 CSS 注释，避免注释里的示例代码/历史说明干扰断言。 */
 function stripCssComments(css: string): string {
@@ -143,6 +144,12 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
       .toMatch(/\.tab-bar\s*\{[\s\S]*?height:\s*var\(--mobile-tabbar-h/);
   });
 
+  it('App.vue：移动顶栏图标和头像具备 44px 触控区', () => {
+    const css = stripCssComments(APP);
+    expect(css).toMatch(/\.mobile-icon-btn\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px;/);
+    expect(css).toMatch(/\.mobile-user-avatar\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px;/);
+  });
+
   it('App.vue：移动端隐藏页内大标题（避免与顶栏标题重复）', () => {
     const css = stripCssComments(APP);
     expect(css, '缺少 .platform-mobile .page-title 隐藏规则（会与顶栏标题同屏重复）')
@@ -163,6 +170,20 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
     // ★ 两项的 path 都是空串（「我的」无路由），若拿 path 当 v-for key 会撞车少渲染一项
     expect(SIDE_NAV, 'TabBar 的 v-for key 必须用 item.key')
       .toMatch(/:key="item\.key"/);
+  });
+
+  it('WebTopBar.vue：320px 保留登录、主题和可访问的图标导航', () => {
+    const css = stripCssComments(WEB_TOPBAR);
+    expect(css, '420px 断点未收起导航文字，320px 会裁掉登录/主题入口')
+      .toMatch(/@media\s*\(max-width:\s*420px\)[\s\S]*?\.title-nav-item\s*>\s*span\s*\{\s*display:\s*none/);
+    expect(css, '登录入口被窄屏样式隐藏了')
+      .not.toMatch(/@media\s*\(max-width:\s*420px\)[\s\S]*?\.title-login-btn\s*\{\s*display:\s*none/);
+    expect(css, '主题入口被窄屏样式隐藏了')
+      .not.toMatch(/@media\s*\(max-width:\s*420px\)[\s\S]*?\.title-theme-btn\s*\{\s*display:\s*none/);
+    expect(WEB_TOPBAR, '导航文字视觉收起后缺少 aria-label')
+      .toContain(':aria-label="m.label"');
+    expect(WEB_TOPBAR, '「更多」图标缺少 aria-label')
+      .toContain('aria-label="更多"');
   });
 });
 

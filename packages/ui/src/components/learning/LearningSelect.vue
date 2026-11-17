@@ -412,7 +412,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   align-items: flex-end;
   padding: 10px;
   box-sizing: border-box;
-  background: rgba(15, 23, 42, .35);
+  background: color-mix(in srgb, var(--color-text, #17211e) 35%, transparent);
 }
 .learning-select-menu.sheet {
   position: static;

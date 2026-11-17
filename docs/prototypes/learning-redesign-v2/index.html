@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>学习模式全科目重构 · 方案与原型索引</title>
+  <link rel="stylesheet" href="./prototype.css" />
+</head>
+<body>
+  <main class="index-wrap">
+    <header class="index-head">
+      <div>
+        <span class="eyebrow">Learning OS v2 · 2026-11-16</span>
+        <h1>学习模式<br />全科目重构方案</h1>
+        <p>新增 13 个科目，同时重做英语、软考、网络安全、传统文化、音乐与周易。公共图书馆跨科检索所有原文、注释、版本与出处。</p>
+      </div>
+      <div class="index-meta">
+        <span id="hero-subject-count">19 个科目</span>
+        <span>8 类页面</span>
+        <span id="hero-course-count">327 门课程全页面直达</span>
+        <span>≤900px 移动骨架</span>
+        <span>桌面 + 移动双设计</span>
+        <a class="btn small" href="./library.html">公共图书馆</a>
+      </div>
+    </header>
+
+    <section class="prototype-switcher" aria-label="可交互原型">
+      <article class="preview-card">
+        <div class="preview-card-head">
+          <div><b>桌面端可交互原型</b><br /><span>科目切换、课程地图、沉浸学习、练习反馈、复习与陪练</span></div>
+          <a class="btn primary small" href="./desktop.html?subject=party&page=overview">打开原型</a>
+        </div>
+        <a href="./desktop.html?subject=party&page=overview">
+          <img src="./assets/desktop-overview.png" alt="桌面端学习总览原型" style="display:block;width:100%;min-height:480px;object-fit:cover;object-position:top left;background:#f4f6f4" />
+        </a>
+      </article>
+      <article class="preview-card">
+        <div class="preview-card-head">
+          <div><b>移动端可交互原型</b><br /><span>科目顶栏、课程浮层、横向课件轨、吸底 CTA 与全屏学习台</span></div>
+          <a class="btn primary small" href="./mobile.html?subject=party&page=overview">打开原型</a>
+        </div>
+        <div class="preview-mobile-wrap">
+          <img src="./assets/mobile-overview.png" alt="移动端学习总览原型" style="width:402px;max-width:100%;display:block" />
+        </div>
+      </article>
+    </section>
+
+    <section class="doc-grid" aria-label="方案摘要">
+      <article class="doc-card">
+        <h3>一套页面语法</h3>
+        <p>19 个科目统一覆盖总览、课程地图、书籍研读、沉浸学习、实践、练习、复习、陪练。课程内容不同，交互骨架不各自发明。</p>
+      </article>
+      <article class="doc-card">
+        <h3>两层结构</h3>
+        <p>导航层负责选科目、阶段、课程与进度；进入知识点后只保留当前课程、当前步骤、进度与退出。</p>
+      </article>
+      <article class="doc-card">
+        <h3>移动端重新排布</h3>
+        <p>科目收进顶栏；阶段与课程合并为 App 内浮层；单张继续学习卡；课件横向单轨；高频 CTA 固定在底部。</p>
+      </article>
+    </section>
+
+    <section class="coverage-layout">
+      <aside class="coverage-summary">
+        <h2>全页面覆盖</h2>
+        <p>下表不是截图清单，而是科目级页面索引。另有全课程清单把 327 门课程逐门展开，并提供桌面、移动两侧直达链接。</p>
+        <div class="coverage-numbers">
+          <div><b id="cover-subject-count">19</b><span>科目</span></div>
+          <div><b>8</b><span>页面族</span></div>
+          <div><b id="course-count">0</b><span>课程入口</span></div>
+          <div><b id="cover-course-count">327</b><span>课程</span></div>
+        </div>
+        <ul class="coverage-rules">
+          <li>每个课程都能在课程地图中选择。</li>
+          <li>沉浸学习页按科目拥不同步骤序列。</li>
+          <li>练习、复习、陪练分别有独立入口。</li>
+          <li>移动端所有高频控件触摸目标不小于 44px。</li>
+        </ul>
+        <a class="btn primary small" href="./coverage.html">打开全课程全页面清单</a>
+      </aside>
+      <div class="subject-matrix" id="subject-matrix"></div>
+    </section>
+  </main>
+
+  <script src="./prototype-data.js"></script>
+  <script src="./prototype-render.js"></script>
+  <script>
+    (function () {
+      const data = window.LEARNING_PROTOTYPE;
+      const proto = window.LearningProto;
+      const matrix = document.querySelector('#subject-matrix');
+      const totalCourses = data.subjects.reduce((sum, subject) => sum + proto.allCourses(subject).length, 0);
+      document.querySelector('#hero-subject-count').textContent = `${data.subjects.length} 个科目`;
+      document.querySelector('#hero-course-count').textContent = `${totalCourses} 门课程全页面直达`;
+      document.querySelector('#cover-subject-count').textContent = String(data.subjects.length);
+      document.querySelector('#cover-course-count').textContent = String(totalCourses);
+
+      matrix.innerHTML = data.subjects
+        .map((subject) => {
+          const courseCount = proto.allCourses(subject).length;
+          return `
+            <section class="matrix-subject" style="${proto.subjectStyle(subject)}">
+              <div class="matrix-subject-head">
+                <div class="matrix-subject-title">
+                  <span class="subject-dot">${subject.short.slice(0, 1)}</span>
+                  <div><b>${subject.name}</b><span>${courseCount} 门课程 · ${subject.tracks.length} 个阶段 · ${subject.lesson.labels.length} 步学习循环</span></div>
+                </div>
+                <span class="platform-badge">${subject.current.progress}% 进行中</span>
+              </div>
+              <div class="matrix-links">
+                ${data.pages
+                  .map(
+                    (page) => `
+                      <div class="matrix-link">
+                        <a href="./desktop.html?subject=${subject.key}&page=${page.key}"><b>${page.label}</b><br /><span>${page.key === 'lesson' ? subject.lesson.labels.join(' → ') : page.key === 'books' ? subject.book.title : page.key === 'studio' ? subject.studio.type : subject.current.course}</span></a>
+                        <span class="platforms"><a href="./desktop.html?subject=${subject.key}&page=${page.key}"><i>桌面</i></a><a href="./mobile.html?subject=${subject.key}&page=${page.key}"><i>移动</i></a></span>
+                      </div>`,
+                  )
+                  .join('')}
+              </div>
+            </section>`;
+        })
+        .join('');
+    })();
+  </script>
+</body>
+</html>

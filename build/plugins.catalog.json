@@ -71,14 +71,15 @@
       "kind": "mode",
       "modeKey": "learning",
       "label": "学习模式",
-      "desc": "多学科学习陪练 · 英语/软考/网安/传统文化/音乐/周易 · 课程进度",
+      "desc": "19 科零基础课程 · 原文出处 · 实践工作台 · 公共图书馆",
       "icon": "Reading",
-      "route": "/learning",
+      "route": "/learning-v2",
       "backendEntry": "apps/server/src/plugins/learning-mode.ts",
       "manifestExport": "learningModeManifest",
       "backendNoop": true,
       "frontendViews": [
-        "views/Learning.vue"
+        "views/Learning.vue",
+        "views/LearningV2.vue"
       ],
       "defaultEnabled": true,
       "notes": "默认只在 Pro 档随包；学习数据、API 与学习陪练智能体留在基座，插件只贡献模式与页面入口",

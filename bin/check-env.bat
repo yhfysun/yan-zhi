@@ -14,6 +14,8 @@ set PASS=0
 set WARN=0
 set FAIL=0
 
+call "%~dp0resolve-node.bat" >nul 2>&1
+
 echo.
 echo ============================================================
 echo   Yan-Zhi Environment Check

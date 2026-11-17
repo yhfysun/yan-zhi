@@ -357,8 +357,65 @@ defineExpose({ load, ext: () => extOf(props.path) });
 .odv-slide-notes { margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--color-border); font-size: 11.5px; color: var(--color-text-tertiary); white-space: pre-wrap; }
 
 @media (max-width: 900px) {
-  .odv-doc-wrap { padding: 14px; }
-  .odv-page { padding: 26px 20px; min-height: 0; }
-  .odv-slide { padding: 18px 20px; aspect-ratio: auto; }
+  .odv-doc-toolbar,
+  .odv-slide-toolbar {
+    min-height: 52px;
+    padding: 4px 10px;
+    overflow-x: auto;
+  }
+  .odv-doc-toolbar :deep(.el-button),
+  .odv-slide-toolbar :deep(.el-button) {
+    min-height: 44px;
+    margin-left: 0;
+    font-size: 13px;
+  }
+  .odv-doc-wrap { padding: 10px 10px 24px; }
+  .odv-page {
+    width: 100%;
+    min-height: 0;
+    padding: 24px 18px 36px;
+    border-radius: 8px;
+  }
+  .odv-h1 { font-size: 23px; line-height: 1.35; }
+  .odv-h2 { margin-top: 20px; font-size: 17px; }
+  .odv-p { font-size: 15px; line-height: 1.75; }
+  .odv-table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    font-size: 13px;
+    overscroll-behavior-x: contain;
+  }
+  .odv-table td { min-width: 96px; padding: 9px 10px; }
+  .odv-sheet-tabs {
+    min-height: 52px;
+    padding: 4px 8px 0;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+  .odv-sheet-tab {
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  .odv-sheet-scroll { overscroll-behavior: contain; }
+  .odv-sheet { font-size: 13px; }
+  .odv-sheet td { min-width: 96px; padding: 8px 11px; }
+  .odv-sheet td.odv-gutter { min-width: 42px; width: 42px; }
+  .odv-slides-wrap {
+    padding: 10px 10px 24px;
+    gap: 14px;
+    overscroll-behavior: contain;
+  }
+  .odv-slide {
+    width: 100%;
+    min-height: 230px;
+    padding: 20px 18px;
+    aspect-ratio: auto;
+    overflow: visible;
+  }
+  .odv-slide-title { font-size: 21px; }
+  .odv-slide-text { font-size: 15px; line-height: 1.7; }
+  .odv-slide-notes { margin-top: 10px; font-size: 12px; line-height: 1.6; }
 }
 </style>

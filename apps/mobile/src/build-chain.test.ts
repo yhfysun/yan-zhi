@@ -38,6 +38,14 @@ describe('Android 打包链接线', () => {
     const patch = read('scripts/apply-native-nodejs-shortpath.cjs');
     expect(patch).toContain('capacitor.settings.gradle');
     expect(patch).toContain('capawesome-capacitor-nodejs');
+    // 短路径工程必须自己配置 CMake；只复制源码会把 libnode.so 留在深路径缓存里，
+    // Gradle 仍能成功，但 APK 缺原生库后会 UnsatisfiedLinkError 闪退。
+    expect(patch).toContain('externalNativeBuild');
+    expect(patch).toContain('path "CMakeLists.txt"');
+    expect(patch).toContain('-DLIBNODE_DIR=');
+    expect(patch).toContain('legacyJniLine');
+    // CMake 的 include_directories 指向 ../ios/PluginNative；漏掉 bridge.h 会直接断编。
+    expect(patch).toContain("'PluginNative'");
     // 同步原生源码时只复制不删除，避免触发批量删除保护
     expect(patch).not.toMatch(/\brmSync\s*\(/);
   });
@@ -46,6 +54,11 @@ describe('Android 打包链接线', () => {
     const c = chain();
     expect(c.indexOf('apply-native-m1nfc.cjs')).toBeLessThan(c.indexOf('cap sync android'));
     expect(c.trimEnd().endsWith('copy-apk.cjs')).toBe(true);
+    const copyApk = read('scripts/copy-apk.cjs');
+    expect(copyApk).toContain('lib/arm64-v8a/libnode.so');
+    expect(copyApk).toContain('lib/arm64-v8a/libcapacitor-nodejs.so');
+    expect(copyApk).toContain('assets/public/nodejs/dist/apps/server/src/index.js');
+    expect(copyApk).toContain('300 * 1024 * 1024');
   });
 
   it('★ 旧产物清理是链路第一步，且移出工程而非删除（否则会被打进 APK）', () => {

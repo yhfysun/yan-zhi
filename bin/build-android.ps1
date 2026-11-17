@@ -131,7 +131,10 @@ function Install-SdkPackages([string]$SdkPath, [string[]]$Packages) {
     $cli = Join-Path $binDir "android.exe"
     $mgr = Join-Path $binDir "sdkmanager.bat"
     if (Test-Path $cli) {
-        $slash = $Packages | ForEach-Object { $_ -replace ';', '/' }
+        # PowerShell may flatten a single native argument into characters when
+        # splatting a scalar string. Keep an explicit array so platform-tools
+        # is passed as one package name instead of p,l,a,t,...
+        $slash = @($Packages | ForEach-Object { $_ -replace ';', '/' })
         & $cli "--sdk=$SdkPath" sdk install @slash 2>&1 | Out-Host
         return ($LASTEXITCODE -eq 0)
     }

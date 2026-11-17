@@ -27,6 +27,7 @@ describe('P2-1 办公工作台骨架', () => {
     expect(ROUTER).toMatch(/path: '\/office'/);
     expect(ROUTER).toMatch(/office-workbench/);
     expect(ROUTER).toMatch(/'\/office': 'office'/);
+    expect(ROUTER).toMatch(/path: '\/office'[\s\S]*mobilePageShell: true/);
   });
 
   it('不再单独出「工作台」入口；入口是右下角悬浮按钮（与开发模式同形态）', () => {
@@ -47,6 +48,19 @@ describe('P2-1 办公工作台骨架', () => {
     // 工作台不再内嵌聊天：AI = /chat，人工 = 这里
     expect(WORKBENCH).not.toMatch(/<ChatMessageList \/>/);
     expect(WORKBENCH).not.toMatch(/<ChatInputArea \/>/);
+  });
+
+  it('移动端把文件树收成抽屉，编辑区独占首屏且文件操作一键可达', () => {
+    expect(WORKBENCH).toContain('useMobileShell');
+    expect(WORKBENCH).toContain('fileDrawerOpen');
+    expect(WORKBENCH).toMatch(/class="office-mobile-bar"/);
+    expect(WORKBENCH).toMatch(/data-action="open-file-drawer"/);
+    expect(WORKBENCH).toMatch(/class="wb-file-drawer-mask"/);
+    expect(WORKBENCH).toMatch(/watch\(selectedPath[\s\S]*fileDrawerOpen\.value = false/);
+    expect(WORKBENCH).toMatch(/@select="onWorkspaceFileSelected"/);
+    expect(TREE).toMatch(/defineEmits<\{ select: \[path: string\] \}>/);
+    expect(WORKBENCH).toMatch(/@media \(max-width: 900px\)[\s\S]*\.office-mobile-bar/);
+    expect(WORKBENCH).toMatch(/@media \(max-width: 900px\)[\s\S]*\.wb-tree-shell[\s\S]*position: absolute/);
   });
 
   it('状态栏在 /office 下同步 AI/人工', () => {
@@ -126,6 +140,14 @@ describe('P2-4 文件树与三套视图', () => {
     expect(TREE).toMatch(/e\.key === 'Delete'/);
     expect(TREE).toMatch(/humanSize/);
     expect(TREE).toMatch(/ws-size/);
+  });
+
+  it('移动端文件树和文档查看器使用触控尺寸并处理横向内容', () => {
+    expect(TREE).toMatch(/@media \(max-width: 900px\)[\s\S]*\.ws-row[\s\S]*min-height: 48px/);
+    expect(TREE).toMatch(/@media \(max-width: 900px\)[\s\S]*\.ws-icon-btn[\s\S]*width: 44px; height: 44px/);
+    expect(DOCVIEW).toMatch(/@media \(max-width: 900px\)[\s\S]*\.odv-page[\s\S]*padding: 24px 18px 36px/);
+    expect(DOCVIEW).toMatch(/@media \(max-width: 900px\)[\s\S]*\.odv-table[\s\S]*overflow-x: auto/);
+    expect(DOCVIEW).toMatch(/@media \(max-width: 900px\)[\s\S]*\.odv-sheet-tab[\s\S]*min-height: 44px/);
   });
 
   it('工作台记住上次文件与目录展开状态', () => {

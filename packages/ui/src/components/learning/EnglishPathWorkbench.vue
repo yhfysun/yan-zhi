@@ -1946,7 +1946,10 @@ onBeforeUnmount(() => {
   --path-paper-ink: #17262b;
   --path-paper-muted: #5e7074;
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: var(--app-statusbar-h, 0px);
+  left: 0;
   z-index: 3000;
   display: flex;
   flex-direction: column;
