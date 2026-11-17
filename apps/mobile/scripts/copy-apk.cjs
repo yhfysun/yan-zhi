@@ -44,6 +44,9 @@ function assertCompleteApk(apkPath) {
     const required = [
       'lib/arm64-v8a/libnode.so',
       'lib/arm64-v8a/libcapacitor-nodejs.so',
+      'lib/arm64-v8a/libc++_shared.so',
+      'lib/armeabi-v7a/libc++_shared.so',
+      'lib/x86_64/libc++_shared.so',
       'assets/public/nodejs/dist/apps/server/src/index.js',
     ];
     const missing = required.filter((name) => !buf.includes(name));

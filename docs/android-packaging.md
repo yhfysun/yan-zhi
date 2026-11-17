@@ -103,6 +103,49 @@ grep -E "usesCleartextTraffic|permission.CAMERA" apps/mobile/android/app/src/mai
 
 **修**：`sqlite-driver.ts` 导出 `flushSqliteInstances()`，`connector.ts` 在判断前先刷一次盘。桌面用 better-sqlite3（文件库）永远复现不出来。
 
+### 症状 C：`libnode.so` 已在 APK 内，仍报 `UnsatisfiedLinkError`
+
+**真实现场（2026-11-17，API 35 x86_64 模拟器）**：
+
+```text
+dlopen failed: library "libc++_shared.so" not found:
+needed by .../base.apk!/lib/x86_64/libnode.so
+at io.capawesome.capacitorjs.plugins.nodejs.Nodejs.<clinit>(Nodejs.java:43)
+```
+
+**根因**：`nodejs-mobile` 的 `libnode.so` 是动态链接，`llvm-readelf -d` 明确包含
+`NEEDED libc++_shared.so`。只检查 `libnode.so` 是否存在不够；AGP 也不会因为
+CMake 导入了预编译 `libnode.so` 就自动把 STL 运行库放进 APK。
+
+**修**：`apply-native-nodejs-shortpath.cjs` 从 NDK 按 ABI 把 `libc++_shared.so`
+铺到短路径工程的 `src/main/jniLibs/`；`copy-apk.cjs` 同时检查三个 ABI 的
+`libc++_shared.so`，缺失直接拒绝产物。
+
+**无真机时的最小复现/验收**：
+
+```powershell
+$sdk="$env:LOCALAPPDATA\Android\Sdk"
+$adb="$sdk\platform-tools\adb.exe"
+
+# 首次准备 API 35 x86_64 AVD
+& "$sdk\cmdline-tools\latest\bin\android.exe" "--sdk=$sdk" sdk install `
+  system-images/android-35/google_apis/x86_64
+'no' | & "$sdk\cmdline-tools\latest\bin\avdmanager.bat" create avd `
+  -n yanzhi-crash-api35 -k 'system-images;android-35;google_apis;x86_64' -d pixel_5 --force
+
+# 启动并验证：进程必须存活、Activity 必须在前台、内嵌后端必须可访问
+& "$sdk\emulator\emulator.exe" -avd yanzhi-crash-api35 -no-window -no-audio `
+  -gpu swiftshader_indirect -no-snapshot
+& $adb install -r -t dist-release/android/<版本>/app-debug.apk
+& $adb shell am start -W -n com.yanzhi.mobile/.MainActivity
+& $adb shell pidof com.yanzhi.mobile
+& $adb forward tcp:3101 tcp:3001
+Invoke-RestMethod http://127.0.0.1:3101/api/health
+```
+
+判据不是“窗口出现了”就算过：`pidof` 有值、`topResumedActivity` 是本应用、
+`/api/health` 返回 `ok: true`，三项同时成立才算通过。
+
 ---
 
 ## 六、真机验证方法
@@ -144,6 +187,6 @@ curl http://127.0.0.1:9222/json/list
 ## 七、版本与产物
 
 - APK 路径：`dist-release/android/<版本>/app-debug.apk`
-- 包体积参考：约 184–186 MB，其中 `libnode.so` 三个 ABI 约占 151 MB（armeabi-v7a / arm64-v8a / x86_64 各一份）。
+- 完整包体积参考：约 378 MB，其中 `libnode.so` 三个 ABI 约占 151 MB，另有 Sherpa、内嵌后端依赖与三份 `libc++_shared.so`。
   想减体积：只保留 `arm64-v8a`（现代手机基本都支持），能降到 ~90 MB。
 - 全新安装的平台列表本来就是空的（内置的是「厂商目录 preset」，不是已配置平台），需要用户自己选一个厂商或填 Key。

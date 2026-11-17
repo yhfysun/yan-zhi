@@ -21,6 +21,13 @@ const repoRoot = path.join(mobileDir, '..', '..');
 const settingsFile = path.join(mobileDir, 'android', 'capacitor.settings.gradle');
 const shortRoot = process.env.YZ_NATIVE_LIB_DIR || 'C:/yz-libs/capnodejs';
 const shortAndroid = path.join(shortRoot, 'android');
+const shortJniLibs = path.join(shortAndroid, 'src', 'main', 'jniLibs');
+
+const ABI_TO_NDK_TRIPLE = {
+  'arm64-v8a': 'aarch64-linux-android',
+  'armeabi-v7a': 'arm-linux-androideabi',
+  'x86_64': 'x86_64-linux-android',
+};
 
 function copyTree(from, to) {
   if (!fs.existsSync(from)) return 0;
@@ -37,6 +44,26 @@ function copyTree(from, to) {
     }
   }
   return count;
+}
+
+function resolveAndroidNdk() {
+  const explicit = [process.env.ANDROID_NDK_HOME, process.env.ANDROID_NDK_ROOT].filter(Boolean);
+  const sdkRoots = [
+    process.env.ANDROID_HOME,
+    process.env.ANDROID_SDK_ROOT,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk') : '',
+  ].filter(Boolean);
+  const candidates = [...explicit];
+  for (const sdkRoot of sdkRoots) {
+    const ndkRoot = path.join(sdkRoot, 'ndk');
+    if (!fs.existsSync(ndkRoot)) continue;
+    for (const name of fs.readdirSync(ndkRoot)) candidates.push(path.join(ndkRoot, name));
+  }
+  const found = candidates.find((dir) =>
+    fs.existsSync(path.join(dir, 'toolchains', 'llvm', 'prebuilt', 'windows-x86_64', 'sysroot', 'usr', 'lib')),
+  );
+  if (!found) throw new Error('未找到 Android NDK（需要 libc++_shared.so）');
+  return found;
 }
 
 // 1) 定位当前 pnpm store 里的插件 android 目录
@@ -72,6 +99,21 @@ copied += copyTree(
   path.join(shortRoot, 'ios', 'PluginNative'),
 );
 
+// nodejs-mobile 的 libnode.so 动态依赖 libc++_shared.so。AGP 不会仅因
+// CMake 导入了预编译 libnode 就自动打包 STL 运行库，必须按 ABI 显式铺入。
+const ndkDir = resolveAndroidNdk();
+const ndkSysrootLib = path.join(
+  ndkDir, 'toolchains', 'llvm', 'prebuilt', 'windows-x86_64', 'sysroot', 'usr', 'lib',
+);
+for (const [abi, triple] of Object.entries(ABI_TO_NDK_TRIPLE)) {
+  const src = path.join(ndkSysrootLib, triple, 'libc++_shared.so');
+  if (!fs.existsSync(src)) throw new Error(`NDK 缺少 ${abi} libc++_shared.so: ${src}`);
+  const dest = path.join(shortJniLibs, abi, 'libc++_shared.so');
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  copied += 1;
+}
+
 // 3) 修正复制后的 build.gradle：从短路径 CMake 实际编译，不再引用深路径固定产物
 const shortBuildFile = path.join(shortAndroid, 'build.gradle');
 let buildGradle = fs.readFileSync(shortBuildFile, 'utf8');
@@ -104,6 +146,15 @@ if (!buildGradle.includes('-DLIBNODE_DIR=')) {
         }`;
   buildGradle = buildGradle.replace(runnerMarker, `${runnerMarker}\n${cmakeArguments}`);
 }
+if (!buildGradle.includes("jniLibs.srcDirs += ['src/main/jniLibs']")) {
+  const mainSourceSet = /sourceSets\s*\{\s*\r?\n\s*main\s*\{/;
+  if (!mainSourceSet.test(buildGradle)) {
+    throw new Error('capacitor-nodejs build.gradle 缺少 main sourceSet');
+  }
+  buildGradle = buildGradle.replace(mainSourceSet, (match) =>
+    `${match}\n            jniLibs.srcDirs += ['src/main/jniLibs']`,
+  );
+}
 fs.writeFileSync(shortBuildFile, buildGradle);
 
 // 4) 把 gradle 模块指向短路径（幂等）
@@ -122,3 +173,4 @@ if (text.includes(replacement)) {
 }
 console.log(`[nodejs-shortpath] 已同步 ${copied} 个原生源码文件（不清理 .cxx 缓存）`);
 console.log('[nodejs-shortpath] CMake 构建已启用（libnode.so 将进入 APK）');
+console.log(`[nodejs-shortpath] 已铺入 3 个 ABI 的 libc++_shared.so（NDK: ${ndkDir}）`);

@@ -44,6 +44,9 @@ describe('Android 打包链接线', () => {
     expect(patch).toContain('path "CMakeLists.txt"');
     expect(patch).toContain('-DLIBNODE_DIR=');
     expect(patch).toContain('legacyJniLine');
+    // nodejs-mobile 的 libnode.so 动态依赖 STL 运行库，必须按 ABI 显式打包。
+    expect(patch).toContain('libc++_shared.so');
+    expect(patch).toContain("jniLibs.srcDirs += ['src/main/jniLibs']");
     // CMake 的 include_directories 指向 ../ios/PluginNative；漏掉 bridge.h 会直接断编。
     expect(patch).toContain("'PluginNative'");
     // 同步原生源码时只复制不删除，避免触发批量删除保护
@@ -57,6 +60,9 @@ describe('Android 打包链接线', () => {
     const copyApk = read('scripts/copy-apk.cjs');
     expect(copyApk).toContain('lib/arm64-v8a/libnode.so');
     expect(copyApk).toContain('lib/arm64-v8a/libcapacitor-nodejs.so');
+    expect(copyApk).toContain('lib/arm64-v8a/libc++_shared.so');
+    expect(copyApk).toContain('lib/armeabi-v7a/libc++_shared.so');
+    expect(copyApk).toContain('lib/x86_64/libc++_shared.so');
     expect(copyApk).toContain('assets/public/nodejs/dist/apps/server/src/index.js');
     expect(copyApk).toContain('300 * 1024 * 1024');
   });
