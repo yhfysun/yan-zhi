@@ -55,6 +55,7 @@
  *                                  #   迭代验证用，省掉打安装器+压缩的时间，直接跑 win-unpacked 里的 exe
  *   --no-compress                  # 仍然出安装包，但 NSIS 用 store（不压缩）：打包/安装都快，包体翻倍
  *   --auth-mode=multi              # 多用户发行版：后端默认启用登录与账号隔离
+ *   --android-full                 # 安卓完整调试包（全模式 + 全 ABI，供模拟器/排障）
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -152,6 +153,7 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const VERIFY = !flags.has('--no-verify');
 const KEEP_TMP = flags.has('--keep-tmp');
+const ANDROID_FULL = flags.has('--android-full');
 
 // ── 发行鉴权模式（--auth-mode=guest|multi）──
 // 写进 edition.json 并随 app.asar 固化，不能依赖用户机器上残留的 host-config。
@@ -1341,6 +1343,20 @@ function buildAndroid() {
   // ⓪.5 gradle wrapper 换源（官方源会跳到 GitHub，本机直连不通）
   ensureGradleWrapper(mobile);
 
+  // 发行默认走精简链：仅 office/learning、真机 ABI，避免把模拟器库和桌面插件
+  // 全部塞进手机安装包。需要全模式全 ABI 调试时显式传 --android-full。
+  if (!ANDROID_FULL) {
+    info('① 构建移动端精简发行包（office + learning，arm64-v8a + armeabi-v7a）');
+    run(
+      process.execPath,
+      [path.join(mobile, 'scripts', 'build-android-slim.cjs')],
+      { cwd: mobile },
+    );
+    ok('安卓精简包构建完成');
+    return;
+  }
+
+  info('① 构建安卓完整调试包（全模式 + arm64-v8a / armeabi-v7a / x86_64）');
   // ① 图标（必须在 vite build 之前）
   info('① 生成安卓图标');
   run(process.execPath, ['scripts/gen-android-icons.cjs'], { cwd: mobile });
@@ -1668,7 +1684,7 @@ function cleanFreshRoot() {
     info(`将构建: ${[
       needCompile ? '桌面三档/选档' : null,
       targets.desktop.includes(SHELL_EDITION) ? '桌面轻量壳（无后端）' : null,
-      targets.android ? '安卓 APK' : null,
+      targets.android ? `安卓 APK（${ANDROID_FULL ? '完整调试' : '精简发行'}）` : null,
     ].filter(Boolean).join(' → ')}`);
     info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
     info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);

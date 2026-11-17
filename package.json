@@ -37,6 +37,7 @@
     "package:desktop:shell": "node scripts/package-desktop-shell.cjs",
     "package:server:linux": "node scripts/package-server-linux.cjs",
     "package:android": "node scripts/package-android.cjs",
+    "package:android:full": "node scripts/package-android.cjs --android-full",
     "package:all": "node scripts/package.cjs all",
     "verify:package": "node scripts/verify-package-artifacts.cjs",
     "sync:novel-skill": "node scripts/sync-novel-skill-seed.cjs",

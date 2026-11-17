@@ -65,12 +65,10 @@ function run(cmd, args, opts = {}) {
     env: { ...process.env, ...(opts.env || {}) },
   });
   if (r.error) {
-    console.error('[build-android-slim][ERROR] 启动失败:', cmd, r.error.message);
-    process.exit(1);
+    throw new Error(`启动失败: ${cmd} (${r.error.message})`);
   }
   if (r.status !== 0) {
-    console.error('[build-android-slim][ERROR] 命令失败:', cmd, args.join(' '));
-    process.exit(r.status || 1);
+    throw new Error(`命令失败(exit=${r.status}): ${cmd} ${args.join(' ')}`);
   }
 }
 
@@ -99,8 +97,7 @@ function restoreModes() {
 function ensureAbiFilterBlock() {
   const gradleFile = path.join(MOBILE_DIR, 'android', 'app', 'build.gradle');
   if (!fs.existsSync(gradleFile)) {
-    console.error('[build-android-slim][ERROR] 未找到 ' + gradleFile + '（先跑一次普通 build:android 生成 android 工程）');
-    process.exit(1);
+    throw new Error('未找到 ' + gradleFile + '（先跑一次普通 build:android 生成 android 工程）');
   }
   const src = fs.readFileSync(gradleFile, 'utf8');
   if (src.includes("hasProperty('yanZhiAbiFilters')")) return; // 已铺设，幂等退出
@@ -118,8 +115,7 @@ function ensureAbiFilterBlock() {
   // 插在 defaultConfig 内 testInstrumentationRunner 之后（Capacitor 工程该行恒存在）
   const anchor = /testInstrumentationRunner "[^"]+"\r?\n/;
   if (!anchor.test(src)) {
-    console.error('[build-android-slim][ERROR] build.gradle 未找到 testInstrumentationRunner 锚点，无法铺设 ABI 块');
-    process.exit(1);
+    throw new Error('build.gradle 未找到 testInstrumentationRunner 锚点，无法铺设 ABI 块');
   }
   fs.writeFileSync(gradleFile, src.replace(anchor, (m0) => m0 + block + '\n'), 'utf8');
   log('已在 android/app/build.gradle 铺设 ABI 过滤块（幂等）');
@@ -167,9 +163,15 @@ function buildAll() {
       });
       continue;
     }
-    if (/^node scripts\/copy-apk\.cjs/.test(step)) {
+    if (/^node\s+(?:\.\/)?scripts\/copy-apk\.cjs/.test(step)) {
       log('执行:', step);
-      run(process.execPath, [path.join(__dirname, 'copy-apk.cjs')], { cwd: MOBILE_DIR });
+      run(process.execPath, [path.join(__dirname, 'copy-apk.cjs')], {
+        cwd: MOBILE_DIR,
+        env: {
+          YZ_ANDROID_PACKAGE_PROFILE: 'slim',
+          YZ_EXPECTED_ABIS: SLIM_ABIS,
+        },
+      });
       continue;
     }
     // 其余步骤（icons / apply-native-* / cap sync / shortpath）原样执行
@@ -177,8 +179,7 @@ function buildAll() {
     if (m) {
       const scriptPath = path.resolve(MOBILE_DIR, m[1].trim());
       if (!fs.existsSync(scriptPath)) {
-        console.error('[build-android-slim][ERROR] 步骤脚本不存在:', scriptPath);
-        process.exit(1);
+        throw new Error('步骤脚本不存在: ' + scriptPath);
       }
       log('执行:', step);
       run(process.execPath, [scriptPath], { cwd: MOBILE_DIR });
@@ -203,8 +204,7 @@ function buildAll() {
       env: { ...process.env, PATH: `${path.join(MOBILE_DIR, 'node_modules', '.bin')};${process.env.PATH || ''}` },
     });
     if (r.status !== 0) {
-      console.error('[build-android-slim][ERROR] 外部命令失败:', step, useLocal ? '(本地 .bin)' : '(PATH)');
-      process.exit(r.status || 1);
+      throw new Error(`外部命令失败(exit=${r.status}): ${step} ${useLocal ? '(本地 .bin)' : '(PATH)'}`);
     }
   }
 }
@@ -229,7 +229,13 @@ try {
   buildAll();
   reportSize();
   log('完成。APK 见 android/app/build/outputs/apk/debug/');
+} catch (e) {
+  console.error('[build-android-slim][ERROR]', e && e.message ? e.message : e);
+  process.exitCode = 1;
 } finally {
   // 无论成败都必须还原生成文件，否则工作区被裁剪态污染（后续普通构建会缺模式）
-  try { restoreModes(); } catch (e) { console.error('[build-android-slim] 还原模式表失败:', e); }
+  try { restoreModes(); } catch (e) {
+    console.error('[build-android-slim] 还原模式表失败:', e);
+    process.exitCode = 1;
+  }
 }

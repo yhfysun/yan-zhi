@@ -29,11 +29,21 @@ let count = 0;
 /**
  * ★★ 闪退包硬闸（2026-11-16 真机实锤复盘）：曾有人把旧目录构建的 155.3MB APK
  *   （缺 nodejs-mobile 原生库）传进手机，启动即 `UnsatisfiedLinkError: libnode.so
- *   not found` 闪退。这里在拷贝前检查 APK 内必须含 Node.js 双原生库与内嵌后端入口，
- *   并要求完整包达到 300MB 下限 —— 任一不满足都直接失败，绝不放出残缺包。
+ *   not found` 闪退。这里在拷贝前检查 APK 内必须含目标 ABI 的 Node.js 原生库与
+ *   内嵌后端入口，并按发行档检查体积下限 —— 任一不满足都直接失败。
  *   检查原理：APK 是 zip，所有文件名以明文存在文件尾的 central directory 里，
  *   扫尾部 2MB 即可。
  */
+const profile = process.env.YZ_ANDROID_PACKAGE_PROFILE === 'slim' ? 'slim' : 'full';
+const defaultAbis = profile === 'slim'
+  ? ['arm64-v8a', 'armeabi-v7a']
+  : ['arm64-v8a', 'armeabi-v7a', 'x86_64'];
+const expectedAbis = String(process.env.YZ_EXPECTED_ABIS || defaultAbis.join(','))
+  .split(/[,\s]+/)
+  .map((s) => s.trim())
+  .filter(Boolean);
+const minSizeMb = profile === 'slim' ? 140 : 300;
+
 function assertCompleteApk(apkPath) {
   const fd = fs.openSync(apkPath, 'r');
   try {
@@ -41,20 +51,18 @@ function assertCompleteApk(apkPath) {
     const tailLen = Math.min(size, 2 * 1024 * 1024);
     const buf = Buffer.alloc(tailLen);
     fs.readSync(fd, buf, 0, tailLen, size - tailLen);
-    const required = [
-      'lib/arm64-v8a/libnode.so',
-      'lib/arm64-v8a/libcapacitor-nodejs.so',
-      'lib/arm64-v8a/libc++_shared.so',
-      'lib/armeabi-v7a/libc++_shared.so',
-      'lib/x86_64/libc++_shared.so',
-      'assets/public/nodejs/dist/apps/server/src/index.js',
-    ];
+    const required = expectedAbis.flatMap((abi) => [
+      `lib/${abi}/libnode.so`,
+      `lib/${abi}/libcapacitor-nodejs.so`,
+      `lib/${abi}/libc++_shared.so`,
+    ]).concat('assets/public/nodejs/dist/apps/server/src/index.js');
     const missing = required.filter((name) => !buf.includes(name));
-    if (missing.length || size < 300 * 1024 * 1024) {
+    const minSize = minSizeMb * 1024 * 1024;
+    if (missing.length || size < minSize) {
       const sizeMb = (size / 1024 / 1024).toFixed(2);
       console.error(`[copy-apk] ✗ 闪退包拦截：${path.basename(apkPath)}（${sizeMb} MB）`);
       for (const name of missing) console.error(`[copy-apk]   缺少 ${name}`);
-      if (size < 300 * 1024 * 1024) console.error('[copy-apk]   完整包小于 300MB，疑似退回了缺原生库/内嵌资源的残缺产物');
+      if (size < minSize) console.error(`[copy-apk]   ${profile} 包小于 ${minSizeMb}MB，疑似退回了缺原生库/内嵌资源的残缺产物`);
       console.error('[copy-apk]   这份 APK 启动必崩（UnsatisfiedLinkError），禁止分发/安装。');
       console.error('[copy-apk]   请检查 capacitor.settings.gradle 的 nodejs 短路径补丁与 nodejs-mobile 构建是否成功。');
       process.exit(3);
@@ -85,4 +93,4 @@ if (count === 0) {
   console.warn('[copy-apk] 未发现任何 .apk 文件');
   process.exit(2);
 }
-console.log(`[copy-apk] 完成（v${version}），共拷贝 ${count} 个 APK 到 ${path.relative(mobileDir, outDir)}`);
+console.log(`[copy-apk] 完成（v${version}，${profile}，ABI=${expectedAbis.join(',')}），共拷贝 ${count} 个 APK 到 ${path.relative(mobileDir, outDir)}`);

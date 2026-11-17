@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '..');
+const REPO_ROOT = resolve(ROOT, '..', '..');
 const read = (p: string) => readFileSync(resolve(ROOT, p), 'utf8');
 const chain = (): string => JSON.parse(read('package.json')).scripts['build:android'];
 
@@ -58,13 +59,29 @@ describe('Android 打包链接线', () => {
     expect(c.indexOf('apply-native-m1nfc.cjs')).toBeLessThan(c.indexOf('cap sync android'));
     expect(c.trimEnd().endsWith('copy-apk.cjs')).toBe(true);
     const copyApk = read('scripts/copy-apk.cjs');
-    expect(copyApk).toContain('lib/arm64-v8a/libnode.so');
-    expect(copyApk).toContain('lib/arm64-v8a/libcapacitor-nodejs.so');
-    expect(copyApk).toContain('lib/arm64-v8a/libc++_shared.so');
-    expect(copyApk).toContain('lib/armeabi-v7a/libc++_shared.so');
-    expect(copyApk).toContain('lib/x86_64/libc++_shared.so');
+    expect(copyApk).toContain("['arm64-v8a', 'armeabi-v7a', 'x86_64']");
+    expect(copyApk).toContain('`lib/${abi}/libnode.so`');
+    expect(copyApk).toContain('`lib/${abi}/libcapacitor-nodejs.so`');
+    expect(copyApk).toContain('`lib/${abi}/libc++_shared.so`');
     expect(copyApk).toContain('assets/public/nodejs/dist/apps/server/src/index.js');
-    expect(copyApk).toContain('300 * 1024 * 1024');
+    expect(copyApk).toContain("profile === 'slim' ? 140 : 300");
+  });
+
+  it('★ package:android 默认走精简发行链，完整全 ABI 包必须显式选择', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'));
+    expect(pkg.scripts['package:android']).toBe('node scripts/package-android.cjs');
+    expect(pkg.scripts['package:android:full']).toBe('node scripts/package-android.cjs --android-full');
+
+    const packageSource = readFileSync(resolve(REPO_ROOT, 'scripts/package.cjs'), 'utf8');
+    expect(packageSource).toContain('const ANDROID_FULL = flags.has');
+    expect(packageSource).toContain("'build-android-slim.cjs'");
+    expect(packageSource).toContain("info('① 构建安卓完整调试包");
+
+    const slim = read('scripts/build-android-slim.cjs');
+    expect(slim).toContain("YZ_ANDROID_PACKAGE_PROFILE: 'slim'");
+    expect(slim).toContain('YZ_EXPECTED_ABIS: SLIM_ABIS');
+    expect(slim).toContain('(?:\\.\\/)?scripts\\/copy-apk\\.cjs');
+    expect(slim, '精简链失败时必须抛错走 finally 还原全量模式表').not.toContain('process.exit(');
   });
 
   it('★ 旧产物清理是链路第一步，且移出工程而非删除（否则会被打进 APK）', () => {

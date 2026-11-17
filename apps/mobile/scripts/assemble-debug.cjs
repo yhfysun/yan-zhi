@@ -89,7 +89,7 @@ function resolveAndroidSdk() {
 
 /**
  * 透传的 Gradle property（-Pxxx）。
- * ★ 目前只有 yanZhiAbiFilters —— 精简包用它裁掉 x86_64 的 libnode.so（省 55.6MB）。
+ * ★ 目前只有 yanZhiAbiFilters —— 精简包用它裁掉模拟器 ABI（省 150MB+）。
  *   普通构建不传 ⇒ 与此前行为逐字一致（保留模拟器 ABI）。
  */
 const gradleProps = [];
