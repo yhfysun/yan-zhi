@@ -1,5 +1,31 @@
 <template>
-  <div class="chat-topbar">
+  <div v-if="isMobile" class="chat-topbar mobile-chat-topbar">
+    <button class="mobile-chat-icon" type="button" aria-label="打开任务与文件" @click="drawerOpen = true">
+      <el-icon :size="19"><Expand /></el-icon>
+    </button>
+    <MobileModeSwitch />
+    <WorkspaceModeSwitch class="mobile-chat-lead" />
+    <button
+      type="button"
+      class="mobile-chat-title"
+      :title="hasWorkspaceDir ? `工作目录：${workspaceDir}` : '未设置工作目录，点击选择'"
+      @click="showWorkspaceDir = true"
+    >
+      <strong>{{ currentConv?.title || '新任务' }}</strong>
+      <small>
+        <span v-if="convSpaceName">{{ convSpaceName }}</span>
+        <span v-if="hasWorkspaceDir">{{ workspaceShort }}</span>
+        <span v-if="convCost.costCny > 0">¥{{ fmtCost(convCost.costCny) }}</span>
+      </small>
+    </button>
+    <button class="mobile-chat-icon is-primary" type="button" aria-label="新建任务" @click="startNewChat()">
+      <el-icon :size="18"><DocumentAdd /></el-icon>
+    </button>
+    <button class="mobile-chat-icon" type="button" aria-label="更多" @click="openMobileNavDrawer">
+      <el-icon :size="19"><MoreFilled /></el-icon>
+    </button>
+  </div>
+  <div v-else class="chat-topbar">
     <el-button class="hamburger-btn" text circle @click="drawerOpen = !drawerOpen">
       <el-icon :size="20"><Expand /></el-icon>
     </el-button>
@@ -141,14 +167,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
-import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, SwitchButton, Avatar, Platform } from '@element-plus/icons-vue';
+import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, SwitchButton, Avatar, Platform, MoreFilled } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { openMobileNavDrawer } from '../../composables/useMobileNavDrawer';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import { useSpaceStore } from '../../stores/space';
 import { isLocalClient } from '../../api/client';
 import ChatFilePanel from './ChatFilePanel.vue';
 import MobileModeSwitch from '../MobileModeSwitch.vue';
+import WorkspaceModeSwitch from '../workbench/WorkspaceModeSwitch.vue';
 
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
@@ -166,6 +194,12 @@ const convSpace = computed(() => {
   return spaceStore.spaces.find((s) => s.id === id) || null;
 });
 const convSpaceName = computed(() => convSpace.value?.name || '');
+const workspaceShort = computed(() => {
+  const value = workspaceDir.value.replace(/[\\/]+$/, '');
+  if (!value) return '';
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  return parts.slice(-2).join('/');
+});
 // 悬停给最全信息：标题全称（标题本身会省略号）+ 空间 + 空间目录 + 当前工作目录
 const convHeadTip = computed(() => {
   const lines = [`标题：${currentConv.value?.title || '新任务'}`];
@@ -219,6 +253,79 @@ function openConsoleTab() {
 </script>
 
 <style scoped>
+.mobile-chat-topbar {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.mobile-chat-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.mobile-chat-icon:active {
+  background: var(--color-surface-hover);
+}
+
+.mobile-chat-icon.is-primary {
+  color: var(--color-primary);
+}
+
+.mobile-chat-title {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.mobile-chat-title strong,
+.mobile-chat-title small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-chat-title strong {
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.mobile-chat-title small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-tertiary);
+  font-size: 10.5px;
+}
+
+.mobile-chat-title small span {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .new-chat-btn {
   flex-shrink: 0;
   margin-left: 6px;

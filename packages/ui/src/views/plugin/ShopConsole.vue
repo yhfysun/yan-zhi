@@ -42,6 +42,7 @@
           :active-project-title="activeProjectTitle"
           :is-store="isStore"
           :checking="checking"
+          :chat-collapsed="chatCollapsed"
           @update:shop-type="onShopType"
           @update:supply-mode="onSupplyMode"
           @check="runCheck()"
@@ -49,6 +50,7 @@
           @remove="removeShop()"
           @open-platform="tab = 'platform'"
           @open-browser="openShopBrowserPreview"
+          @toggle-chat="chatCollapsed = !chatCollapsed"
         />
 
         <el-tabs v-model="tab" class="shop-tabs">
@@ -67,7 +69,15 @@
           </el-tab-pane>
 
           <el-tab-pane label="概览" name="overview">
-            <ShopOverview :shop="active" :check="checkForActive" :platform-label="platformLabel" :kind-of="kindOf" />
+            <ShopOverview
+              :shop="active"
+              :check="checkForActive"
+              :active-project-title="activeProjectTitle"
+              :platform-label="platformLabel"
+              :kind-of="kindOf"
+              @open-tab="tab = $event as ShopTab"
+              @ask-ai="openShopAi"
+            />
           </el-tab-pane>
 
           <template v-if="isStore">
@@ -144,10 +154,6 @@
 
       <ChatPreviewPane />
 
-      <!-- 对话栏收起后右下角的悬浮入口 -->
-      <button v-if="chatCollapsed" class="shop-chat-fab" title="展开 AI 对话" @click="chatCollapsed = false">
-        <el-icon :size="13"><ChatDotRound /></el-icon><span>AI</span>
-      </button>
     </section>
 
     <ChatDialogs />
@@ -230,6 +236,20 @@ const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 function onLeadChange(v: LeadMode): void {
   setLead(activeMode.value, v);
   if (v === 'ai') chatCollapsed.value = false;
+}
+watch(lead, (next) => {
+  if (next === 'ai') {
+    chatCollapsed.value = false;
+    return;
+  }
+  if (typeof window !== 'undefined' && window.innerWidth < 1100) {
+    chatCollapsed.value = true;
+  }
+}, { immediate: true });
+
+function openShopAi(): void {
+  setLead(activeMode.value, 'ai');
+  chatCollapsed.value = false;
 }
 
 /** 平板/手机宽度下优先给工作台让位；资源栏和 AI 栏都从边缘入口按需展开。 */

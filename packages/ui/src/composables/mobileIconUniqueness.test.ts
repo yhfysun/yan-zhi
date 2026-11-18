@@ -80,13 +80,12 @@ describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页�
     const icons = tabBarIcons();
     expect(new Set(icons).size).toBe(4);
     // 记录当前取值，方便日后 review diff 时一眼看出是否被改
-    expect(icons).toEqual(['ChatDotRound', 'Cpu', 'UserFilled', 'Setting']);
+    expect(icons).toEqual(['HomeFilled', 'Shop', 'Reading', 'User']);
   });
 
-  it('App.vue 移动顶栏头像/登录位不得用线框 User（与 TabBar 智能体撞脸）', () => {
-    // 2026-09-21 实测：旧写法一屏出现 3 个人形图标（TabBar + 顶栏 + 输入框上方）
+  it('App.vue 移动顶栏使用更多按钮，不再叠加账户人形图标', () => {
     const icons = [...inlineIconsOf(APP), ...importedIconsOf(APP)];
-    expect(icons).toContain('Avatar');
+    expect(icons).toContain('MoreFilled');
     expect(icons, 'App.vue 不应再导入/使用线框 User 作为头像位图标').not.toContain('User');
   });
 

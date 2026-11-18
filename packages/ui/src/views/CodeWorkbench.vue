@@ -148,8 +148,8 @@
       </div>
     </header>
 
-    <!-- ===== 主体：双形态（5a / 5m.2 / 5m.3），两种形态都是三屏，只是中/右互换
-         AI 模式  ：左任务/文件 tab │ 中任务聊天      │ 右编辑器
+    <!-- ===== 主体：双形态
+         AI 模式  ：左项目/文件/会话 │ 中代码编辑器 │ 右智能体会话
          编辑模式：左活动条+任务+树 │ 中编辑器        │ 右任务
          一切用 v-show 保活：切形态不重开文件、不换会话、不重连终端 ===== -->
     <div class="cp-body">
@@ -157,8 +157,24 @@
       <CodeSidebar v-show="!sideCollapsed" class="cp-side" :activity-bar="lead === 'human'" @pick-dir="showDir = true" />
       <div v-show="!sideCollapsed" class="rs-handle" :class="{ dragging: sideR.dragging.value }" @mousedown="sideR.startDrag($event, 'left')"></div>
 
-      <!-- ===== AI 模式：中栏任务聊天 │ 右栏编辑器 ===== -->
+      <!-- ===== AI 模式：中栏代码编辑器 │ 右栏智能体会话 ===== -->
       <template v-if="lead === 'ai'">
+        <section class="cp-ai-editor-pane" :class="{ open: editorOpen }">
+          <div class="cp-ai-editor-head">
+            <el-icon :size="13" class="cp-chat-icon"><Monitor /></el-icon>
+            <span class="cp-drawer-title">{{ code.activeFile?.name || '编辑器' }}</span>
+            <span class="cp-chat-spacer"></span>
+            <button class="cp-chat-btn" title="收起编辑器" @click="editorOpen = false">
+              <el-icon :size="12"><ArrowRight /></el-icon>
+            </button>
+          </div>
+          <div class="cp-ai-editor-body">
+            <CodeEditorArea @pick-dir="showDir = true" />
+          </div>
+        </section>
+
+        <div class="rs-handle" :class="{ dragging: aiEditorR.dragging.value }" @mousedown="aiEditorR.startDrag($event, 'left')"></div>
+
         <section class="cp-ai-main">
           <div class="cp-ai-chat">
             <div class="cp-chat-head">
@@ -173,23 +189,6 @@
               <ChatMessageList />
             </div>
             <ChatInputArea />
-          </div>
-        </section>
-
-        <div class="rs-handle" :class="{ dragging: aiEditorR.dragging.value }" @mousedown="aiEditorR.startDrag($event, 'right')"></div>
-
-        <!-- 右栏编辑器（三屏结构；点左栏文件自动打开，见 watch(code.activePath)） -->
-        <section class="cp-ai-editor-pane" :class="{ open: editorOpen }">
-          <div class="cp-ai-editor-head">
-            <el-icon :size="13" class="cp-chat-icon"><Monitor /></el-icon>
-            <span class="cp-drawer-title">{{ code.activeFile?.name || '编辑器' }}</span>
-            <span class="cp-chat-spacer"></span>
-            <button class="cp-chat-btn" title="收起编辑器" @click="editorOpen = false">
-              <el-icon :size="12"><ArrowRight /></el-icon>
-            </button>
-          </div>
-          <div class="cp-ai-editor-body">
-            <CodeEditorArea @pick-dir="showDir = true" />
           </div>
         </section>
       </template>
@@ -954,8 +953,8 @@ onMounted(async () => {
 /* ===== 主体 ===== */
 .cp-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
-/* ===== AI 模式：三屏结构 = 左任务/文件 │ 中任务聊天 │ 右编辑器 =====
-   chatPlacement='center' 指对话在中间（非右侧）；编辑器仍在右栏。
+/* ===== AI 模式：三屏结构 = 左项目/文件/会话 │ 中代码编辑器 │ 右智能体会话 =====
+   与原型一致：编辑器是可拖动的主工作画布，智能体会话固定在右侧。
    用 width 过渡而非 translateX：收/展是「分栏宽度变化」，不是浮层。
    注意：CodeSidebar / CodeEditorArea / 右栏对话 全部 v-show 保活。 */
 .cp-ai-main {
@@ -967,7 +966,7 @@ onMounted(async () => {
 }
 .cp-ai-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
-/* 右栏编辑器（三屏第三屏）：收起时宽度归零，对话自动占满 */
+/* 中栏编辑器：收起时宽度归零，对话自动占满 */
 .cp-ai-editor-pane {
   flex: 0 0 var(--code-ai-editor-w, 520px);
   width: var(--code-ai-editor-w, 520px);
@@ -976,13 +975,13 @@ onMounted(async () => {
   background: var(--glass-bg, #fff);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
-  border-left: 1px solid var(--glass-border, #e7e4dc);
+  border-right: 1px solid var(--glass-border, #e7e4dc);
   overflow: hidden;
   transition:
     flex-basis var(--motion-panel) var(--ease-out),
     width var(--motion-panel) var(--ease-out);
 }
-.cp-ai-editor-pane:not(.open) { flex-basis: 0; width: 0; border-left: none; }
+.cp-ai-editor-pane:not(.open) { flex-basis: 0; width: 0; border-right: none; }
 .cp-ai-editor-head {
   display: flex; align-items: center; gap: 6px;
   height: 32px; padding: 0 10px; flex-shrink: 0;

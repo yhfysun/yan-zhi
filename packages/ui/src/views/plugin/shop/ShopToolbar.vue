@@ -34,6 +34,9 @@
     <span class="shop-toolbar-spacer" />
 
     <div class="shop-toolbar-actions">
+      <el-button size="small" :type="chatCollapsed ? 'primary' : undefined" :icon="ChatDotRound" @click="emit('toggle-chat')">
+        {{ chatCollapsed ? '问 AI' : 'AI 助手' }}
+      </el-button>
       <el-button size="small" :icon="Monitor" @click="emit('open-browser')">浏览器</el-button>
       <el-button v-if="shop" size="small" :loading="checking" @click="emit('check')">配置自检</el-button>
       <el-button v-if="shop" size="small" @click="emit('edit')">编辑</el-button>
@@ -47,7 +50,7 @@
 // 顶部工作条（方案 §6）：店铺类型 / 货源模式 + 连接级操作。
 // 主导方切换统一收在 AI 对话栏头部，避免同一动作出现两个入口。
 import { computed } from 'vue';
-import { Monitor } from '@element-plus/icons-vue';
+import { ChatDotRound, Monitor } from '@element-plus/icons-vue';
 import type { ShopConnection } from '../shopSession';
 import { SHOP_TYPE_META, type ShopType, type SupplyMode } from './useShopApi';
 
@@ -56,6 +59,7 @@ const props = defineProps<{
   activeProjectTitle: string;
   isStore: boolean;
   checking: boolean;
+  chatCollapsed: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -66,6 +70,7 @@ const emit = defineEmits<{
   (e: 'remove'): void;
   (e: 'open-platform'): void;
   (e: 'open-browser'): void;
+  (e: 'toggle-chat'): void;
 }>();
 
 const shopType = computed<ShopType>(() => props.shop?.shopType ?? (props.shop?.demo ? 'demo' : props.shop?.isProduction ? 'production' : 'test'));

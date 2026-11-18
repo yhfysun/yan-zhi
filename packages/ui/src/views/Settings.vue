@@ -31,6 +31,27 @@
     </template>
     <template v-else>
       <h2 v-if="!(pageShell && mobileGroup)" class="page-title">设置</h2>
+      <!-- 「模型与智能」是设置首层里的管理入口组：二级页只展示可进入的独立管理页，
+           不把模型、智能体、Skill 的业务表单硬塞回通用设置 tab。 -->
+      <div
+        v-if="pageShell && mobileGroup?.links?.length"
+        class="settings-group-list settings-link-list"
+      >
+        <button
+          v-for="link in mobileGroup.links"
+          :key="link.key"
+          type="button"
+          class="settings-group-row"
+          @click="openMobileSettingLink(link)"
+        >
+          <span class="settings-group-icon"><el-icon :size="17"><component :is="link.icon" /></el-icon></span>
+          <span class="settings-group-main">
+            <span class="settings-group-name">{{ link.label }}</span>
+            <span class="settings-group-desc">{{ link.desc }}</span>
+          </span>
+          <el-icon class="settings-group-arrow" :size="14"><ArrowRight /></el-icon>
+        </button>
+      </div>
       <!-- 二级子页内的页内子分段（仅多 tab 分组显示）：pane 直取机制与 SettingsDialog 同一通道 -->
       <div v-if="pageShell && mobileGroup && mobileGroup.tabs.length > 1" class="mobile-sub-tabs">
         <button
@@ -42,7 +63,12 @@
           @click="tab = t.name"
         >{{ t.label }}</button>
       </div>
-      <el-tabs v-model="tab" class="glass-tabs" :class="{ 'is-pane': isPaneMode || (pageShell && !!mobileGroup) }">
+      <el-tabs
+        v-if="!pageShell || !mobileGroup?.links?.length"
+        v-model="tab"
+        class="glass-tabs"
+        :class="{ 'is-pane': isPaneMode || (pageShell && !!mobileGroup) }"
+      >
       <el-tab-pane label="通用" name="general" lazy>
         <div class="settings-form">
           <!-- 账号区只在 multi 显示。guest 是内部数据归属身份，不是登录账号。 -->
@@ -999,7 +1025,7 @@ async function pickPetVrm() {
   if (r?.ok && r.path) setPet({ vrmMode: 'custom', vrmPath: r.path });
   else if (r && !r.canceled) ElMessage.error(r.msg || '选择失败');
 }
-import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor, CreditCard } from '@element-plus/icons-vue';
+import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor, CreditCard, Cpu, User, Files } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase, isShellMode } from '../api/client';
@@ -1146,11 +1172,37 @@ watch(
 // 分组把现有 10 个 tab 聚合为 6 个入口行；二级子页复用 pane 直取机制（v-model=tab + lazy pane），
 // 多 tab 分组在子页顶部给一排页内子分段。返回键经 MobilePageShell.backHandler 先退回首层而非离开路由。
 interface SettingsGroupTab { name: string; label: string }
-interface SettingsGroup { key: string; label: string; desc: string; icon: Component; tabs: SettingsGroupTab[] }
+interface SettingsGroupLink {
+  key: string;
+  label: string;
+  desc: string;
+  icon: Component;
+  path: string;
+}
+interface SettingsGroup {
+  key: string;
+  label: string;
+  desc: string;
+  icon: Component;
+  tabs: SettingsGroupTab[];
+  links?: SettingsGroupLink[];
+}
 // P5 灰度：shadow/off 模式隐藏扩展管理入口
 const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
 const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
+  {
+    key: 'intelligence',
+    label: '模型与智能',
+    desc: '模型平台 · 智能体 · Skill/技能',
+    icon: Cpu,
+    tabs: [],
+    links: [
+      { key: 'models', label: '模型平台', desc: '平台、模型、Token 与调用配额', icon: Cpu, path: '/models' },
+      { key: 'agents', label: '智能体', desc: '创建、编辑智能体与候选池', icon: User, path: '/agents' },
+      { key: 'skills', label: 'Skill 技能', desc: '导入、安装与管理本地 Skill', icon: Files, path: '/skills/local' },
+    ],
+  },
   // ★ 直达项（2026-10-25 用户反馈"埋太深没人找得到"）：不进子页，直接开 /remote 控制端。
   //   enterMobileGroup 里对 key==='remote' 特判路由跳转；tabs 空数组仅满足类型（不会进入）。
   { key: 'remote', label: '远程控制', desc: '用手机实时观看并操作你的电脑', icon: Monitor, tabs: [] },
@@ -1165,8 +1217,8 @@ const MOBILE_GROUPS_BASE: SettingsGroup[] = [
 const mobileGroups = computed<SettingsGroup[]>(() => {
   if (extensionsMode.value === 'on') return MOBILE_GROUPS_BASE;
   return MOBILE_GROUPS_BASE
-    .map((g) => ({ ...g, tabs: g.tabs.filter((t) => t.name !== 'extensions') }))
-    .filter((g) => g.key === 'remote' || g.tabs.length > 0);
+    .map((g) => (g.links?.length ? g : { ...g, tabs: g.tabs.filter((t) => t.name !== 'extensions') }))
+    .filter((g) => g.key === 'remote' || g.tabs.length > 0 || !!g.links?.length);
 });
 const mobileGroup = ref<SettingsGroup | null>(null);
 /** 页面头标题：二级子页显示分组名，首层与桌面显示「设置」 */
@@ -1176,8 +1228,12 @@ const mobileBackHandler = computed(() => (pageShell.value && mobileGroup.value ?
 function enterMobileGroup(g: SettingsGroup) {
   // ★ 直达项：远程控制不进子页，直接开 /remote（移动端 openRemotePage 应用内跳转）
   if (g.key === 'remote') { openRemotePage(); return; }
+  if (!g.tabs.length && !g.links?.length) return;
   mobileGroup.value = g;
-  tab.value = g.tabs[0].name;
+  if (g.tabs[0]) tab.value = g.tabs[0].name;
+}
+function openMobileSettingLink(link: SettingsGroupLink) {
+  void router.push(link.path).catch(() => {});
 }
 function exitMobileGroup() {
   mobileGroup.value = null;

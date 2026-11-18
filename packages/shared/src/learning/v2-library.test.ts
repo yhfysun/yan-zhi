@@ -7,16 +7,20 @@ import {
 } from './v2-library.js';
 
 describe('Learning V2 reading library', () => {
-  it('covers classics, zhiguai, authorized web novels, comics and course originals', () => {
+  it('covers literature, science, everyday knowledge, superlatives and trivia', () => {
     expect(LEARNING_V2_READING_CATEGORIES.map((category) => category.key)).toEqual([
       'classics',
       'zhiguai',
       'web-novel',
       'comics',
+      'science',
+      'common-sense',
+      'world-records',
+      'trivia',
       'course',
     ]);
     expect(new Set(getLearningV2ReadingCatalog().map((entry) => entry.category))).toEqual(
-      new Set(['classics', 'zhiguai', 'web-novel', 'comics', 'course']),
+      new Set(['classics', 'zhiguai', 'web-novel', 'comics', 'science', 'common-sense', 'world-records', 'trivia', 'course']),
     );
   });
 

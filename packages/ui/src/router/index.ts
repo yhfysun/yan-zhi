@@ -151,6 +151,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务' },
   },
   {
+    path: '/scheduled-tasks',
+    name: 'scheduled-tasks',
+    component: () => import('../views/ScheduledTasks.vue'),
+    meta: { title: '定时任务' },
+  },
+  {
+    path: '/publish-queue',
+    name: 'publish-queue',
+    component: () => import('../views/PublishQueue.vue'),
+    meta: { title: '发布队列' },
+  },
+  {
     // 办公工作台（P2）：文件树 / 文档画布 / AI 右栏；入口在顶栏「工作台」。
     // 与 /chat 同属 office 模式（MODE_ROUTE_KEYS 已映射），切换不回聊天页布局。
     path: '/office',
@@ -374,6 +386,8 @@ const MOBILE_BLOCKED_PATHS = new Set([
  */
 const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/chat': 'office',
+  '/scheduled-tasks': 'office',
+  '/publish-queue': 'office',
   '/office': 'office',
   '/workflow': 'wf',
   '/automation': 'rpa',

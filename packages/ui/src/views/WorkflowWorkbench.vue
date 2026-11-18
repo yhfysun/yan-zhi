@@ -119,6 +119,33 @@
         </div>
 
         <div v-else class="wf-run">
+          <section class="wf-flow-overview" aria-label="工作流运行概览">
+            <header class="wf-flow-overview-head">
+              <div>
+                <h2>{{ current.name }}</h2>
+                <p>{{ current.nodeCount }} 个节点 · {{ current.fields.length }} 个输入参数</p>
+              </div>
+              <span v-if="latestRun" class="wf-flow-last" :class="latestRun.status">
+                最近运行 {{ runStatusText(latestRun.status) }} · {{ timeAgo(latestRun.createdAt) }}
+              </span>
+              <span v-else class="wf-flow-last">尚未运行</span>
+            </header>
+            <div class="wf-flow-track">
+              <template v-for="(node, index) in flowNodes" :key="node.key">
+                <span class="wf-flow-node" :class="node.kind">
+                  <i>{{ index + 1 }}</i>
+                  <b>{{ node.label }}</b>
+                  <small>{{ node.desc }}</small>
+                </span>
+                <span v-if="index < flowNodes.length - 1" class="wf-flow-link" aria-hidden="true"></span>
+              </template>
+            </div>
+            <div class="wf-flow-summary">
+              <span>今日成功 <b>{{ todaySuccessCount }}</b></span>
+              <span>失败 <b>{{ failedRunCount }}</b></span>
+              <span>运行记录 <b>{{ wf.runs.value.length }}</b></span>
+            </div>
+          </section>
           <div class="wf-run-head">
             <div>
               <div class="wf-run-title">{{ current.name }}</div>
@@ -481,6 +508,39 @@ const wfFilterActive = computed(() => !!keyword.value.trim() || !!runStatusFilte
 const current = computed<WorkflowAgentItem | null>(
   () => wf.agents.value.find((a) => a.id === selectedId.value) || null,
 );
+type FlowNode = { key: string; label: string; desc: string; kind: 'trigger' | 'data' | 'transform' | 'human' | 'output' };
+const flowNodes = computed<FlowNode[]>(() => {
+  const item = current.value;
+  if (!item) return [];
+  const nodes: FlowNode[] = [
+    { key: 'trigger', label: '启动', desc: item.fields.length ? `${item.fields.length} 个参数` : '手动运行', kind: 'trigger' },
+  ];
+  for (const override of item.overrides.slice(0, 6)) {
+    const human = /approval|human|review|confirm/i.test(`${override.nodeType} ${override.label || ''}`);
+    nodes.push({
+      key: override.nodeId,
+      label: override.label || override.nodeId,
+      desc: human ? '需要人工确认' : override.nodeType,
+      kind: human ? 'human' : (nodes.length % 2 === 0 ? 'transform' : 'data'),
+    });
+  }
+  if (!item.overrides.length) {
+    nodes.push({ key: 'agent', label: '智能体节点', desc: `${item.nodeCount} 个节点`, kind: 'data' });
+  }
+  nodes.push({ key: 'output', label: '运行输出', desc: '结果写回任务', kind: 'output' });
+  return nodes;
+});
+const todaySuccessCount = computed(() => {
+  const today = new Date();
+  return wf.runs.value.filter((run) => {
+    const date = new Date(run.createdAt);
+    return run.status === 'completed'
+      && date.getFullYear() === today.getFullYear()
+      && date.getMonth() === today.getMonth()
+      && date.getDate() === today.getDate();
+  }).length;
+});
+const failedRunCount = computed(() => wf.runs.value.filter((run) => run.status === 'failed').length);
 
 /** 底部状态栏：当前工作流（工作流模式的「上下文」就是这个被选中的工作流） */
 watch(current, (w) => {
@@ -876,6 +936,122 @@ watch(() => agentStore.agents.length, ensureFixedAgent);
   height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; color: var(--el-text-color-placeholder); font-size: 13px;
 }
+.wf-flow-overview {
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 9px;
+  background: var(--el-bg-color);
+}
+.wf-flow-overview-head {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.wf-flow-overview-head h2 {
+  margin: 0;
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+.wf-flow-overview-head p {
+  margin: 3px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+}
+.wf-flow-last {
+  margin-left: auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+.wf-flow-last.completed { background: var(--el-color-success-light-9); color: var(--el-color-success); }
+.wf-flow-last.failed { background: var(--el-color-danger-light-9); color: var(--el-color-danger); }
+.wf-flow-last.running { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+.wf-flow-track {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  padding: 14px 12px;
+  scrollbar-width: thin;
+}
+.wf-flow-node {
+  display: flex;
+  min-width: 126px;
+  max-width: 170px;
+  flex: 1 0 126px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 7px;
+  background: var(--el-fill-color-lighter);
+}
+.wf-flow-node i {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+  font-size: 9px;
+  font-style: normal;
+}
+.wf-flow-node b {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--el-text-color-primary);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-flow-node small {
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-flow-node.trigger i { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+.wf-flow-node.human i { background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
+.wf-flow-node.output i { background: var(--el-color-success-light-9); color: var(--el-color-success); }
+.wf-flow-link {
+  position: relative;
+  width: 28px;
+  min-width: 28px;
+  align-self: center;
+  height: 1px;
+  background: var(--el-border-color);
+}
+.wf-flow-link::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-top: 1px solid var(--el-border-color);
+  border-right: 1px solid var(--el-border-color);
+  transform: rotate(45deg);
+}
+.wf-flow-summary {
+  display: flex;
+  gap: 18px;
+  padding: 7px 12px 9px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-size: 9.5px;
+}
+.wf-flow-summary b { color: var(--el-text-color-primary); font-weight: 650; }
 .wf-run-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
 .wf-run-title { font-size: 15px; font-weight: 500; }
 .wf-run-desc { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }

@@ -2606,11 +2606,11 @@
   font-weight: 600;
 }
 .conv-item {
-  padding: 7px 9px; border-radius: 8px; margin-bottom: 2px; gap: 8px;
-  align-items: flex-start;
+  min-height: 34px; padding: 4px 8px; border-radius: 7px; margin-bottom: 1px; gap: 7px;
+  align-items: center;
 }
-.conv-item > .el-icon { margin-top: 3px; }
-.conv-item > .el-checkbox { margin-top: 2px; }
+.conv-item > .el-icon { margin-top: 0; }
+.conv-item > .el-checkbox { margin-top: 0; }
 .conv-item:hover { background: var(--color-surface-hover); }
 .conv-item.active {
   background: var(--color-primary-soft);
@@ -2618,13 +2618,24 @@
 }
 .conv-item.active .conv-title { font-weight: 500; }
 .conv-item .conv-title { font-size: 13px; line-height: 1.35; }
-/* 两行式：标题 + 「状态点 · 时间/运行中」——列表可扫读，不再是一排等权重灰字 */
-.conv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 单行式：标题与时间分层表达，但共享一行高度，长列表更紧凑。 */
+.conv-main {
+  flex: 1; min-width: 0; display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 6px;
+}
+.conv-main .conv-title { min-width: 0; }
 .conv-meta {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 10.5px; line-height: 1.35; color: var(--color-text-tertiary);
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  max-width: 76px;
+  font-size: 9.5px; line-height: 1.3; color: var(--color-text-tertiary);
   overflow: hidden; white-space: nowrap;
 }
+.conv-meta > span:not(.conv-dot):not(.conv-meta-flag) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-meta .conv-meta-flag { display: none; }
 .conv-dot {
   flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%;
   background: var(--color-border-strong);
@@ -2837,4 +2848,39 @@
   background: var(--color-primary-soft); color: var(--color-primary);
   font-size: 10px; line-height: 16px; font-weight: 500; font-style: normal;
   vertical-align: middle;
+}
+
+@media (max-width: 767px) {
+  .input-toolbar {
+    min-height: 54px;
+    padding: 4px 4px 6px;
+  }
+  .input-toolbar .el-button.is-circle,
+  .input-toolbar .mobile-new-task-btn,
+  .input-toolbar .send-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    font-size: 17px;
+  }
+  .input-agent-bar .el-button.is-circle {
+    width: 44px;
+    height: 44px;
+  }
+  .input-toolbar .model-select-btn {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+  .input-toolbar .model-select-btn .model-select-name,
+  .input-toolbar .model-select-btn > .el-icon:last-child {
+    display: none;
+  }
+  .goal-action-btn,
+  .run-stop-btn {
+    min-height: 44px;
+  }
 }

@@ -14,15 +14,15 @@ import { usePluginStore } from './plugin';
 import { isCapacitor } from '../api/client';
 
 /**
- * 移动端模式白名单（用户拍板 2026-11-15）：手机上只留「办公 + 学习」两个模式，
- * 其余（开发/运维/安全/工作流/自动化/剪辑/店铺）的工作台形态均不适合触屏窄屏。
+ * 移动端模式白名单（2026-11-17 调整）：手机开放「办公、店铺、运维、安全、学习」。
+ * 开发、工作流、自动化、剪辑仍属于桌面重工作台，不在移动一级模式中露出。
  *
  * ★ 收口在 isModeAvailable（模式可见性的唯一判定出口）：模式下拉、侧栏入口、
  *   路由守卫、运行时插件模式全部经过它 —— 单独在某处过滤必然漏（判据：同一语义只能有一处实现）。
  *   构建期清单不裁剪：build-modes.ts 是桌面/移动共用的生成文件，谁最后构建谁说了算，
  *   在这里做平台维度收敛不抢构建期状态。
  */
-const MOBILE_ALLOWED_MODES: readonly string[] = ['office', 'learning'];
+const MOBILE_ALLOWED_MODES: readonly string[] = ['office', 'shop', 'ops', 'sec', 'learning'];
 
 /** 构建期内置模式（type 只用于提示与兜底，运行时允许插件带来新 key） */
 export type BaseMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'rpa' | 'clip' | 'shop' | 'learning';
@@ -191,6 +191,7 @@ const LEAD_DEFAULTS: Partial<Record<BaseMode, LeadMode | null>> = {
   rpa: 'human', // 默认脚本库/时间线居中，Builder 对话在右
   clip: 'human', // 默认时间轴居中（人工剪），要 AI 主导时切到 ai
   shop: 'human', // 默认店铺列表/工作台居中（人工主导），要 AI 主导时切到 ai
+  learning: 'human', // 默认进入学习台，要 AI 陪学/辅导时切到 ai
 };
 
 /**

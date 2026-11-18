@@ -23,39 +23,10 @@
         <img class="brand-logo" src="../assets/titlebar-logo.png" alt="言智" draggable="false" />
       </div>
 
-      <!-- 横排主导航：核心 3 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层）
-           ★ 窄屏（≤860px）只保留「当前页」那一项，其余导航项收进「更多 → 页面」分组。
-           顶栏在窄屏放不下「首页/办公/浏览器/消息」四段文字，硬铺会把文字挤成竖排两行。 -->
-      <!-- ★ 模式独立窗口（?window=mode）：主导航整条隐藏 —— 任何 router-link 都会把路由
-           切离当前模式，且丢失 window=mode 标记后窗口就"解锁"回不去固定模式了
-           （2026-10-18 用户：「上面这些菜单按钮不要啊，要不然按了之后都切不回去了」）。
-           模式窗口顶栏只保留：品牌 Logo + 主题切换 + 窗口控制。 -->
+      <!-- 当前模式下拉 + 顶部工作方式切换 + 工具“更多”。 -->
       <nav v-if="!modeLocked" class="title-nav">
-        <router-link
-          v-for="m in navBefore"
-          :key="m.path"
-          :to="m.path"
-          class="title-nav-item"
-          :class="{ active: isActive(m.path) }"
-          :aria-label="m.label"
-        >
-          <el-icon :size="15"><component :is="m.icon" /></el-icon>
-          <span>{{ m.label }}</span>
-        </router-link>
-
-        <!-- 模式切换（四模式工作台）：首页之后、其余导航之前，hover 展开 -->
-        <ModeSwitcher v-model="modeSwitcherOpen" />
-
-        <router-link
-          v-for="m in navAfter"
-          :key="m.path"
-          :to="m.path"
-          class="title-nav-item"
-          :class="{ active: isActive(m.path) }"
-        >
-          <el-icon :size="15"><component :is="m.icon" /></el-icon>
-          <span>{{ m.label }}</span>
-        </router-link>
+        <ModeSwitcher />
+        <WorkspaceModeSwitch />
         <el-popover
           v-model:visible="moreOpen"
           :disabled="moreSuppressed"
@@ -80,6 +51,19 @@
         <button class="title-nav-item title-nav-item--icon" type="button" title="刷新界面" @click="onReload">
           <el-icon :size="15"><Refresh /></el-icon>
         </button>
+        <button
+          v-if="officeSidebarAvailable"
+          class="title-nav-item title-nav-item--icon office-sidebar-toggle"
+          type="button"
+          :class="{ active: !officeAiSidebarCollapsed }"
+          :title="officeAiSidebarCollapsed ? '展开办公侧栏（Ctrl+B）' : '收起办公侧栏（Ctrl+B）'"
+          :aria-label="officeAiSidebarCollapsed ? '展开办公侧栏' : '收起办公侧栏'"
+          :aria-pressed="!officeAiSidebarCollapsed"
+          @click="toggleOfficeAiSidebar"
+        >
+          <el-icon :size="15"><Expand v-if="officeAiSidebarCollapsed" /><Fold v-else /></el-icon>
+          <span>侧栏</span>
+        </button>
       </nav>
 
       <!-- 中部：可拖拽留白（flex:1） -->
@@ -90,6 +74,86 @@
            再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。
            ★ 模式窗口同样隐藏（与主导航同一口径：不做任何能切走路由的入口）。 -->
       <div v-if="!modeLocked" class="title-quick">
+        <button class="top-search-button" type="button" aria-label="搜索工作区" @click="onGlobalSearch">
+          <el-icon :size="15"><Search /></el-icon>
+          <span>搜索工作区</span>
+          <kbd>Ctrl K</kbd>
+        </button>
+        <el-popover
+          v-model:visible="notificationOpen"
+          trigger="click"
+          placement="bottom-end"
+          :show-arrow="false"
+          :width="344"
+          popper-class="yz-menu-popper top-notification-popper"
+        >
+          <template #reference>
+            <button
+              class="title-nav-item title-nav-item--icon top-notification-button"
+              type="button"
+              title="通知"
+              aria-label="通知"
+            >
+              <el-icon :size="15"><Bell /></el-icon>
+              <span v-if="unreadNotificationCount" class="top-notification-badge">
+                {{ unreadNotificationCount > 9 ? '9+' : unreadNotificationCount }}
+              </span>
+            </button>
+          </template>
+          <section class="top-notification-panel" aria-label="通知中心">
+            <header class="top-notification-head">
+              <div>
+                <strong>通知</strong>
+                <span>{{ unreadNotificationCount ? `${unreadNotificationCount} 条未读` : '没有未读通知' }}</span>
+              </div>
+              <button
+                v-if="notificationItems.length"
+                type="button"
+                class="top-notification-readall"
+                @click="markNotificationsRead"
+              >
+                全部已读
+              </button>
+            </header>
+            <div v-if="notificationItems.length" class="top-notification-list">
+              <button
+                v-for="item in notificationItems"
+                :key="item.key"
+                type="button"
+                class="top-notification-item"
+                :class="{ unread: item.at > notificationSeenAt }"
+                @click="openNotification(item.convId)"
+              >
+                <span class="top-notification-state" :class="item.kind">
+                  <el-icon :size="13">
+                    <CircleCheck v-if="item.kind === 'done'" />
+                    <WarningFilled v-else-if="item.kind === 'error'" />
+                    <ChatDotRound v-else />
+                  </el-icon>
+                </span>
+                <span class="top-notification-copy">
+                  <strong>{{ item.title }}</strong>
+                  <small>{{ item.body }}</small>
+                  <time>{{ formatNotificationTime(item.at) }}</time>
+                </span>
+              </button>
+            </div>
+            <div v-else class="top-notification-empty">
+              <el-icon :size="18"><Bell /></el-icon>
+              <span>任务完成、出错或需要你处理时会显示在这里</span>
+            </div>
+          </section>
+        </el-popover>
+        <button
+          class="title-nav-item title-nav-item--icon"
+          :class="{ active: route.path.startsWith('/chat-hub') }"
+          type="button"
+          title="消息中心"
+          aria-label="消息中心"
+          @click="router.push('/chat-hub')"
+        >
+          <el-icon :size="15"><ChatDotRound /></el-icon>
+        </button>
         <!-- 超级剪贴板入口（2026-10-29）：桌面端才有独立面板窗；召唤键见设置 → 快捷键 -->
         <button v-if="clipboardAvailable" class="title-nav-item title-nav-item--icon" type="button"
                 title="超级剪贴板（全局快捷键召唤）" @click="onOpenClipboard">
@@ -202,11 +266,11 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
-  Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
+  Minus, FullScreen, CopyDocument, Close, Moon, Sunny, ChatDotRound, Monitor, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, VideoPlay, Notebook,
+  Search, VideoCamera, SwitchButton, VideoPlay, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand,
 } from '@element-plus/icons-vue';
-import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
+import { useSettingsStore, useAuthStore, usePluginStore, useChatStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';
 import { isElectron, isCapacitor } from '../api/client';
 import { ElMessage } from 'element-plus';
@@ -218,13 +282,15 @@ import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { openSettingsDialog } from '../composables/useSettingsDialog';
 import CommandPalette from './common/CommandPalette.vue';
 import ModeSwitcher from './workbench/ModeSwitcher.vue';
+import WorkspaceModeSwitch from './workbench/WorkspaceModeSwitch.vue';
 import { useChat } from '../composables/chat/useChat';
+import { activeMode } from '../stores/mode';
+import { officeAiSidebarCollapsed, officePanel, toggleOfficeAiSidebar } from '../stores/officeWorkbench';
 import { isStandaloneWindow } from '../utils/modeWindow';
 
 // 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
 // window= 标记），用常量而非 computed —— 避免模板里每个分支都走 hash 解析。
 const modeLocked = isStandaloneWindow();
-const modeSwitcherOpen = ref(false);
 
 // 超级剪贴板（2026-10-29）：只有桌面端主进程提供了面板能力才显示入口
 const clipboardAvailable = typeof window !== 'undefined' && !!(window as any).electronAPI?.clipboardPanel;
@@ -262,6 +328,10 @@ const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
 const route = useRoute();
 const router = useRouter();
+const officeSidebarAvailable = computed(() => (
+  activeMode.value === 'office'
+  && ['/chat', '/memory', '/scheduled-tasks', '/publish-queue'].includes(route.path)
+));
 
 /**
  * 桌面端「本机身份」展示名与首字母。
@@ -273,25 +343,6 @@ const router = useRouter();
  */
 const localIdentityTitle = computed(() => '本机');
 const localIdentityInitial = computed(() => '本');
-
-// 横排主导航：核心 3 页
-const navMenus = [
-  { path: '/home', label: '首页', icon: HomeFilled },
-  { path: '/browser', label: '浏览器', icon: Monitor },
-  { path: '/chat-hub', label: '消息', icon: Promotion },
-];
-
-/**
- * 窄屏判定（≤860px）：顶栏放不下「首页/办公/浏览器/消息」四段文字 ——
- * 实测 390px 下「浏览器」被挤成三行、「首页/消息」两行，整条顶栏视觉崩坏。
- * 窄屏策略：只保留**当前所在页**那一个导航项，其余全部收进「更多 → 页面」分组。
- * 用 matchMedia 而非 CSS 媒体查询：要真的从 v-for 里拿掉节点（不是 display:none），
- * 否则「更多」菜单里会出现与顶栏重复的项。
- */
-const NARROW_QUERY = '(max-width: 860px)';
-const isNarrow = ref(false);
-let narrowMq: MediaQueryList | null = null;
-const onNarrowChange = (e: MediaQueryListEvent | MediaQueryList) => { isNarrow.value = e.matches; };
 
 /**
  * 触屏判定（无 hover 能力）：「更多」等 hover 菜单在触屏上退化为 click/tap 触发（Task 4.1）。
@@ -306,14 +357,6 @@ const isTouchLike = (() => {
 function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
-
-/** 窄屏下顶栏保留的项：当前页优先；若当前不在任何导航页（如 /settings），回落首页。 */
-const narrowKeep = computed(() => {
-  const hit = navMenus.find((m) => isActive(m.path));
-  return hit ? [hit] : navMenus.slice(0, 1);
-});
-const navBefore = computed(() => (isNarrow.value ? narrowKeep.value : navMenus.slice(0, 1)));
-const navAfter = computed(() => (isNarrow.value ? [] : navMenus.slice(1)));
 
 // 插件注入的导航项：moreGroup 声明的进「更多」对应分组，其余进底部独立项（历史行为）
 const pluginStore = usePluginStore();
@@ -414,23 +457,6 @@ async function openPluginWindowEntry(composite: string): Promise<void> {
 // 「更多」下拉：按「能力 / 数据 / 连接」三组 hover 二级展开 + 底部独立项（记忆/插件/设置/插件注入）
 // MCP 不再单列：已并入 /tools 工具页「MCP 服务」tab
 const moreItems = computed<HoverMenuItem[]>(() => [
-  // ★ 窄屏专属：顶栏放不下的导航项（浏览器/消息）从「更多」补齐，避免窄屏失去入口
-  ...(isNarrow.value
-    ? [
-        {
-          key: 'group-pages-narrow',
-          label: '页面',
-          icon: Monitor,
-          children: navMenus.map((m) => ({
-            key: `nav-${m.path}`,
-            label: m.label,
-            icon: m.icon as HoverMenuItem['icon'],
-            path: m.path,
-            check: isActive(m.path),
-          })),
-        },
-      ]
-    : []),
   mergeIntoGroup({
     key: 'group-capability',
     label: '能力',
@@ -514,8 +540,102 @@ const moreActive = computed(
 const moreOpen = ref(false)
 // 用户头像下拉展开状态：与"更多"弹层一样落在内容区上方，需一并避让 BrowserView
 const avatarMenuOpen = ref(false);
+const notificationOpen = ref(false);
 // 浮层任一展开 → 通知 BrowserPanel 临时隐藏原生 BrowserView（关闭后自动恢复）
-watch([moreOpen, avatarMenuOpen, modeSwitcherOpen], ([m, a, s]) => { titleBarOverlayOpen.value = m || a || s; });
+watch([moreOpen, avatarMenuOpen, notificationOpen], ([m, a, n]) => {
+  titleBarOverlayOpen.value = m || a || n;
+});
+
+const chatStore = useChatStore();
+const NOTIFICATION_SEEN_KEY = 'yz:topbar:notifications-seen';
+const notificationSeenAt = ref(readNotificationSeenAt());
+let notificationReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+function readNotificationSeenAt(): number {
+  try {
+    return Math.max(0, Number(localStorage.getItem(NOTIFICATION_SEEN_KEY)) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+type TopNotificationKind = 'input' | 'done' | 'error';
+interface TopNotificationItem {
+  key: string;
+  convId: string;
+  kind: TopNotificationKind;
+  title: string;
+  body: string;
+  at: number;
+}
+
+const notificationItems = computed<TopNotificationItem[]>(() => {
+  const titles = new Map<string, string>();
+  for (const conv of chatStore.conversations || []) {
+    titles.set(conv.id, conv.title || '未命名任务');
+  }
+  const items: TopNotificationItem[] = [];
+  const questions = (chatStore.questionPendingByConv || {}) as Record<string, { question?: string }>;
+  for (const [convId, question] of Object.entries(questions)) {
+    if (!question) continue;
+    items.push({
+      key: `input-${convId}`,
+      convId,
+      kind: 'input',
+      title: '智能体在等你',
+      body: String(question.question || titles.get(convId) || '需要你补充信息'),
+      at: Date.now(),
+    });
+  }
+  const stats = (chatStore.runStatsByConv || {}) as Record<string, { status?: string; endedAt?: number }>;
+  for (const [convId, stat] of Object.entries(stats)) {
+    const at = Number(stat.endedAt) || 0;
+    if (!at || (stat.status !== 'completed' && stat.status !== 'error')) continue;
+    items.push({
+      key: `${stat.status}-${convId}-${at}`,
+      convId,
+      kind: stat.status === 'error' ? 'error' : 'done',
+      title: stat.status === 'error' ? '任务执行失败' : '任务已完成',
+      body: titles.get(convId) || '任务',
+      at,
+    });
+  }
+  return items.sort((a, b) => b.at - a.at).slice(0, 6);
+});
+
+const unreadNotificationCount = computed(
+  () => notificationItems.value.filter((item) => item.at > notificationSeenAt.value).length,
+);
+
+function markNotificationsRead(): void {
+  const newest = notificationItems.value[0]?.at || Date.now();
+  notificationSeenAt.value = newest;
+  try { localStorage.setItem(NOTIFICATION_SEEN_KEY, String(newest)); } catch { /* 隐私模式 */ }
+}
+
+function formatNotificationTime(at: number): string {
+  if (!at) return '';
+  const diff = Math.max(0, Date.now() - at);
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return new Date(at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+}
+
+async function openNotification(convId: string): Promise<void> {
+  notificationOpen.value = false;
+  markNotificationsRead();
+  if (convId && convId !== chatStore.currentConvId) {
+    try { await useChat().selectConv(convId); } catch { /* 会话可能已删除 */ }
+  }
+  await router.push('/chat');
+}
+
+watch(notificationOpen, (open) => {
+  if (!open) return;
+  if (notificationReadTimer) clearTimeout(notificationReadTimer);
+  notificationReadTimer = setTimeout(markNotificationsRead, 900);
+});
 
 /**
  * 「更多」点选后短暂屏蔽 hover：trigger=hover 时，点了菜单项 → 路由跳转触发重渲染，
@@ -617,6 +737,10 @@ function onCmdKKeydown(e: KeyboardEvent) {
   if (key === 'b') {
     e.preventDefault();
     if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
+    if (activeMode.value === 'office' && officePanel.value === 'ai') {
+      toggleOfficeAiSidebar();
+      return;
+    }
     const chat = useChat();
     chat.convCollapsed.value = !chat.convCollapsed.value;
     return;
@@ -669,13 +793,6 @@ onMounted(async () => {
   // ⌘K / Ctrl+K 全局搜索快捷键：桌面 / Web 通用
   window.addEventListener('keydown', onCmdKKeydown);
 
-  // 窄屏判定：与顶栏 v-for 门控同一个断点，必须真监听（窗口拖窄要即时收起）
-  try {
-    narrowMq = window.matchMedia(NARROW_QUERY);
-    onNarrowChange(narrowMq);
-    narrowMq.addEventListener('change', onNarrowChange);
-  } catch { /* 老浏览器无 matchMedia.addListener → 退化为始终宽屏布局 */ }
-
   if (!api) return;
   try {
     // 初始化最大化状态
@@ -698,11 +815,8 @@ onUnmounted(() => {
     window.removeEventListener('resize', resizeHandler);
     resizeHandler = null;
   }
-  if (narrowMq) {
-    try { narrowMq.removeEventListener('change', onNarrowChange); } catch { /* ignore */ }
-    narrowMq = null;
-  }
   if (moreSuppressTimer) { clearTimeout(moreSuppressTimer); moreSuppressTimer = null; }
+  if (notificationReadTimer) { clearTimeout(notificationReadTimer); notificationReadTimer = null; }
 });
 </script>
 
@@ -729,12 +843,16 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  height: 36px;
+  height: 56px;
   width: 100%;
-  background: var(--glass-bg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--glass-bg) 96%, white), var(--glass-bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .35), 0 8px 24px rgba(24, 31, 44, .06);
   user-select: none;
   -webkit-user-select: none;
   flex-shrink: 0;
+  z-index: 50;
 }
 
 /* 拖拽背景层：绝对定位铺满整条标题栏，置于最底层；使用 Electron 原生拖拽 */
@@ -762,12 +880,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 14px;
+  height: 100%;
+  padding: 0 16px 0 18px;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
 }
 
 .brand-logo {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   display: block;
   object-fit: contain;
   user-select: none;
@@ -778,14 +898,28 @@ onUnmounted(() => {
 .title-nav {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 12px;
-  /* 顶栏可横向收缩，浮层与窗口控件优先（窄屏时导航项由 JS 门控减到 1 项） */
+  gap: 3px;
+  margin-left: 10px;
   min-width: 0;
-  flex-shrink: 0;
+  max-width: min(58vw, 760px);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 1;
+}
+.title-nav::-webkit-scrollbar { display: none; }
+
+@media (max-width: 1180px) {
+  .title-nav-item > span { display: none; }
+  .title-nav-item { padding: 0 9px; }
+  .top-search-button {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+  .top-search-button span,
+  .top-search-button kbd { display: none; }
 }
 
-/* 窄屏（≤860px）：导航只剩「当前页 + 更多 + 刷新」，收紧内边距与品牌区留白 */
 @media (max-width: 860px) {
   .brand { padding: 0 8px; }
   .title-nav { margin-left: 4px; }
@@ -810,12 +944,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 12px;
+  height: 34px;
+  padding: 0 11px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--color-text-secondary);
   cursor: pointer;
   pointer-events: auto;
@@ -837,10 +971,12 @@ onUnmounted(() => {
 }
 
 .title-nav-item.active {
-  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--glass-bg));
   color: var(--color-primary);
-  font-weight: 500;
+  font-weight: 650;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
+.title-nav-item.disabled { opacity: .42; cursor: not-allowed; }
 
 /* 纯图标导航项（刷新）：收窄左右内边距，与带文字的项视觉对齐 */
 .title-nav-item--icon {
@@ -851,10 +987,205 @@ onUnmounted(() => {
 .title-quick {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   margin-right: 8px;
   flex-shrink: 0;
   pointer-events: auto;
+}
+
+.top-notification-button { position: relative; }
+
+.top-notification-badge {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border: 2px solid var(--glass-bg, var(--el-bg-color));
+  border-radius: 8px;
+  background: var(--el-color-danger);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.top-notification-panel {
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--el-bg-color-overlay);
+}
+
+.top-notification-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px 9px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.top-notification-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.top-notification-head strong {
+  color: var(--el-text-color-primary);
+  font-size: 12.5px;
+}
+
+.top-notification-head span {
+  color: var(--el-text-color-secondary);
+  font-size: 10.5px;
+}
+
+.top-notification-readall {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--el-color-primary);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.top-notification-readall:hover { background: var(--el-color-primary-light-9); }
+
+.top-notification-list {
+  max-height: min(420px, 60vh);
+  overflow: auto;
+  padding: 4px;
+}
+
+.top-notification-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.top-notification-item:hover { background: var(--el-fill-color-light); }
+.top-notification-item.unread {
+  background: color-mix(in srgb, var(--el-color-primary-light-9) 74%, transparent);
+}
+
+.top-notification-state {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+}
+
+.top-notification-state.done {
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+}
+
+.top-notification-state.error {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+
+.top-notification-state.input {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.top-notification-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.top-notification-copy strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-notification-copy small {
+  overflow: hidden;
+  color: var(--el-text-color-regular);
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-notification-copy time {
+  color: var(--el-text-color-placeholder);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.top-notification-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 18px 14px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.top-search-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: clamp(156px, 14vw, 220px);
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-surface) 74%, transparent);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.top-search-button:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
+  color: var(--color-text);
+}
+.top-search-button span {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.top-search-button kbd {
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  font: 10px/1.2 var(--font-mono, Consolas, monospace);
+  color: var(--color-text-tertiary);
 }
 
 /* 登录头像（绿点=已登录）/ 登录按钮 */
@@ -863,12 +1194,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--color-primary) 14%, transparent);
   color: var(--color-primary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   pointer-events: auto;
@@ -900,8 +1231,8 @@ onUnmounted(() => {
 }
 
 .title-login-btn {
-  height: 24px;
-  padding: 0 12px;
+  height: 30px;
+  padding: 0 14px;
   border: none;
   border-radius: 12px;
   background: var(--color-primary);
@@ -927,7 +1258,8 @@ onUnmounted(() => {
 }
 
 .title-theme-btn {
-  width: 40px;
+  width: 42px;
+  height: 56px;
   color: var(--color-text-secondary);
 }
 
@@ -941,7 +1273,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   width: 46px;
-  height: 36px;
+  height: 56px;
   border: none;
   outline: none;
   background: transparent;

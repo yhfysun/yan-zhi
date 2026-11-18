@@ -771,7 +771,18 @@ function createChat() {  const router = useRouter();
 
   // 对话左侧栏第三个 tab「文件」（资源管理器/搜索/Git）：选中带目录的空间时展示内容
   const drawerOpen = ref(false);
-  const convCollapsed = ref(false);
+  const CONV_COLLAPSED_KEY = 'yz_chat_sidebar_collapsed';
+  function initialConvCollapsed(): boolean {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(CONV_COLLAPSED_KEY) === '1';
+  }
+  const convCollapsed = ref(initialConvCollapsed());
+  watch(convCollapsed, (collapsed) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(CONV_COLLAPSED_KEY, collapsed ? '1' : '0');
+    } catch { /* 隐私模式 */ }
+  });
   // 预览窗打开 → 自动收起任务列表：宽屏（>1199px，与 CSS 断点一致）预览是常驻分栏，
   // 任务列表会被挤得过窄，打开预览时收起列表给预览让位。
   // 窄屏/移动端预览是覆盖抽屉（带遮罩），不占任务列表空间 → 不动。

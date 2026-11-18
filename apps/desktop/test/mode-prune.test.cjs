@@ -133,7 +133,16 @@ test('Learning 是插件贡献路由，共享路由表不能写死页面 import'
   assert.match(home, /isModeAvailable\(['"]learning['"]\)/, 'Home.vue 必须按构建/授权状态过滤学习入口');
 
   const topbar = fs.readFileSync(path.join(uiSrc, 'components', 'WebTopBar.vue'), 'utf8');
-  assert.match(topbar, /<ModeSwitcher/, 'WebTopBar.vue 必须通过 ModeSwitcher 渲染授权模式');
+  assert.match(
+    topbar,
+    /<ModeSwitcher/,
+    'WebTopBar.vue 必须通过模式下拉渲染构建/授权后的可见模式',
+  );
+  assert.doesNotMatch(
+    topbar,
+    /label:\s*['"]学习模式['"]/,
+    'WebTopBar.vue 不能手写学习模式，必须消费生成模式表',
+  );
   const switcher = fs.readFileSync(path.join(uiSrc, 'components', 'workbench', 'ModeSwitcher.vue'), 'utf8');
   assert.match(switcher, /visibleModeDefs/, 'ModeSwitcher.vue 必须只遍历可见模式');
 });

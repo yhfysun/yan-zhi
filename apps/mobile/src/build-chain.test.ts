@@ -84,13 +84,17 @@ describe('Android 打包链接线', () => {
     expect(slim, '精简链失败时必须抛错走 finally 还原全量模式表').not.toContain('process.exit(');
   });
 
-  it('★ 旧产物清理是链路第一步，且移出工程而非删除（否则会被打进 APK）', () => {
+  it('★ 旧产物清理是链路第一步，直接删除且不再生成时间戳备份目录', () => {
     const c = chain();
     expect(c.startsWith('node scripts/prepare-clean-build.cjs')).toBe(true);
     const cleaner = read('scripts/prepare-clean-build.cjs');
-    expect(cleaner).toContain('renameSync');
+    expect(cleaner).toContain('rmSync');
+    expect(cleaner).toContain('maxRetries: 10');
+    expect(cleaner).toContain('retryDelay: 250');
     expect(cleaner).toContain('capacitor-cordova-android-plugins');
-    expect(cleaner).not.toMatch(/\brmSync\s*\(/);
+    expect(cleaner).not.toContain('renameSync');
+    expect(cleaner).not.toContain('yz-build-bak');
+    expect(cleaner, '清理失败时不能静默留下一份新备份').not.toContain('bakDir');
     expect(cleaner).not.toMatch(/\bunlinkSync\s*\(/);
   });
 });

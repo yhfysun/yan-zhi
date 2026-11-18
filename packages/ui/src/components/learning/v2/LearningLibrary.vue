@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import {
   BookMarked, BookOpen, Bookmark, BookmarkCheck, Check, ChevronRight, ExternalLink, Library,
-  Plus, Search, Trash2, Upload, X,
+  LayoutGrid, List, Plus, Search, Trash2, TrendingUp, Upload, X,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_READING_CATEGORIES,
@@ -19,6 +19,7 @@ import {
 import { decodeBookBytes, parseBookText } from './library-import';
 import {
   listImportedBooks,
+  saveImportedComic,
   saveImportedBook,
   type ImportedBookMeta,
 } from './library-storage';
@@ -38,10 +39,14 @@ const emit = defineEmits<{
 const SHELF_KEY = 'yz.learning.v2.library.shelf.v1';
 const SOURCES_KEY = 'yz.learning.v2.library.sources.v1';
 const DISABLED_SOURCES_KEY = 'yz.learning.v2.library.disabled-sources.v1';
+const FOLDERS_KEY = 'yz.learning.v2.library.folders.v1';
+const BOOK_FOLDERS_KEY = 'yz.learning.v2.library.book-folders.v1';
+const BOOK_VIEW_KEY = 'yz.learning.v2.library.book-view.v1';
 
 type LibraryView = 'discover' | 'shelf' | 'sources';
 type CategoryFilter = LearningV2ReadingCategoryKey | 'all';
 type CollectionFilter = LearningV2ReadingCollectionKey | 'all';
+type BookViewMode = 'card' | 'list';
 
 type LibraryCard = {
   id: string;
@@ -57,6 +62,7 @@ type LibraryCard = {
   readingEntry?: LearningV2ReadingEntry;
   importedBookId?: string;
   readingMode?: LearningV2ReadingEntry['readingMode'];
+  contentKind?: 'text' | 'comic';
   collections?: readonly LearningV2ReadingCollectionKey[];
 };
 
@@ -65,6 +71,13 @@ type SourceForm = {
   url: string;
   category: LearningV2ReadingCategoryKey;
   license: string;
+};
+
+type ShelfFolder = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: number;
 };
 
 const activeView = ref<LibraryView>('discover');
@@ -77,6 +90,13 @@ const detailOpen = ref(false);
 const shelfIds = ref<string[]>([]);
 const customSources = ref<LearningV2BookSource[]>([]);
 const disabledSourceIds = ref<string[]>([]);
+const folders = ref<ShelfFolder[]>([]);
+const bookFolders = ref<Record<string, string>>({});
+const currentFolderId = ref<string | null>(null);
+const folderCreatorOpen = ref(false);
+const newFolderName = ref('');
+const folderError = ref('');
+const bookViewMode = ref<BookViewMode>('card');
 const sourceFormOpen = ref(false);
 const sourceError = ref('');
 const sourceForm = ref<SourceForm>({
@@ -128,13 +148,16 @@ const cards = computed<LibraryCard[]>(() => {
     id: `imported:${book.id}`,
     title: book.title,
     author: book.author,
-    category: 'web-novel',
+    category: book.kind === 'comic' ? 'comics' : 'web-novel',
     sourceId: 'local-import',
     sourceName: '本地导入',
     license: '用户本地导入；仅保存在当前设备，不上传正文',
-    description: `${book.chapters} 章 · ${book.characterCount.toLocaleString()} 字 · 支持继续阅读`,
+    description: book.kind === 'comic'
+      ? `${book.pageCount || book.chapters} 页漫画 · 本地离线阅读`
+      : `${book.chapters} 章 · ${book.characterCount.toLocaleString()} 字 · 支持继续阅读`,
     importedBookId: book.id,
     readingMode: 'import',
+    contentKind: book.kind,
     collections: ['youth', 'adult'],
   }));
   const customCards: LibraryCard[] = customSources.value.map((source) => ({
@@ -160,7 +183,10 @@ const cards = computed<LibraryCard[]>(() => {
 const visibleCards = computed(() => {
   const keyword = query.value.trim().toLowerCase();
   return cards.value.filter((card) => {
-    if (activeView.value === 'shelf' && !shelfIds.value.includes(card.id)) return false;
+    if (activeView.value === 'shelf') {
+      if (!shelfIds.value.includes(card.id)) return false;
+      if ((bookFolders.value[card.id] || null) !== currentFolderId.value) return false;
+    }
     if (categoryFilter.value !== 'all' && card.category !== categoryFilter.value) return false;
     if (collectionFilter.value !== 'all' && !card.collections?.includes(collectionFilter.value)) return false;
     if (!keyword) return true;
@@ -170,6 +196,12 @@ const visibleCards = computed(() => {
       .includes(keyword);
   });
 });
+const showDiscoveryDashboard = computed(() => (
+  activeView.value === 'discover'
+  && categoryFilter.value === 'all'
+  && collectionFilter.value === 'all'
+  && !query.value.trim()
+));
 const selectedCard = computed(() =>
   visibleCards.value.find((card) => card.id === selectedCardId.value)
   || cards.value.find((card) => card.id === selectedCardId.value)
@@ -191,15 +223,45 @@ const collectionCounts = computed(() => Object.fromEntries(
     cards.value.filter((card) => card.collections?.includes(collection.key)).length,
   ]),
 ) as Record<LearningV2ReadingCollectionKey, number>);
+const childFolders = computed(() =>
+  folders.value
+    .filter((folder) => folder.parentId === currentFolderId.value)
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+);
+const folderPath = computed(() => {
+  const path: ShelfFolder[] = [];
+  let id = currentFolderId.value;
+  const guard = new Set<string>();
+  while (id && !guard.has(id)) {
+    guard.add(id);
+    const folder = folders.value.find((item) => item.id === id);
+    if (!folder) break;
+    path.unshift(folder);
+    id = folder.parentId;
+  }
+  return path;
+});
 
 function categoryLabel(key: LearningV2ReadingCategoryKey): string {
   return LEARNING_V2_READING_CATEGORIES.find((category) => category.key === key)?.label || key;
+}
+
+function coverTone(index: number): number {
+  return index % 6;
 }
 
 function accessLabel(access: LearningV2BookSource['access']): string {
   if (access === 'authorized-platform') return '官方授权平台';
   if (access === 'library') return '馆藏或借阅';
   return '公版或开放许可';
+}
+
+function sourceHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '');
+  } catch {
+    return url;
+  }
 }
 
 function readArray(key: string): string[] {
@@ -228,11 +290,42 @@ function readCustomSources(): LearningV2BookSource[] {
   }
 }
 
+function readObject(key: string): Record<string, string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function readFolders(): ShelfFolder[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(FOLDERS_KEY) || '[]');
+    if (!Array.isArray(value)) return [];
+    return value.filter((folder): folder is ShelfFolder =>
+      !!folder
+      && typeof folder.id === 'string'
+      && typeof folder.name === 'string'
+      && (typeof folder.parentId === 'string' || folder.parentId === null)
+      && Number.isFinite(folder.createdAt),
+    );
+  } catch {
+    return [];
+  }
+}
+
 function persistPreferences() {
   try {
     localStorage.setItem(SHELF_KEY, JSON.stringify(shelfIds.value));
     localStorage.setItem(SOURCES_KEY, JSON.stringify(customSources.value));
     localStorage.setItem(DISABLED_SOURCES_KEY, JSON.stringify(disabledSourceIds.value));
+    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders.value));
+    localStorage.setItem(BOOK_FOLDERS_KEY, JSON.stringify(bookFolders.value));
+    localStorage.setItem(BOOK_VIEW_KEY, bookViewMode.value);
   } catch { /* local library preferences are optional */ }
 }
 
@@ -240,6 +333,14 @@ function restorePreferences() {
   shelfIds.value = readArray(SHELF_KEY);
   disabledSourceIds.value = readArray(DISABLED_SOURCES_KEY);
   customSources.value = readCustomSources();
+  folders.value = readFolders();
+  bookFolders.value = readObject(BOOK_FOLDERS_KEY);
+  try {
+    const savedView = localStorage.getItem(BOOK_VIEW_KEY);
+    if (savedView === 'card' || savedView === 'list') bookViewMode.value = savedView;
+  } catch {
+    // Display preference is optional.
+  }
 }
 
 function selectView(view: LibraryView) {
@@ -248,7 +349,12 @@ function selectView(view: LibraryView) {
   sourceError.value = '';
   selectedCardId.value = '';
   detailOpen.value = false;
+  folderCreatorOpen.value = false;
+  folderError.value = '';
   if (view === 'discover') collectionFilter.value = 'all';
+  if (view === 'shelf' && currentFolderId.value && !folders.value.some((folder) => folder.id === currentFolderId.value)) {
+    currentFolderId.value = null;
+  }
   if (view === 'sources') selectedSourceId.value = enabledSources.value[0]?.id || '';
 }
 
@@ -266,11 +372,101 @@ function toggleShelf(card: LibraryCard) {
   shelfIds.value = shelfIds.value.includes(card.id)
     ? shelfIds.value.filter((id) => id !== card.id)
     : [...shelfIds.value, card.id];
+  if (shelfIds.value.includes(card.id) && currentFolderId.value) {
+    bookFolders.value = { ...bookFolders.value, [card.id]: currentFolderId.value };
+  }
+  if (!shelfIds.value.includes(card.id)) {
+    const next = { ...bookFolders.value };
+    delete next[card.id];
+    bookFolders.value = next;
+  }
   persistPreferences();
 }
 
 function isOnShelf(card: LibraryCard): boolean {
   return shelfIds.value.includes(card.id);
+}
+
+function folderBookCount(folderId: string): number {
+  return shelfIds.value.filter((id) => bookFolders.value[id] === folderId).length;
+}
+
+function folderLabel(folder: ShelfFolder): string {
+  const labels: string[] = [folder.name];
+  let parentId = folder.parentId;
+  const guard = new Set<string>();
+  while (parentId && !guard.has(parentId)) {
+    guard.add(parentId);
+    const parent = folders.value.find((item) => item.id === parentId);
+    if (!parent) break;
+    labels.unshift(parent.name);
+    parentId = parent.parentId;
+  }
+  return labels.join(' / ');
+}
+
+function openFolder(folder: ShelfFolder) {
+  currentFolderId.value = folder.id;
+  selectedCardId.value = '';
+  query.value = '';
+  detailOpen.value = false;
+}
+
+function goFolder(folderId: string | null) {
+  currentFolderId.value = folderId;
+  selectedCardId.value = '';
+  detailOpen.value = false;
+}
+
+function createFolder() {
+  folderError.value = '';
+  const name = newFolderName.value.trim();
+  if (!name) {
+    folderError.value = '请输入目录名称。';
+    return;
+  }
+  const sibling = folders.value.some(
+    (folder) => folder.parentId === currentFolderId.value && folder.name.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (sibling) {
+    folderError.value = '当前目录下已有同名目录。';
+    return;
+  }
+  const folder: ShelfFolder = {
+    id: `shelf-folder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name,
+    parentId: currentFolderId.value,
+    createdAt: Date.now(),
+  };
+  folders.value = [...folders.value, folder];
+  newFolderName.value = '';
+  folderCreatorOpen.value = false;
+  persistPreferences();
+}
+
+function deleteFolder(folder: ShelfFolder) {
+  const parentId = folder.parentId;
+  folders.value = folders.value
+    .filter((item) => item.id !== folder.id)
+    .map((item) => item.parentId === folder.id ? { ...item, parentId } : item);
+  const nextAssignments = { ...bookFolders.value };
+  for (const bookId of Object.keys(nextAssignments)) {
+    if (nextAssignments[bookId] === folder.id) {
+      if (parentId) nextAssignments[bookId] = parentId;
+      else delete nextAssignments[bookId];
+    }
+  }
+  bookFolders.value = nextAssignments;
+  if (currentFolderId.value === folder.id) currentFolderId.value = parentId;
+  persistPreferences();
+}
+
+function moveBook(card: LibraryCard, folderId: string) {
+  const next = { ...bookFolders.value };
+  if (folderId) next[card.id] = folderId;
+  else delete next[card.id];
+  bookFolders.value = next;
+  persistPreferences();
 }
 
 function openBook(card: LibraryCard) {
@@ -290,6 +486,7 @@ function openBook(card: LibraryCard) {
       author: imported.author,
       language: 'mixed',
       readingMode: 'import',
+      contentKind: imported.kind,
       importedBookId: imported.id,
       sourceName: '本地导入',
       license: card.license,
@@ -321,6 +518,7 @@ function readerBookFor(entry: LearningV2ReadingEntry): LearningV2ReaderBook {
     author: entry.author,
     language: entry.language,
     readingMode: entry.readingMode,
+      contentKind: entry.category === 'comics' ? 'comic' : 'text',
     assetKey: entry.assetKey,
     url: entry.url,
     sourceName: entry.sourceName,
@@ -347,18 +545,60 @@ function chooseImport() {
   importInput.value?.click();
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function importLocalBook(event: Event) {
   const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
+  const files = Array.from(input.files || []);
   input.value = '';
-  if (!file) return;
-  if (!/\.(txt|md|markdown)$/i.test(file.name)) {
-    importError.value = '当前支持导入 TXT、MD 文本；EPUB 阅读器仍在后续任务中。';
-    return;
-  }
+  if (!files.length) return;
   importing.value = true;
   importError.value = '';
   try {
+    const imageFiles = files
+      .filter((file) => file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|avif)$/i.test(file.name))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
+    if (imageFiles.length) {
+      const pages = await Promise.all(imageFiles.map(readFileAsDataUrl));
+      const comicTitle = imageFiles[0].name
+        .replace(/\.[^.]+$/, '')
+        .replace(/[-_ ]?\d+$/, '')
+        .trim() || '本地漫画';
+      const saved = await saveImportedComic(comicTitle, pages);
+      const meta: ImportedBookMeta = {
+        id: saved.id,
+        title: saved.title,
+        author: saved.author,
+        kind: 'comic',
+        chapters: saved.chapters,
+        characterCount: 0,
+        pageCount: pages.length,
+        createdAt: saved.createdAt,
+        updatedAt: saved.updatedAt,
+      };
+      importedBooks.value = [meta, ...importedBooks.value];
+      if (!shelfIds.value.includes(`imported:${meta.id}`)) {
+        shelfIds.value = [...shelfIds.value, `imported:${meta.id}`];
+      }
+      activeView.value = 'discover';
+      categoryFilter.value = 'comics';
+      query.value = '';
+      const card = cards.value.find((item) => item.importedBookId === meta.id);
+      if (card) openBook(card);
+      return;
+    }
+    const file = files[0];
+    if (!/\.(txt|md|markdown)$/i.test(file.name)) {
+      importError.value = '当前支持 TXT、MD 文本和 JPG/PNG/WebP 图片漫画。';
+      return;
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     const raw = decodeBookBytes(bytes);
     const parsed = parseBookText(raw, file.name);
@@ -368,6 +608,7 @@ async function importLocalBook(event: Event) {
       id: saved.id,
       title: saved.title,
       author: saved.author,
+      kind: 'text',
       chapters: saved.chapters,
       characterCount: saved.characterCount,
       createdAt: saved.createdAt,
@@ -446,7 +687,11 @@ function submitCustomSource() {
   persistPreferences();
 }
 
-watch([shelfIds, customSources, disabledSourceIds], persistPreferences, { deep: true });
+watch(
+  [shelfIds, customSources, disabledSourceIds, folders, bookFolders, bookViewMode],
+  persistPreferences,
+  { deep: true },
+);
 onMounted(async () => {
   restorePreferences();
   try {
@@ -533,29 +778,143 @@ onMounted(async () => {
               />
             </label>
             <span>{{ visibleCards.length }} 条</span>
+            <div class="ll-view-toggle" role="group" aria-label="书本显示方式">
+              <button
+                type="button"
+                :class="{ active: bookViewMode === 'card' }"
+                :aria-pressed="bookViewMode === 'card'"
+                aria-label="卡片模式"
+                title="卡片模式"
+                @click="bookViewMode = 'card'"
+              ><LayoutGrid :size="16" /></button>
+              <button
+                type="button"
+                :class="{ active: bookViewMode === 'list' }"
+                :aria-pressed="bookViewMode === 'list'"
+                aria-label="列表模式"
+                title="列表模式"
+                @click="bookViewMode = 'list'"
+              ><List :size="16" /></button>
+            </div>
             <button type="button" class="ll-import" :disabled="importing" @click="chooseImport">
-              <Upload :size="15" />{{ importing ? '正在导入' : '导入本地小说' }}
+              <Upload :size="15" /><span class="ll-import-label">{{ importing ? '正在导入' : '导入书/漫画' }}</span>
             </button>
             <input
               ref="importInput"
               data-import-book-input
               class="ll-import-input"
               type="file"
-              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              accept=".txt,.md,.markdown,.jpg,.jpeg,.png,.webp,.gif,.avif,text/plain,text/markdown,image/*"
+              multiple
               @change="importLocalBook"
             />
           </div>
           <p v-if="importError" class="ll-import-error" role="alert">{{ importError }}</p>
-          <div v-if="visibleCards.length" class="ll-card-grid">
+          <section v-if="showDiscoveryDashboard" class="ll-discovery-dashboard" aria-label="今日阅读概览">
+            <article class="ll-weekly-card">
+              <header>
+                <span><TrendingUp :size="14" />本周阅读</span>
+                <small>{{ shelfCount }} 本在书架</small>
+              </header>
+              <b>{{ visibleCards[0]?.title || '从推荐书目开始' }}</b>
+              <div class="ll-week-days" aria-label="本周阅读记录">
+                <i v-for="day in 7" :key="day" :class="{ active: day <= Math.min(7, Math.max(1, shelfCount)) }">
+                  {{ '一二三四五六日'[day - 1] }}
+                </i>
+              </div>
+              <button type="button" :disabled="!visibleCards[0]" @click="visibleCards[0] && selectCard(visibleCards[0])">
+                继续阅读<ChevronRight :size="13" />
+              </button>
+            </article>
+
+            <section class="ll-continue-strip">
+              <header>
+                <div><span>继续阅读</span><small>最近可读与推荐书目</small></div>
+                <button type="button" @click="selectView('shelf')">查看书架</button>
+              </header>
+              <div class="ll-continue-rail">
+                <button
+                  v-for="(card, index) in visibleCards.slice(0, 6)"
+                  :key="`continue-${card.id}`"
+                  type="button"
+                  @click="selectCard(card)"
+                >
+                  <span class="ll-feature-cover" :data-category="card.category" :data-tone="coverTone(index)">
+                    <strong>{{ card.title }}</strong>
+                  </span>
+                  <b>{{ card.title }}</b>
+                  <small>{{ card.author }}</small>
+                </button>
+              </div>
+            </section>
+          </section>
+
+          <section v-if="showDiscoveryDashboard" class="ll-rank-panel" aria-label="推荐榜">
+            <header>
+              <div><span>推荐榜</span><b>正在被阅读的经典与新知</b></div>
+              <small>按馆藏热度与课程关联整理</small>
+            </header>
+            <div class="ll-rank-grid">
+              <button
+                v-for="(card, index) in visibleCards.slice(0, 8)"
+                :key="`rank-${card.id}`"
+                type="button"
+                @click="selectCard(card)"
+              >
+                <em>{{ index + 1 }}</em>
+                <span class="ll-rank-cover" :data-category="card.category" :data-tone="coverTone(index)">
+                  {{ card.title.slice(0, 1) }}
+                </span>
+                <span><b>{{ card.title }}</b><small>{{ categoryLabel(card.category) }} · {{ card.sourceName }}</small></span>
+                <ChevronRight :size="14" />
+              </button>
+            </div>
+          </section>
+
+          <div v-if="activeView === 'shelf'" class="ll-shelf-tools">
+            <nav class="ll-folder-path" aria-label="书架目录">
+              <button type="button" :class="{ active: currentFolderId === null }" @click="goFolder(null)">书架</button>
+              <template v-for="folder in folderPath" :key="folder.id">
+                <ChevronRight :size="13" />
+                <button type="button" :class="{ active: currentFolderId === folder.id }" @click="goFolder(folder.id)">{{ folder.name }}</button>
+              </template>
+            </nav>
+            <button type="button" class="ll-create-folder" @click="folderCreatorOpen = !folderCreatorOpen">
+              <Plus :size="15" />新建目录
+            </button>
+          </div>
+          <form v-if="activeView === 'shelf' && folderCreatorOpen" class="ll-folder-form" @submit.prevent="createFolder">
+            <label><span>目录名称</span><input v-model="newFolderName" autofocus placeholder="例如：中国古典小说" /></label>
+            <button type="submit">创建</button>
+            <button type="button" @click="folderCreatorOpen = false">取消</button>
+            <p v-if="folderError">{{ folderError }}</p>
+          </form>
+          <div v-if="activeView === 'shelf' && childFolders.length" class="ll-folder-grid">
+            <article v-for="folder in childFolders" :key="folder.id" class="ll-folder-card">
+              <button type="button" class="ll-folder-open" @click="openFolder(folder)">
+                <span><BookMarked :size="21" /></span>
+                <strong>{{ folder.name }}</strong>
+                <small>{{ folderBookCount(folder.id) }} 本书</small>
+              </button>
+              <button type="button" class="ll-folder-delete" :aria-label="`删除目录 ${folder.name}`" title="删除目录" @click="deleteFolder(folder)">
+                <Trash2 :size="14" />
+              </button>
+            </article>
+          </div>
+          <div v-if="visibleCards.length" class="ll-all-books-head">
+            <div><span>全部馆藏</span><small>{{ visibleCards.length }} 条</small></div>
+          </div>
+          <div v-if="visibleCards.length" class="ll-card-grid" :class="`view-${bookViewMode}`">
             <article
-              v-for="card in visibleCards"
+              v-for="(card, index) in visibleCards"
               :key="card.id"
               class="ll-book-card"
               :class="{ selected: selectedCard?.id === card.id }"
             >
               <button type="button" class="ll-book-main" @click="selectCard(card)">
-                <span class="ll-book-cover" :data-category="card.category" aria-hidden="true">
+                <span class="ll-book-cover" :data-category="card.category" :data-tone="coverTone(index)" aria-hidden="true">
                   <BookMarked :size="20" />
+                  <strong class="ll-book-cover-title">{{ card.title }}</strong>
                   <small>{{ categoryLabel(card.category) }}</small>
                 </span>
                 <span class="ll-book-copy">
@@ -575,8 +934,8 @@ onMounted(async () => {
           </div>
           <div v-else class="ll-empty">
             <BookOpen :size="28" />
-            <b>{{ activeView === 'shelf' ? '书架还没有这本书' : '没有匹配的书目' }}</b>
-            <p>{{ activeView === 'shelf' ? '在“发现”里选择书目，再加入书架。' : '换一个关键词或分类试试。' }}</p>
+            <b>{{ activeView === 'shelf' ? (currentFolderId ? '这个目录还没有书' : '书架还没有这本书') : '没有匹配的书目' }}</b>
+            <p>{{ activeView === 'shelf' ? (currentFolderId ? '在“发现”里打开书本详情，再把书移动到这个目录。' : '在“发现”里选择书目，再加入书架。') : '换一个关键词或分类试试。' }}</p>
           </div>
         </template>
 
@@ -635,6 +994,13 @@ onMounted(async () => {
             <div><dt>许可与阅读边界</dt><dd>{{ selectedCard.license }}</dd></div>
             <div v-if="selectedCard.learningEntry"><dt>原文状态</dt><dd>{{ selectedCard.learningEntry.readable ? '应用内课程原文可读' : '仅书目登记，原文待接入' }}</dd></div>
           </dl>
+          <label v-if="isOnShelf(selectedCard)" class="ll-move-book">
+            <span>所在目录</span>
+            <select :value="bookFolders[selectedCard.id] || ''" @change="moveBook(selectedCard, ($event.target as HTMLSelectElement).value)">
+              <option value="">书架根目录</option>
+              <option v-for="folder in folders" :key="folder.id" :value="folder.id">{{ folderLabel(folder) }}</option>
+            </select>
+          </label>
           <div class="ll-detail-actions">
             <button type="button" @click="toggleShelf(selectedCard)">
               <BookmarkCheck v-if="isOnShelf(selectedCard)" :size="15" />
@@ -651,14 +1017,27 @@ onMounted(async () => {
         </template>
 
         <template v-else-if="activeView === 'sources' && selectedSource">
-          <span>{{ accessLabel(selectedSource.access) }}</span>
-          <h2>{{ selectedSource.name }}</h2>
-          <p>{{ selectedSource.description }}</p>
-          <dl>
-            <div><dt>地址</dt><dd>{{ selectedSource.url }}</dd></div>
-            <div><dt>许可说明</dt><dd>{{ selectedSource.license }}</dd></div>
-            <div><dt>状态</dt><dd>{{ isSourceEnabled(selectedSource) ? '已启用' : '已停用' }}</dd></div>
-          </dl>
+          <header class="ll-source-detail-head">
+            <span class="ll-source-kicker">{{ accessLabel(selectedSource.access) }}</span>
+            <h2>{{ selectedSource.name }}</h2>
+            <p>{{ selectedSource.description }}</p>
+            <div class="ll-source-badges">
+              <span>{{ categoryLabel(selectedSource.category) }}</span>
+              <span :class="{ 'is-off': !isSourceEnabled(selectedSource) }">
+                {{ isSourceEnabled(selectedSource) ? '已启用' : '已停用' }}
+              </span>
+              <span>{{ customSources.some((source) => source.id === selectedSource?.id) ? '自定义' : '内置' }}</span>
+            </div>
+          </header>
+          <section class="ll-source-detail-section">
+            <h3>阅读与授权</h3>
+            <p>{{ selectedSource.license }}</p>
+          </section>
+          <section class="ll-source-detail-section">
+            <h3>站点地址</h3>
+            <div class="ll-source-domain"><ExternalLink :size="14" /><b>{{ sourceHost(selectedSource.url) }}</b></div>
+            <code>{{ selectedSource.url }}</code>
+          </section>
           <div class="ll-detail-actions">
             <button type="button" @click="toggleSource(selectedSource)">{{ isSourceEnabled(selectedSource) ? '停用书源' : '启用书源' }}</button>
             <a :href="selectedSource.url" target="_blank" rel="noopener noreferrer"><ExternalLink :size="15" />打开站点</a>

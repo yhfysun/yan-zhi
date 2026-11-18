@@ -19,11 +19,11 @@
       v-if="hasChoice"
       v-model:visible="open"
       :disabled="suppressHover"
-      :trigger="isTouchLike ? 'click' : 'hover'"
-      :show-after="isTouchLike ? 0 : 120"
-      :hide-after="isTouchLike ? 0 : 120"
+      trigger="hover"
       placement="bottom-start"
       :show-arrow="false"
+      :show-after="120"
+      :hide-after="120"
       :width="'auto'"
       popper-class="yz-menu-popper mode-switcher-popper"
     >
@@ -33,7 +33,9 @@
           :class="{ active: onModeRoute }"
           type="button"
           :title="triggerTitle"
-          @click="onTriggerClick"
+          aria-haspopup="menu"
+          :aria-expanded="open"
+          @click="goCurrentMode"
         >
           <el-icon :size="15"><component :is="currentIcon" /></el-icon>
           <span class="mode-label">{{ shortLabel(currentDef) }}</span>
@@ -52,8 +54,9 @@
       <el-icon :size="15"><component :is="currentIcon" /></el-icon>
       <span class="mode-label">{{ shortLabel(currentDef) }}</span>
     </button>
-    <!-- 独立窗口弹出按钮（Trae 式）：把当前模式弹到独立 OS 窗口，窗口内锁定该模式 -->
+    <!-- 单模式包仍保留独立窗口入口；多模式包把它放进模式菜单，避免顶栏多一个按钮。 -->
     <button
+      v-if="!hasChoice"
       class="title-nav-item mode-popout"
       type="button"
       title="在独立窗口打开当前模式（窗口内固定本模式）"
@@ -119,23 +122,6 @@ const triggerTitle = computed(() =>
   onModeRoute.value ? `${shortLabel(currentDef.value)}（当前模式）` : `点击进入${shortLabel(currentDef.value)}`,
 );
 
-/** 触屏判定（无 hover 能力）：与 WebTopBar 同一口径 —— 纯触屏菜单走 click/tap，桌面保留 hover。
- *  matchMedia('(hover: none)') 而非 'ontouchstart'：触屏笔记本不误判，桌面 hover 不退化。 */
-const isTouchLike = (() => {
-  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
-})();
-
-/**
- * 点击按钮：桌面 = 跳当前模式的页面（不管现在在哪个路由）。
- * ★ 触屏（Task 4.1）：tap 只开合菜单（开合交给 el-popover 的 click trigger，
- *   这里 return 避免双重处理），导航交给菜单项 onPick；否则 tap 会「既跳页又弹菜单」。
- */
-function onTriggerClick() {
-  if (isTouchLike) return;
-  // 用户拍板 2026-09-16：在 /home（办公模式）点「办公」→ 跳 /chat；在 /code 点「开发」→ 已在则视为刷新定位。
-  goCurrentMode();
-}
-
 /** 单模式包没有下拉，点击按钮必须直接回到该模式页面（触屏同样可用）。 */
 function onSingleModeClick() {
   goCurrentMode();
@@ -167,8 +153,8 @@ function shortLabel(def: ModeDef): string {
  *  ★ 只遍历 visibleModeDefs：未授权的模式**完全隐藏**（用户拍板）——
  *    不出现置灰项、不带「需升级」提示文字。授权是硬边界，不是可选项。
  */
-const menuItems = computed<HoverMenuItem[]>(() =>
-  visibleModeDefs.value.map((def) => {
+const menuItems = computed<HoverMenuItem[]>(() => {
+  const modes = visibleModeDefs.value.map((def) => {
     const base = {
       key: def.key,
       label: shortLabel(def),
@@ -186,10 +172,20 @@ const menuItems = computed<HoverMenuItem[]>(() =>
     return enabled
       ? { ...base, check: on }
       : { ...base, desc: undefined, disabled: true, disabledReason: '对应插件未启用' };
-  }),
-);
+  });
+  return [
+    ...modes,
+    { key: 'mode-menu-divider', label: '', divider: true },
+    { key: '__open_standalone__', label: '在独立窗口打开', icon: TopRight },
+  ];
+});
 
 function onPick(item: HoverMenuItem) {
+  if (item.key === '__open_standalone__') {
+    suppress();
+    void openStandalone();
+    return;
+  }
   const key = item.key as AppMode;
   // 不可用项：HoverMenu 已置灰且不派发 select，此处仅防御
   const def = allModeDefs.value.find((d) => d.key === key);
@@ -266,14 +262,14 @@ export default { name: 'ModeSwitcher' };
 .mode-switcher {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 10px;
+  gap: 6px;
+  height: 34px;
+  padding: 0 11px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   color: var(--color-text-secondary, #b0b8bc);
-  font-size: 13px;
+  font-size: 12.5px;
   font-family: inherit;
   cursor: pointer;
   /* 关键：标题栏内必须显式声明不可拖拽，否则点击/hover 全被窗口拖拽吞掉 */
@@ -297,8 +293,9 @@ export default { name: 'ModeSwitcher' };
 }
 
 .mode-switcher.active {
-  background: color-mix(in srgb, var(--color-primary, #38bdf8) 12%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #38bdf8) 14%, var(--glass-bg, transparent));
   color: var(--color-primary, #38bdf8);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary, #38bdf8) 22%, transparent);
 }
 
 /* 独立窗口弹出按钮（Trae 式）：与模式下拉同款式，hover 提示主色 */
@@ -306,8 +303,8 @@ export default { name: 'ModeSwitcher' };
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: none;
   border-radius: 8px;
@@ -323,7 +320,7 @@ export default { name: 'ModeSwitcher' };
   color: var(--color-primary, #38bdf8);
 }
 
-/* 窄宽（<1100px）：只留图标 + 箭头（决策 11 / 任务 5c.2） */
+/* 窄宽（<1100px）：只留图标 */
 @media (max-width: 1100px) {
   .mode-label {
     display: none;

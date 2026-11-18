@@ -9,8 +9,10 @@ export type ImportedBookMeta = {
   id: string;
   title: string;
   author: string;
+  kind: 'text' | 'comic';
   chapters: number;
   characterCount: number;
+  pageCount?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -18,6 +20,7 @@ export type ImportedBookMeta = {
 export type ImportedBookRecord = ImportedBookMeta & {
   text: string;
   parsedChapters: ImportedBookChapter[];
+  comicPages?: string[];
 };
 
 export type ReaderProgress = {
@@ -73,12 +76,37 @@ export async function saveImportedBook(
     id: idForBook(),
     title: parsed.title,
     author,
+    kind: 'text',
     chapters: parsed.chapters.length,
     characterCount: parsed.characterCount,
     createdAt: now,
     updatedAt: now,
     text: rawText,
     parsedChapters: parsed.chapters,
+  };
+  await transact('readwrite', (store) => store.put(record));
+  return record;
+}
+
+export async function saveImportedComic(
+  title: string,
+  pages: string[],
+  author = '本地导入',
+): Promise<ImportedBookRecord> {
+  const now = Date.now();
+  const record: ImportedBookRecord = {
+    id: idForBook(),
+    title,
+    author,
+    kind: 'comic',
+    chapters: pages.length,
+    characterCount: 0,
+    pageCount: pages.length,
+    createdAt: now,
+    updatedAt: now,
+    text: '',
+    parsedChapters: [],
+    comicPages: pages,
   };
   await transact('readwrite', (store) => store.put(record));
   return record;
@@ -93,7 +121,11 @@ export async function listImportedBooks(): Promise<ImportedBookMeta[]> {
   try {
     const values = await transact<ImportedBookRecord[]>('readonly', (store) => store.getAll() as IDBRequest<ImportedBookRecord[]>);
     return values
-      .map(({ text: _text, parsedChapters: _chapters, ...meta }) => meta)
+      .map(({ text: _text, parsedChapters: _chapters, comicPages, ...meta }) => ({
+        ...meta,
+        kind: meta.kind === 'comic' ? 'comic' as const : 'text' as const,
+        pageCount: Array.isArray(comicPages) ? comicPages.length : meta.pageCount,
+      }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   } catch {
     return [];

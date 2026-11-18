@@ -80,9 +80,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, buildRequestHeaders } from '../../api/client';
 import { consumeSseStream } from '../../utils/sse';
+import { useMobileShell } from '../../composables/useMobileShell';
 
 type ShellKind = 'powershell' | 'cmd' | 'bash';
 const isWin = navigator.platform.toLowerCase().includes('win');
+const mobileShell = useMobileShell();
 
 interface ConsoleSession {
   id: number;
@@ -141,6 +143,7 @@ function b64ToBytes(b64: string): Uint8Array {
 
 /** 新增终端会话（自动激活并连接） */
 function addSession(shell: ShellKind) {
+  if (mobileShell.value) return;
   const s: ConsoleSession = {
     id: ++seq,
     label: nextLabel(shell),
@@ -161,6 +164,7 @@ function addSession(shell: ShellKind) {
 }
 
 async function openSession(s: ConsoleSession) {
+  if (mobileShell.value) return;
   if (s.open || s.term) return;
   s.error = '';
   const r = await api.post<{ sessionId: string; cwd: string }>('/local-console/open', {
@@ -293,7 +297,9 @@ function clearSession(s: ConsoleSession) {
 }
 
 // 首个终端自动创建（浏览器打开即有默认标签页的体验）
-onMounted(() => { if (!sessions.value.length) addSession(isWin ? 'powershell' : 'bash'); });
+onMounted(() => {
+  if (!mobileShell.value && !sessions.value.length) addSession(isWin ? 'powershell' : 'bash');
+});
 onUnmounted(() => {
   for (const s of [...sessions.value]) teardownSession(s);
   sessions.value = [];

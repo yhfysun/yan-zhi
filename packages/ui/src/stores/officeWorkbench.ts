@@ -8,6 +8,7 @@ export type OfficePanel = 'ai' | 'manual';
 
 const PANEL_KEY = 'yz:office:panel';
 const FILE_KEY = 'yz:office:file';
+const AI_SIDEBAR_COLLAPSED_KEY = 'yz:office:ai-sidebar-collapsed';
 
 function readPanel(): OfficePanel {
   try {
@@ -27,6 +28,7 @@ function readFile(): string {
 
 export const officePanel = ref<OfficePanel>(readPanel());
 export const officeSelectedFile = ref<string>(readFile());
+export const officeAiSidebarCollapsed = ref(readAiSidebarCollapsed());
 
 watch(officePanel, (v) => {
   try { localStorage.setItem(PANEL_KEY, v); } catch { /* 隐私模式忽略 */ }
@@ -37,6 +39,9 @@ watch(officeSelectedFile, (v) => {
     else localStorage.removeItem(FILE_KEY);
   } catch { /* 隐私模式忽略 */ }
 });
+watch(officeAiSidebarCollapsed, (v) => {
+  try { localStorage.setItem(AI_SIDEBAR_COLLAPSED_KEY, v ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+});
 
 export function setOfficePanel(p: OfficePanel): void {
   officePanel.value = p;
@@ -46,11 +51,30 @@ export function toggleOfficePanel(): void {
   officePanel.value = officePanel.value === 'ai' ? 'manual' : 'ai';
 }
 
+function readAiSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(AI_SIDEBAR_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function toggleOfficeAiSidebar(): void {
+  officeAiSidebarCollapsed.value = !officeAiSidebarCollapsed.value;
+}
+
 /** 人工模式 = 不调用任何模型（发送入口在 UI 上消失） */
 export function isManualPanel(): boolean {
   return officePanel.value === 'manual';
 }
 
 export function useOfficeWorkbench() {
-  return { officePanel, officeSelectedFile, setOfficePanel, toggleOfficePanel };
+  return {
+    officePanel,
+    officeSelectedFile,
+    officeAiSidebarCollapsed,
+    setOfficePanel,
+    toggleOfficePanel,
+    toggleOfficeAiSidebar,
+  };
 }

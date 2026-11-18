@@ -26,7 +26,9 @@
           :class="{ on: muted }"
           :title="muted ? '恢复通知' : '静音通知'"
           @click.stop="toggleMute"
-        >{{ muted ? '🔕' : '🔔' }}</button>
+        >
+          <el-icon><BellOff v-if="muted" /><Bell v-else /></el-icon>
+        </button>
         <button type="button" class="p-icon-btn" title="关闭" @click.stop="close"><el-icon><Close /></el-icon></button>
       </div>
       <div class="p-body">
@@ -43,7 +45,7 @@
               <span class="p-dot" :class="'s-' + t.status" />
               <div class="p-main">
                 <div class="p-title">
-                  {{ t.title }}<span v-if="settings.pinnedConvId === t.id" class="p-pin">📌</span>
+                  {{ t.title }}<span v-if="settings.pinnedConvId === t.id" class="p-pin"><Pin :size="12" /></span>
                 </div>
                 <div class="p-meta">{{ metaOf(t) }}</div>
                 <div v-if="(t.planTotal || 0) > 0" class="p-plan"><i :style="{ width: planPct(t) + '%' }" /></div>
@@ -71,7 +73,10 @@
                   :class="{ on: settings.pinnedConvId === t.id }"
                   :title="settings.pinnedConvId === t.id ? '取消跟随' : '让宠物跟随这个任务'"
                   @click.stop="act('pin', t.id)"
-                >📌</button>
+                >
+                  <PinOff v-if="settings.pinnedConvId === t.id" :size="13" />
+                  <Pin v-else :size="13" />
+                </button>
               </div>
             </div>
           </template>
@@ -79,14 +84,13 @@
       </div>
       <div class="p-foot">
         <button type="button" @click.stop="openAllTasks">打开全部任务 →</button>
-        <span class="p-hint">点击行 = 跳转会话</span>
       </div>
     </div>
 
     <!-- 逗一下：动作条 -->
     <div v-else-if="kind === 'play'" class="bar">
       <button v-for="a in ACTIONS" :key="a.key" class="act" @click.stop="play(a.key)">
-        <span class="g">{{ a.g }}</span>{{ a.label }}
+        <component :is="a.icon" :size="15" />{{ a.label }}
       </button>
     </div>
 
@@ -104,7 +108,7 @@
         <span class="chr-name">{{ p.short }}</span>
       </button>
       <button class="chr chr-add" title="打开形象工坊" @click.stop="openImport">
-        <span class="chr-plus">＋</span>
+        <span class="chr-plus"><Plus :size="18" /></span>
         <span class="chr-name">导入</span>
       </button>
     </div>
@@ -112,7 +116,7 @@
     <!-- 工作目录（空间）→ 会话：两级选择，选中会话直接打开追问 -->
     <div v-else-if="kind === 'space'" class="space-list">
       <div class="sp-head">
-        <button v-if="spaceLevel === 'convs'" type="button" class="sp-back" title="返回目录" @click.stop="backToSpaces">‹</button>
+        <button v-if="spaceLevel === 'convs'" type="button" class="sp-back" title="返回目录" @click.stop="backToSpaces"><ChevronLeft :size="16" /></button>
         <span class="sp-title">{{ spaceLevel === 'spaces' ? '工作目录' : pickedSpace?.name }}</span>
         <span v-if="spaceLevel === 'convs'" class="sp-sub">选择会话</span>
       </div>
@@ -174,7 +178,7 @@
         @keydown.enter.prevent="submitAsk"
         @keydown.esc.prevent="close"
       />
-        <button class="ask-go" title="交给主窗口" @click.stop="submitAsk">↑</button>
+        <button class="ask-go" title="交给主窗口" @click.stop="submitAsk"><ArrowUp :size="17" /></button>
       </div>
 
       <!-- 输入框下方：工作目录 → 会话。三态：不绑定 / 只绑目录 / 绑目录+会话 -->
@@ -191,7 +195,7 @@
           </button>
           <div v-if="dirOpen" class="dir-pop">
             <div class="dir-head">
-              <button v-if="dirLevel === 'convs'" type="button" class="dir-back" @click.stop="dirBack">‹</button>
+              <button v-if="dirLevel === 'convs'" type="button" class="dir-back" @click.stop="dirBack"><ChevronLeft :size="15" /></button>
               <span class="dir-title">{{ dirLevel === 'spaces' ? '工作目录' : pickedDir?.name }}</span>
               <span v-if="dirLevel === 'convs'" class="dir-sub">选择会话</span>
             </div>
@@ -261,6 +265,20 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
+  ArrowUp,
+  Bell,
+  BellOff,
+  ChevronLeft,
+  Eye,
+  Hand,
+  Heart,
+  Moon,
+  Pin,
+  PinOff,
+  Plus,
+  RotateCw,
+} from 'lucide-vue-next'
+import {
   PET_DEFAULTS,
   PET_SLOT_DEFS,
   type PetActivity,
@@ -272,7 +290,7 @@ import { loadUserPacks, userPacks } from '../components/pet/user-packs'
 import '../components/pet/pet-popups.css'
 
 const route = useRoute()
-const kind = String(route.params.kind || '')
+const kind = computed(() => String(route.params.kind || ''))
 
 const settings = ref<PetSettings>({ ...PET_DEFAULTS })
 // 弹层独立进程：主进程没推过设置时（刚启动）先用 localStorage 里同一份，否则托盘会把当前形象标错
@@ -308,7 +326,7 @@ const agentOpen = ref(false)
 const agentQuery = ref('')
 
 const api = () => (window as any).electronAPI?.pet
-const close = () => api()?.closePopup?.(kind)
+const close = () => api()?.closePopup?.(kind.value)
 
 /* ===== 换形象托盘 ===== */
 interface PackTile {
@@ -447,7 +465,7 @@ function pickAskConv(c: { id: string; title: string; spaceId?: string }) {
 }
 // 快问条窗口是固定的 380×340（上方留白给下拉）：这里不是"改窗口大小"，
 // 而是告诉主进程「下拉展开了」——展开时整窗可点，收起时只有底部输入条可点。
-watch([agentOpen, dirOpen], ([a, d]) => api()?.resizePopup?.(kind, 380, a || d ? 320 : 84))
+watch([agentOpen, dirOpen], ([a, d]) => api()?.resizePopup?.(kind.value, 380, a || d ? 320 : 84))
 /** 选目录：切过去并进入该目录的会话列表 */
 function pickSpace(s: { id: string; name: string }) {
   pickedSpace.value = s
@@ -461,12 +479,12 @@ function backToSpaces() {
 
 /* ===== 半圆菜单 ===== */
 const ACTIONS = [
-  { key: 'pet', g: '♥', label: '摸摸' },
-  { key: 'wave', g: '👋', label: '招手' },
-  { key: 'look', g: '👀', label: '张望' },
-  { key: 'nap', g: '💤', label: '打盹' },
-  { key: 'spin', g: '↻', label: '转圈' },
-  { key: 'hop', g: '⤴', label: '跳一跳' },
+  { key: 'pet', icon: Heart, label: '摸摸' },
+  { key: 'wave', icon: Hand, label: '招手' },
+  { key: 'look', icon: Eye, label: '张望' },
+  { key: 'nap', icon: Moon, label: '打盹' },
+  { key: 'spin', icon: RotateCw, label: '转圈' },
+  { key: 'hop', icon: ArrowUp, label: '跳一跳' },
 ]
 const ICONS: Record<string, string> = {
   play: '<svg viewBox="0 0 24 24"><path d="M11 3l1.5 4.2L16.7 8.7l-4.2 1.5L11 14.4 9.5 10.2 5.3 8.7l4.2-1.5z"/><path d="M17.5 14l.8 2.3 2.2.8-2.2.8-.8 2.3-.8-2.3-2.2-.8 2.2-.8z"/></svg>',
@@ -480,7 +498,7 @@ const ICONS: Record<string, string> = {
   space: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>',
 }
 const RADIUS = 92
-const SLOT_SIZE = 42
+const SLOT_SIZE = 44
 const slotKeys = computed(() => (Array.isArray(settings.value.slots) ? settings.value.slots : []))
 /** 一屏最多摆 6 个；槽位更多时用滚轮转动 offset */
 const VISIBLE_SLOTS = 7
@@ -654,7 +672,7 @@ onMounted(() => {
   document.documentElement.classList.add('pet-window-mode')
   document.body.classList.add('pet-window-mode')
   // 形象托盘要用用户导入的形象（本窗口是独立进程，注册表要自己同步一次）
-  if (kind === 'char') void loadUserPacks()
+  if (kind.value === 'char') void loadUserPacks()
   const st = document.createElement('style')
   st.id = 'pet-popup-transparent'
   st.textContent = `
@@ -673,7 +691,7 @@ onMounted(() => {
     if (Array.isArray(payload.spaces)) spaces.value = payload.spaces
     if (Array.isArray(payload.spaceConvs)) spaceConvs.value = payload.spaceConvs
     // 目录/会话可能被删：快问条绑定跟着失效的话就地降级（会话没了 → 退回只绑目录）
-    if (kind === 'ask') sanitizeAskTarget()
+    if (kind.value === 'ask') sanitizeAskTarget()
     if (payload.spaceId) spaceId.value = payload.spaceId
     if (Array.isArray(payload.agents)) {
       agents.value = payload.agents
@@ -684,9 +702,9 @@ onMounted(() => {
     if (payload && payload.renderer) settings.value = { ...PET_DEFAULTS, ...payload }
   })
   api()?.requestSync?.()
-  if (kind === 'ask') setTimeout(() => askInputEl.value?.focus(), 80)
+  if (kind.value === 'ask') setTimeout(() => askInputEl.value?.focus(), 80)
   // 面板的「已用 X 分 Y 秒」自己走秒，不依赖主窗每秒推数据（跨进程 IPC 有成本）
-  if (kind === 'panel') {
+  if (kind.value === 'panel') {
     tickTimer = window.setInterval(() => {
       nowTick.value = Date.now()
     }, 1000)
@@ -696,7 +714,7 @@ onMounted(() => {
   document.addEventListener('keydown', onKey, true)
 
   // 画完第一帧再让主进程显示窗口：否则会先闪一个空白透明窗
-  requestAnimationFrame(() => requestAnimationFrame(() => api()?.popupReady?.(kind)))
+  requestAnimationFrame(() => requestAnimationFrame(() => api()?.popupReady?.(kind.value)))
 })
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') close()

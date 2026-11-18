@@ -81,7 +81,21 @@ describe('LearningLibrary', () => {
     const input = host.querySelector('[data-import-book-input]') as HTMLInputElement;
     expect(input).toBeTruthy();
     expect(input.accept).toContain('.txt');
-    expect(host.textContent).toContain('导入本地小说');
+    expect(input.accept).toContain('image/*');
+    expect(host.textContent).toContain('导入书/漫画');
+  });
+
+  it('switches between cover cards and the detailed list view', async () => {
+    const host = await mountLibrary();
+    expect(host.querySelector('.ll-card-grid')?.classList.contains('view-card')).toBe(true);
+
+    const listButton = host.querySelector('[aria-label="列表模式"]') as HTMLButtonElement;
+    listButton.click();
+    await nextTick();
+
+    expect(host.querySelector('.ll-card-grid')?.classList.contains('view-list')).toBe(true);
+    expect(listButton.getAttribute('aria-pressed')).toBe('true');
+    expect(localStorage.getItem('yz.learning.v2.library.book-view.v1')).toBe('list');
   });
 
   it('filters the catalog and persists bookshelf choices locally', async () => {
@@ -109,6 +123,45 @@ describe('LearningLibrary', () => {
     expect(host.textContent).toContain('聊斋志异');
   });
 
+  it('creates nested shelf folders and moves a book into a folder', async () => {
+    const host = await mountLibrary();
+    (host.querySelectorAll('.ll-nav nav button')[1] as HTMLButtonElement).click();
+    await nextTick();
+
+    (host.querySelector('.ll-create-folder') as HTMLButtonElement).click();
+    await nextTick();
+    const folderInput = host.querySelector('.ll-folder-form input') as HTMLInputElement;
+    folderInput.value = '古典小说';
+    folderInput.dispatchEvent(new Event('input'));
+    (host.querySelector('.ll-folder-form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await nextTick();
+    expect(host.textContent).toContain('古典小说');
+
+    (host.querySelectorAll('.ll-nav nav button')[0] as HTMLButtonElement).click();
+    await nextTick();
+    const card = [...host.querySelectorAll('.ll-book-card')]
+      .find((item) => item.textContent?.includes('三国演义')) as HTMLElement;
+    card.click();
+    await nextTick();
+    const shelfButton = [...host.querySelectorAll('.ll-detail-actions button')]
+      .find((item) => item.textContent?.includes('加入书架')) as HTMLButtonElement;
+    shelfButton.click();
+    await nextTick();
+
+    const select = host.querySelector('.ll-move-book select') as HTMLSelectElement;
+    const folderOption = [...select.options].find((option) => option.textContent?.includes('古典小说')) as HTMLOptionElement;
+    select.value = folderOption.value;
+    select.dispatchEvent(new Event('change'));
+    await nextTick();
+
+    (host.querySelectorAll('.ll-nav nav button')[1] as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('.ll-folder-open') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.textContent).toContain('三国演义');
+    expect(localStorage.getItem('yz.learning.v2.library.folders.v1')).toContain('古典小说');
+  });
+
   it('adds only explicit HTTPS custom sources and keeps their license note', async () => {
     const host = await mountLibrary();
     (host.querySelectorAll('.ll-nav nav button')[2] as HTMLButtonElement).click();
@@ -128,7 +181,19 @@ describe('LearningLibrary', () => {
 
     expect(host.textContent).toContain('我的授权书库');
     expect(host.textContent).toContain('作者授权测试来源');
+    expect(host.querySelector('.ll-source-detail-head')).toBeTruthy();
+    expect(host.querySelector('.ll-source-badges')).toBeTruthy();
+    expect(host.querySelectorAll('.ll-source-detail-section')).toHaveLength(2);
+    expect(host.textContent).toContain('阅读与授权');
+    expect(host.textContent).toContain('站点地址');
+    expect(host.textContent).toContain('example.com');
     expect(localStorage.getItem('yz.learning.v2.library.sources.v1')).toContain('https://example.com/books');
+  });
+
+  it('keeps the mobile source sheet above the TabBar', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-library.css'), 'utf8');
+    expect(css).toMatch(/\.ll-detail\s*\{[\s\S]*?bottom:\s*calc\(var\(--mobile-tabbar-h/);
+    expect(css).toMatch(/\.ll-detail\s*\{[\s\S]*?max-height:\s*min\([\s\S]*?var\(--mobile-topbar-h/);
   });
 
   it('rejects insecure source URLs', async () => {

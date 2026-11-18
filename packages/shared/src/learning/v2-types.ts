@@ -166,6 +166,10 @@ export type LearningV2ReadingCategoryKey =
   | 'zhiguai'
   | 'web-novel'
   | 'comics'
+  | 'science'
+  | 'common-sense'
+  | 'world-records'
+  | 'trivia'
   | 'course';
 
 export type LearningV2ReadingCollectionKey =
@@ -195,6 +199,7 @@ export type LearningV2ReaderBook = {
   readonly author: string;
   readonly language: LearningV2ReadingLanguage;
   readonly readingMode: LearningV2ReadingMode;
+  readonly contentKind?: 'text' | 'comic';
   readonly assetKey?: string;
   readonly importedBookId?: string;
   readonly url?: string;

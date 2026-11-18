@@ -102,7 +102,13 @@
       <span class="cp-compound-readonly">复合片段内部编辑 · 外层只读预览</span>
     </div>
 
-    <div v-show="view === 'editor'" class="cp-body">
+    <div
+      v-show="view === 'editor'"
+      ref="bodyEl"
+      class="cp-body"
+      :class="{ 'is-resizing-timeline': timelineResizing }"
+      :style="clipLayoutStyle"
+    >
       <!-- ===== 左：素材库 ===== -->
       <aside class="cp-left">
         <div class="cp-panel-head">
@@ -285,6 +291,18 @@
           </template>
           <div v-else class="cp-empty small">拖入音频素材即设为 BGM</div>
         </div>
+        <div
+          class="cp-pane-resizer is-left"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整素材栏宽度"
+          tabindex="0"
+          title="拖动调整素材栏宽度；双击恢复"
+          @mousedown.prevent="leftR.startDrag($event, 'left')"
+          @dblclick="resetClipWidth('left')"
+          @keydown.left.prevent="nudgeClipWidth('left', -16)"
+          @keydown.right.prevent="nudgeClipWidth('left', 16)"
+        ></div>
       </aside>
 
       <!-- ===== 中：监视器 + 时间轴 ===== -->
@@ -439,6 +457,18 @@
 
         <!-- 时间轴 -->
         <section class="cp-timeline">
+          <div
+            class="cp-row-resizer"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整预览区与时间轴高度"
+            tabindex="0"
+            title="拖动调整时间轴高度；双击恢复"
+            @pointerdown.prevent="startTimelineResize"
+            @dblclick="resetTimelineHeight"
+            @keydown.up.prevent="nudgeTimelineHeight(16)"
+            @keydown.down.prevent="nudgeTimelineHeight(-16)"
+          ></div>
           <div class="cp-toolbar">
             <button class="cp-mini" title="撤销（Ctrl+Z）" :disabled="!undoStack.length" @click="undo"><el-icon :size="13"><RefreshLeft /></el-icon></button>
             <button class="cp-mini" title="重做（Ctrl+Shift+Z）" :disabled="!redoStack.length" @click="redo"><el-icon :size="13"><RefreshRight /></el-icon></button>
@@ -906,25 +936,41 @@
         </section>
       </main>
 
-      <!-- ===== 右：检视器 / 对话 ===== -->
-      <aside class="cp-right" :class="{ compact: rightPanelCollapsed }">
+      <!-- ===== 右：检视器 / AI 剪辑师 ===== -->
+      <aside
+        class="cp-right"
+        :class="{ compact: rightPanelCollapsed, 'is-chat': rightTab === 'chat' }"
+      >
+        <div
+          v-if="!rightPanelCollapsed"
+          class="cp-pane-resizer is-right"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整属性与剪辑师面板宽度"
+          tabindex="0"
+          title="拖动调整右侧面板宽度；双击恢复"
+          @mousedown.prevent="rightR.startDrag($event, 'right')"
+          @dblclick="resetClipWidth('right')"
+          @keydown.left.prevent="nudgeClipWidth('right', 16)"
+          @keydown.right.prevent="nudgeClipWidth('right', -16)"
+        ></div>
         <div v-if="rightPanelCollapsed" class="cp-right-rail">
-          <button class="cp-rail-btn" title="展开属性 / 对话面板" @click="rightPanelCollapsed = false">
+          <button class="cp-rail-btn" title="展开属性 / 剪辑师面板" @click="rightPanelCollapsed = false">
             <el-icon :size="15"><DArrowLeft /></el-icon>
           </button>
           <button class="cp-rail-btn" title="属性" @click="rightTab = 'inspector'; rightPanelCollapsed = false">
             <el-icon :size="16"><EditPen /></el-icon>
             <span>属性</span>
           </button>
-          <button class="cp-rail-btn" title="对话" @click="rightTab = 'chat'; rightPanelCollapsed = false">
+          <button class="cp-rail-btn" title="AI 剪辑师" @click="rightTab = 'chat'; rightPanelCollapsed = false">
             <el-icon :size="16"><ChatLineSquare /></el-icon>
-            <span>对话</span>
+            <span>剪辑师</span>
           </button>
         </div>
         <template v-else>
           <div class="cp-tabs">
             <button class="cp-tab" :class="{ on: rightTab === 'inspector' }" @click="rightTab = 'inspector'">属性</button>
-            <button class="cp-tab" :class="{ on: rightTab === 'chat' }" @click="rightTab = 'chat'">对话</button>
+            <button class="cp-tab" :class="{ on: rightTab === 'chat' }" @click="rightTab = 'chat'">AI 剪辑师</button>
             <button class="cp-tabs-collapse" title="收起右侧面板" @click="rightPanelCollapsed = true">
               <el-icon :size="14"><DArrowRight /></el-icon>
             </button>
@@ -1875,8 +1921,110 @@
         </div>
 
         <div v-show="rightTab === 'chat'" class="cp-chat">
-          <ChatMessageList />
-          <ChatInputArea />
+          <section class="cp-ai-context" aria-label="当前剪辑工程">
+            <div class="cp-ai-context-title">
+              <span class="cp-ai-context-icon"><el-icon :size="14"><MagicStick /></el-icon></span>
+              <strong>AI 剪辑师</strong>
+              <span class="cp-ai-context-status">跟随当前工程</span>
+            </div>
+            <div class="cp-ai-project">{{ projectName || '未命名剪辑' }}</div>
+            <div class="cp-ai-facts">
+              <span>{{ filteredFiles.length }} 个素材</span>
+              <span>{{ clipCount }} 段</span>
+              <span>{{ totalDurationLabel }}</span>
+              <span>播放头 {{ fmtTime(playhead) }}</span>
+            </div>
+          </section>
+          <div class="cp-ai-actions" aria-label="剪辑快捷指令">
+            <button
+              type="button"
+              class="cp-ai-action primary"
+              :disabled="!clipCount"
+              title="把当前工程交给剪辑师完成重排、剪辑、字幕和预览档"
+              @click="askAgentOneShot"
+            >
+              <el-icon :size="13"><VideoPlay /></el-icon>
+              一句话成片
+            </button>
+            <button
+              type="button"
+              class="cp-ai-action"
+              :disabled="asrRunning || !selectedClipId"
+              :title="selectedClipId ? '识别选中片段并生成字幕' : '先在时间轴选中一个片段'"
+              @click="runAsrOnSelected"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': asrRunning }"><Microphone /></el-icon>
+              自动字幕
+            </button>
+            <button
+              type="button"
+              class="cp-ai-action"
+              title="按当前工程节奏生成器乐配乐"
+              @click="openMusicDialog"
+            >
+              <el-icon :size="13"><Headset /></el-icon>
+              AI 配乐
+            </button>
+            <button
+              type="button"
+              class="cp-ai-action"
+              :disabled="talkingCutting || !selectedClipId"
+              :title="selectedClipId ? '识别选中口播并剪掉静音与语气词' : '先在时间轴选中口播片段'"
+              @click="talkingCutSelected"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': talkingCutting }"><Crop /></el-icon>
+              智能剪口播
+            </button>
+            <button
+              type="button"
+              class="cp-ai-action quietly"
+              title="重新读取剪辑师修改后的工程与素材"
+              @click="reloadAll"
+            >
+              <el-icon :size="13"><Refresh /></el-icon>
+              同步工程
+            </button>
+            <button
+              type="button"
+              class="cp-ai-action quietly"
+              title="从本机导入视频、图片或音频素材"
+              @click="importMedia"
+            >
+              <el-icon :size="13"><FolderOpened /></el-icon>
+              导入素材
+            </button>
+          </div>
+          <ChatMessageList>
+            <template #welcome>
+              <div class="cp-ai-welcome">
+                <span class="cp-ai-welcome-mark"><el-icon :size="20"><MagicStick /></el-icon></span>
+                <div class="cp-ai-welcome-copy">
+                  <h3>想怎么剪？</h3>
+                  <p>说清成片目标、时长和风格，剪辑师会直接修改当前时间轴。</p>
+                </div>
+                <div class="cp-ai-briefs" aria-label="剪辑需求示例">
+                  <button type="button" @click="fillClipAiInput('把当前素材剪成 30 秒竖屏短视频，节奏紧凑，保留人物原声并加中文字幕。')">
+                    <strong>30 秒竖屏成片</strong>
+                    <span>重排素材、保留原声、生成字幕</span>
+                  </button>
+                  <button type="button" @click="fillClipAiInput('检查当前口播片段，去掉静音和语气词，保持字幕同步。')">
+                    <strong>清理口播</strong>
+                    <span>去除停顿与语气词，保留叙事顺序</span>
+                  </button>
+                  <button type="button" @click="fillClipAiInput('按当前音乐节拍重新卡点，给重点画面加简洁转场，输出一版预览。')">
+                    <strong>卡点与转场</strong>
+                    <span>按节拍切画面，控制转场密度</span>
+                  </button>
+                </div>
+                <div class="cp-ai-welcome-status">
+                  <span>{{ filteredFiles.length }} 个素材</span>
+                  <span>{{ clipCount }} 个片段</span>
+                  <span>{{ totalDurationLabel }}</span>
+                </div>
+              </div>
+            </template>
+          </ChatMessageList>
+          <ChatInputArea ref="clipChatInputRef" />
         </div>
         </template>
       </aside>
@@ -1906,9 +2054,40 @@
         </button>
       </div>
 
+      <section v-if="lead === 'ai'" class="cp-ai-project-start">
+        <div class="cp-ai-project-copy">
+          <span class="cp-ai-project-mark"><el-icon :size="20"><MagicStick /></el-icon></span>
+          <div>
+            <span>AI 剪辑师</span>
+            <h2>说出成片目标，创建工程后直接开工</h2>
+            <p>写清时长、画幅、素材类型和风格。工程创建后会进入剪辑台，并把这段需求交给剪辑师。</p>
+          </div>
+        </div>
+        <textarea
+          v-model="aiProjectBrief"
+          class="cp-ai-project-input"
+          rows="3"
+          placeholder="例如：把访谈素材剪成 45 秒竖屏短视频，保留人物原声，自动去停顿，加中文字幕和克制的转场。"
+          @keydown.ctrl.enter.prevent="startAiProject"
+          @keydown.meta.enter.prevent="startAiProject"
+        ></textarea>
+        <div class="cp-ai-project-presets">
+          <button type="button" @click="setAiProjectBrief('把素材剪成 30 秒竖屏短视频，节奏紧凑，保留人物原声并加中文字幕。')">30 秒竖屏</button>
+          <button type="button" @click="setAiProjectBrief('清理口播中的静音和语气词，保持字幕同步，成片自然流畅。')">清理口播</button>
+          <button type="button" @click="setAiProjectBrief('按音乐节拍重排画面，给重点片段加简洁转场，输出一版预览。')">卡点成片</button>
+          <button type="button" @click="setAiProjectBrief('从素材中挑出最有信息量的片段，做成 60 秒横屏讲解视频，并生成章节字幕。')">讲解视频</button>
+        </div>
+        <div class="cp-ai-project-actions">
+          <button class="cp-btn primary" type="button" @click="startAiProject">
+            <el-icon :size="13"><VideoPlay /></el-icon>创建工程并交给剪辑师
+          </button>
+          <span>Ctrl+Enter</span>
+        </div>
+      </section>
+
       <div v-if="loadingList" class="cp-empty">正在读取项目…</div>
       <div v-else-if="!projectList.length" class="cp-empty">
-        还没有剪辑项目。<br />点「新建项目」选好画幅即可开始；也可以在对话里让剪辑师直接开剪。
+        {{ lead === 'ai' ? '写下第一支片子的目标，创建工程后剪辑师会接着处理。' : '还没有剪辑项目。点「新建项目」选好画幅即可开始。' }}
       </div>
       <div v-else class="cp-pj-grid">
         <div
@@ -2416,6 +2595,7 @@ import { useSpaceStore } from '../stores/space';
 import { leadOf, activeMode, type LeadMode } from '../stores/mode';
 import { setWorkbenchContext } from '../stores/workbenchContext';
 import { useChat } from '../composables/chat/useChat';
+import { useResizable } from '../composables/useResizable';
 import { api, API_BASE, mediaAuthQuery } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
 import {
@@ -2601,7 +2781,8 @@ interface ProjectListItem {
 }
 
 const chat = useChat();
-const lead = ref<LeadMode>(leadOf(activeMode.value));
+const clipChatInputRef = ref<{ fillInput: (text: string) => void } | null>(null);
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 // 视图：projects = 项目列表（进模式先看这个）；editor = 时间轴编辑
 const view = ref<'projects' | 'editor'>('projects');
 const projectList = ref<ProjectListItem[]>([]);
@@ -2611,11 +2792,13 @@ const newProjectDialog = ref(false);
 const newName = ref('');
 const newSize = ref('1080x1920');
 const newFps = ref(30);
+const aiProjectBrief = ref('');
+let pendingAiProjectBrief = '';
 const creating = ref(false);
 const delDialog = ref(false);
 const delTarget = ref<ProjectListItem | null>(null);
 const spaceDirPicker = ref(false);
-const rightTab = ref<'inspector' | 'chat'>('inspector');
+const rightTab = ref<'inspector' | 'chat'>('chat');
 const spaceStore = useSpaceStore();
 /** 当前绑定的项目目录（空间 dirPath）；未绑定 = 产物落默认数据目录。 */
 const currentSpaceDir = computed(() => spaceStore.currentSpace?.dirPath || '');
@@ -2639,7 +2822,101 @@ const selectedClipId = ref('');
 const selectedClipIds = ref<string[]>([]);
 const selectedCompoundId = ref('');
 const timelineToolsExpanded = ref(false);
-const rightPanelCollapsed = ref(true);
+const rightPanelCollapsed = ref(typeof window !== 'undefined' && window.innerWidth < 1000);
+const leftR = useResizable('clip_left', 228, 168, 380);
+const rightR = useResizable('clip_right', 360, 280, 620);
+const bodyEl = ref<HTMLElement | null>(null);
+const TIMELINE_HEIGHT_KEY = 'yz_resize_clip_timeline_height';
+const timelineHeight = ref(readTimelineHeight());
+const timelineResizing = ref(false);
+let timelineDragStartY = 0;
+let timelineDragStartHeight = 0;
+
+function readTimelineHeight(): number {
+  try {
+    const saved = Number(localStorage.getItem(TIMELINE_HEIGHT_KEY));
+    return Number.isFinite(saved) ? Math.min(520, Math.max(180, Math.round(saved))) : 300;
+  } catch {
+    return 300;
+  }
+}
+
+const clipLayoutStyle = computed<Record<string, string>>(() => ({
+  '--cp-left-w': `${leftR.width.value}px`,
+  '--cp-right-w': `${rightPanelCollapsed.value ? 48 : rightR.width.value}px`,
+  '--cp-timeline-h': `${timelineHeight.value}px`,
+}));
+
+function saveTimelineHeight(): void {
+  try { localStorage.setItem(TIMELINE_HEIGHT_KEY, String(timelineHeight.value)); } catch { /* 隐私模式 */ }
+}
+
+function setTimelineHeight(value: number): void {
+  const bodyHeight = bodyEl.value?.clientHeight || 720;
+  const max = Math.max(180, Math.min(560, bodyHeight - 190));
+  timelineHeight.value = Math.round(Math.min(max, Math.max(180, value)));
+  saveTimelineHeight();
+}
+
+function startTimelineResize(e: PointerEvent): void {
+  timelineResizing.value = true;
+  timelineDragStartY = e.clientY;
+  timelineDragStartHeight = timelineHeight.value;
+  window.addEventListener('pointermove', onTimelineResize);
+  window.addEventListener('pointerup', stopTimelineResize, { once: true });
+  document.body.style.cursor = 'row-resize';
+  document.body.style.userSelect = 'none';
+}
+
+function onTimelineResize(e: PointerEvent): void {
+  if (!timelineResizing.value) return;
+  setTimelineHeight(timelineDragStartHeight + timelineDragStartY - e.clientY);
+}
+
+function stopTimelineResize(): void {
+  timelineResizing.value = false;
+  window.removeEventListener('pointermove', onTimelineResize);
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+}
+
+function resetTimelineHeight(): void {
+  setTimelineHeight(300);
+}
+
+function nudgeTimelineHeight(delta: number): void {
+  setTimelineHeight(timelineHeight.value + delta);
+}
+
+function nudgeClipWidth(side: 'left' | 'right', delta: number): void {
+  const control = side === 'left' ? leftR : rightR;
+  const min = side === 'left' ? 168 : 280;
+  const max = side === 'left' ? 380 : 620;
+  control.width.value = Math.min(max, Math.max(min, control.width.value + delta));
+  try {
+    localStorage.setItem(`yz_resize_clip_${side}`, String(control.width.value));
+  } catch { /* 隐私模式 */ }
+}
+
+function resetClipWidth(side: 'left' | 'right'): void {
+  const control = side === 'left' ? leftR : rightR;
+  control.width.value = side === 'left' ? 228 : 360;
+  try {
+    localStorage.setItem(`yz_resize_clip_${side}`, String(control.width.value));
+  } catch { /* 隐私模式 */ }
+}
+
+function fillClipAiInput(text: string): void {
+  rightTab.value = 'chat';
+  rightPanelCollapsed.value = false;
+  clipChatInputRef.value?.fillInput(text);
+}
+
+watch(lead, (next) => {
+  if (next !== 'ai') return;
+  rightTab.value = 'chat';
+  rightPanelCollapsed.value = false;
+});
 const packRangeDialog = ref(false);
 const packRangeStart = ref(0);
 const packRangeEnd = ref(0);
@@ -5297,6 +5574,15 @@ async function createProject() {
     await loadFiles();
     await reload();
     note(`项目「${name}」已创建（${newSize.value}@${newFps.value}）`);
+    const brief = pendingAiProjectBrief.trim();
+    pendingAiProjectBrief = '';
+    if (brief) {
+      await nextTick();
+      clipChatInputRef.value?.fillInput(brief);
+      aiProjectBrief.value = '';
+      await nextTick();
+      void chat.send();
+    }
   } catch (e) {
     // ★★ 必须有 catch（2026-10-07 用户报「点了新建项目没反应」的真实原因）：
     //   原实现只有 try/finally —— `createConversation` 抛错时异常**逃逸成未捕获拒绝**，
@@ -5306,6 +5592,19 @@ async function createProject() {
   } finally {
     creating.value = false;
   }
+}
+
+function setAiProjectBrief(text: string) {
+  aiProjectBrief.value = text;
+}
+
+function startAiProject() {
+  pendingAiProjectBrief = aiProjectBrief.value.trim()
+    || '先根据我接下来导入的素材，制作一版节奏清晰、字幕完整、适合直接预览的成片。';
+  if (!newName.value.trim()) {
+    newName.value = 'AI 剪辑项目';
+  }
+  newProjectDialog.value = true;
 }
 
 function askDeleteProject(p: ProjectListItem) { delTarget.value = p; delDialog.value = true; }
@@ -8063,6 +8362,7 @@ watch(() => [clipCount.value, JSON.stringify(project.value?.clips?.map((c) => [c
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   document.removeEventListener('mousedown', onDocMouseDown, true);
+  stopTimelineResize();
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   if (frameTimer) clearTimeout(frameTimer);
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
@@ -8135,11 +8435,36 @@ onMounted(async () => {
 
 /* ===== 主体三栏 ===== */
 /* 剪映式骨架：上排素材/预览/属性，下排时间轴横跨整窗。 */
-.cp-body { display: grid; grid-template-columns: 228px minmax(0, 1fr) auto; grid-template-rows: minmax(220px, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
-.cp-left { width: 228px; min-width: 0; grid-column: 1; grid-row: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-body { display: grid; grid-template-columns: var(--cp-left-w, 228px) minmax(0, 1fr) var(--cp-right-w, 360px); grid-template-rows: minmax(200px, 1fr) var(--cp-timeline-h, 300px); flex: 1; min-height: 0; overflow: hidden; }
+.cp-left { position: relative; width: var(--cp-left-w, 228px); min-width: 0; grid-column: 1; grid-row: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-center { display: contents; min-width: 0; min-height: 0; }
-.cp-right { width: 304px; grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); transition: width .18s ease; }
+.cp-right { position: relative; width: var(--cp-right-w, 360px); grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); transition: width .18s ease; }
 .cp-right.compact { width: 48px; flex: 0 0 48px; }
+.cp-pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 12;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.cp-pane-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background .12s ease;
+}
+.cp-pane-resizer:hover::after,
+.cp-pane-resizer:focus-visible::after { background: var(--el-color-primary); }
+.cp-pane-resizer:focus-visible { outline: none; }
+.cp-pane-resizer.is-left { right: -4px; }
+.cp-pane-resizer.is-right { left: -4px; }
 .cp-right-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 5px; }
 .cp-rail-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 36px; min-height: 38px; padding: 4px 2px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--el-text-color-secondary); font-size: 10px; cursor: pointer; }
 .cp-rail-btn:hover { color: var(--el-color-primary); border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); }
@@ -8277,8 +8602,37 @@ onMounted(async () => {
 .cp-stale { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
 .cp-zoom { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
 
-/* ===== 时间轴（按内容定高，在监视器下方） ===== */
-.cp-timeline { grid-column: 1 / -1; grid-row: 2; min-width: 0; display: flex; flex-direction: column; padding: 6px 12px 10px; border-top: 1px solid var(--el-border-color-lighter); }
+/* ===== 时间轴（高度可拖动，轨道区内部滚动） ===== */
+.cp-timeline { position: relative; grid-column: 1 / -1; grid-row: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 6px 12px 10px; border-top: 1px solid var(--el-border-color-lighter); }
+.cp-row-resizer {
+  position: absolute;
+  z-index: 20;
+  top: -5px;
+  right: 0;
+  left: 0;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.cp-row-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 54px;
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--el-text-color-secondary) 28%, transparent);
+  transform: translateX(-50%);
+  transition: width .12s ease, background .12s ease;
+}
+.cp-row-resizer:hover::after,
+.cp-row-resizer:focus-visible::after {
+  width: 86px;
+  background: var(--el-color-primary);
+}
+.cp-row-resizer:focus-visible { outline: none; }
+.cp-body.is-resizing-timeline { cursor: row-resize; user-select: none; }
 .cp-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; flex: 0 0 auto; }
 .cp-toolbar-sep { width: 1px; height: 16px; background: var(--el-border-color-lighter); margin: 0 4px; }
 .cp-tool-toggle { gap: 4px; padding: 0 8px; }
@@ -8286,7 +8640,7 @@ onMounted(async () => {
 .cp-toolbar-label { margin-right: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .cp-toolbar-text { gap: 5px; padding: 0 8px; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
-.cp-tl { display: flex; max-height: clamp(260px, 40vh, 430px); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
+.cp-tl { display: flex; flex: 1; min-height: 0; max-height: 100%; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
 .cp-tl-labels { flex: 0 0 168px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label { display: flex; align-items: center; gap: 5px; height: 64px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label.head { position: sticky; top: 0; z-index: 8; height: 28px; border-bottom: 1px solid var(--el-border-color-lighter); }
@@ -8485,9 +8839,193 @@ onMounted(async () => {
 .cp-seg-btns .cp-mini.on { border-color: var(--el-color-primary); background: var(--el-color-primary); color: #fff; }
 .cp-color { width: 34px; height: 24px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: none; cursor: pointer; }
 .cp-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cp-ai-context {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 11px 9px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--el-color-primary-light-9) 72%, var(--el-bg-color)),
+    var(--el-bg-color)
+  );
+}
+.cp-ai-context-title { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.cp-ai-context-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--el-color-primary-light-8);
+  color: var(--el-color-primary);
+}
+.cp-ai-context-title strong { font-size: 12.5px; }
+.cp-ai-context-status {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+.cp-ai-project {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-ai-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.cp-ai-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.cp-ai-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+  color: var(--el-text-color-regular);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.cp-ai-action:hover:not(:disabled) {
+  border-color: var(--el-color-primary-light-5);
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.cp-ai-action.primary {
+  border-color: color-mix(in srgb, var(--el-color-primary) 32%, var(--el-border-color));
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  font-weight: 600;
+}
+.cp-ai-action.quietly { color: var(--el-text-color-secondary); }
+.cp-ai-action:disabled { opacity: .42; cursor: not-allowed; }
+.cp-ai-welcome {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 11px;
+  padding: 24px 16px;
+}
+.cp-ai-welcome-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 24%, var(--el-border-color-lighter));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--el-color-primary-light-9) 78%, var(--el-bg-color));
+  color: var(--el-color-primary);
+}
+.cp-ai-welcome-copy h3 {
+  margin: 0;
+  color: var(--el-text-color-primary);
+  font-size: 18px;
+  font-weight: 650;
+}
+.cp-ai-welcome-copy p {
+  margin: 4px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.cp-ai-briefs { display: flex; width: 100%; flex-direction: column; gap: 6px; }
+.cp-ai-briefs button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 7px;
+  background: var(--el-bg-color);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cp-ai-briefs button:hover {
+  border-color: color-mix(in srgb, var(--el-color-primary) 34%, var(--el-border-color-lighter));
+  background: var(--el-color-primary-light-9);
+}
+.cp-ai-briefs strong { color: var(--el-text-color-primary); font-size: 11.5px; font-weight: 650; }
+.cp-ai-briefs span { color: var(--el-text-color-secondary); font-size: 9.5px; line-height: 1.45; }
+.cp-ai-welcome-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  color: var(--el-text-color-placeholder);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+.cp-chat :deep(.input-area) {
+  padding: 8px 9px 9px;
+  background: var(--el-bg-color);
+}
+.cp-chat :deep(.input-box) {
+  border-radius: 7px;
+  box-shadow: none;
+}
+.cp-chat :deep(.input-agent-bar) {
+  padding-bottom: 4px;
+}
+.cp-chat :deep(.messages) {
+  padding-inline: 10px;
+}
 
 /* ===== 项目列表（剪映式草稿箱） ===== */
 .cp-projects { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
+.cp-ai-project-start {
+  display: grid; max-width: 1040px; gap: 12px; margin: 4px auto 18px; padding: 18px;
+  border: 1px solid var(--el-border-color-lighter); border-radius: 10px;
+  background: color-mix(in srgb, var(--el-color-success-light-9) 52%, var(--el-bg-color));
+}
+.cp-ai-project-copy { display: flex; align-items: flex-start; gap: 12px; }
+.cp-ai-project-mark {
+  display: grid; width: 40px; height: 40px; flex: none; place-items: center;
+  border-radius: 9px; background: var(--el-color-success-dark-2); color: #fff;
+}
+.cp-ai-project-copy > div > span { color: var(--el-color-success-dark-2); font-size: 10px; font-weight: 700; }
+.cp-ai-project-copy h2 { margin: 3px 0 0; font-size: 17px; }
+.cp-ai-project-copy p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 11.5px; line-height: 1.65; }
+.cp-ai-project-input {
+  width: 100%; min-height: 88px; resize: vertical; padding: 10px 12px;
+  border: 1px solid var(--el-border-color); border-radius: 8px;
+  background: var(--el-bg-color); color: var(--el-text-color-primary); font: inherit; font-size: 13px; line-height: 1.65;
+  outline: none;
+}
+.cp-ai-project-input:focus { border-color: var(--el-color-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--el-color-success) 14%, transparent); }
+.cp-ai-project-presets { display: flex; flex-wrap: wrap; gap: 7px; }
+.cp-ai-project-presets button {
+  min-height: 30px; padding: 0 10px; border: 1px solid var(--el-border-color-lighter); border-radius: 999px;
+  background: transparent; color: var(--el-text-color-secondary); font-size: 10.5px; cursor: pointer;
+}
+.cp-ai-project-presets button:hover { border-color: var(--el-color-success); color: var(--el-color-success-dark-2); }
+.cp-ai-project-actions { display: flex; align-items: center; gap: 10px; }
+.cp-ai-project-actions > span { color: var(--el-text-color-placeholder); font-size: 10px; }
 .cp-pj-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .cp-pj-title { font-size: 15px; font-weight: 600; }
 .cp-pj-count { font-size: 12px; color: var(--el-text-color-secondary); }
@@ -8571,6 +9109,21 @@ onMounted(async () => {
 /* 素材栏窄（210px）：空态与条目标题都不许被压成竖排 */
 .cp-media-name, .cp-bgm-name, .cp-sec-title { white-space: nowrap; }
 .cp-empty { white-space: normal; }
+
+@media (max-width: 900px) {
+  .cp-projects { padding: 10px; }
+  .cp-ai-project-start { margin-top: 0; padding: 14px; }
+  .cp-ai-project-copy h2 { font-size: 16px; }
+  .cp-ai-project-copy p { font-size: 12px; }
+  .cp-ai-project-input { min-height: 104px; font-size: 16px; }
+  .cp-ai-project-presets button { min-height: 40px; }
+  .cp-ai-project-actions {
+    position: sticky; bottom: 0; padding-top: 10px;
+    background: linear-gradient(transparent, color-mix(in srgb, var(--el-bg-color) 96%, transparent) 26%);
+  }
+  .cp-ai-project-actions .cp-btn { min-height: 44px; }
+  .cp-ai-project-actions > span { display: none; }
+}
 .cp-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 7px 14px; font-size: 12px; color: #fff; background: rgb(0 0 0 / 76%); border-radius: 6px; cursor: pointer; z-index: 20; }
 
 /* 窄屏：顶栏换行（不横向溢出）、右栏收窄、素材栏收成更窄（保留可用，不做"直接消失"） */
@@ -8581,10 +9134,10 @@ onMounted(async () => {
 @media (max-width: 1199px) {
   /* ★ 150px 太窄：空态长句会被压成竖排（实测 1100px 命中）。
      收到 168px 并配合 .cp-empty 的自然断行，仍保持单列可用。 */
-  .cp-body { grid-template-columns: 168px minmax(0, 1fr) auto; }
-  .cp-left { width: 168px; }
+  .cp-body { grid-template-columns: min(var(--cp-left-w, 168px), 168px) minmax(0, 1fr) min(var(--cp-right-w, 320px), 320px); }
+  .cp-left { width: min(var(--cp-left-w, 168px), 168px); }
   .cp-left .cp-ins-hint { display: none; }
-  .cp-right { width: 270px; flex-basis: 270px; }
+  .cp-right { width: min(var(--cp-right-w, 320px), 320px); flex-basis: min(var(--cp-right-w, 320px), 320px); }
   .cp-media { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 900px) {

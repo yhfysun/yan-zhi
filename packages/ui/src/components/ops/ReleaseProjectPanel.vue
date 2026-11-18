@@ -139,6 +139,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, EditPen, Close } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import type { ReleaseProject } from '@yan-zhi/shared';
+import { usePluginStore } from '../../stores/plugin';
 
 const props = defineProps<{ activeProjectId?: string }>();
 const emit = defineEmits<{
@@ -159,6 +160,7 @@ interface TargetForm {
 }
 
 const electron = (window as any).electronAPI;
+const pluginStore = usePluginStore();
 const projects = ref<ReleaseProject[]>([]);
 const connections = ref<ConnRow[]>([]);
 const pipelines = ref<PipelineRow[]>([]);
@@ -188,6 +190,14 @@ async function loadConnections(): Promise<void> {
   if ('data' in r && Array.isArray(r.data)) connections.value = r.data;
 }
 async function loadPipelines(): Promise<void> {
+  if (!pluginStore.loaded) await pluginStore.refresh().catch(() => {});
+  const enabled = pluginStore.plugins.some(
+    (plugin) => plugin.manifest.id === 'cicd-pipeline' && plugin.state === 'enabled',
+  );
+  if (!enabled) {
+    pipelines.value = [];
+    return;
+  }
   const r = await api.get<PipelineRow[]>('/plugin/cicd-pipeline/pipelines');
   if ('data' in r && Array.isArray(r.data)) pipelines.value = r.data;
 }
@@ -195,7 +205,6 @@ async function loadPipelines(): Promise<void> {
 onMounted(() => {
   void load();
   void loadConnections();
-  void loadPipelines();
 });
 
 function resetForm(): void {

@@ -96,13 +96,17 @@
                 <div class="cp-line1" :class="{ mono: it.kind === 'code' || it.kind === 'json' }">
                   <span v-if="chipOf(it)" class="cp-chip" :class="'c-' + it.kind">{{ chipOf(it) }}</span>
                   <template v-if="it.kind === 'image' || it.kind === 'file'">{{ fileNameOf(it) }}</template>
-                  <template v-else>{{ firstLineOf(it) }}</template>
+                  <template v-else>{{ displayTextOf(it) }}</template>
                 </div>
                 <div class="cp-line2">
                   <span v-if="it.pinned" class="cp-pinflag">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16 3l5 5-1.4 1.4-1.4-.4-3.9 3.9.5 4.2-1.4 1.4-3.6-3.6L5 21l-2-2 5.7-5.8L5.1 9.6l1.4-1.4 4.2.5 3.9-3.9-.4-1.4z"/></svg>
                   </span>
                   <span>{{ kindLabel(it.kind) }}</span>
+                  <span v-if="isSensitive(it)" class="cp-badge sensitive">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+                    {{ isRevealed(it) ? '已显示' : '敏感' }}
+                  </span>
                   <i class="dot"></i>
                   <span>{{ timeAgo(it.createdAt) }}</span>
                   <template v-if="metaOf(it)">
@@ -119,6 +123,10 @@
               </div>
 
               <div class="cp-acts">
+                <button v-if="isSensitive(it)" class="cp-act" data-act="reveal" :title="isRevealed(it) ? '隐藏敏感内容' : '显示原文（10 秒后自动隐藏）'" @click.stop="revealSensitive(it)">
+                  <svg v-if="isRevealed(it)" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c7 0 10 8 10 8a17.7 17.7 0 0 1-2.1 3.2M6.6 6.6C4.4 8.1 3 10.2 2 12c0 0 3 8 10 8a10.8 10.8 0 0 0 5.4-1.4"/></svg>
+                  <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
+                </button>
                 <button class="cp-act" data-act="pin" :class="{ pin: it.pinned }" :title="it.pinned ? '取消置顶' : '置顶'" @click.stop="togglePin(it)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 3l5 5-1.4 1.4-1.4-.4-3.9 3.9.5 4.2-1.4 1.4-3.6-3.6L5 21l-2-2 5.7-5.8L5.1 9.6l1.4-1.4 4.2.5 3.9-3.9-.4-1.4z"/></svg>
                 </button>
@@ -398,6 +406,8 @@ const AI_ACTIONS = [
 ] as const;
 const aiOpen = ref(false);
 const hotkeyLabel = ref('Ctrl+Alt+V');
+const revealedSensitive = ref<Set<string>>(new Set());
+const revealTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // 多选(2026-10-29):勾选多条 → AI 合并整理 / 发送到会话
 const selecting = ref(false);
 const selected = ref<Set<string>>(new Set());
@@ -503,6 +513,41 @@ function domainOf(it: ClipItem) {
 function firstLineOf(it: ClipItem) {
   const t = String(it.text || '');
   return t.length > 240 ? t.slice(0, 240) + '…' : t;
+}
+function isSensitive(it: ClipItem): boolean {
+  if (it.kind === 'image' || it.kind === 'file') return false;
+  const text = String(it.text || '');
+  if (!text) return false;
+  return /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(text)
+    || /\b(password|passwd|pwd|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key)\b/i.test(text)
+    || /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@]+:[^\s@]+@/i.test(text)
+    || /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/.test(text);
+}
+function isRevealed(it: ClipItem): boolean {
+  return revealedSensitive.value.has(it.id);
+}
+function displayTextOf(it: ClipItem): string {
+  if (isSensitive(it) && !isRevealed(it)) return '敏感内容已隐藏，点击右侧眼睛查看';
+  return firstLineOf(it);
+}
+function revealSensitive(it: ClipItem) {
+  const existing = revealTimers.get(it.id);
+  if (existing) clearTimeout(existing);
+  const next = new Set(revealedSensitive.value);
+  if (next.has(it.id)) {
+    next.delete(it.id);
+    revealTimers.delete(it.id);
+    revealedSensitive.value = next;
+    return;
+  }
+  next.add(it.id);
+  revealedSensitive.value = next;
+  revealTimers.set(it.id, setTimeout(() => {
+    const hidden = new Set(revealedSensitive.value);
+    hidden.delete(it.id);
+    revealedSensitive.value = hidden;
+    revealTimers.delete(it.id);
+  }, 10_000));
 }
 function metaOf(it: ClipItem): string {
   if (it.kind === 'image') return [it.width && it.height ? `${it.width}×${it.height}` : '', fmtBytes(it.size || 0)].filter(Boolean).join(' · ');
@@ -855,7 +900,7 @@ const menu = reactive<{ show: boolean; x: number; y: number; title: string; item
 });
 function openMenu(e: MouseEvent, it: ClipItem) {
   e.stopPropagation();
-  const title = (it.kind === 'image' || it.kind === 'file' ? fileNameOf(it) : String(it.text || '').slice(0, 24)) || kindLabel(it.kind);
+  const title = (it.kind === 'image' || it.kind === 'file' ? fileNameOf(it) : displayTextOf(it).slice(0, 24)) || kindLabel(it.kind);
   menu.item = it;
   menu.title = title.length >= 24 ? title + '…' : title;
   menu.show = true;
@@ -936,6 +981,7 @@ function onGlobalKey(e: KeyboardEvent) {
   if (e.key === 'ArrowDown') { e.preventDefault(); selIndex.value = Math.min(list.length - 1, selIndex.value + 1); scrollSel(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); selIndex.value = Math.max(0, selIndex.value - 1); scrollSel(); }
   else if (e.key === 'Enter') { const it = list[selIndex.value]; if (it) void pasteItem(it); }
+  else if (e.key.toLowerCase() === 'r') { const it = list[selIndex.value]; if (it && isSensitive(it)) revealSensitive(it); }
   else if (e.key === '/') { e.preventDefault(); searchEl.value?.focus(); }
   else if (e.key === 'Tab') {
     e.preventDefault();
@@ -1003,6 +1049,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKey);
   window.removeEventListener('mousedown', onWindowMouseDown);
+  for (const timer of revealTimers.values()) clearTimeout(timer);
+  revealTimers.clear();
   offShown?.();
   offChanged?.();
   document.documentElement.style.background = prevBg.html;
@@ -1033,7 +1081,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--color-surface);
+  /* 独立剪贴板窗口必须是不透明面板。主窗口的玻璃/皮肤表面会带 alpha，
+     直接复用 --color-surface 会让后面的聊天内容透出来。 */
+  background-color: #f7f8fa;
+  background-color: var(--el-bg-color, #f7f8fa) !important;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   /* ★ 透明窗里画阴影:模糊半径 - 负扩散 必须小于 .clip-root 的 padding,
@@ -1526,6 +1577,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .cp-badge.g { color: #7C5CFC; border-color: rgba(124, 92, 252, 0.3); background: rgba(124, 92, 252, 0.1); }
+.cp-badge.sensitive { color: #B45309; border-color: rgba(180, 83, 9, 0.28); background: rgba(245, 158, 11, 0.11); }
+.cp-badge.sensitive svg { flex: none; }
 .cp-badge.hk {
   color: var(--color-primary);
   border-color: var(--color-primary-light);

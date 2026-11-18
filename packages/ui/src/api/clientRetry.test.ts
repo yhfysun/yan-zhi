@@ -9,6 +9,7 @@
  *     ① GET 遇到 status:0 会重试（后端稍晚起来就自愈）；
  *     ② POST/PATCH 等写操作**绝不重试**（重试会重复写入）；
  *     ③ 4xx/5xx（后端明确答复）不重试（重试无意义，白白拖时间）。
+ *     ④ 插件 GET 的启动期 404 单独短退避，避免页面先挂载时误弹“缺功能”。
  *
  * @vitest-environment jsdom
  */
@@ -82,6 +83,26 @@ describe('apiFetch · 后端不可达时的退避重试', () => {
   it('★ 4xx（后端明确拒绝）不重试', async () => {
     const spy = mockFetchSequence([httpError(404)]);
     const p = apiFetch('/learning/zhouyi/paths');
+    await vi.runAllTimersAsync();
+    const r = await p;
+    expect(spy.mock.calls.length).toBe(1);
+    expect((r as any).status).toBe(404);
+    expect((r as any).error).toContain('当前后端缺少这个功能');
+    expect((r as any).error).not.toMatch(/^HTTP\s*404/);
+  });
+
+  it('★ 插件 GET 启动期 404 会短退避，路由挂载后自愈', async () => {
+    const spy = mockFetchSequence([httpError(404), httpError(404), ok({ ready: true })]);
+    const p = apiFetch('/plugin/sec-lab/config');
+    await vi.runAllTimersAsync();
+    const r = await p;
+    expect(spy.mock.calls.length).toBe(3);
+    expect('data' in r).toBe(true);
+  });
+
+  it('★ 插件 POST 的 404 不重试（写操作不做语义猜测）', async () => {
+    const spy = mockFetchSequence([httpError(404)]);
+    const p = apiFetch('/plugin/sec-lab/run', { method: 'POST', body: '{}' });
     await vi.runAllTimersAsync();
     const r = await p;
     expect(spy.mock.calls.length).toBe(1);

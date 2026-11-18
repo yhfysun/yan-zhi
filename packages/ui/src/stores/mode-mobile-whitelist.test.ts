@@ -1,7 +1,7 @@
 // 移动端模式白名单（stores/mode.ts 的 isModeAvailable 平台维度）—— 回归测试。
 //
-// 背景（2026-11-15 用户拍板）：手机上只留「办公 + 学习」两个模式，
-// 其余模式的工作台形态（编辑器/终端/控制台/时间轴）均不适合触屏窄屏。
+// 背景（2026-11-17 调整）：手机开放「办公、店铺、运维、安全、学习」五个模式；
+// 开发/工作流/自动化/剪辑仍保留桌面入口，不进入移动一级模式。
 //
 // 钉住的契约：
 //   1) isCapacitor（原生壳）下：白名单外模式一律不可见/不可用 ——
@@ -26,7 +26,7 @@ type ModeModule = typeof import('./mode');
 
 const ALL = MODE_DEFS.map((d) => d.key);
 // 白名单模式必须真的存在于构建期清单里：清单改名/删模式时这里第一时间变红
-const MOBILE_ALLOWED = ALL.filter((k) => k === 'office' || k === 'learning');
+const MOBILE_ALLOWED = ALL.filter((k) => ['office', 'shop', 'ops', 'sec', 'learning'].includes(k));
 
 const REAL_WINDOW = globalThis.window; // 原始 window 引用（测试间恢复，避免污染泄漏）
 
@@ -43,19 +43,24 @@ async function freshModule(
 }
 
 describe('移动端模式白名单（isCapacitor）', () => {
-  it('★ 白名单模式存在性卫兵：office/learning 必须在构建期清单里（清单漂移即红）', () => {
-    expect(MOBILE_ALLOWED).toEqual(['office', 'learning']);
+  it('★ 白名单模式存在性卫兵：五个移动模式必须在构建期清单里（清单漂移即红）', () => {
+    expect(MOBILE_ALLOWED).toEqual(['office', 'ops', 'sec', 'shop', 'learning']);
   });
 
-  it('原生壳下白名单外模式一律不可见（含编译进包的 dev/ops 与未授权兜底态）', async () => {
+  it('原生壳下只显示五个移动模式，桌面重工作台不可见', async () => {
     const m = await freshModule(true);
     m.setLicensedModes(null); // 未拿到授权：桌面全可见，移动端仍收敛
     const keys = m.visibleModeDefs.value.map((d) => d.key);
     expect(keys).toEqual(MOBILE_ALLOWED);
     expect(m.isModeAvailable('dev')).toBe(false);
-    expect(m.isModeAvailable('ops')).toBe(false);
     expect(m.isModeAvailable('office')).toBe(true);
+    expect(m.isModeAvailable('ops')).toBe(true);
+    expect(m.isModeAvailable('sec')).toBe(true);
+    expect(m.isModeAvailable('shop')).toBe(true);
     expect(m.isModeAvailable('learning')).toBe(true);
+    expect(m.isModeAvailable('wf')).toBe(false);
+    expect(m.isModeAvailable('rpa')).toBe(false);
+    expect(m.isModeAvailable('clip')).toBe(false);
   });
 
   it('★ 启动时停在白名单外模式（如 dev）→ 授权到达后回落 office', async () => {

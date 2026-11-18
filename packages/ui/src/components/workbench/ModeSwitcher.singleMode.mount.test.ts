@@ -5,6 +5,8 @@
  */
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { createApp, ref, computed, nextTick, type App } from 'vue';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 
@@ -43,6 +45,14 @@ beforeAll(async () => {
 });
 
 describe('ModeSwitcher · lite 单模式', () => {
+  it('多模式入口通过 hover 展开，触发器无倒三角且单击直接进入当前模式', () => {
+    const source = readFileSync(resolve(__dirname, 'ModeSwitcher.vue'), 'utf8');
+    expect(source).toContain('trigger="hover"');
+    expect(source).toContain('@click="goCurrentMode"');
+    expect(source).not.toContain('mode-caret');
+    expect(source).not.toContain('<ArrowDown');
+  });
+
   it('只有 office 时仍显示“办公”按钮，点击回到 /chat', async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);

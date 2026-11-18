@@ -13,14 +13,17 @@ const strip = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
 
 const ROUTER = strip(readRepo('packages/ui/src/router/index.ts'));
+const APP = strip(readRepo('packages/ui/src/App.vue'));
 const TOPBAR = strip(readRepo('packages/ui/src/components/WebTopBar.vue'));
 const STATUSBAR = strip(readRepo('packages/ui/src/components/AppStatusBar.vue'));
 const WORKBENCH = strip(readRepo('packages/ui/src/views/office/OfficeWorkbench.vue'));
+const OFFICE_AI = strip(readRepo('packages/ui/src/components/office/OfficeAiSidebar.vue'));
 const TREE = strip(readRepo('packages/ui/src/components/office/WorkspaceFileTree.vue'));
 const DOCVIEW = strip(readRepo('packages/ui/src/components/office/OfficeDocumentView.vue'));
 const WS_FILES = strip(readRepo('packages/ui/src/composables/office/useWorkspaceFiles.ts'));
 const OFFICE_ROUTE = strip(readRepo('apps/server/src/routes/office.ts'));
 const ALLOWED = strip(readRepo('apps/server/src/services/allowed-roots.ts'));
+const CHAT_CSS = readRepo('packages/ui/src/views/chat.css');
 
 describe('P2-1 办公工作台骨架', () => {
   it('/office 路由存在且归属 office 模式', () => {
@@ -30,14 +33,13 @@ describe('P2-1 办公工作台骨架', () => {
     expect(ROUTER).toMatch(/path: '\/office'[\s\S]*mobilePageShell: true/);
   });
 
-  it('不再单独出「工作台」入口；入口是右下角悬浮按钮（与开发模式同形态）', () => {
+  it('不再单独出「工作台」入口；AI/人工由顶部切换，旧悬浮入口默认隐藏', () => {
     expect(TOPBAR).not.toMatch(/to="\/office"/);
     const CHAT = strip(readRepo('packages/ui/src/views/Chat.vue'));
     expect(CHAT).toMatch(/<LeadToggle/);
     expect(CHAT).toMatch(/mode="office"/);
     expect(CHAT).toMatch(/onOfficeLead/);
-    // 顶栏不再有 AI/人工 胶囊
-    expect(strip(readRepo('packages/ui/src/components/chat/ChatTopbar.vue'))).not.toMatch(/office-seg/);
+    expect(TOPBAR).toMatch(/<WorkspaceModeSwitch/);
   });
 
   it('三栏：文件树 / 画布；AI 形态就是聊天页', () => {
@@ -50,10 +52,43 @@ describe('P2-1 办公工作台骨架', () => {
     expect(WORKBENCH).not.toMatch(/<ChatInputArea \/>/);
   });
 
+  it('办公 AI 侧栏保留完整空间/子目录/任务树，而不是只列最近会话', () => {
+    expect(OFFICE_AI).toMatch(/<ChatSidebar/);
+    expect(OFFICE_AI).toMatch(/\.oai-directory/);
+    expect(OFFICE_AI).not.toMatch(/class="oai-conv"/);
+    expect(OFFICE_AI).toContain('定时任务');
+    expect(OFFICE_AI).toContain('发布');
+    expect(OFFICE_AI).toContain('oai-recent-resize');
+    expect(APP).toContain('officeAiSidebarR');
+    expect(APP).toContain('office-ai-sidebar-resize');
+    expect(CHAT_CSS).toMatch(/\.conv-main\s*\{[^}]*display:\s*grid/);
+    expect(CHAT_CSS).toMatch(/\.conv-meta\s*\{[^}]*max-width:\s*76px/);
+  });
+
+  it('办公人工模式同时提供任务台、工作区概览和文件编辑器', () => {
+    expect(WORKBENCH).toMatch(/class="wb-desk"/);
+    expect(WORKBENCH).toMatch(/class="wb-task-board"/);
+    expect(WORKBENCH).toMatch(/class="wb-desk-inspector"/);
+    expect(WORKBENCH).toMatch(/class="wb-surface-tabs"/);
+    expect(WORKBENCH).toMatch(/workSurface === 'tasks'/);
+    expect(WORKBENCH).toMatch(/workSurface === 'editor'/);
+    expect(WORKBENCH).toMatch(/class="wb-editor-pulse"/);
+    expect(WORKBENCH).toMatch(/<WorkspaceFileTree/);
+    expect(WORKBENCH).toMatch(/<OfficeDocumentView/);
+  });
+
+  it('在办公壳内直连定时任务与发布主工作区', () => {
+    expect(OFFICE_AI).toContain("router.push('/scheduled-tasks')");
+    expect(OFFICE_AI).toContain("router.push('/publish-queue')");
+    expect(OFFICE_AI).not.toMatch(/openSidePanel\('task'\)/);
+    expect(OFFICE_AI).not.toMatch(/openSidePanel\('publish'\)/);
+  });
+
   it('移动端把文件树收成抽屉，编辑区独占首屏且文件操作一键可达', () => {
     expect(WORKBENCH).toContain('useMobileShell');
     expect(WORKBENCH).toContain('fileDrawerOpen');
     expect(WORKBENCH).toMatch(/class="office-mobile-bar"/);
+    expect(WORKBENCH).toMatch(/<WorkspaceModeSwitch/);
     expect(WORKBENCH).toMatch(/data-action="open-file-drawer"/);
     expect(WORKBENCH).toMatch(/class="wb-file-drawer-mask"/);
     expect(WORKBENCH).toMatch(/watch\(selectedPath[\s\S]*fileDrawerOpen\.value = false/);
@@ -63,10 +98,18 @@ describe('P2-1 办公工作台骨架', () => {
     expect(WORKBENCH).toMatch(/@media \(max-width: 900px\)[\s\S]*\.wb-tree-shell[\s\S]*position: absolute/);
   });
 
+  it('移动端任务台把所有空列收成一条紧凑空态，避免三张大空卡占满首屏', () => {
+    expect(WORKBENCH).toMatch(/const allOfficeTasksEmpty = computed/);
+    expect(WORKBENCH).toMatch(/mobileShell && allOfficeTasksEmpty/);
+    expect(WORKBENCH).toMatch(/v-if="!mobileShell \|\| column\.tasks\.length"/);
+    expect(WORKBENCH).toMatch(/\.wb-task-board-empty\s*\{[\s\S]*?min-height:\s*64px/);
+  });
+
   it('状态栏在 /office 下同步 AI/人工', () => {
     expect(STATUSBAR).toMatch(/officePanel/);
-    expect(STATUSBAR).toMatch(/AI 协作/);
-    expect(STATUSBAR).toMatch(/人工编辑/);
+    expect(STATUSBAR).toMatch(/工作方式/);
+    expect(STATUSBAR).toMatch(/leadLabel/);
+    expect(STATUSBAR).toMatch(/'AI'[\s\S]*'人工'/);
   });
 });
 

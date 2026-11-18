@@ -39,5 +39,20 @@ describe('LearningBookReader', () => {
     expect(host.querySelector('[data-reader-chapters]')).toBeTruthy();
     expect(host.textContent).toContain('注释');
     expect(host.textContent).not.toContain('去来源阅读');
+
+    (host.querySelector('[aria-label="阅读设置"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelectorAll('.lbr-theme-grid button')).toHaveLength(5);
+    expect(host.textContent).toContain('行距');
+    expect(host.textContent).toContain('字间距');
+    expect(host.textContent).toContain('护眼模式');
+    expect(host.textContent).toContain('关灯模式');
+
+    const green = [...host.querySelectorAll('.lbr-theme-grid button')]
+      .find((button) => button.textContent?.includes('护眼')) as HTMLButtonElement;
+    green.click();
+    await nextTick();
+    expect(host.querySelector('.learning-book-reader')?.classList.contains('theme-green')).toBe(true);
+    expect(localStorage.getItem('yz.learning.v2.reader.preferences.v1')).toContain('"theme":"green"');
   });
 });

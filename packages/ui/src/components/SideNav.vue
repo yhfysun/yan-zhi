@@ -2,6 +2,17 @@
   <!-- 桌面平台：可折叠带标签侧栏（分组导航） -->
   <nav v-if="isDesktop" class="side-nav side-nav-desktop" :class="{ collapsed }">
     <div class="nav-top">
+      <button
+        v-if="!collapsed"
+        class="nav-collapse-top"
+        type="button"
+        title="收起侧栏"
+        aria-label="收起侧栏"
+        @click="toggle()"
+      >
+        <el-icon :size="16"><Fold /></el-icon>
+        <span>收起侧栏</span>
+      </button>
       <template v-for="g in navGroups" :key="g.label">
         <div v-if="!collapsed" class="nav-group-label">{{ g.label }}</div>
         <template v-for="item in g.items" :key="item.path">
@@ -202,38 +213,33 @@
     </div>
   </nav>
 
-  <!-- 移动端底部 TabBar：四个核心入口（任务 / 消息 / 文件 / 我的）。
-       ★ 仅 Capacitor 端渲染。桌面/Web 端的窄窗口已有外层 WebTopBar 承担主导航，
-       再叠一条 TabBar 就是两套导航并存（且两者都指向同一批路由）。
-       判定见 usePlatform().isMobile，与 App.vue / packages·core 口径一致。
+  <!-- 移动端底部 TabBar：四个核心入口（工作 / 店铺 / 学习 / 我的）。
+       Capacitor 与 Web 手机视口共用；桌面/宽屏 Web 由各自的顶部导航承担。
 
        ★ 为什么是这 4 项：移动端首屏能放的 TabBar 项上限就是 4~5 个，
        超过就必然挤压文字或降级成纯图标。这里按「用户每天真正会点开的东西」收敛：
-         任务（=对话，绝对主力）/ 消息（IM）/ 文件（产出与上传）/ 我的（设置·授权·关于）
-       原来的「智能体 / 知识库」是配置类低频项，已由「我的 → 更多」与对话页内入口承担，
-       不值得占常驻位。 -->
-  <nav v-if="platformMobile" class="tab-bar">
+         工作（=当前模式主页面）/ 店铺 / 学习 / 我的。
+       文件是任务侧栏里的二级工具，不再占用常驻位；配置管理统一收进「我的 → 设置」。 -->
+  <nav v-if="isMobile" class="tab-bar">
     <template v-for="item in mobilePrimaryItems" :key="item.key">
       <router-link
         v-if="item.kind === 'route'"
         :to="item.path"
         class="tab-bar-item"
-        :class="{ active: isActive(item.path) }"
+        :class="{ active: item.active }"
       >
         <el-icon :size="21"><component :is="item.icon" /></el-icon>
-        <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
+        <span class="tab-bar-label">{{ item.label }}</span>
       </router-link>
-      <!-- 「我的」：移动端跳 /settings（移动版设置列表页）；桌面/窄窗开设置抽屉。
-           ★ 2026-10-25 修复：此前移动端也开桌面抽屉 —— 双栏弹窗在竖屏上溢出不可用
-           （真机截图：设置变成桌面弹窗）。 -->
       <button
         v-else
         type="button"
         class="tab-bar-item"
-        @click="platformMobile ? router.push('/settings') : openSettingsDrawer('general')"
+        :class="{ active: item.active }"
+        @click="item.run?.()"
       >
         <el-icon :size="21"><component :is="item.icon" /></el-icon>
-        <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
+        <span class="tab-bar-label">{{ item.label }}</span>
       </button>
     </template>
   </nav>
@@ -242,16 +248,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding, Files } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, UserFilled, User, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding, Files, Reading, Shop } from '@element-plus/icons-vue';
 import { Code } from 'lucide-vue-next';
-import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useMobileShell } from '../composables/useMobileShell';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
-import { visibleModeDefs, isModeLicensed } from '../stores/mode';
+import { visibleModeDefs, isModeLicensed, activeMode, setMode, modeRoute } from '../stores/mode';
 
 /** 触屏（无 hover 能力）禁用 tooltip：tap 后气泡残留遮挡内容（2026-11-15 真机实报） */
 const isTouchLike = (() => {
@@ -265,10 +270,9 @@ const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
-/** 移动外壳判定（视口窄 或 Capacitor 端）。见 useMobileShell 注释：
- *  用宽度断点会在 Capacitor 横屏时误判成 Web，底部 TabBar 与自绘顶栏会一起消失。 */
+/** 移动外壳判定（视口窄或 Capacitor 端），Web 手机视口与原生端共用。 */
 const isMobile = useMobileShell();
-const { isDesktop, isMobile: platformMobile } = usePlatform();
+const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
 interface NavItem {
@@ -276,8 +280,8 @@ interface NavItem {
   label: string;
   tabLabel?: string;
   icon: any;
-  /** route = 路由跳转；settings = 打开设置抽屉；files = 回对话页并打开文件面板 */
-  kind: 'route' | 'settings' | 'files';
+  /** route = 路由跳转；settings = 打开设置抽屉 */
+  kind: 'route' | 'settings';
   group: string;
   /** 移动端 TabBar 不显示该项（如内置浏览器仅桌面端） */
   hideOnMobile?: boolean;
@@ -380,17 +384,73 @@ const navGroups = computed(() => {
  *
  *  ★★ 这几个图标是"常驻可见"的，**必须与对话页其它区域的图标互不重叠**
  *  （TabBar 一直挂在屏幕上，撞脸最容易被用户看见）。对照表：
- *    · 智能体 → UserFilled（实心）✗ 线框 User 已改用 Avatar（对话页右上角登录/头像位）
- *    · 我的   → Setting    ✗ 空态「配置模型」已改 Brick，"编辑智能体"已改 Tools
- *    · 模型   → Cpu        ✗ 工具条「切换模型」是同一个东西，不冲突；
- *                            顶栏下拉「控制台」已改 Platform
+ *    · 学习   → Reading    ✗ 学习页内阅读动作使用书本/文档类符号，不使用同一入口图
+ *    · 我的   → User       ✗ 对话页身份位、编辑动作分别使用 Avatar / Tools
+ *    · 工作   → HomeFilled ✗ 页面内“首页”动作使用导航语义，不与底部常驻入口重复
  *  由 `composables/mobileIconUniqueness.test.ts` 守门（读源码断言不做跨区域撞脸）。 */
-const mobilePrimaryItems = computed<Array<NavItem & { kind: 'route' | 'settings' | 'files'; key: string }>>(() => [
-  { key: 'chat', kind: 'route', path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, group: '工作台' },
-  { key: 'models', kind: 'route', path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, group: '工作台' },
-  { key: 'agents', kind: 'route', path: '/agents', label: '智能体平台', tabLabel: '智能体', icon: UserFilled, group: '工作台' },
-  { key: 'me', kind: 'settings', path: '', label: '我的', tabLabel: '我的', icon: Setting, group: '系统' },
-]);
+interface MobilePrimaryItem {
+  key: string;
+  label: string;
+  icon: any;
+  kind: 'route' | 'action';
+  path: string;
+  active: boolean;
+  run?: () => void;
+}
+
+function openCurrentWork(): void {
+  if (activeMode.value === 'shop') setMode('office');
+  void router.push(modeRoute(activeMode.value)).catch(() => {});
+}
+
+function openShop(): void {
+  setMode('shop');
+  void router.push(modeRoute('shop')).catch(() => {});
+}
+
+const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
+  const workRoute = activeMode.value === 'shop' ? '/chat' : modeRoute(activeMode.value);
+  const shopVisible = visibleModeDefs.value.some((d) => d.key === 'shop');
+  const learningVisible = visibleModeDefs.value.some((d) => d.key === 'learning');
+  const learningRoute = visibleModeDefs.value.find((d) => d.key === 'learning')?.route || '/learning-v2';
+  const workActive = route.path === workRoute && activeMode.value !== 'shop';
+  return [
+    {
+      key: 'work',
+      label: '工作',
+      icon: HomeFilled,
+      kind: 'action',
+      path: workRoute,
+      active: workActive,
+      run: openCurrentWork,
+    },
+    ...(shopVisible ? [{
+      key: 'shop',
+      label: '店铺',
+      icon: Shop,
+      kind: 'action' as const,
+      path: '/shop',
+      active: route.path.startsWith('/shop'),
+      run: openShop,
+    }] : []),
+    ...(learningVisible ? [{
+      key: 'learning',
+      label: '学习',
+      icon: Reading,
+      kind: 'route' as const,
+      path: learningRoute,
+      active: route.path.startsWith('/learning'),
+    }] : []),
+    {
+      key: 'me',
+      label: '我的',
+      icon: User,
+      kind: 'route',
+      path: '/settings',
+      active: isActive('/settings'),
+    },
+  ];
+});
 
 function isActive(path: string) {
   return route.path === path || route.path.startsWith(path + '/');
@@ -419,6 +479,30 @@ function toggleTheme() {
   overflow-y: auto;
   overflow-x: hidden;
   width: 100%;
+}
+
+.nav-collapse-top {
+  display: flex;
+  width: calc(100% - 8px);
+  min-height: 34px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 6px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nav-collapse-top:hover {
+  border-color: var(--color-border-strong);
+  background: var(--glass-bg-hover);
+  color: var(--color-text);
 }
 
 .nav-bottom {
@@ -623,16 +707,16 @@ function toggleTheme() {
   right: 0;
   /* ★ 高度走 App.vue 的变量 —— .main-content 的底部留白消费同一个变量，
      避免「改 TabBar 高度忘改留白」导致最后一条内容被压住。 */
-  height: var(--mobile-tabbar-h, 56px);
+  height: calc(var(--mobile-tabbar-h, 60px) + env(safe-area-inset-bottom, 0px));
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border-top: 1px solid var(--glass-border);
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  box-shadow: 0 -6px 22px rgba(22, 31, 39, 0.06);
   z-index: 100;
   justify-content: space-around;
-  align-items: flex-start;
-  padding-top: 6px;
+  align-items: center;
+  padding-top: 5px;
+  gap: 2px;
 }
 
 .tab-bar-item {
@@ -643,14 +727,14 @@ function toggleTheme() {
   flex: 1;
   gap: 3px;
   min-width: 0;
-  min-height: 44px;
+  min-height: 50px;
   text-decoration: none;
   color: var(--color-text-secondary);
-  font-size: 10px;
-  font-weight: 500;
-  border-radius: 10px;
-  padding: 4px 2px;
-  margin: 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 14px;
+  padding: 5px 3px;
+  margin: 0 3px;
   transition: color 0.18s ease, background-color 0.18s ease;
   position: relative;
   border: none; background: transparent; font-family: inherit;
@@ -664,29 +748,21 @@ function toggleTheme() {
 
 .tab-bar-item.active {
   color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  background: var(--color-primary-soft);
 }
 
 .tab-bar-item.active .el-icon {
-  transform: translateY(-1px) scale(1.06);
-  transition: transform 0.18s ease;
+  transform: translateY(-1px) scale(1.08);
+  transition: transform var(--motion-base) var(--ease-entrance);
 }
 
 .tab-bar-item.active::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 18px;
-  height: 3px;
-  background: var(--color-primary);
-  border-radius: 0 0 2px 2px;
+  display: none;
 }
 
 .tab-bar-label {
-  font-size: 10px;
-  line-height: 1;
+  font-size: 11px;
+  line-height: 1.1;
 }
 
 .tab-bar-more {

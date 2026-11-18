@@ -1,23 +1,14 @@
 /**
- * 打包前把旧产物「移出工程」而不是删除（幂等、跨盘安全）。
+ * 打包前直接删除已知旧产物，避免每次构建都在工程外堆出时间戳备份目录。
  *
- * 起因：vite build / build-mobile-server / cap sync 会分别清空 dist、nodejs/dist、
- * android/app/src/main/assets/public、android/capacitor-cordova-android-plugins；
- * 本机安全钩子对 >50 个文件的批量删除要求人工确认，构建会直接失败。
- * ★ 若把旧产物改名成工程内的 *_prev_* 备份，capacitor 的 webDir / android assets
- *   会把它一起打进 APK（实测包体从 217MB 涨到 548MB 且夹带旧代码）——
- *   所以必须移到工程目录之外。
- *
- * 备份根默认在「项目所在盘符的根 /yz-build-bak」，与项目同盘 ⇒ renameSync 不会 EXDEV。
- * 可用 YZ_BUILD_BAK 覆盖。只移动、不删除任何文件。
+ * Windows 上 Gradle / Node / 文件预览可能短暂占用目录或文件，因此统一使用
+ * fs.rmSync 的 maxRetries/retryDelay；仍失败时明确提示关闭占用进程后重试。
+ * 工程内旧版 *_prev_* 目录也一并清理，防止被 Capacitor 打进 APK。
  */
 const fs = require('fs');
 const path = require('path');
 
 const mobileDir = path.join(__dirname, '..');
-const bakRoot = process.env.YZ_BUILD_BAK || path.join(path.parse(mobileDir).root, 'yz-build-bak');
-const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-const bakDir = path.join(bakRoot, stamp);
 
 const relTargets = [
   'dist',
@@ -36,14 +27,20 @@ function staleBackups(dir) {
 
 const all = [...relTargets, ...staleBackups('dist'), ...staleBackups('nodejs'),
   ...staleBackups('android/app/src/main/assets'), ...staleBackups('android')];
-let moved = 0;
+let removed = 0;
 for (const rel of [...new Set(all)]) {
   const src = path.join(mobileDir, rel);
   if (!fs.existsSync(src)) continue;
-  const dest = path.join(bakDir, rel);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.renameSync(src, dest);
-  moved += 1;
-  console.log(`[clean-build] ${rel} -> ${dest}`);
+  try {
+    fs.rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  } catch (error) {
+    const code = error && error.code ? ` (${error.code})` : '';
+    throw new Error(
+      `[clean-build] 无法删除旧产物 ${rel}${code}。请关闭正在占用该目录的构建、预览或同步进程后重试。`,
+      { cause: error },
+    );
+  }
+  removed += 1;
+  console.log(`[clean-build] 已删除 ${rel}`);
 }
-console.log(`[clean-build] 共移出 ${moved} 个旧产物目录（未删除任何文件）`);
+console.log(`[clean-build] 共清理 ${removed} 个旧产物目录`);

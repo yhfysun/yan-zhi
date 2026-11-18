@@ -5,6 +5,7 @@ import { createPinia } from 'pinia';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import LearningV2 from './LearningV2.vue';
+import { setLead, setMode } from '../stores/mode';
 
 const apiState = vi.hoisted(() => ({
   get: vi.fn(async (): Promise<{ data: { lessonIds: string[] } }> => ({ data: { lessonIds: [] } })),
@@ -26,6 +27,20 @@ vi.mock('../components/notes/NoteQuickCreateDialog.vue', () => ({
   },
 }));
 
+vi.mock('../components/chat/ChatMessageList.vue', () => ({
+  default: {
+    name: 'ChatMessageList',
+    template: '<div data-test="learning-chat-messages"><slot name="welcome"></slot></div>',
+  },
+}));
+
+vi.mock('../components/chat/ChatInputArea.vue', () => ({
+  default: {
+    name: 'ChatInputArea',
+    template: '<div data-test="learning-chat-input"></div>',
+  },
+}));
+
 vi.mock('../components/learning/CyberSecurityWorkbench.vue', () => ({
   default: {
     name: 'CyberSecurityWorkbench',
@@ -38,6 +53,8 @@ vi.mock('../components/learning/CyberSecurityWorkbench.vue', () => ({
 let app: App | null = null;
 
 beforeEach(() => {
+  setMode('learning');
+  setLead('learning', 'human');
   localStorage.clear();
   document.body.style.overflow = '';
   apiState.get.mockClear();
@@ -47,8 +64,10 @@ beforeEach(() => {
 });
 
 async function mountPage(): Promise<HTMLElement> {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
+  // Immersive lesson/studio surfaces teleport to <body> so they can escape
+  // the application stacking context. Mount the test app at the same root
+  // and query through it, matching the real runtime containment.
+  const host = document.body;
   app = createApp(LearningV2);
   app.use(createPinia());
   app.mount(host);
@@ -57,6 +76,8 @@ async function mountPage(): Promise<HTMLElement> {
 }
 
 afterEach(() => {
+  setLead('learning', 'human');
+  setMode('office');
   app?.unmount();
   app = null;
   localStorage.clear();
@@ -75,7 +96,8 @@ describe('LearningV2', () => {
     expect(appSource).toContain("'has-statusbar': showStatusBar");
     expect(appSource).toMatch(/\.app-shell\.has-statusbar \{ --app-statusbar-h: 26px; \}/);
     for (const selector of ['.lv2-lesson', '.lv2-specialized-study', '.lv2-studio-immersive']) {
-      expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*bottom: var\\(--app-statusbar-h, 0px\\);`));
+      expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*position: fixed;[^}]*inset: 0;`));
+      expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*height: 100dvh;`));
     }
     expect(css).toMatch(/\.lv2 \{[^}]*background: transparent;/);
     expect(css).toMatch(/\.lv2-subjects \{[^}]*backdrop-filter: blur\(18px\)/);
@@ -86,14 +108,14 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2-subject-list \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
     expect(css).toMatch(/\.lv2-main \{[^}]*min-height: 0;[^}]*display: flex;/);
     expect(css).toMatch(/\.lv2-workspace \{[^}]*min-height: 0;[^}]*flex: 1;[^}]*overflow-y: auto;/);
-    expect(css).toMatch(/\.lv2-studio-immersive \{[^}]*position: fixed;[^}]*bottom: var\(--app-statusbar-h, 0px\);[^}]*overflow: hidden;/);
+    expect(css).toMatch(/\.lv2-studio-immersive \{[^}]*position: fixed;[^}]*inset: 0;[^}]*overflow: hidden;/);
     expect(css).toMatch(/\.lv2-studio-immersive-body \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
     expect(css).toMatch(/\.lv2-specialized-study \{[^}]*background: var\(--skin-panel-bg-strong/);
     expect(css).not.toMatch(/\.lv2-specialized-study-surface \{[^}]*backdrop-filter/);
     expect(css).toMatch(/\.lv2-subject-list \{[^}]*scrollbar-width: thin;/);
     expect(css).toMatch(/\.lv2-subject-list::-webkit-scrollbar \{[^}]*width: 8px;/);
-    expect(css).toMatch(/\.lv2-library-shell \{[^}]*width: 100%;[^}]*justify-content: center;/);
-    expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: min\(1320px, calc\(100vw - 40px\)\);/);
+    expect(css).toMatch(/\.lv2-library-shell \{[^}]*width: 100%;[^}]*align-items: stretch;/);
+    expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: 100%;[^}]*height: 100%;/);
   });
 
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
@@ -363,6 +385,58 @@ describe('LearningV2', () => {
 
     expect(document.body.querySelector('.ll-library')?.textContent).toContain('星图与历法入门');
     expect(document.body.querySelector('.ll-library')?.textContent).toContain('仅书目登记');
+  });
+
+  it('renders the library as a first-class learning workspace instead of a modal overlay', async () => {
+    const host = await mountPage();
+    (host.querySelector('[aria-label="打开公共图书馆"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2')?.classList.contains('is-library-open')).toBe(true);
+    expect(host.querySelector('.lv2-library-page .ll-library')).toBeTruthy();
+    expect(host.querySelector('.lv2-library-mask')).toBeNull();
+    expect(host.querySelector('.lv2-library-page')?.parentElement).toBe(host.querySelector('.lv2'));
+    expect(document.body.style.overflow).not.toBe('hidden');
+
+    (host.querySelector('[aria-label="关闭图书馆"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-library-page')).toBeNull();
+    expect(host.querySelector('.lv2-subjects')).toBeTruthy();
+  });
+
+  it('switches learning between the complete AI workspace and the immersive human desk', async () => {
+    setLead('learning', 'ai');
+    const host = await mountPage();
+
+    expect(host.querySelector('.lv2')?.classList.contains('is-learning-ai')).toBe(true);
+    expect(host.querySelector('.lv2-ai-context')?.textContent).toContain('学习教练');
+    expect(host.querySelector('.lv2-ai-context')?.textContent).toContain('当前课程');
+    expect(host.querySelector('[data-test="learning-chat-messages"]')).toBeTruthy();
+    expect(host.querySelector('[data-test="learning-chat-input"]')).toBeTruthy();
+    expect(host.querySelector('.lv2-ai-welcome')?.textContent).toContain('今天想把哪一块学明白');
+    expect(host.querySelector('.lv2-ai-actions')?.textContent).toContain('图书馆');
+
+    (host.querySelector('.lv2-ai-actions button') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2')?.classList.contains('is-learning-ai')).toBe(false);
+    expect(host.querySelector('.lv2-subjects')).toBeTruthy();
+    expect(host.querySelector('.lv2-workspace')).toBeTruthy();
+  });
+
+  it('returns from the built-in reader to the open library instead of dropping to the overview', async () => {
+    const host = await mountPage();
+    (host.querySelector('[aria-label="打开公共图书馆"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const read = document.body.querySelector('button[data-read-book]') as HTMLButtonElement;
+    read.click();
+    await nextTick();
+    expect(document.body.querySelector('.learning-book-reader')).toBeTruthy();
+
+    (document.body.querySelector('[aria-label="关闭阅读器"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(document.body.querySelector('.ll-library')).toBeTruthy();
   });
 
   it('reports completed lessons to the existing progress API', async () => {

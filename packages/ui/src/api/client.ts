@@ -4,7 +4,11 @@ import { resolveLocalApiPort, localApiBase } from '@yan-zhi/shared';
 import { getLicenseCodeSync } from './license-code';
 
 export const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-export const isCapacitor = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
+const mobileShellPreview = import.meta.env.DEV
+  && typeof window !== 'undefined'
+  && new URLSearchParams(window.location?.search || '').get('mobileRuntime') === '1';
+export const isCapacitor = mobileShellPreview
+  || (typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform);
 /** 完整桌面版有随包后端；轻量壳没有，只能连远程后端。 */
 export const hasLocalBackend = isElectron && !!(window as any).electronAPI?.hasLocalBackend;
 /** 只允许轻量壳显示/修改远程服务器地址。 */
@@ -107,7 +111,7 @@ export const API_BASE = hasLocalBackend
   : serverBaseApi()
     || (isElectron
       ? LOCAL_API_BASE
-      : isCapacitor
+      : isCapacitor && !mobileShellPreview
         ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : LOCAL_API_BASE)
         : '/api');
 const BASE_URL = API_BASE;
@@ -272,11 +276,37 @@ export interface ApiError {
  *   退避总预算 ~2.4s，覆盖内嵌后端实测 1~3s 的冷启动窗口。
  */
 const GET_RETRY_DELAYS_MS = [400, 800, 1200];
+/**
+ * 插件后端路由在宿主启动完成前会短暂 404。
+ *
+ * 插件系统在主进程监听之后异步恢复/激活插件，页面可能先挂载并发 GET。
+ * 这不是“插件缺失”，而是一个启动窗口；若立即把 404 弹给用户，就会出现
+ * “页面内容明明已显示，却红框提示后端缺功能”。只对幂等 GET 的插件路径做短退避。
+ */
+const PLUGIN_ROUTE_RETRY_DELAYS_MS = [250, 500, 750, 1000, 1500, 2000, 3000];
 
 /** 该请求是否幂等（可安全重试）。未指定 method 的 api.get 视为 GET。 */
 function isIdempotentMethod(method?: string): boolean {
   const m = String(method || 'GET').toUpperCase();
   return m === 'GET' || m === 'HEAD';
+}
+
+function isPluginRoute(path: string): boolean {
+  return path.startsWith('/plugin/');
+}
+
+function friendlyHttpError(status: number, raw?: unknown): string {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (status === 404 || /^HTTP\s*404\b/i.test(text)) {
+    return '当前后端缺少这个功能，请更新服务端或对应插件后重试。';
+  }
+  if (status === 401 || status === 403) {
+    return '当前操作没有权限，请检查登录状态和授权范围。';
+  }
+  if (status >= 500) {
+    return '服务暂时不可用，请稍后重试；如果持续失败，请查看后端日志。';
+  }
+  return text && !/^HTTP\s*\d+/i.test(text) ? text : `请求失败（${status}）`;
 }
 
 export async function apiFetch<T = any>(
@@ -295,15 +325,31 @@ export async function apiFetch<T = any>(
   const licenseCode = getLicenseCode();
   if (licenseCode) headers['x-license'] = licenseCode;
 
-  // ★ 后端不可达时的退避重试（仅幂等方法）。理由见 GET_RETRY_DELAYS_MS 注释。
-  const maxAttempts = isIdempotentMethod(options.method) ? GET_RETRY_DELAYS_MS.length : 0;
+  // ★ 两类启动竞态都只对幂等方法重试：
+  //   ① 后端尚未监听 → status 0；
+  //   ② 插件层尚未挂载路由 → 插件 GET 的 404。
+  const idempotent = isIdempotentMethod(options.method);
+  let networkAttempt = 0;
+  let pluginRouteAttempt = 0;
 
-  for (let attempt = 0; ; attempt++) {
+  for (;;) {
     const outcome = await fetchOnce<T>(path, options, headers);
-    // 只有「压根没拿到 HTTP 响应」（连接被拒 / 后端还没监听）才重试；
-    // 4xx/5xx 是后端明确答复，重试无意义，直接返回。
-    if (outcome.status !== 0 || attempt >= maxAttempts) return outcome.result;
-    await new Promise((r) => setTimeout(r, GET_RETRY_DELAYS_MS[attempt]));
+    if (outcome.status === 0 && idempotent && networkAttempt < GET_RETRY_DELAYS_MS.length) {
+      await new Promise((r) => setTimeout(r, GET_RETRY_DELAYS_MS[networkAttempt]));
+      networkAttempt += 1;
+      continue;
+    }
+    if (
+      outcome.status === 404
+      && idempotent
+      && isPluginRoute(path)
+      && pluginRouteAttempt < PLUGIN_ROUTE_RETRY_DELAYS_MS.length
+    ) {
+      await new Promise((r) => setTimeout(r, PLUGIN_ROUTE_RETRY_DELAYS_MS[pluginRouteAttempt]));
+      pluginRouteAttempt += 1;
+      continue;
+    }
+    return outcome.result;
   }
 }
 
@@ -337,12 +383,12 @@ async function fetchOnce<T>(
   if (!res) {
     return { result: { error: 'NETWORK_UNREACHABLE', status: 0 }, status: 0 };
   }
-  const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  const json = await res.json().catch(() => ({ error: friendlyHttpError(res.status) }));
   if (!res.ok) {
     // 本地模式已屏蔽鉴权，401 不再清 token 跳登录
     return {
       result: {
-        error: (json as any).error || `请求失败 (${res.status})`,
+        error: friendlyHttpError(res.status, (json as any).error),
         status: res.status,
         details: (json as any).data,
       },

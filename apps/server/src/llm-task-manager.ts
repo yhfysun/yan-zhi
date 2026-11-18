@@ -822,7 +822,7 @@ export function loadModel(modelId: string, userId: string, platformId?: string):
  * 注意：findModelRow 按主键查时不带平台约束（存量裸名兼容），所以这里必须自己比对 platform_id。
  */
 export function validateTaskModel(userId: string, platformId: string, modelId: string): string | null {
-  if (!loadPlatform(platformId, userId)) return `平台不存在或已删除（platformId: ${platformId}）`;
+  if (!loadPlatform(platformId, userId)) return '当前模型平台已删除或不可用，请重新选择模型。';
   const row = findModelRow(db, modelId, userId, platformId) as
     | (ReturnType<typeof findModelRow> & { enabled?: number | null })
     | undefined;

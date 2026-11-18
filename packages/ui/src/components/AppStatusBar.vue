@@ -10,26 +10,40 @@
   <footer class="app-statusbar" role="status" aria-live="polite">
     <span class="st-item">
       <span class="st-dot" :class="{ busy }"></span>
-      {{ modeLabel }}
+      <strong>{{ modeLabel }}</strong>
     </span>
+    <span class="st-sep"></span>
+    <span class="st-item">工作方式 <b>{{ leadLabel }}</b></span>
     <template v-if="territory">
       <span class="st-sep"></span>
-      <span class="st-item">{{ territory.label }} <b>{{ territory.value }}</b></span>
+      <span class="st-item">当前 <b>{{ currentLabel }}</b></span>
     </template>
+    <span v-if="modelLabel" class="st-sep"></span>
+    <span v-if="modelLabel" class="st-item st-model">
+      <el-icon :size="11"><Cpu /></el-icon>
+      <b>{{ modelLabel }}</b>
+    </span>
     <span class="st-right">
-      <span v-if="modelLabel" class="st-item">模型 <b>{{ modelLabel }}</b></span>
-      <span class="st-item">{{ busy ? '任务运行中' : '空闲' }}</span>
+      <span class="st-item">
+        <el-icon :size="11"><Refresh /></el-icon>
+        {{ busy ? '任务运行中' : '同步正常' }}
+      </span>
+      <span class="st-item st-clock">
+        <el-icon :size="11"><Clock /></el-icon>
+        {{ currentTime }}
+      </span>
     </span>
   </footer>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { Clock, Cpu, Refresh } from '@element-plus/icons-vue';
 import { useRoute } from 'vue-router';
 import { useSettingsStore } from '../stores/settings';
 import { useChatStore } from '../stores/chat';
 import { usePlatformStore } from '../stores/platform';
-import { activeMode, modeDefOf } from '../stores/mode';
+import { activeLead, activeMode, modeDefOf } from '../stores/mode';
 import { useCodeStore } from '../stores/code';
 import { workbenchContextOf } from '../stores/workbenchContext';
 import { officePanel } from '../stores/officeWorkbench';
@@ -39,15 +53,18 @@ const chatStore = useChatStore();
 const platformStore = usePlatformStore();
 const codeStore = useCodeStore();
 const route = useRoute();
+const now = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | null = null;
 
 /** 工作台要同步显示 AI / 人工（人工 = 不调用任何模型），聊天页保持只显示模式名 */
 const modeLabel = computed(() => {
-  const base = modeDefOf(activeMode.value).label;
-  if (activeMode.value === 'office' && route.path.startsWith('/office')) {
-    return `${base} · ${officePanel.value === 'manual' ? '人工编辑' : 'AI 协作'}`;
-  }
-  return base;
+  return modeDefOf(activeMode.value).label.replace(/模式$/, '');
 });
+const leadLabel = computed(() => (
+  activeMode.value === 'office'
+    ? (officePanel.value === 'manual' ? '人工' : 'AI')
+    : (activeLead.value === 'ai' ? 'AI' : '人工')
+));
 
 /** 工作区取路径最后一段；未设置时给明确文案，不显示空串 */
 const workspaceName = computed(() => {
@@ -83,6 +100,10 @@ const territory = computed<{ label: string; value: string } | null>(() => {
       return workbenchContextOf(activeMode.value);
   }
 });
+const currentLabel = computed(() => {
+  if (activeMode.value === 'office') return workspaceName.value || '本机工作台';
+  return territory.value?.value || '本机工作台';
+});
 
 /**
  * 当前会话的模型优先，其次设置里的默认模型。
@@ -98,6 +119,20 @@ const modelLabel = computed(() => {
 });
 
 const busy = computed(() => !!chatStore.streaming);
+const currentTime = computed(() => new Date(now.value).toLocaleTimeString('zh-CN', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+}));
+
+onMounted(() => {
+  now.value = Date.now();
+  clockTimer = setInterval(() => { now.value = Date.now(); }, 30_000);
+});
+onBeforeUnmount(() => {
+  if (clockTimer) clearInterval(clockTimer);
+  clockTimer = null;
+});
 </script>
 
 <style scoped>
@@ -106,20 +141,23 @@ const busy = computed(() => !!chatStore.streaming);
   height: 26px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px;
+  gap: 9px;
+  padding: 0 10px;
   border-top: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 94%, var(--el-fill-color-light));
   color: var(--color-text-tertiary);
   font-size: 11px;
   user-select: none;
   overflow: hidden;
   white-space: nowrap;
 }
-.st-item { display: inline-flex; align-items: center; gap: 5px; }
-.st-item b { color: var(--color-text-secondary); font-weight: 500; }
-.st-sep { width: 1px; height: 12px; background: var(--color-border); }
-.st-right { margin-left: auto; display: inline-flex; align-items: center; gap: 14px; }
+.st-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.st-item strong { color: var(--color-text); font-size: 11px; font-weight: 650; }
+.st-item b { overflow: hidden; color: var(--color-text-secondary); font-weight: 550; text-overflow: ellipsis; }
+.st-sep { width: 1px; height: 13px; background: color-mix(in srgb, var(--color-border) 76%, transparent); }
+.st-right { margin-left: auto; display: inline-flex; align-items: center; gap: 16px; }
+.st-model { min-width: 0; max-width: 240px; }
+.st-clock { font-variant-numeric: tabular-nums; }
 .st-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--color-success);

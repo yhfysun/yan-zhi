@@ -20,6 +20,7 @@
       @click="toggle"
     >
       <el-icon :size="15"><component :is="nextIcon" /></el-icon>
+      <span class="lead-fab-state">{{ currentShort }}</span>
       <span class="lead-fab-tip">{{ nextLabel }}</span>
     </button>
   </div>
@@ -57,6 +58,17 @@ const humanIcon = computed(() =>
 /** 按钮显示的是「点了会切到哪里」：当前 ai → 显示人工侧图标，反之显示 AI 图标 */
 const nextLabel = computed(() => (props.modelValue === 'ai' ? humanLabel.value : 'AI 模式'));
 const nextIcon = computed(() => (props.modelValue === 'ai' ? humanIcon.value : MagicStick));
+const currentShort = computed(() =>
+  props.modelValue === 'ai'
+    ? 'AI'
+    : props.mode === 'dev'
+      ? '编辑'
+      : props.mode === 'wf'
+        ? '运行'
+        : props.mode === 'shop'
+          ? '工作台'
+          : '命令',
+);
 
 /** hover 提示：说清当前状态与点击结果 */
 const hint = computed(() =>
@@ -73,6 +85,7 @@ function toggle() {
 <style scoped>
 /* 外层 wrapper：只定位不拦截事件，按钮本身 pointer-events:auto */
 .lead-toggle-wrap {
+  display: none;
   position: absolute;
   right: 16px;
   bottom: 16px;
@@ -125,10 +138,12 @@ function toggle() {
   pointer-events: none;
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
+.lead-fab-state { display: none; }
 
 .lead-fab:hover .lead-fab-tip,
 .lead-fab:focus-visible .lead-fab-tip {
   opacity: 1;
   transform: translateY(0);
 }
+
 </style>

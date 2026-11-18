@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
-  BookOpen, ChevronLeft, ChevronRight, Languages, List, LoaderCircle, Minus, Moon, NotebookText, Plus, Sun, X,
+  BookOpen, ChevronLeft, ChevronRight, Languages, List, LoaderCircle, NotebookText,
+  RotateCcw, SlidersHorizontal, X,
 } from 'lucide-vue-next';
 import type { LearningV2ReaderBook } from '@yan-zhi/shared';
 import { BUILTIN_BOOK_LOADERS, type BuiltinBookAsset } from '../../../assets/learning-library/book-assets.generated';
@@ -19,14 +20,21 @@ const props = defineProps<{ book: LearningV2ReaderBook }>();
 const emit = defineEmits<{ close: [] }>();
 
 type ReaderChapter = ImportedBookChapter;
-type ReaderTheme = 'paper' | 'night';
+type ReaderTheme = 'paper' | 'sepia' | 'green' | 'night' | 'lights-off';
+type ReaderPageWidth = 'narrow' | 'standard' | 'wide';
 
 const loading = ref(true);
 const error = ref('');
 const chapters = ref<ReaderChapter[]>([]);
+const comicPages = ref<string[]>([]);
 const chapterIndex = ref(0);
 const theme = ref<ReaderTheme>('paper');
 const fontSize = ref(19);
+const lineHeight = ref(1.95);
+const letterSpacing = ref(0);
+const pageWidth = ref<ReaderPageWidth>('standard');
+const comicZoom = ref(100);
+const settingsOpen = ref(false);
 const chaptersOpen = ref(false);
 const notesOpen = ref(false);
 const translationOpen = ref(false);
@@ -42,21 +50,50 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const usesExternalReader = computed(() =>
   props.book.readingMode === 'external' || props.book.readingMode === 'platform',
 );
+const isComic = computed(() => props.book.contentKind === 'comic');
 const currentChapter = computed(() => chapters.value[chapterIndex.value] || null);
 const progressPercent = computed(() =>
-  chapters.value.length ? Math.round(((chapterIndex.value + 1) / chapters.value.length) * 100) : 0,
+  isComic.value
+    ? comicPages.value.length ? Math.round(((chapterIndex.value + 1) / comicPages.value.length) * 100) : 0
+    : chapters.value.length ? Math.round(((chapterIndex.value + 1) / chapters.value.length) * 100) : 0,
 );
-const themeLabel = computed(() => theme.value === 'paper' ? '切换深色阅读' : '切换纸张阅读');
+const totalPages = computed(() => isComic.value ? comicPages.value.length : chapters.value.length);
+const currentComicPage = computed(() => comicPages.value[chapterIndex.value] || '');
 const canTranslate = computed(() => props.book.language === 'en');
+const readerStyle = computed<Record<string, string>>(() => ({
+  '--reader-font-size': `${fontSize.value}px`,
+  '--reader-line-height': String(lineHeight.value),
+  '--reader-letter-spacing': `${letterSpacing.value}px`,
+  '--reader-page-width': pageWidth.value === 'narrow' ? '640px' : pageWidth.value === 'wide' ? '900px' : '760px',
+  '--comic-zoom': String(comicZoom.value / 100),
+}));
+
+const READER_THEMES: Array<{ key: ReaderTheme; label: string; hint: string }> = [
+  { key: 'paper', label: '纸张', hint: '明亮纸白' },
+  { key: 'sepia', label: '羊皮', hint: '暖色低刺激' },
+  { key: 'green', label: '护眼', hint: '低饱和绿色' },
+  { key: 'night', label: '夜间', hint: '深色低亮度' },
+  { key: 'lights-off', label: '关灯', hint: '近黑阅读' },
+];
 
 function restorePreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem('yz.learning.v2.reader.preferences.v1') || '{}') as {
       theme?: ReaderTheme;
       fontSize?: number;
+      lineHeight?: number;
+      letterSpacing?: number;
+      pageWidth?: ReaderPageWidth;
+      comicZoom?: number;
     };
-    if (saved.theme === 'paper' || saved.theme === 'night') theme.value = saved.theme;
+    if (READER_THEMES.some((item) => item.key === saved.theme)) theme.value = saved.theme as ReaderTheme;
     if (Number.isFinite(saved.fontSize)) fontSize.value = Math.min(26, Math.max(16, Number(saved.fontSize)));
+    if (Number.isFinite(saved.lineHeight)) lineHeight.value = Math.min(2.5, Math.max(1.45, Number(saved.lineHeight)));
+    if (Number.isFinite(saved.letterSpacing)) letterSpacing.value = Math.min(3, Math.max(0, Number(saved.letterSpacing)));
+    if (saved.pageWidth === 'narrow' || saved.pageWidth === 'standard' || saved.pageWidth === 'wide') {
+      pageWidth.value = saved.pageWidth;
+    }
+    if (Number.isFinite(saved.comicZoom)) comicZoom.value = Math.min(180, Math.max(70, Number(saved.comicZoom)));
   } catch {
     // Preferences are optional.
   }
@@ -67,6 +104,10 @@ function persistPreferences() {
     localStorage.setItem('yz.learning.v2.reader.preferences.v1', JSON.stringify({
       theme: theme.value,
       fontSize: fontSize.value,
+      lineHeight: lineHeight.value,
+      letterSpacing: letterSpacing.value,
+      pageWidth: pageWidth.value,
+      comicZoom: comicZoom.value,
     }));
   } catch {
     // Preferences are optional.
@@ -82,6 +123,7 @@ async function loadBook() {
   loading.value = true;
   error.value = '';
   chapters.value = [];
+  comicPages.value = [];
   chapterIndex.value = 0;
   try {
     if (props.book.readingMode === 'builtin') {
@@ -93,13 +135,21 @@ async function loadBook() {
       if (!props.book.importedBookId) throw new Error('本地书籍标识缺失。');
       const record = await getImportedBook(props.book.importedBookId);
       if (!record) throw new Error('本地书籍文件已不存在，请重新导入。');
-      chapters.value = record.parsedChapters;
-      sourceMeta.value = `本地导入 · ${record.characterCount.toLocaleString()} 字`;
+      if (record.kind === 'comic' && record.comicPages?.length) {
+        comicPages.value = record.comicPages;
+        sourceMeta.value = `本地漫画 · ${record.comicPages.length} 页`;
+      } else {
+        chapters.value = record.parsedChapters;
+        sourceMeta.value = `本地导入 · ${record.characterCount.toLocaleString()} 字`;
+      }
     }
-    if (!usesExternalReader.value && !chapters.value.length) throw new Error('正文为空或章节解析失败。');
+    if (!usesExternalReader.value && !chapters.value.length && !comicPages.value.length) {
+      throw new Error('正文为空或章节解析失败。');
+    }
     const progress = readReaderProgress(props.book.id);
     if (progress) {
-      chapterIndex.value = Math.min(Math.max(0, progress.chapterIndex), Math.max(0, chapters.value.length - 1));
+      const total = comicPages.value.length || chapters.value.length;
+      chapterIndex.value = Math.min(Math.max(0, progress.chapterIndex), Math.max(0, total - 1));
       restoreScrollRatio = Math.min(1, Math.max(0, progress.scrollRatio));
     }
   } catch (e) {
@@ -126,6 +176,14 @@ function selectChapter(index: number) {
   chaptersOpen.value = false;
   nextTick(() => {
     if (contentRef.value) contentRef.value.scrollTop = 0;
+    saveReaderProgress(props.book.id, { chapterIndex: index, scrollRatio: 0 });
+  });
+}
+
+function goComicPage(index: number) {
+  if (index < 0 || index >= comicPages.value.length) return;
+  chapterIndex.value = index;
+  nextTick(() => {
     saveReaderProgress(props.book.id, { chapterIndex: index, scrollRatio: 0 });
   });
 }
@@ -205,6 +263,26 @@ function adjustFont(delta: number) {
   persistPreferences();
 }
 
+function adjustLineHeight(delta: number) {
+  lineHeight.value = Math.min(2.5, Math.max(1.45, Math.round((lineHeight.value + delta) * 100) / 100));
+  persistPreferences();
+}
+
+function adjustLetterSpacing(delta: number) {
+  letterSpacing.value = Math.min(3, Math.max(0, Math.round((letterSpacing.value + delta) * 10) / 10));
+  persistPreferences();
+}
+
+function resetReaderPreferences() {
+  theme.value = 'paper';
+  fontSize.value = 19;
+  lineHeight.value = 1.95;
+  letterSpacing.value = 0;
+  pageWidth.value = 'standard';
+  comicZoom.value = 100;
+  persistPreferences();
+}
+
 function annotatedParts(text: string): Array<{ text: string; gloss?: string }> {
   const annotations = [...props.book.annotations]
     .filter((annotation) => annotation.term && text.includes(annotation.term))
@@ -224,13 +302,20 @@ function closeReader() {
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    if (notesOpen.value) notesOpen.value = false;
+    if (settingsOpen.value) settingsOpen.value = false;
+    else if (notesOpen.value) notesOpen.value = false;
     else if (chaptersOpen.value) chaptersOpen.value = false;
     else closeReader();
     return;
   }
-  if (event.key === 'ArrowLeft' && !event.metaKey && !event.ctrlKey) selectChapter(chapterIndex.value - 1);
-  if (event.key === 'ArrowRight' && !event.metaKey && !event.ctrlKey) selectChapter(chapterIndex.value + 1);
+  if (event.key === 'ArrowLeft' && !event.metaKey && !event.ctrlKey) {
+    if (isComic.value) goComicPage(chapterIndex.value - 1);
+    else selectChapter(chapterIndex.value - 1);
+  }
+  if (event.key === 'ArrowRight' && !event.metaKey && !event.ctrlKey) {
+    if (isComic.value) goComicPage(chapterIndex.value + 1);
+    else selectChapter(chapterIndex.value + 1);
+  }
 }
 
 watch(() => props.book.id, () => void loadBook());
@@ -254,6 +339,7 @@ onBeforeUnmount(() => {
   <section
     class="learning-book-reader"
     :class="[`theme-${theme}`, { 'external-mode': usesExternalReader }]"
+    :style="readerStyle"
     role="dialog"
     aria-modal="true"
     :aria-label="`${book.title}阅读器`"
@@ -268,14 +354,11 @@ onBeforeUnmount(() => {
       </div>
       <div class="lbr-head-actions">
         <template v-if="!usesExternalReader">
-          <button type="button" :aria-label="chaptersOpen ? '关闭目录' : '打开目录'" @click="chaptersOpen = !chaptersOpen">
+          <button v-if="!isComic" type="button" :aria-label="chaptersOpen ? '关闭目录' : '打开目录'" @click="chaptersOpen = !chaptersOpen">
             <List :size="17" />
           </button>
-          <button type="button" aria-label="缩小字号" @click="adjustFont(-1)"><Minus :size="17" /></button>
-          <button type="button" aria-label="放大字号" @click="adjustFont(1)"><Plus :size="17" /></button>
-          <button type="button" :aria-label="themeLabel" @click="setTheme(theme === 'paper' ? 'night' : 'paper')">
-            <Moon v-if="theme === 'paper'" :size="17" />
-            <Sun v-else :size="17" />
+          <button type="button" aria-label="阅读设置" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">
+            <SlidersHorizontal :size="17" /><span>设置</span>
           </button>
           <button type="button" :aria-label="notesOpen ? '关闭注释' : '打开注释'" :aria-pressed="notesOpen" @click="notesOpen = !notesOpen">
             <NotebookText :size="17" /><span>注释</span>
@@ -316,6 +399,31 @@ onBeforeUnmount(() => {
       reader-mode
     />
 
+    <div v-else-if="isComic" class="lbr-comic-body">
+      <main class="lbr-comic-stage" data-reader-content>
+        <img
+          v-if="currentComicPage"
+          :src="currentComicPage"
+          :alt="`${book.title} 第 ${chapterIndex + 1} 页`"
+          class="lbr-comic-page"
+        />
+        <div v-else class="lbr-state">
+          <BookOpen :size="30" />
+          <b>漫画页面为空</b>
+          <p>请重新导入图片并按页码顺序命名。</p>
+        </div>
+      </main>
+      <footer class="lbr-comic-footer">
+        <button type="button" :disabled="chapterIndex <= 0" @click="goComicPage(chapterIndex - 1)">
+          <ChevronLeft :size="17" />上一页
+        </button>
+        <span>{{ chapterIndex + 1 }} / {{ comicPages.length }} · {{ progressPercent }}%</span>
+        <button type="button" :disabled="chapterIndex >= comicPages.length - 1" @click="goComicPage(chapterIndex + 1)">
+          下一页<ChevronRight :size="17" />
+        </button>
+      </footer>
+    </div>
+
     <div v-else class="lbr-body">
       <aside class="lbr-chapters" :class="{ open: chaptersOpen }" data-reader-chapters>
         <header>
@@ -338,7 +446,7 @@ onBeforeUnmount(() => {
       </aside>
 
       <main ref="contentRef" class="lbr-content" data-reader-content @scroll.passive="persistScroll">
-        <article class="lbr-paper" :style="{ '--reader-font-size': `${fontSize}px` }">
+        <article class="lbr-paper">
           <header>
             <span>{{ progressPercent }}% · {{ sourceMeta }}</span>
             <h1>{{ currentChapter?.title }}</h1>
@@ -395,6 +503,72 @@ onBeforeUnmount(() => {
         @click="notesOpen = false"
       />
     </div>
+
+    <button
+      v-if="settingsOpen"
+      type="button"
+      class="lbr-settings-mask"
+      aria-label="关闭阅读设置"
+      @click="settingsOpen = false"
+    />
+    <aside v-if="settingsOpen" class="lbr-settings" aria-label="阅读设置">
+      <header>
+        <div><span>阅读设置</span><small>自动保存在本机</small></div>
+        <button type="button" aria-label="关闭阅读设置" @click="settingsOpen = false"><X :size="17" /></button>
+      </header>
+      <div class="lbr-settings-scroll">
+        <section>
+          <h3>阅读背景</h3>
+          <div class="lbr-theme-grid">
+            <button
+              v-for="item in READER_THEMES"
+              :key="item.key"
+              type="button"
+              :class="{ active: theme === item.key }"
+              :aria-pressed="theme === item.key"
+              @click="setTheme(item.key)"
+            >
+              <i :data-reader-theme="item.key"></i>
+              <span>{{ item.label }}</span>
+              <small>{{ item.hint }}</small>
+            </button>
+          </div>
+        </section>
+        <section class="lbr-mode-actions">
+          <button type="button" :class="{ active: theme === 'green' }" @click="setTheme('green')">护眼模式</button>
+          <button type="button" :class="{ active: theme === 'lights-off' }" @click="setTheme('lights-off')">关灯模式</button>
+        </section>
+        <template v-if="!isComic">
+          <section>
+            <div class="lbr-setting-head"><h3>字号</h3><b>{{ fontSize }} px</b></div>
+            <input v-model.number="fontSize" type="range" min="16" max="30" step="1" @change="persistPreferences" />
+          </section>
+          <section>
+            <div class="lbr-setting-head"><h3>行距</h3><b>{{ lineHeight.toFixed(2) }}</b></div>
+            <input v-model.number="lineHeight" type="range" min="1.45" max="2.5" step="0.05" @change="persistPreferences" />
+          </section>
+          <section>
+            <div class="lbr-setting-head"><h3>字间距</h3><b>{{ letterSpacing.toFixed(1) }} px</b></div>
+            <input v-model.number="letterSpacing" type="range" min="0" max="3" step="0.1" @change="persistPreferences" />
+          </section>
+        </template>
+        <section>
+          <h3>{{ isComic ? '画面宽度' : '正文页宽' }}</h3>
+          <div class="lbr-width-options">
+            <button type="button" :class="{ active: pageWidth === 'narrow' }" @click="pageWidth = 'narrow'; persistPreferences()">窄</button>
+            <button type="button" :class="{ active: pageWidth === 'standard' }" @click="pageWidth = 'standard'; persistPreferences()">标准</button>
+            <button type="button" :class="{ active: pageWidth === 'wide' }" @click="pageWidth = 'wide'; persistPreferences()">宽</button>
+          </div>
+        </section>
+        <section v-if="isComic">
+          <div class="lbr-setting-head"><h3>画面缩放</h3><b>{{ comicZoom }}%</b></div>
+          <input v-model.number="comicZoom" type="range" min="70" max="180" step="5" @change="persistPreferences" />
+        </section>
+        <button type="button" class="lbr-settings-reset" @click="resetReaderPreferences">
+          <RotateCcw :size="15" />恢复默认阅读设置
+        </button>
+      </div>
+    </aside>
   </section>
 </template>
 

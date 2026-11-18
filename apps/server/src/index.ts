@@ -1132,19 +1132,22 @@ try {
     await registerPkgOrSource('rpa-mode', () => mgr.registerBuiltin(rpaModeManifest, rpaModeModule));
     // 学习模式（Pro）：纯视图插件，页面入口随插件选择集裁剪；学习数据与 API 留在基座。
     await registerPkgOrSource('learning-mode', () => mgr.registerBuiltin(learningModeManifest, learningModeModule));
-    // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
+    // 移动端一级模式包含运维 / 安全 / 店铺，因此这三个插件的后端模块必须与前端页面
+    // 同时注册；只恢复数据库里的 enabled 状态而不注册模块，会让 UI 调用的
+    // /plugin/{ops-shell,sec-lab,shop-ops}/* 全部落 404。
+    await registerPkgOrSource('ops-shell', () => mgr.registerBuiltin(opsShellManifest, opsShellModule, true));
+    // CICD / Java 仍属桌面重工作台：移动端没有本地发布与 JVM 项目环境。
     if (!process.env.MOBILE_MODE) {
-      await registerPkgOrSource('ops-shell', () => mgr.registerBuiltin(opsShellManifest, opsShellModule, true));
-    // CICD 流水线插件：本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接
-    // ★ 包形态自带一份 ops-shell 助手拷贝（连接池独立，凭据同源 plugin_storage —— P3 记录）
-    await registerPkgOrSource('cicd-pipeline', () => mgr.registerBuiltin(cicdManifest, cicdModule, true));
-    // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
-    await registerPkgOrSource('java-suite', () => mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true));
+      // CICD 流水线插件：本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接
+      // ★ 包形态自带一份 ops-shell 助手拷贝（连接池独立，凭据同源 plugin_storage —— P3 记录）
+      await registerPkgOrSource('cicd-pipeline', () => mgr.registerBuiltin(cicdManifest, cicdModule, true));
+      // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
+      await registerPkgOrSource('java-suite', () => mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true));
+    }
     // 安全工作台：授权范围内的侦察/扫描/审计（护栏：授权范围 + 危险动作黑名单 + 全量审计）
     await registerPkgOrSource('sec-lab', () => mgr.registerBuiltin(secLabManifest, secLabModule, true));
-    // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理；移动端跳过（同 ops/sec）
+    // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理
     await registerPkgOrSource('shop-ops', () => mgr.registerBuiltin(shopOpsManifest, shopOpsModule, true));
-    }
     // ★ 随包的可后装插件（--plugins=<optional id> 时打包脚本把它们拷进 builtin）：
     //   注册为**未启用**（registerBuiltin 默认 enabled=false），插件管理里可见、可手动开启。
     //   可后装插件的语义就是"装了不等于要用"—— 自动启用会让每个装包用户凭空多出一堆工具与权限。

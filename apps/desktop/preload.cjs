@@ -224,6 +224,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 宠物伴星（2026-10-28）：透明置顶宠物窗的生命周期、状态同步与穿透控制
   pet: {
+    available: () => ipcRenderer.invoke('pet:available'),
     open: () => ipcRenderer.invoke('pet:open'),
     close: () => ipcRenderer.invoke('pet:close'),
     toggle: () => ipcRenderer.invoke('pet:toggle'),

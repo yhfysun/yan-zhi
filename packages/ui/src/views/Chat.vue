@@ -1,6 +1,6 @@
 <template>
-  <div class="chat-page" :class="{ 'conv-collapsed': convCollapsed, 'drawer-open': drawerOpen }"
-       :style="{ '--chat-sidebar-w': (convCollapsed ? 0 : sidebarW) + 'px', '--chat-context-w': contextMoved ? contextW + 'px' : '', '--chat-right-w': rightMoved ? rightW + 'px' : '' }">
+  <div class="chat-page" :class="{ 'conv-collapsed': sidebarCollapsed, 'drawer-open': drawerOpen, 'is-office-ai': isOfficeAi }"
+       :style="{ '--chat-sidebar-w': (sidebarCollapsed ? 0 : sidebarW) + 'px', '--chat-context-w': contextMoved ? contextW + 'px' : '', '--chat-right-w': rightMoved ? rightW + 'px' : '' }">
     <div v-if="drawerOpen" class="drawer-overlay" @click="drawerOpen = false"></div>
 
     <!-- 窄屏（≤1199px 或移动外壳）下，上下文栏/预览栏为右侧覆盖抽屉：
@@ -14,12 +14,12 @@
       @click="closeAllDrawers"
     ></div>
 
-    <ChatSidebar />
+    <ChatSidebar v-if="!isOfficeAi" />
 
-    <div v-if="!convCollapsed" class="rs-handle rs-handle-left" @mousedown="sidebarR.startDrag($event, 'left')"></div>
+    <div v-if="!isOfficeAi && !sidebarCollapsed" class="rs-handle rs-handle-left" @mousedown="sidebarR.startDrag($event, 'left')"></div>
 
-    <div class="conv-toggle" @click="convCollapsed = !convCollapsed">
-      <el-icon><Fold v-if="!convCollapsed" /><Expand v-else /></el-icon>
+    <div v-if="!isOfficeAi" class="conv-toggle" @click="convCollapsed = !convCollapsed">
+      <el-icon><Fold v-if="!sidebarCollapsed" /><Expand v-else /></el-icon>
     </div>
 
     <section class="chat-main">
@@ -68,7 +68,8 @@ import { useChat } from '../composables/chat/useChat';
 import { useResizable } from '../composables/useResizable';
 import LeadToggle from '../components/workbench/LeadToggle.vue';
 import { officePanel, setOfficePanel } from '../stores/officeWorkbench';
-import type { LeadMode } from '../stores/mode';
+import { activeMode, type LeadMode } from '../stores/mode';
+import { useMobileShell } from '../composables/useMobileShell';
 import ChatSidebar from '../components/chat/ChatSidebar.vue';
 import ChatTopbar from '../components/chat/ChatTopbar.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
@@ -81,8 +82,15 @@ import ChatDialogs from '../components/chat/ChatDialogs.vue';
 import BackgroundJobsPanel from '../components/chat/BackgroundJobsPanel.vue';
 import { useBackgroundJobsStore } from '../stores/background-jobs';
 
-const { convCollapsed, drawerOpen, store, contextSidebarOpen, currentConvArchived, currentConv, archiveConv } = useChat();
+const { convCollapsed, isMobile, drawerOpen, store, contextSidebarOpen, currentConvArchived, currentConv, archiveConv } = useChat();
 const router = useRouter();
+const mobileShell = useMobileShell();
+const sidebarCollapsed = computed(() => !mobileShell.value && !isMobile.value && convCollapsed.value);
+const isOfficeAi = computed(() => (
+  !mobileShell.value
+  && activeMode.value === 'office'
+  && officePanel.value === 'ai'
+));
 const backgroundJobs = useBackgroundJobsStore();
 const currentBackgroundJobs = computed(() => {
   const id = store.currentConvId;

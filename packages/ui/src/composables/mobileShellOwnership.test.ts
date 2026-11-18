@@ -11,9 +11,9 @@
 //       而真正在位的 WebTopBar 只有 36px，顶部多留 12px 白、底部白留 56px。
 //
 // 修正口径（本测试钉住的契约）：
-//   1) **自绘顶栏/底栏只归 Capacitor 端** —— 桌面/Web 的窄窗只是窄窗降级，不是移动端。
-//   2) `isMobile`（并集语义）保留给「按触摸交互渲染」用（TabBar 项筛选、插件 when='mobile'）。
-//   3) 内容区留白只由 `.platform-mobile` 承担，**不能**再出现在媒体查询里。
+//   1) Capacitor 与 Web 手机视口共用自绘顶栏/底栏；Electron 窄窗仍保留桌面交互。
+//   2) `isMobile` 负责触摸/窄屏语义，Web 手机视口直接复用移动壳。
+//   3) 内容区留白只由移动壳类承担，**不能**再出现在媒体查询里。
 //
 // 为什么用「读源码做结构断言」而不是渲染组件：本页面的 bug 是**模板门控条件写错**
 // 与**样式作用域放错**，两者都是静态结构问题；挂载渲染要拖进 WebTopBar / router / pinia
@@ -35,7 +35,7 @@ function stripCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
-describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
+describe('移动外壳归属：Capacitor 与 Web 手机视口共用', () => {
   it('App.vue：mobile-topbar 由 mobileShellAsRoot 门控，不得用 isMobile', () => {
     // 找出 mobile-topbar 那一行，断言它的 v-if 条件
     const line = APP.split('\n').find((l) => l.includes('class="mobile-topbar"'));
@@ -46,28 +46,28 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
     expect(line).not.toMatch(/v-if="isMobile"/);
   });
 
-  it('App.vue：mobileShellAsRoot 取自平台（Capacitor），不是视口宽度', () => {
-    // 必须存在该常量定义，且值来自 usePlatform 的 isMobile
-    expect(APP).toMatch(/const\s+mobileShellAsRoot\s*=\s*isMobilePlatform\s*;/);
+  it('App.vue：mobileShellAsRoot 覆盖 Capacitor 与 Web 手机视口，排除 Electron 窄窗', () => {
+    expect(APP).toMatch(/const\s+mobileShellAsRoot\s*=\s*computed\(\(\)\s*=>\s*\([\s\S]*?isMobilePlatform\s*\|\|\s*\(isWeb\s*&&\s*isMobile\.value\)/);
     expect(APP).toMatch(/isMobile:\s*isMobilePlatform/);
-    // 反向：不允许它退化成 useMobileShell / useIsMobile 的返回值
-    expect(APP).not.toMatch(/const\s+mobileShellAsRoot\s*=\s*use(MobileShell|IsMobile)/);
   });
 
   it('App.vue：isMobile 仍保留并集语义（Capacitor 横屏的 TabBar/触摸形态不能丢）', () => {
     expect(APP).toMatch(/const\s+isMobile\s*=\s*useMobileShell\(\)/);
   });
 
-  it('SideNav.vue：tab-bar 由平台门控（platformMobile），不得用 isMobile', () => {
+  it('SideNav.vue：tab-bar 跟随共享移动壳判定', () => {
     const line = SIDE_NAV.split('\n').find((l) => l.includes('class="tab-bar"'));
     expect(line, '未找到 .tab-bar 的模板节点').toBeTruthy();
     // tab-bar 是 `<nav v-if="...">`，条件在上一行可能出现；两行合起来找
     const idx = SIDE_NAV.indexOf('class="tab-bar"');
     const around = SIDE_NAV.slice(Math.max(0, idx - 200), idx + 40);
-    expect(around).toContain('platformMobile');
-    expect(around).not.toMatch(/v-if="isMobile"/);
-    // 平台 isMobile 必须从 usePlatform 解构出来
-    expect(SIDE_NAV).toMatch(/isMobile:\s*platformMobile/);
+    expect(around).toContain('v-if="isMobile"');
+  });
+
+  it('Web 根组件：Web 手机视口隐藏桌面 WebTopBar，交给共享移动壳', () => {
+    const WEB_APP = readFileSync(resolve(__dirname, '../../../../apps/web/src/App.vue'), 'utf8');
+    expect(WEB_APP).toMatch(/WebTopBar\s+v-if="!isBareRoute\s*&&\s*!mobileShell"/);
+    expect(WEB_APP).toMatch(/useMobileShell/);
   });
 
   it('App.vue：.main-content 的 48px/56px 外壳留白只在 .platform-mobile，媒体查询里不许有', () => {
@@ -129,11 +129,11 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
   it('App.vue：外壳高度必须走变量，留白与栏高同源', () => {
     const css = stripCssComments(APP);
     // 变量定义必须存在（.app-shell 上）
-    expect(css, '缺少 --mobile-topbar-h 定义').toMatch(/--mobile-topbar-h:\s*44px/);
-    expect(css, '缺少 --mobile-tabbar-h 定义').toMatch(/--mobile-tabbar-h:\s*56px/);
+    expect(css, '缺少 --mobile-topbar-h 定义').toMatch(/--mobile-topbar-h:\s*56px/);
+    expect(css, '缺少 --mobile-tabbar-h 定义').toMatch(/--mobile-tabbar-h:\s*60px/);
     // 顶栏与底部留白都必须消费变量 —— 写死数值就是「改栏高忘改留白」的复发路径
     expect(css, '.mobile-topbar 高度没走变量')
-      .toMatch(/\.mobile-topbar\s*\{[\s\S]*?height:\s*var\(--mobile-topbar-h/);
+      .toMatch(/\.mobile-topbar\s*\{[\s\S]*?height:\s*calc\(var\(--mobile-topbar-h/);
     expect(css, '.platform-mobile 顶部留白没走变量')
       .toMatch(/padding-top:\s*calc\(var\(--mobile-topbar-h[\s\S]*?env\(safe-area-inset-top/);
     expect(css, '.platform-mobile 底部留白没走变量')
@@ -141,7 +141,7 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
     // TabBar 高度同样走变量（在 SideNav 里）
     const side = stripCssComments(SIDE_NAV);
     expect(side, '.tab-bar 高度没走变量')
-      .toMatch(/\.tab-bar\s*\{[\s\S]*?height:\s*var\(--mobile-tabbar-h/);
+      .toMatch(/\.tab-bar\s*\{[\s\S]*?height:\s*calc\(var\(--mobile-tabbar-h/);
   });
 
   it('App.vue：移动顶栏图标和头像具备 44px 触控区', () => {
@@ -159,15 +159,15 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
       .not.toMatch(/\.platform-mobile\s+\.page-sub\s*\{\s*display:\s*none/);
   });
 
-  it('SideNav.vue：TabBar 四项为 任务/模型平台/智能体平台/我的（key 不得用 path）', () => {
-    // 用户拍板（2026-09-21）：底部四项 = 任务 / 模型平台 / 智能体平台 / 我的
-    for (const label of ['任务', '模型平台', '智能体平台', '我的']) {
-      expect(SIDE_NAV, `TabBar 缺少「${label}」项`).toContain(`label: '${label}'`);
+  it('SideNav.vue：TabBar 四项为 工作/店铺/学习/我的（key 不得用 path）', () => {
+    const start = SIDE_NAV.indexOf('const mobilePrimaryItems');
+    expect(start, '未找到 mobilePrimaryItems 声明').toBeGreaterThan(0);
+    const mobileBlock = SIDE_NAV.slice(start, SIDE_NAV.indexOf(']);', start));
+    for (const label of ['工作', '店铺', '学习', '我的']) {
+      expect(mobileBlock, `TabBar 缺少「${label}」项`).toContain(`label: '${label}'`);
     }
-    // 已移除的项不得复活（文件/消息曾是旧方案）
-    expect(SIDE_NAV, 'TabBar 又出现「文件」项（已改为模型平台/智能体平台）')
-      .not.toContain("label: '文件'");
-    // ★ 两项的 path 都是空串（「我的」无路由），若拿 path 当 v-for key 会撞车少渲染一项
+    expect(mobileBlock, 'TabBar 不应退回模型平台入口').not.toContain("label: '模型平台'");
+    expect(mobileBlock, 'TabBar 不应退回智能体平台入口').not.toContain("label: '智能体平台'");
     expect(SIDE_NAV, 'TabBar 的 v-for key 必须用 item.key')
       .toMatch(/:key="item\.key"/);
   });
@@ -180,8 +180,10 @@ describe('移动外壳归属：自绘顶栏/底栏仅 Capacitor 端', () => {
       .not.toMatch(/@media\s*\(max-width:\s*420px\)[\s\S]*?\.title-login-btn\s*\{\s*display:\s*none/);
     expect(css, '主题入口被窄屏样式隐藏了')
       .not.toMatch(/@media\s*\(max-width:\s*420px\)[\s\S]*?\.title-theme-btn\s*\{\s*display:\s*none/);
-    expect(WEB_TOPBAR, '导航文字视觉收起后缺少 aria-label')
-      .toContain(':aria-label="m.label"');
+    expect(WEB_TOPBAR, '通知图标缺少 aria-label')
+      .toContain('aria-label="通知"');
+    expect(WEB_TOPBAR, '消息图标缺少 aria-label')
+      .toContain('aria-label="消息中心"');
     expect(WEB_TOPBAR, '「更多」图标缺少 aria-label')
       .toContain('aria-label="更多"');
   });

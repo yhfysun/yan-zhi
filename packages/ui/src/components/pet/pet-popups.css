@@ -42,8 +42,8 @@
 }
 .radial .slot {
   position: absolute;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: linear-gradient(180deg, rgba(46, 54, 70, 0.96) 0%, rgba(18, 22, 31, 0.96) 100%);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -80,7 +80,7 @@
   width: 15px;
   height: 15px;
 }
-.radial .slot .ic :deep(svg) {
+.radial .slot .ic svg {
   width: 15px;
   height: 15px;
   stroke: currentColor;

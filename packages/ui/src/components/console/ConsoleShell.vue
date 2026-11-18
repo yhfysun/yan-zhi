@@ -24,13 +24,17 @@
       ></div>
 
       <!-- 折叠条：贴左边缘的竖条，点击收起/展开左栏（与「对话」页 .conv-toggle 一致） -->
-      <div
+      <button
+        type="button"
         class="cs-aside-toggle"
         :title="collapsed ? '展开资源列表' : '收起资源列表'"
+        :aria-label="collapsed ? '展开资源列表' : '收起资源列表'"
+        :aria-expanded="!collapsed"
         @click="toggleAside"
       >
         <el-icon><Expand v-if="collapsed" /><Fold v-else /></el-icon>
-      </div>
+        <span class="cs-aside-toggle-label">{{ collapsed ? '资源' : '收起' }}</span>
+      </button>
 
       <section class="cs-main"><slot /></section>
     </div>
@@ -100,6 +104,7 @@ defineExpose({ collapsed, toggleAside, collapseAside, asideW });
 .cs-aside-toggle {
   position: absolute; left: calc(var(--cs-aside-w, 260px) + 5px); top: 50%; transform: translateY(-50%);
   width: 20px; height: 48px;
+  padding: 0;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
   border: 1px solid var(--glass-border); border-left: none; border-radius: 0 8px 8px 0;
   display: flex; align-items: center; justify-content: center;
@@ -107,6 +112,21 @@ defineExpose({ collapsed, toggleAside, collapseAside, asideW });
   transition: left 0.25s ease;
 }
 .cs-aside-toggle:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
+.cs-aside-toggle-label { display: none; }
+
+@media (max-width: 900px) {
+  .cs-aside-toggle {
+    width: 44px;
+    height: 44px;
+    border-radius: 0 10px 10px 0;
+    font-size: 15px;
+  }
+  .cs-aside-toggle-label {
+    display: inline;
+    margin-left: 3px;
+    font-size: 11px;
+  }
+}
 
 /* ===== 面板拖拽分隔条（与 Chat 页 .rs-handle 一致） =====
    ★ 本组规则**不在本 scoped 块里**，而是放在文件末尾那个**非 scoped 的 `<style>` 块**中：

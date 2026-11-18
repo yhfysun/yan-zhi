@@ -84,8 +84,8 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     await settle();
 
     const text = host.textContent || '';
-    expect(text).toContain('店铺运营模式');
-    expect(text).toContain('项目');
+    expect(text).toContain('店铺运营');
+    expect(text).toContain('当前');
     expect(text).toContain('抖店-家居收纳');
     expect(text).not.toContain('工作区');
     app.unmount();
@@ -104,7 +104,7 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     await settle();
 
     const text = host.textContent || '';
-    expect(text).toContain('项目');
+    expect(text).toContain('当前');
     expect(text).toContain('抖店-家居收纳');
     expect(text).not.toContain('未选择项目');
     app.unmount();
@@ -116,7 +116,7 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     await settle();
 
     const text = host.textContent || '';
-    expect(text).toContain('项目');
+    expect(text).toContain('当前');
     expect(text).toContain('口播成片-v3');
     expect(text).not.toContain('工作区');
     app.unmount();
@@ -129,7 +129,7 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     await settle();
 
     const text = host.textContent || '';
-    expect(text).toContain('项目');
+    expect(text).toContain('当前');
     expect(text).toContain('myshop');
     app.unmount();
   });
@@ -141,7 +141,7 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     await settle();
 
     const text = host.textContent || '';
-    expect(text).toContain('工作区');
+    expect(text).toContain('当前');
     expect(text).toContain('文档库');
     app.unmount();
   });
@@ -156,21 +156,21 @@ describe('AppStatusBar · 当前上下文随模式换口径', () => {
     const ops = await mountWith('ops');
     setWorkbenchContext('ops', { label: '连接', value: 'prod-01' });
     await settle();
-    expect(ops.host.textContent || '').toContain('连接');
+    expect(ops.host.textContent || '').toContain('当前');
     expect(ops.host.textContent || '').toContain('prod-01');
     ops.app.unmount();
 
     const wf = await mountWith('wf');
     setWorkbenchContext('wf', { label: '工作流', value: '日报生成' });
     await settle();
-    expect(wf.host.textContent || '').toContain('工作流');
+    expect(wf.host.textContent || '').toContain('当前');
     expect(wf.host.textContent || '').toContain('日报生成');
     wf.app.unmount();
 
     const sec = await mountWith('sec');
     setWorkbenchContext('sec', { label: '目标', value: '共 3 个授权' });
     await settle();
-    expect(sec.host.textContent || '').toContain('目标');
+    expect(sec.host.textContent || '').toContain('当前');
     expect(sec.host.textContent || '').toContain('共 3 个授权');
     sec.app.unmount();
   });

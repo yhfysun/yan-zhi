@@ -637,8 +637,87 @@
               </template>
               </div>
 
-              <div v-else class="ops-workspace-empty">
-                <el-empty description="在左侧资源列表里选一个连接开始：点名称进 shell；右键可新建/文件管理/新窗口/编辑/删除" />
+              <div v-else class="ops-start">
+                <template v-if="lead === 'ai'">
+                  <section class="ops-ai-start">
+                    <header class="ops-ai-start-head">
+                      <span class="ops-ai-start-mark"><el-icon :size="20"><ChatDotRound /></el-icon></span>
+                      <div>
+                        <span>运维助手</span>
+                        <h2>先说你要处理什么</h2>
+                      </div>
+                    </header>
+                    <p class="ops-ai-start-copy">任务可以先写下来，再选择一台已有服务器，或者新建连接。进入工作区后会把这段需求直接交给运维助手。</p>
+                    <textarea
+                      ref="noConnBriefEl"
+                      v-model="noConnBrief"
+                      class="ops-ai-start-input"
+                      rows="4"
+                      placeholder="例如：检查生产服务器的磁盘占用，找出增长最快的目录，先只读排查，不要直接清理。"
+                      @keydown.ctrl.enter.prevent="startNoConnTask"
+                      @keydown.meta.enter.prevent="startNoConnTask"
+                    ></textarea>
+                    <div class="ops-ai-start-examples">
+                      <button type="button" @click="useNoConnBrief('检查最近一次发布后服务是否异常，先看进程、端口和错误日志。')">排查发布异常</button>
+                      <button type="button" @click="useNoConnBrief('检查服务器磁盘和内存占用，只做只读诊断并给出处理建议。')">容量诊断</button>
+                      <button type="button" @click="useNoConnBrief('查看 Docker 容器状态和不健康服务，先定位原因，不要重启。')">容器巡检</button>
+                    </div>
+                    <div class="ops-ai-start-actions">
+                      <button class="ops-ai-start-primary" type="button" @click="startNoConnTask">
+                        <el-icon :size="14"><ArrowRight /></el-icon>选择连接并开始
+                      </button>
+                      <button class="ops-ai-start-secondary" type="button" @click="openAddDialog">
+                        <el-icon :size="14"><Plus /></el-icon>新建连接
+                      </button>
+                      <span>Ctrl+Enter 开始</span>
+                    </div>
+                  </section>
+
+                  <aside class="ops-start-connections">
+                    <header>
+                      <div>
+                        <b>已有连接</b>
+                        <span>{{ connections.length }} 台</span>
+                      </div>
+                      <button type="button" title="新建连接" @click="openAddDialog">
+                        <el-icon :size="13"><Plus /></el-icon>
+                      </button>
+                    </header>
+                    <div v-if="connections.length" class="ops-start-connection-list">
+                      <button
+                        v-for="c in connections.slice(0, 8)"
+                        :key="c.id"
+                        type="button"
+                        @click="openConnection(c, 'chat')"
+                      >
+                        <span class="ops-conn-dot" :data-type="connType(c)" />
+                        <span>
+                          <b>{{ c.name }}</b>
+                          <small>{{ c.username }}@{{ c.host }}:{{ c.port }}</small>
+                        </span>
+                        <em v-if="c.tag" :class="{ danger: isProdTag(c.tag) }">{{ c.tag }}</em>
+                        <el-icon :size="13"><ArrowRight /></el-icon>
+                      </button>
+                    </div>
+                    <div v-else class="ops-start-connections-empty">
+                      <span>还没有服务器连接。</span>
+                      <button type="button" @click="openAddDialog">添加第一台</button>
+                    </div>
+                  </aside>
+                </template>
+
+                <template v-else>
+                  <section class="ops-human-start">
+                    <span><el-icon :size="20"><FolderOpened /></el-icon></span>
+                    <div>
+                      <h2>打开一台服务器开始工作</h2>
+                      <p>终端、文件、容器和数据库都跟随所选连接。移动端可从左下角“资源”打开连接列表。</p>
+                    </div>
+                    <button type="button" @click="openAddDialog">
+                      <el-icon :size="14"><Plus /></el-icon>新建连接
+                    </button>
+                  </section>
+                </template>
               </div>
             </div>
           </el-tab-pane>
@@ -868,6 +947,9 @@ const { width: fileW } = fileR;
 const testingId = ref('');
 /** 命令广播弹窗（7.14）：多机同时执行 */
 const broadcastOpen = ref(false);
+const noConnBrief = ref('');
+const noConnBriefEl = ref<HTMLTextAreaElement | null>(null);
+let pendingNoConnBrief = '';
 
 // ===== 主导方双形态（任务 7.9 / 7.10）=====
 // ai（AI 模式）→ 激活窗口切到 chat 视图（对话即执行界面）；human（命令模式）→ 切回主视图（终端等）。
@@ -987,7 +1069,7 @@ function openConnection(c: OpsConn, want: 'primary' | 'chat' | 'file' = 'primary
 }
 
 /** 强制新开一个窗口（同一连接可多开） */
-function openConnectionNew(c: OpsConn) {
+function openConnectionNew(c: OpsConn): OpsWin {
   const w = newWin(c, preferredView(connType(c)));
   windows.value.push(w);
   activateWindow(w.id);
@@ -996,6 +1078,7 @@ function openConnectionNew(c: OpsConn) {
   //     顶部目录 chip 永远显示「…」，点击也换不了目录。后台建连不影响对话界面
   //     （终端在 v-show 隐藏容器里，pendingUnhide 负责量尺寸）。
   void openTerminal(w);
+  return w;
 }
 
 function activateWindow(id: string) {
@@ -3060,11 +3143,31 @@ function openAddDialog() {
 function openEditDialog(c: OpsConn) {
   connDialogRef.value?.open(c);
 }
+function useNoConnBrief(text: string) {
+  noConnBrief.value = text;
+  void nextTick(() => noConnBriefEl.value?.focus());
+}
+function startNoConnTask() {
+  const brief = noConnBrief.value.trim();
+  if (!brief) {
+    ElMessage.warning('先描述这次要处理的运维任务');
+    noConnBriefEl.value?.focus();
+    return;
+  }
+  pendingNoConnBrief = brief;
+  openAddDialog();
+}
 
 /** 保存回调：刷新列表并为该资源开一个窗口（修掉「新增了连接但页面没反应」） */
 async function onConnectionSaved(conn: OpsConn) {
   await Promise.all([loadConnections(), loadGroups()]);
-  openConnectionNew(conn);
+  const w = openConnectionNew(conn);
+  if (pendingNoConnBrief) {
+    w.chatInput = pendingNoConnBrief;
+    pendingNoConnBrief = '';
+    noConnBrief.value = '';
+    void submitWinChat(w);
+  }
 }
 
 // ===== 操作日志 =====
@@ -3296,12 +3399,103 @@ onUnmounted(() => {
    跟着一起变高、.sftp-panes 的 1fr 退化成"内容高" ⇒ **本地栏被顶到窗口下沿之外**（表现就是"本地那栏没了"）。
    两处一起给：min-height: 0 让正常情况收进可视区；overflow: auto 作兜底（真超高时可滚，不再静默裁掉）。 */
 .ops-workspace { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.ops-workspace-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+.ops-start {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr);
+  gap: 18px; padding: 24px; overflow-y: auto;
+}
+.ops-ai-start {
+  display: flex; min-width: 0; flex-direction: column; align-self: start;
+  padding: 22px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: color-mix(in srgb, var(--glass-bg) 82%, transparent);
+}
+.ops-ai-start-head { display: flex; align-items: center; gap: 12px; }
+.ops-ai-start-mark {
+  display: grid; width: 42px; height: 42px; flex: none; place-items: center;
+  border-radius: 10px; background: var(--color-primary); color: #fff;
+}
+.ops-ai-start-head span { color: var(--color-primary); font-size: 11px; font-weight: 650; }
+.ops-ai-start-head h2 { margin: 3px 0 0; font-size: 20px; }
+.ops-ai-start-copy { max-width: 680px; margin: 16px 0 13px; color: var(--color-text-secondary); font-size: 12.5px; line-height: 1.8; }
+.ops-ai-start-input {
+  width: 100%; min-height: 116px; resize: vertical; padding: 12px 13px;
+  border: 1px solid var(--glass-border); border-radius: 9px;
+  background: var(--color-bg); color: var(--color-text); font: inherit; font-size: 13px; line-height: 1.7;
+  outline: none;
+}
+.ops-ai-start-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 13%, transparent); }
+.ops-ai-start-examples { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.ops-ai-start-examples button {
+  min-height: 30px; padding: 0 10px; border: 1px solid var(--glass-border); border-radius: 999px;
+  background: transparent; color: var(--color-text-secondary); font-size: 11px; cursor: pointer;
+}
+.ops-ai-start-examples button:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.ops-ai-start-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.ops-ai-start-actions button { display: inline-flex; min-height: 38px; align-items: center; gap: 6px; padding: 0 13px; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ops-ai-start-primary { border: 0; background: var(--color-primary); color: #fff; }
+.ops-ai-start-secondary { border: 1px solid var(--glass-border); background: transparent; color: var(--color-text); }
+.ops-ai-start-actions > span { margin-left: auto; color: var(--color-text-tertiary); font-size: 10.5px; }
+.ops-start-connections {
+  min-width: 0; align-self: start; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: color-mix(in srgb, var(--glass-bg) 68%, transparent);
+}
+.ops-start-connections > header {
+  display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 13px; border-bottom: 1px solid var(--glass-border);
+}
+.ops-start-connections > header b, .ops-start-connections > header span { display: block; }
+.ops-start-connections > header b { font-size: 13px; }
+.ops-start-connections > header span { margin-top: 2px; color: var(--color-text-tertiary); font-size: 10px; }
+.ops-start-connections > header button {
+  display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--glass-border);
+  border-radius: 7px; background: transparent; color: var(--color-text-secondary); cursor: pointer;
+}
+.ops-start-connection-list { display: grid; }
+.ops-start-connection-list > button {
+  display: grid; width: 100%; min-height: 58px; grid-template-columns: 8px minmax(0, 1fr) auto 14px;
+  align-items: center; gap: 9px; padding: 8px 12px; border: 0; border-top: 1px solid var(--glass-border);
+  background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.ops-start-connection-list > button:first-child { border-top: 0; }
+.ops-start-connection-list > button:hover { background: var(--glass-bg-hover); }
+.ops-start-connection-list b, .ops-start-connection-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-start-connection-list b { font-size: 12px; }
+.ops-start-connection-list small { margin-top: 2px; color: var(--color-text-tertiary); font-family: Consolas, monospace; font-size: 9.5px; }
+.ops-start-connection-list em {
+  padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  color: var(--color-text-secondary); font-size: 9px; font-style: normal;
+}
+.ops-start-connection-list em.danger { background: color-mix(in srgb, var(--el-color-danger) 12%, transparent); color: var(--el-color-danger); }
+.ops-start-connections-empty { display: grid; gap: 8px; padding: 22px 16px; color: var(--color-text-tertiary); font-size: 11px; text-align: center; }
+.ops-start-connections-empty button { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 7px; background: transparent; color: var(--color-primary); cursor: pointer; }
+.ops-human-start {
+  grid-column: 1 / -1; display: flex; max-width: 720px; align-items: center; gap: 14px; align-self: center; justify-self: center;
+  padding: 20px; border: 1px solid var(--glass-border); border-radius: 12px; background: color-mix(in srgb, var(--glass-bg) 72%, transparent);
+}
+.ops-human-start > span { display: grid; width: 42px; height: 42px; flex: none; place-items: center; border-radius: 10px; background: color-mix(in srgb, var(--color-primary) 11%, transparent); color: var(--color-primary); }
+.ops-human-start > div { min-width: 0; flex: 1; }
+.ops-human-start h2 { margin: 0; font-size: 16px; }
+.ops-human-start p { margin: 5px 0 0; color: var(--color-text-secondary); font-size: 11.5px; line-height: 1.65; }
+.ops-human-start > button { display: inline-flex; min-height: 36px; align-items: center; gap: 6px; padding: 0 12px; border: 0; border-radius: 7px; background: var(--color-primary); color: #fff; font-size: 11.5px; cursor: pointer; }
 .ops-tabs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ops-tabs :deep(.el-tabs__header) { margin-bottom: 8px; flex-shrink: 0; }
 .ops-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; }
 .ops-tabs :deep(.el-tab-pane) { height: 100%; }
 .ops-main-tab { height: 100%; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+
+@media (max-width: 900px) {
+  .ops-start { grid-template-columns: 1fr; gap: 12px; padding: 12px; }
+  .ops-ai-start { padding: 16px; }
+  .ops-ai-start-head h2 { font-size: 18px; }
+  .ops-ai-start-input { min-height: 110px; font-size: 16px; }
+  .ops-ai-start-examples button { min-height: 44px; }
+  .ops-ai-start-actions button { min-height: 44px; }
+  .ops-ai-start-actions > span { display: none; }
+  .ops-start-connections > header button { width: 44px; height: 44px; }
+  .ops-start-connection-list > button { min-height: 60px; }
+  .ops-human-start { flex-wrap: wrap; padding: 16px; }
+  .ops-human-start > div { flex-basis: calc(100% - 60px); }
+  .ops-human-start > button { width: 100%; min-height: 44px; justify-content: center; }
+}
 
 /* 顶部一行：窗口标签（左可滚动） + 整体设置（右固定） */
 .ops-topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

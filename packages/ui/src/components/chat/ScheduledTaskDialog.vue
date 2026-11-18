@@ -1051,6 +1051,11 @@ async function onDelete(task: ScheduledTask) {
     ElMessage.success('任务已删除');
   } catch { /* 取消 */ }
 }
+
+defineExpose({
+  openCreate,
+  formVisible,
+});
 </script>
 
 <style scoped>

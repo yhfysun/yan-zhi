@@ -136,6 +136,27 @@ describe('ClipWorkbench · 布局（撑满 + 剪辑软件比例）', () => {
     expect(CSS).toMatch(/\.cp-badge[^{]*\{[^}]*white-space:\s*nowrap/);
     expect(CSS).toMatch(/\.cp-meta[^{]*\{[^}]*white-space:\s*nowrap/);
   });
+
+  it('素材栏、右侧 AI 和上下工作区都提供可持久化拖拽分隔条', () => {
+    expect(CODE).toContain('cp-pane-resizer is-left');
+    expect(CODE).toContain('cp-pane-resizer is-right');
+    expect(CODE).toContain('cp-row-resizer');
+    expect(CODE).toContain("useResizable('clip_left'");
+    expect(CODE).toContain("useResizable('clip_right'");
+    expect(CODE).toContain('yz_resize_clip_timeline_height');
+    expect(CODE).toContain('@dblclick="resetClipWidth');
+    expect(CODE).toContain('@dblclick="resetTimelineHeight"');
+  });
+
+  it('AI 剪辑师保留现有聊天链路，并提供项目级快捷指令', () => {
+    expect(CODE).toContain('class="cp-ai-context"');
+    expect(CODE).toContain('class="cp-ai-actions"');
+    expect(CODE).toContain('一句话成片');
+    expect(CODE).toContain('智能剪口播');
+    expect(CODE).toContain('<ChatMessageList>');
+    expect(CODE).toContain('<ChatInputArea ref="clipChatInputRef"');
+    expect(CODE).toContain('fillClipAiInput');
+  });
 });
 
 describe('ClipWorkbench · 整体工作台可用性', () => {

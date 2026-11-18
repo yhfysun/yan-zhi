@@ -152,7 +152,7 @@
         <!-- Tab 导航（横向，但带编号 + 状态点） -->
         <nav class="sec-tabs" role="tablist">
           <button
-            v-for="t in TABS"
+            v-for="t in visibleTabs"
             :key="t.value"
             :class="['sec-tab', { active: tab === t.value }]"
             role="tab"
@@ -167,7 +167,7 @@
         </nav>
 
         <!-- ========= Tab 1：终端（命令行 + 运行卡 + 高级表单） ========= -->
-        <div v-show="tab === 'run'" class="sec-pane">
+        <div v-show="tab === 'run'" class="sec-pane sec-pane-run">
           <!-- 扫描入口卡（2026-10-30）：四类输入一键开局。
                ★ 卡片只负责**拼命令行**，执行仍走 submitCommand → POST /plugin/sec-lab/run
                  → withGuard → 审计；这里没有第二条执行链。 -->
@@ -449,18 +449,19 @@
 
         <div v-show="tab === 'review' && reviewTab === 'findings'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
-            <header class="sec-frame-head">
+            <header class="sec-frame-head sec-findings-head">
               <span class="sec-num">05</span>
               <span class="sec-frame-title">FINDINGS</span>
               <span class="sec-frame-hint">分严重度色块</span>
-              <span class="sec-spacer" />
-              <el-button
-                size="small" :loading="exportingReport" :disabled="!lastJobId"
-                @click="exportFindingsReport(lastJobId)"
-              >导出本次扫描</el-button>
-              <el-button size="small" :loading="exportingReport" @click="exportFindingsReport()">导出报告 MD</el-button>
-              <el-button size="small" :loading="exportingDocx" @click="exportReportDocx()">导出 Word</el-button>
-              <el-button size="small" :loading="exportingPdf" @click="exportReportPdf()">导出 PDF</el-button>
+              <div class="sec-findings-actions">
+                <el-button
+                  size="small" :loading="exportingReport" :disabled="!lastJobId"
+                  @click="exportFindingsReport(lastJobId)"
+                >导出本次扫描</el-button>
+                <el-button size="small" :loading="exportingReport" @click="exportFindingsReport()">导出报告 MD</el-button>
+                <el-button size="small" :loading="exportingDocx" @click="exportReportDocx()">导出 Word</el-button>
+                <el-button size="small" :loading="exportingPdf" @click="exportReportPdf()">导出 PDF</el-button>
+              </div>
             </header>
             <div class="sec-finding-list">
               <div v-for="f in findings" :key="f.id" class="sec-finding" :data-sev="f.severity">
@@ -748,7 +749,7 @@
         </div>
 
         <!-- ===== 本机终端（xterm + SSE）· 独立 Tab ===== -->
-        <div v-show="tab === 'tty'" class="sec-pane sec-pane-scroll sec-tty-pane">
+        <div v-if="!mobileShell" v-show="tab === 'tty'" class="sec-pane sec-pane-scroll sec-tty-pane">
           <ChatConsolePanel />
         </div>
 
@@ -1021,7 +1022,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, API_BASE, buildRequestHeaders, isElectron } from '../../api/client';
+import { api, API_BASE, buildRequestHeaders, isCapacitor, isElectron } from '../../api/client';
 import ChatConsolePanel from '../../components/chat/ChatConsolePanel.vue';
 import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
@@ -1033,6 +1034,7 @@ import FormDialog from '../../components/FormDialog.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import { setWorkbenchContext } from '../../stores/workbenchContext';
 import { useChat } from '../../composables/chat/useChat';
+import { useMobileShell } from '../../composables/useMobileShell';
 // 命令中枢（2026-10-16）：命令行与聊天框的面板**同源**（同一份解析、同一个执行出口）
 import type { CommandDef } from '@yan-zhi/core';
 import { useCommandsStore } from '../../stores/commands';
@@ -1431,6 +1433,10 @@ const TABS = [
   { value: 'env',    num: '03', name: '环境', sub: 'LAB',    badge: '' },
   { value: 'tty',    num: '04', name: '本机终端', sub: 'TTY', badge: '' },
 ] as const;
+const mobileShell = useMobileShell();
+const visibleTabs = computed(() => (
+  mobileShell.value ? TABS.filter((item) => item.value !== 'tty') : TABS
+));
 
 const BASIC_TOOLS = [
   { value: 'recon', label: 'recon · 目标画像（被动）' },
@@ -1503,7 +1509,7 @@ const showExpForm = ref(false);
 const expDraft = reactive({ title: '', body: '', source: '', tags: '' });
 
 // ---------- 派生 ----------
-const currentTabLabel = computed(() => TABS.find((t) => t.value === tab.value)?.sub || '');
+const currentTabLabel = computed(() => visibleTabs.value.find((t) => t.value === tab.value)?.sub || '');
 
 /** Tab 角标：只给「结果」实时计数。
  *  ★ 原来写死的 `badge: '0'` 是个假角标 —— 永远是 0 会让人以为"没结果"，
@@ -1740,6 +1746,9 @@ async function exportFindingsReport(jobId?: string): Promise<void> {
       });
       if (r?.ok) ElMessage.success(`已导出 ${d.count} 条发现项：${r.path}`);
       else if (!r?.cancelled) ElMessage.error('导出失败：' + (r?.error || '未知错误'));
+    } else if (isCapacitor) {
+      downloadBase64(base64Utf8(d.text), d.filename, 'text/markdown');
+      ElMessage.success(`已生成报告（${d.count} 条发现项）`);
     } else {
       await navigator.clipboard.writeText(d.text);
       ElMessage.success('报告已复制到剪贴板（网页端不支持直接落盘）');
@@ -2293,6 +2302,7 @@ async function runEasm() {
 
 const chatApi = useChat();
 onMounted(async () => {
+  if (mobileShell.value && tab.value === 'tty') tab.value = 'run';
   await loadAll();
   await loadToolchain();
   await secChatStore.loadConversations().catch(() => {});
@@ -2482,6 +2492,14 @@ onUnmounted(() => {
 }
 .sec-frame-head-sm { padding: 6px 10px; }
 .sec-frame-head-tab { padding: 10px 14px; border-bottom: 1px dashed var(--sc-line-2); background: var(--sc-bg); }
+.sec-findings-actions {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.sec-findings-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .sec-frame-title {
   font-family: var(--sc-mono); font-weight: 700; font-size: 11.5px;
   letter-spacing: 0.18em; text-transform: uppercase; color: var(--sc-fg);
@@ -2682,6 +2700,7 @@ onUnmounted(() => {
 
 /* ---------- 面板通用 ---------- */
 .sec-pane { padding: 14px; display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+.sec-pane-run { flex: 0 0 auto; min-height: auto; overflow: visible; }
 
 /* 环境页：按内容自然高度排、整页滚动。
    原先多个面板同在一个 flex 列里平分高度，每块只剩一两行，还会叠在一起。 */
@@ -2948,6 +2967,67 @@ onUnmounted(() => {
   .sec-meta { display: none; }
   .sec-ribbon { flex-wrap: wrap; }
   .sec-row-ctl { padding: 10px; }
+  .sec-fullbtn,
+  .sec-frame-act,
+  .sec-cta,
+  .sec-cta-ghost,
+  .sec-pulse-more,
+  .sec-review-tab {
+    min-height: 44px;
+  }
+  .sec-fullbtn { padding: 0 12px; }
+  .sec-switch { min-height: 44px; }
+  .sec-cmdbar {
+    min-height: 56px;
+    gap: 6px;
+  }
+  .sec-cmdbar-input { min-height: 44px; }
+  .sec-ai-toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-top: 6px;
+  }
+  .sec-ai-toolbar .el-button,
+  .sec-ai-perm-btn {
+    min-width: 44px;
+    min-height: 44px;
+    margin-left: 0;
+  }
+  .sec-ai-model-select {
+    flex: 1 1 180px;
+    min-height: 44px;
+  }
+  .sec-ai-scope-hint {
+    width: 100%;
+  }
+  .sec-tabs .sec-tab {
+    min-height: 44px;
+  }
+  .sec-findings-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+  .sec-findings-head .sec-frame-hint {
+    display: block;
+    flex: 1 1 100%;
+    order: 4;
+    white-space: normal;
+  }
+  .sec-findings-actions {
+    display: grid;
+    flex: 1 1 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .sec-findings-actions :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    margin-left: 0;
+    padding: 6px 8px;
+    font-size: 10px;
+  }
 }
 
 /* ---------- Element Plus 局部 style（不 scoped，皮肤感知） ---------- */

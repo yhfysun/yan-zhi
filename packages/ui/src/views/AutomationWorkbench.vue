@@ -28,6 +28,16 @@
       </div>
     </header>
 
+    <div class="rpa-overview-strip" aria-label="自动化运行概览">
+      <span><small>脚本库</small><b>{{ store.scripts?.length || 0 }}</b></span>
+      <span><small>运行中</small><b>{{ (store.runs || []).filter((run) => run.status === 'running').length }}</b></span>
+      <span><small>最近成功</small><b>{{ (store.runs || []).filter((run) => run.status === 'completed').length }}</b></span>
+      <span class="rpa-overview-note">
+        <el-icon :size="12"><CircleCheck /></el-icon>
+        正式运行固定使用已发布版本
+      </span>
+    </div>
+
     <div class="rpa-body" :class="{ 'is-builder-open': builderOpen }">
       <aside class="rpa-library" aria-label="脚本库">
         <div class="rpa-search-wrap">
@@ -89,7 +99,7 @@
       </aside>
 
       <main class="rpa-workspace">
-        <div v-if="store.scripts.length" class="rpa-mobile-picker">
+        <div v-if="store.scripts?.length" class="rpa-mobile-picker">
           <label for="rpa-mobile-script">当前脚本</label>
           <select id="rpa-mobile-script" :value="current?.id || ''" @change="selectScript(($event.target as HTMLSelectElement).value)">
             <option v-for="script in filteredScripts" :key="script.id" :value="script.id">
@@ -553,7 +563,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowDown,
@@ -591,6 +601,7 @@ import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
 import ChatDialogs from '../components/chat/ChatDialogs.vue';
 import { useChat } from '../composables/chat/useChat';
+import { activeMode, leadOf, type LeadMode } from '../stores/mode';
 
 const BrowserPanel = defineAsyncComponent(() => import('../components/BrowserPanel.vue'));
 
@@ -603,6 +614,7 @@ const chat = useChat();
 //   /chat 是 office 路由，整页跳过去会让「脚本工作台」与「会话归属 mode=rpa」错位。
 const builderOpen = ref(false);
 const builderConvId = ref('');
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 
 const keyword = ref('');
 const filter = ref<'all' | 'published' | 'draft'>('all');
@@ -1063,6 +1075,14 @@ async function closeBuilder(): Promise<void> {
   try { await store.loadScripts(); } catch { /* 刷新失败不挡收起 */ }
 }
 
+watch(lead, (next) => {
+  if (next === 'ai' && !builderOpen.value) {
+    void openBuilder();
+  } else if (next === 'human' && builderOpen.value) {
+    void closeBuilder();
+  }
+});
+
 async function deleteCurrent(): Promise<void> {
   if (!current.value) return;
   try {
@@ -1242,6 +1262,27 @@ onBeforeUnmount(() => {
 .rpa-top-stats { display: flex; gap: 14px; margin-left: 10px; font-size: 11px; color: var(--color-text-secondary); }
 .rpa-top-stats b { color: var(--color-text); font-size: 13px; margin-right: 3px; }
 .rpa-top-actions { margin-left: auto; display: flex; gap: 8px; }
+
+.rpa-overview-strip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 22px;
+  min-height: 42px;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-secondary, var(--color-bg)) 72%, transparent);
+}
+.rpa-overview-strip > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+.rpa-overview-strip small { color: var(--color-text-tertiary); font-size: 9.5px; }
+.rpa-overview-strip b { color: var(--color-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.rpa-overview-note { margin-left: auto; gap: 5px !important; }
 
 .rpa-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 270px minmax(0, 1fr); }
 .rpa-body.is-builder-open { grid-template-columns: 270px minmax(0, 1fr) 352px; }

@@ -13197,11 +13197,18 @@ ipcMain.handle('pet:open', () => {
   createPetWindow();
   return { ok: true };
 });
+ipcMain.handle('pet:available', () => ({
+  available: PET_ASSETS_AVAILABLE,
+  reason: PET_ASSETS_AVAILABLE ? '' : '当前发行包未包含宠物资源',
+}));
 ipcMain.handle('pet:close', () => {
   try { if (petWindow && !petWindow.isDestroyed()) petWindow.close(); } catch {}
   return { ok: true };
 });
-ipcMain.handle('pet:toggle', () => ({ open: togglePetWindow() }));
+ipcMain.handle('pet:toggle', () => ({
+  open: togglePetWindow(),
+  reason: PET_ASSETS_AVAILABLE ? '' : '当前发行包未包含宠物资源',
+}));
 ipcMain.handle('pet:is-open', () => !!(petWindow && !petWindow.isDestroyed()));
 // ---- 形象工坊：用户导入的 2D 形象（GIF / 图集）----
 // 存在 userData/pet-packs/<id>/{sheet.webp,manifest.json}，不随包分发，卸载也不删。

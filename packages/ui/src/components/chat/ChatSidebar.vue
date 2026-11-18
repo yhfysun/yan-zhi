@@ -1,18 +1,32 @@
 <template>
   <aside class="sidebar">
-    <div class="sidebar-tabs">
+    <div v-if="showTabs" class="sidebar-tabs">
       <div class="sb-tab" :class="{ active: sideTab === 'chat' }" title="任务" @click="sideTab = 'chat'">
         <el-icon><ChatDotRound /></el-icon> <span class="sb-label">任务</span><span class="sb-label-short">任务</span>
       </div>
-      <div class="sb-tab" :class="{ active: sideTab === 'task' }" title="定时任务" @click="sideTab = 'task'">
+      <button
+        class="sb-tab"
+        type="button"
+        title="在中间工作区打开定时任务"
+        @click="openScheduledTasks"
+      >
         <el-icon><Timer /></el-icon> <span class="sb-label">定时任务</span><span class="sb-label-short">定时</span>
-      </div>
+      </button>
       <div class="sb-tab" :class="{ active: sideTab === 'file' }" title="文件" @click="sideTab = 'file'">
         <el-icon><FolderOpened /></el-icon> <span class="sb-label">文件</span><span class="sb-label-short">文件</span>
       </div>
-      <div class="sb-tab" :class="{ active: sideTab === 'publish' }" title="发布" @click="sideTab = 'publish'">
+      <button class="sb-tab" type="button" title="在中间工作区打开发布队列" @click="openPublishQueue">
         <el-icon><Promotion /></el-icon> <span class="sb-label">发布</span><span class="sb-label-short">发布</span>
-      </div>
+      </button>
+      <button
+        class="sidebar-collapse-btn"
+        type="button"
+        title="收起任务侧栏（Ctrl+B）"
+        aria-label="收起任务侧栏"
+        @click="collapseTaskSidebar"
+      >
+        <el-icon><Fold /></el-icon>
+      </button>
     </div>
 
     <div v-if="sideTab === 'chat'" class="conv-list">
@@ -24,7 +38,7 @@
           <!-- 浏览器页面对话默认收起（它们由浏览器面板的「历史」管理），这里是查看/收起的开关。
                带数字角标是为了**别让"收起来了"变成"消失了"** —— 有 N 条时按钮上直接写 N。 -->
           <button
-            v-if="!batchMode"
+            v-if="showPageConversationToggle && !batchMode"
             class="conv-new-icon page-conv-toggle"
             :class="{ 'is-on': store.showPageConvs }"
             type="button"
@@ -72,7 +86,7 @@
               :key="conv.id"
               class="conv-item pinned"
               :class="{ active: conv.id === store.currentConvId, selecting: batchMode }"
-              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+              @click="batchMode ? toggleConvSelect(conv.id) : activateConversation(conv)"
               @contextmenu.prevent="openConvMenu($event, conv)"
               v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
               @dblclick="!batchMode && rows.startRename(conv)"
@@ -125,7 +139,7 @@
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+              @click="batchMode ? toggleConvSelect(conv.id) : activateConversation(conv)"
               @contextmenu.prevent="openConvMenu($event, conv)"
               v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
               @dblclick="!batchMode && rows.startRename(conv)"
@@ -229,7 +243,7 @@
                   :key="conv.id"
                   class="conv-item"
                   :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-                  @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+                  @click="batchMode ? toggleConvSelect(conv.id) : activateConversation(conv)"
                   @contextmenu.prevent="openConvMenu($event, conv)"
                   v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
                   @dblclick="!batchMode && rows.startRename(conv)"
@@ -246,8 +260,6 @@
                       <span v-if="conv.source === BROWSER_PAGE_SOURCE" class="conv-meta-flag" title="来自浏览器页面对话">页面</span>
                     </div>
                   </div>
-              <!-- 相对时间（2026-10-31）：让列表能按"什么时候干的"扫读；hover/激活才显形，不占常驻注意力 -->
-              <span class="conv-time" :title="fullTime(conv.updatedAt)">{{ relativeTime(conv.updatedAt) }}</span>
                   <el-input
                     v-if="renamingId === conv.id"
                     v-model="renamingTitle"
@@ -266,7 +278,7 @@
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+              @click="batchMode ? toggleConvSelect(conv.id) : activateConversation(conv)"
               @contextmenu.prevent="openConvMenu($event, conv)"
               v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
               @dblclick="!batchMode && rows.startRename(conv)"
@@ -356,7 +368,7 @@
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId }"
-              @click="rows.activate(conv)"
+              @click="activateConversation(conv)"
             >
               <el-icon class="pin-icon"><Delete /></el-icon>
               <span class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</span>
@@ -380,22 +392,6 @@
         <el-button size="small" :disabled="filteredConversations.length === 0" @click="batchSelectAll">全选</el-button>
         <el-button size="small" type="danger" @click="batchDeleteConvs">删除选中</el-button>
       </div>
-    </div>
-
-    <div v-else-if="sideTab === 'task'" class="task-tab task-tab-switched">
-      <el-segmented
-        v-model="taskPanelTab"
-        :options="taskPanelOptions"
-        size="small"
-        class="task-panel-switch"
-      />
-      <GoalSchedulePanel v-if="taskPanelTab === 'goal'" />
-      <ScheduledTaskDialog v-else />
-    </div>
-
-    <!-- 发布队列（2026-10-17）：模型 publish_enqueue 入队的内容在这里人工确认 -->
-    <div v-else-if="sideTab === 'publish'" class="task-tab">
-      <PublishQueueTab />
     </div>
 
     <!-- 文件 tab：资源管理器 / 搜索 / Git（竖排视图按钮 + 面板） -->
@@ -678,22 +674,22 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion, Fold,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
+import type { Conversation } from '@yan-zhi/shared';
 // 来源标记的白名单常量取自 core（别在模板里写 'browser-page' 字面量）
 import { CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 import { useChat } from '../../composables/chat/useChat';
-import { activeMode } from '../../stores/mode';
+import { activeMode, setMode } from '../../stores/mode';
+import { setOfficePanel } from '../../stores/officeWorkbench';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { useMobileShell } from '../../composables/useMobileShell';
-import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
-import GoalSchedulePanel from './GoalSchedulePanel.vue';
-import PublishQueueTab from './PublishQueueTab.vue';
 import ChatFileTab from './ChatFileTab.vue';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
 import FormDialog from '../FormDialog.vue';
@@ -701,14 +697,38 @@ import EmptyState from '../common/EmptyState.vue';
 import ActionSheet from '../common/ActionSheet.vue';
 import type { ActionSheetAction } from '../common/ActionSheet.vue';
 
+withDefaults(defineProps<{
+  showTabs?: boolean;
+  showPageConversationToggle?: boolean;
+}>(), {
+  showTabs: true,
+  showPageConversationToggle: true,
+});
+
 /** 会话来源徽标的判据（模板里 `v-if="conv.source === BROWSER_PAGE_SOURCE"`） */
 const BROWSER_PAGE_SOURCE = CONV_SOURCE_BROWSER_PAGE;
 
-const taskPanelTab = ref<'scheduled' | 'goal'>('scheduled');
-const taskPanelOptions = [
-  { label: '定时任务', value: 'scheduled' },
-  { label: '目标计划', value: 'goal' },
-];
+const router = useRouter();
+const route = useRoute();
+
+function openScheduledTasks(): void {
+  sideTab.value = 'chat';
+  void router.push('/scheduled-tasks');
+}
+
+function openPublishQueue(): void {
+  sideTab.value = 'chat';
+  void router.push('/publish-queue');
+}
+
+/** 移动端抽屉与桌面折叠态是两套状态，同一个人口必须按当前外壳分派。 */
+function collapseTaskSidebar(): void {
+  if (isTouchShell.value) {
+    drawerOpen.value = false;
+    return;
+  }
+  convCollapsed.value = true;
+}
 
 /** 行尾相对时间：今天 → HH:mm；昨天 → 昨天；更早 → M/D（跨年带年份）。
     只做展示，排序仍由 store 按 updatedAt 决定。 */
@@ -744,7 +764,7 @@ function convTitle(c: { title?: string }): string {
 }
 
 const {
-  sideTab, search, store, batchMode, toggleConvSelect,
+  sideTab, convCollapsed, drawerOpen, search, store, batchMode, toggleConvSelect,
   openConvMenu, selectedConvIds, renamingId, renamingTitle, renameInputRef,
   filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
@@ -776,6 +796,14 @@ const archivedFiltered = computed(() => {
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
 // 重命名聚焦走 useChat 内置的 renameInputRef（模板里 rename 输入框绑了该 ref），无需额外适配。
 const rows = useTaskRowActions();
+
+function activateConversation(conv: Conversation | null): void {
+  if (!conv) return;
+  setOfficePanel('ai');
+  setMode('office');
+  rows.activate(conv);
+  if (route.name !== 'chat' && route.name !== 'chat-detail') void router.push('/chat');
+}
 
 // ===== 右键菜单贴光标：渲染后按真实尺寸校正（2026-10-18，用户实报「弹窗离鼠标老远」）=====
 // 旧 clampMenuPos 按猜的 320px 高度夹取，光标越靠菜单被推得越远。现在打开时先落光标坐标，
@@ -1120,6 +1148,41 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.sidebar-collapse-btn {
+  display: inline-flex;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin: 1px 1px 1px 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--glass-bg-hover);
+  color: var(--color-text);
+}
+
+:global(.platform-mobile) .sidebar-collapse-btn {
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+}
+
+.sidebar-tabs > .sb-tab {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+}
+
 .task-tab-switched {
   display: flex;
   min-height: 0;

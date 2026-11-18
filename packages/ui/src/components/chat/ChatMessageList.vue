@@ -848,6 +848,7 @@ import UserAttachmentList from './UserAttachmentList.vue';
 import { splitUserContent, type UserAttachment, type UserQuotedLink } from '../../utils/user-attachments';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 import { resolveModelDisplayName } from '../../utils/model-display';
+import { sanitizeUserFacingError } from '../../utils/user-facing-errors';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, visibleRounds, ensureRoundVisible, formatTime, collapsedMessages, toggleMsgCollapse,
@@ -948,7 +949,7 @@ function roundSvgs(round: MessageRound) {
 }
 function renderRoundContent(content: string): string {
   return renderAssistantMarkdown(
-    stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(stripSceneResultBlocks(content))))),
+    stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(stripSceneResultBlocks(sanitizeUserFacingError(content)))))),
   );
 }
 

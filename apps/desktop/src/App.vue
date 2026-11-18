@@ -28,7 +28,7 @@ const isBareRoute = computed(() => route.meta?.bare === true);
 </script>
 
 <style>
-/* 根容器：纵向铺满整屏，标题栏固定高度 + 主体自适应填充 */
+/* 根容器：纵向铺满整屏，应用标题栏 + 主体自适应填充 */
 .desktop-root {
   height: 100vh;
   display: flex;

@@ -8,7 +8,7 @@
 -->
 <template>
   <div class="web-root">
-    <WebTopBar v-if="!isBareRoute" />
+    <WebTopBar v-if="!isBareRoute && !mobileShell" />
     <div class="web-body">
       <SharedApp />
     </div>
@@ -20,14 +20,17 @@ import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import WebTopBar from '@yan-zhi/ui/components/WebTopBar.vue';
 import SharedApp from '@yan-zhi/ui/App.vue';
+import { useMobileShell } from '@yan-zhi/ui';
 
 const route = useRoute();
 /** 独立窗口视图：不套应用顶栏（与 packages/ui 的 App.vue 同一判定口径） */
 const isBareRoute = computed(() => route.meta?.bare === true);
+/** Web 窄屏与 Capacitor 共用同一套移动壳；宽屏仍保留桌面 WebTopBar。 */
+const mobileShell = useMobileShell();
 </script>
 
 <style>
-/* 根容器：纵向铺满整屏，WebTopBar 固定 36px + 主体自适应填充 */
+/* 根容器：纵向铺满整屏，应用标题栏 + 主体自适应填充 */
 .web-root {
   height: 100vh;
   display: flex;

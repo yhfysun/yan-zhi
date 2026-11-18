@@ -1,5 +1,5 @@
 <template>
-  <PageFrame title="知识库" subtitle="管理文档切片，按关键词检索知识内容" class="kb-page">
+  <PageFrame title="知识库" subtitle="管理文档切片，按关键词检索知识内容" class="kb-page" :scroll="false">
     <!-- 工具条：向量模型 + 新建（独立一行，窄屏也不会挤压标题） -->
     <template #toolbar>
       <div class="kb-header-tools">
@@ -48,25 +48,27 @@
           <span>知识库</span>
           <el-button link type="primary" :icon="Refresh" @click="loadBases" />
         </div>
-        <div v-if="loading" class="panel-state">
-          <el-skeleton :rows="5" animated />
+        <div class="kb-list-body">
+          <div v-if="loading" class="panel-state">
+            <el-skeleton :rows="5" animated />
+          </div>
+          <el-empty v-else-if="bases.length === 0" description="还没有知识库" :image-size="64" />
+          <button
+            v-for="kb in bases"
+            :key="kb.id"
+            class="kb-item"
+            :class="{ active: selectedId === kb.id }"
+            type="button"
+            @click="selectBase(kb.id)"
+          >
+            <span class="kb-item-title">{{ kb.name }}</span>
+            <span class="kb-item-title" style="font-size:11px;font-weight:400;margin-left:auto">
+              <span v-if="kb.visibility === 'public'" class="badge-public">公开</span>
+              <span v-else class="badge-private">私有</span>
+            </span>
+            <span class="kb-item-desc">{{ kb.description || '无描述' }}</span>
+          </button>
         </div>
-        <el-empty v-else-if="bases.length === 0" description="还没有知识库" :image-size="64" />
-        <button
-          v-for="kb in bases"
-          :key="kb.id"
-          class="kb-item"
-          :class="{ active: selectedId === kb.id }"
-          type="button"
-          @click="selectBase(kb.id)"
-        >
-          <span class="kb-item-title">{{ kb.name }}</span>
-          <span class="kb-item-title" style="font-size:11px;font-weight:400;margin-left:auto">
-            <span v-if="kb.visibility === 'public'" class="badge-public">公开</span>
-            <span v-else class="badge-private">私有</span>
-          </span>
-          <span class="kb-item-desc">{{ kb.description || '无描述' }}</span>
-        </button>
       </aside>
 
       <section class="kb-detail glass-card">
@@ -820,20 +822,37 @@ async function resetBuiltinGuide() {
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 16px;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .kb-list,
 .kb-detail {
-  min-height: 420px;
+  min-height: 0;
   border-radius: var(--radius-md);
   padding: 16px;
+  overflow: hidden;
 }
 
 .kb-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.kb-list-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
+.kb-detail {
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-head,
@@ -929,6 +948,7 @@ async function resetBuiltinGuide() {
 
 .search-row {
   margin: 16px 0 14px;
+  flex: 0 0 auto;
 }
 
 .section-label {
@@ -942,6 +962,10 @@ async function resetBuiltinGuide() {
   flex-direction: column;
   gap: 10px;
   margin-top: 12px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding-right: 4px;
+  flex: 0 0 auto;
 }
 
 /* 文档表格：固定最大高度、独立滚动，避免撑长页面 */
@@ -1004,17 +1028,20 @@ async function resetBuiltinGuide() {
 
 @media (max-width: 767px) {
   .knowledge-layout {
-    grid-template-columns: 1fr;
+    display: flex;
+    height: 100%;
+    flex-direction: column;
+    overflow-y: auto;
   }
-  .kb-list,
-  .kb-detail {
-    min-height: 0;
-  }
+  .kb-list { min-height: 220px; max-height: 300px; flex: 0 0 auto; }
+  .kb-detail { min-height: 620px; flex: 0 0 auto; overflow: visible; }
+  .kb-detail > * { flex: 0 0 auto; }
+  .kb-tabs { min-height: 460px; }
 }
 
 /* ===== 分片列表（按文档分组，分片直接可读） ===== */
 .chunk-section { margin-top: 4px; }
-.chunk-tree { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+.chunk-tree { height: 100%; margin-top: 0; display: flex; min-height: 0; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 4px; }
 .chunk-group {
   flex: none; /* flex 列 + max-height 容器下禁止压缩，内容超高走容器滚动而不是把分组裁掉 */
   border: 1px solid var(--glass-border); border-radius: var(--radius-md, 10px); overflow: hidden;
@@ -1051,20 +1078,35 @@ async function resetBuiltinGuide() {
 /* ===== Tab 切换主体 ===== */
 .kb-tabs {
   margin-top: 14px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .kb-tabs :deep(.el-tabs__header) {
   margin-bottom: 12px;
+  flex: 0 0 auto;
 }
 .kb-tabs :deep(.el-tabs__nav-wrap::after) {
   height: 1px;
+}
+.kb-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.kb-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 /* ===== 文档浏览器（Windows 资源管理器风格：左目录 + 右预览） ===== */
 .doc-explorer {
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 12px;
-  min-height: 360px;
-  height: calc(70vh - 40px);
+  min-height: 0;
+  height: 100%;
 }
 .doc-tree-panel {
   display: flex;

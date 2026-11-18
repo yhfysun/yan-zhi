@@ -9,7 +9,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   BookOpen, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck,
-  Library, NotebookPen, Play, Wrench, X,
+  Library, NotebookPen, Play, Sparkles, Wrench, X,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_PAGES,
@@ -35,6 +35,11 @@ import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbenc
 import CultureWorkbench from '../components/learning/CultureWorkbench.vue';
 import MusicWorkbench from '../components/learning/MusicWorkbench.vue';
 import ZhouyiWorkbench from '../components/learning/zhouyi/ZhouyiWorkbench.vue';
+import ChatMessageList from '../components/chat/ChatMessageList.vue';
+import ChatInputArea from '../components/chat/ChatInputArea.vue';
+import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
+import { useAgentStore } from '../stores/agent';
+import { useChat } from '../composables/chat/useChat';
 
 const SESSION_KEY = 'yz.learning.v2.session.v1';
 const PROGRESS_KEY = 'yz.learning.v2.progress.v1';
@@ -44,6 +49,8 @@ const STUDY_RAIL_DEFAULT_WIDTH = 216;
 const STUDY_RAIL_MIN_WIDTH = 188;
 const STUDY_RAIL_MAX_WIDTH = 320;
 const STUDY_RAIL_COLLAPSED_WIDTH = 42;
+const LEARNING_AGENT_ID = 'a_builtin_learning_subject_coach';
+const LEGACY_ENGLISH_AGENT_ID = 'a_builtin_learning_coach';
 const subjects = getLearningV2Subjects();
 const selectedSubjectKey = ref(subjects[0]?.key || 'party');
 const selectedCourseName = ref(subjects[0]?.current.course || '');
@@ -59,7 +66,11 @@ const libraryOpen = ref(false);
 const readerOpen = ref(false);
 const readerBook = ref<LearningV2ReaderBook | null>(null);
 const mobileSubjectsOpen = ref(false);
-const libraryDialog = ref<HTMLElement | null>(null);
+const learningAiInput = ref<{
+  fillInput: (text: string) => void;
+  fillAndSend: (text: string) => Promise<void>;
+} | null>(null);
+const libraryPage = ref<HTMLElement | null>(null);
 const workspaceRoot = ref<HTMLElement | null>(null);
 const mobileSubjectSheet = ref<HTMLElement | null>(null);
 const lessonRoot = ref<HTMLElement | null>(null);
@@ -84,7 +95,6 @@ const usesSpecializedLessonWorkbench = computed(() =>
 let progressRequestId = 0;
 let compactMediaQuery: MediaQueryList | null = null;
 let compactMediaListener: ((event: MediaQueryListEvent) => void) | null = null;
-let previousBodyOverflow = '';
 let lessonBodyOverflow = '';
 let studioBodyOverflow = '';
 let mobileSheetBodyOverflow = '';
@@ -92,6 +102,9 @@ let railResizeStartX = 0;
 let railResizeStartWidth = STUDY_RAIL_DEFAULT_WIDTH;
 
 const subject = computed(() => getLearningV2Subject(selectedSubjectKey.value) || subjects[0]);
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
+const chat = useChat();
+const agentStore = useAgentStore();
 const courses = computed(() => subject.value?.courses || []);
 const currentTrackName = computed(() =>
   courses.value.find((course) => course.name === selectedCourseName.value)?.trackName
@@ -303,6 +316,32 @@ const overviewStats = computed(() => [
   [String(completedCourseCount.value), '已完成'],
   [`${courseProgressPercent.value}%`, '本地进度'],
 ] as const);
+const aiQuickPrompts = computed(() => [
+  {
+    key: 'explain',
+    label: '讲解当前课',
+    detail: '从已学内容切入，讲清机制和例子',
+    prompt: `我在学习《${subject.value.name}》的《${selectedCourseName.value}》。请结合当前课程，先用一句话讲清核心结论，再分三步讲解机制，并给一个能马上做的例子。`,
+  },
+  {
+    key: 'practice',
+    label: '出练习题',
+    detail: '由浅入深，附带答案与错因',
+    prompt: `请围绕《${selectedCourseName.value}》给我出 5 道由浅入深的小练习。先不要给答案，等我作答后再逐题讲解错因。`,
+  },
+  {
+    key: 'review',
+    label: '整理薄弱点',
+    detail: '汇总待复习概念与易错点',
+    prompt: `请根据《${subject.value.name}》当前进度和待复习内容，整理我最近的薄弱点，按优先级排好，并给出今天 15 分钟内能完成的复习安排。`,
+  },
+  {
+    key: 'plan',
+    label: '规划今日学习',
+    detail: '按剩余时间安排学习与复习',
+    prompt: `请基于当前科目《${subject.value.name}》和课程《${selectedCourseName.value}》，给我安排今天的学习计划，明确先学什么、练什么、如何检查是否掌握。`,
+  },
+]);
 const narrationText = computed(() => {
   const pageText: Record<LearningV2PageKey, string> = {
     overview: `${subject.value.name}。${subject.value.line}。当前课程：${selectedCourseName.value}。`,
@@ -467,6 +506,42 @@ function selectPage(page: LearningV2PageKey) {
   activePage.value = page;
 }
 
+function switchLearningLead(next: LeadMode): void {
+  setLead(activeMode.value, next);
+  ensureLearningAgent();
+}
+
+function ensureLearningAgent(): void {
+  if (lead.value !== 'ai' || agentStore.selectedId !== LEGACY_ENGLISH_AGENT_ID) return;
+  if (!agentStore.agents.some((agent) => agent.id === LEARNING_AGENT_ID)) return;
+  chat.onAgentSwitch(LEARNING_AGENT_ID, true);
+}
+
+function openLearningPage(page: LearningV2PageKey): void {
+  switchLearningLead('human');
+  selectPage(page);
+}
+
+function onAiSubjectChange(key: string): void {
+  selectSubject(key);
+}
+
+function onAiCourseChange(name: string): void {
+  selectCourse(name);
+}
+
+function fillLearningPrompt(prompt: string): void {
+  learningAiInput.value?.fillInput(prompt);
+}
+
+async function sendLearningPrompt(prompt: string): Promise<void> {
+  await learningAiInput.value?.fillAndSend(prompt);
+}
+
+async function newLearningConversation(): Promise<void> {
+  await chat.startNewChat();
+}
+
 function exitLesson() {
   selectPage('overview');
   if (!libraryOpen.value) document.body.style.overflow = lessonBodyOverflow;
@@ -546,6 +621,7 @@ function applyScholarNote() {
 
 function openLibraryBook(entry: LearningV2LibraryEntry) {
   if (!entry?.readable) return;
+  switchLearningLead('human');
   selectSubject(entry.subjectKey);
   selectedCourseName.value = getLearningV2Subject(entry.subjectKey)?.current.course || '';
   activePage.value = 'books';
@@ -556,7 +632,6 @@ function openLibraryBook(entry: LearningV2LibraryEntry) {
 function openReadingBook(book: LearningV2ReaderBook) {
   readerBook.value = book;
   readerOpen.value = true;
-  libraryOpen.value = false;
 }
 
 function closeReadingBook() {
@@ -568,9 +643,8 @@ function selectMobileCourse(name: string) {
   if (selectCourse(name)) selectPage('lesson');
 }
 
-function onMobileCourseChange(event: Event) {
-  const name = (event.target as HTMLSelectElement).value;
-  if (name && !selectCourse(name)) event.preventDefault();
+function onMobileCourseChange(name: string) {
+  if (name) selectCourse(name);
 }
 
 function submitPractice() {
@@ -618,7 +692,7 @@ function onKeydown(event: KeyboardEvent) {
     return;
   }
   if (libraryOpen.value && event.key === 'Tab') {
-    const focusable = [...(libraryDialog.value?.querySelectorAll<HTMLElement>(
+    const focusable = [...(libraryPage.value?.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href]',
     ) || [])].filter((element) => element.offsetParent !== null);
     if (!focusable.length) return;
@@ -669,14 +743,18 @@ function onKeydown(event: KeyboardEvent) {
 
 watch([selectedSubjectKey, selectedCourseName, activePage, lessonStep], saveSession);
 watch(selectedSubjectKey, () => void loadProgress());
+watch(lead, (next, previous) => {
+  if (next === 'ai' && previous !== 'ai') {
+    ensureLearningAgent();
+  }
+});
+watch(() => agentStore.agents.length, ensureLearningAgent);
+watch(() => agentStore.selectedId, ensureLearningAgent);
+watch(() => chat.store.currentConvId, ensureLearningAgent);
 watch(libraryOpen, async (open) => {
   if (open) {
-    previousBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
     await nextTick();
-    libraryDialog.value?.querySelector<HTMLElement>('[data-library-search], button')?.focus();
-  } else {
-    document.body.style.overflow = previousBodyOverflow;
+    libraryPage.value?.querySelector<HTMLElement>('[data-library-search], button')?.focus();
   }
 });
 watch(activePage, async (page, previous) => {
@@ -708,6 +786,9 @@ watch(mobileSubjectsOpen, async (open) => {
   }
 });
 onMounted(() => {
+  if (lead.value === 'ai') {
+    ensureLearningAgent();
+  }
   restoreStudyRailPreferences();
   restoreSession();
   subjectsCollapsed.value = localStorage.getItem(SUBJECTS_COLLAPSED_KEY) === '1';
@@ -730,7 +811,6 @@ onBeforeUnmount(() => {
   compactMediaQuery = null;
   compactMediaListener = null;
   stopStudyRailResize();
-  if (libraryOpen.value) document.body.style.overflow = previousBodyOverflow;
   if (activePage.value === 'lesson') document.body.style.overflow = lessonBodyOverflow;
   if (activePage.value === 'studio') document.body.style.overflow = studioBodyOverflow;
   if (mobileSubjectsOpen.value) document.body.style.overflow = mobileSheetBodyOverflow;
@@ -741,11 +821,180 @@ onBeforeUnmount(() => {
   <div
     v-if="subject"
     class="lv2"
-    :class="{ 'subjects-collapsed': subjectsCollapsed }"
+    :class="{ 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
     :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
     :data-yz-annotate-id="activePage === 'lesson' ? 'learning-v2-lesson' : `learning-v2-${activePage}`"
     data-yz-annotate-label="学习"
   >
+    <section
+      v-if="libraryOpen"
+      ref="libraryPage"
+      class="lv2-library-page lv2-library-shell"
+      :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
+      aria-label="图书馆"
+    >
+      <LearningLibrary
+        :records="libraryRecords"
+        :accent="subject.accent"
+        :tint="subject.tint"
+        @close="closeLibrary"
+        @open-book="openLibraryBook"
+        @read-book="openReadingBook"
+      />
+    </section>
+
+    <section v-else-if="lead === 'ai'" class="lv2-ai-shell" aria-label="学习 AI 工作区">
+      <aside class="lv2-ai-context">
+        <header class="lv2-ai-brand">
+          <span><Sparkles :size="17" /></span>
+          <div><b>学习教练</b><small>只围绕你的课程与进度</small></div>
+        </header>
+
+        <section class="lv2-ai-context-block">
+          <label>
+            <span>当前科目</span>
+            <el-select
+              :model-value="selectedSubjectKey"
+              class="lv2-ai-select"
+              popper-class="lv2-ai-select-popper"
+              aria-label="切换 AI 学习科目"
+              @change="onAiSubjectChange"
+            >
+              <el-option v-for="item in subjects" :key="item.key" :value="item.key" :label="item.name" />
+            </el-select>
+          </label>
+          <label>
+            <span>当前课程</span>
+            <el-select
+              :model-value="selectedCourseName"
+              class="lv2-ai-select"
+              popper-class="lv2-ai-select-popper lv2-ai-course-popper"
+              aria-label="切换 AI 学习课程"
+              filterable
+              @change="onAiCourseChange"
+            >
+              <el-option-group v-for="track in subject.tracks" :key="track.name" :label="track.name">
+                <el-option
+                  v-for="course in track.courses"
+                  :key="course.name"
+                  :value="course.name"
+                  :label="course.name"
+                  :disabled="!courseReady(course.name)"
+                />
+              </el-option-group>
+            </el-select>
+          </label>
+        </section>
+
+        <section class="lv2-ai-progress">
+          <header><span>课程进度</span><b>{{ courseProgressPercent }}%</b></header>
+          <i><span :style="{ width: `${courseProgressPercent}%` }"></span></i>
+          <p>{{ completedCourseCount }} / {{ courses.length }} 门已学 · {{ subject.review.due }} 项待复习</p>
+        </section>
+
+        <nav class="lv2-ai-actions" aria-label="学习工具">
+          <button type="button" @click="openLearningPage('overview')">
+            <BookOpen :size="15" /><span><b>学习台</b><small>课程、路线与进度</small></span><ChevronRight :size="14" />
+          </button>
+          <button type="button" @click="libraryOpen = true">
+            <Library :size="15" /><span><b>图书馆</b><small>小说、名著、漫画与书架</small></span><ChevronRight :size="14" />
+          </button>
+          <button type="button" @click="openLearningPage('review')">
+            <Brain :size="15" /><span><b>复习</b><small>{{ subject.review.due }} 个薄弱点到期</small></span><ChevronRight :size="14" />
+          </button>
+          <button type="button" @click="openLearningPage('studio')">
+            <Wrench :size="15" /><span><b>实践</b><small>{{ studios.studio.type }}</small></span><ChevronRight :size="14" />
+          </button>
+        </nav>
+
+        <section class="lv2-ai-next">
+          <header><span>下一步</span><button type="button" @click="openLearningPage('lesson')">沉浸学习</button></header>
+          <button class="lv2-ai-continue" type="button" @click="openLearningPage('lesson')">
+            <span>{{ selectedCourse?.trackName }}</span>
+            <b>{{ selectedCourseName }}</b>
+            <small>{{ courseProgressPercent }}% · 继续当前学习步骤</small>
+            <Play :size="16" />
+          </button>
+        </section>
+      </aside>
+
+      <main class="lv2-ai-main">
+        <header class="lv2-ai-chat-head">
+          <div>
+            <span>学习 · AI 陪学</span>
+            <b>{{ subject.name }} / {{ selectedCourseName }}</b>
+          </div>
+          <div class="lv2-ai-head-actions">
+            <button type="button" class="lv2-ai-mobile-subject" @click="mobileSubjectsOpen = true">
+              {{ subject.name }}<ChevronDown :size="14" />
+            </button>
+            <button type="button" class="lv2-ai-head-button" @click="libraryOpen = true">
+              <Library :size="15" /><span>图书馆</span>
+            </button>
+            <button type="button" class="lv2-ai-head-button icon-only" title="新建学习会话" aria-label="新建学习会话" @click="newLearningConversation">
+              <Sparkles :size="15" />
+            </button>
+          </div>
+        </header>
+
+        <div class="lv2-ai-mobile-context">
+          <label>
+            <span>课程</span>
+            <el-select
+              :model-value="selectedCourseName"
+              class="lv2-ai-select"
+              popper-class="lv2-ai-select-popper lv2-ai-course-popper"
+              aria-label="切换 AI 学习课程"
+              filterable
+              @change="onAiCourseChange"
+            >
+              <el-option v-for="course in readyCourses" :key="course.id" :value="course.name" :label="course.name" />
+            </el-select>
+          </label>
+          <span><b>{{ courseProgressPercent }}%</b> 掌握进度</span>
+          <button type="button" @click="openLearningPage('lesson')"><Play :size="14" />继续学习</button>
+        </div>
+
+        <div class="lv2-ai-messages">
+          <ChatMessageList>
+            <template #welcome>
+              <section class="lv2-ai-welcome">
+                <span class="lv2-ai-welcome-mark"><Sparkles :size="22" /></span>
+                <h1>今天想把哪一块学明白？</h1>
+                <p>我会结合《{{ subject.name }}》和《{{ selectedCourseName }}》当前进度来讲解、出题与复盘。</p>
+                <div class="lv2-ai-welcome-prompts">
+                  <button
+                    v-for="item in aiQuickPrompts"
+                    :key="item.key"
+                    type="button"
+                    @click="sendLearningPrompt(item.prompt)"
+                  >
+                    <span>{{ item.label }}</span>
+                    <small>{{ item.detail }}</small>
+                    <ChevronRight :size="14" />
+                  </button>
+                </div>
+                <div class="lv2-ai-welcome-foot">
+                  <button type="button" @click="openLearningPage('lesson')"><NotebookPen :size="14" />直接进入沉浸学习</button>
+                  <button type="button" @click="openLearningPage('practice')"><ClipboardCheck :size="14" />先做一组练习</button>
+                </div>
+              </section>
+            </template>
+          </ChatMessageList>
+        </div>
+
+        <div class="lv2-ai-quick-strip" aria-label="学习快捷指令">
+          <button v-for="item in aiQuickPrompts" :key="item.key" type="button" @click="fillLearningPrompt(item.prompt)">
+            {{ item.label }}
+          </button>
+        </div>
+        <div class="lv2-ai-composer">
+          <ChatInputArea ref="learningAiInput" />
+        </div>
+      </main>
+    </section>
+
+    <template v-else>
     <aside
       v-if="!isCompactLayout"
       class="lv2-subjects"
@@ -839,14 +1088,32 @@ onBeforeUnmount(() => {
         <template v-if="activePage === 'overview'">
           <div v-if="isCompactLayout" class="lv2-mobile-overview">
             <label class="lv2-mobile-course-select">
-              <select aria-label="选择阶段与课程" :value="selectedCourseName" @change="onMobileCourseChange">
-                <optgroup v-for="track in subject.tracks" :key="track.name" :label="track.name">
-                  <option v-for="course in track.courses" :key="course.name" :value="course.name" :disabled="!courseReady(course.name)">
-                    {{ course.name }}{{ courseReady(course.name) ? '' : '（建设中）' }}
-                  </option>
-                </optgroup>
-              </select>
+              <el-select
+                :model-value="selectedCourseName"
+                class="lv2-ai-select"
+                popper-class="lv2-ai-select-popper lv2-ai-course-popper"
+                aria-label="选择阶段与课程"
+                filterable
+                @change="onMobileCourseChange"
+              >
+                <el-option-group v-for="track in subject.tracks" :key="track.name" :label="track.name">
+                  <el-option
+                    v-for="course in track.courses"
+                    :key="course.name"
+                    :value="course.name"
+                    :label="courseReady(course.name) ? course.name : `${course.name}（建设中）`"
+                    :disabled="!courseReady(course.name)"
+                  />
+                </el-option-group>
+              </el-select>
             </label>
+
+            <button class="lv2-mobile-library-entry" type="button" @click="libraryOpen = true">
+              <span><Library :size="18" /></span>
+              <b>图书馆</b>
+              <small>小说、名著、漫画与书架</small>
+              <ChevronRight :size="16" />
+            </button>
 
             <button class="lv2-mobile-continue" type="button" @click="selectPage('lesson')">
               <span>继续学习 · {{ selectedCourse?.trackName }}<em>第 {{ selectedCourseOrder }} / {{ courses.length }} 课</em></span>
@@ -993,12 +1260,13 @@ onBeforeUnmount(() => {
         </template>
 
         <template v-else-if="activePage === 'lesson'">
-          <div
-            v-if="usesSpecializedLessonWorkbench"
-            ref="specializedStudyRoot"
-            class="lv2-specialized-study"
-            tabindex="-1"
-          >
+          <Teleport to="body">
+            <div
+              v-if="usesSpecializedLessonWorkbench"
+              ref="specializedStudyRoot"
+              class="lv2-specialized-study"
+              tabindex="-1"
+            >
             <header class="lv2-specialized-study-bar">
               <button data-action="exit-lesson" type="button" @click="exitLesson">
                 <ChevronLeft :size="16" />返回学习
@@ -1028,15 +1296,15 @@ onBeforeUnmount(() => {
               />
               <ZhouyiWorkbench v-else-if="selectedSubjectKey === 'zhouyi'" />
             </div>
-          </div>
-          <div
-            v-else
-            ref="lessonRoot"
-            class="lv2-lesson"
-            tabindex="-1"
-            data-yz-annotate-id="learning-v2-lesson"
-            data-yz-annotate-label="沉浸学习台"
-          >
+            </div>
+            <div
+              v-else
+              ref="lessonRoot"
+              class="lv2-lesson"
+              tabindex="-1"
+              data-yz-annotate-id="learning-v2-lesson"
+              data-yz-annotate-label="沉浸学习台"
+            >
             <header>
               <button class="lv2-lesson-back" data-action="exit-lesson" type="button" @click="exitLesson"><ChevronLeft :size="16" />返回路线</button>
               <b>{{ coursePlan.title }}</b>
@@ -1134,36 +1402,39 @@ onBeforeUnmount(() => {
                 <button type="button" @click="openNote(coursePlan.title, currentLessonStep?.body || '')"><NotebookPen :size="14" />自由笔记</button>
               </div>
             </article>
-            <footer><button type="button" :disabled="lessonStep === 0" @click="lessonStep--">上一步</button><button type="button" @click="lessonStep < lessonSteps.length - 1 ? lessonStep++ : finishLesson()">{{ lessonStep < lessonSteps.length - 1 ? '下一步' : '完成本课' }}</button></footer>
-          </div>
+              <footer><button type="button" :disabled="lessonStep === 0" @click="lessonStep--">上一步</button><button type="button" @click="lessonStep < lessonSteps.length - 1 ? lessonStep++ : finishLesson()">{{ lessonStep < lessonSteps.length - 1 ? '下一步' : '完成本课' }}</button></footer>
+            </div>
+          </Teleport>
         </template>
 
         <template v-else-if="activePage === 'studio'">
-          <div ref="studioRoot" class="lv2-studio-immersive" tabindex="-1">
-            <header class="lv2-studio-immersive-bar">
-              <button data-action="exit-studio" type="button" @click="exitStudio">
-                <ChevronLeft :size="16" />返回学习
-              </button>
-              <b>{{ selectedCourseName }}</b>
-              <span>实践 · {{ studios.studio.type }}</span>
-              <button class="lv2-studio-immersive-close" type="button" aria-label="关闭实践" @click="exitStudio">
-                <X :size="16" />
-              </button>
-            </header>
-            <div class="lv2-studio-immersive-body" :class="{ embedded: usesEmbeddedStudioPractice }">
-              <div class="lv2-studio-immersive-content" :class="{ embedded: usesEmbeddedStudioPractice }">
-                <header v-if="!usesEmbeddedStudioPractice" class="lv2-page-head">
-                  <div><span>{{ studios.studio.type }}</span><h1>实践</h1><p>当前只保留实践工作区；离开后回到原课程进度。</p></div>
-                </header>
-                <LearningPracticeStudio
-                  :subject-key="selectedSubjectKey"
-                  :course-name="selectedCourseName"
-                  :practice="studios"
-                  @goto-lesson="selectPage('lesson')"
-                />
+          <Teleport to="body">
+            <div ref="studioRoot" class="lv2-studio-immersive" tabindex="-1">
+              <header class="lv2-studio-immersive-bar">
+                <button data-action="exit-studio" type="button" @click="exitStudio">
+                  <ChevronLeft :size="16" />返回学习
+                </button>
+                <b>{{ selectedCourseName }}</b>
+                <span>实践 · {{ studios.studio.type }}</span>
+                <button class="lv2-studio-immersive-close" type="button" aria-label="关闭实践" @click="exitStudio">
+                  <X :size="16" />
+                </button>
+              </header>
+              <div class="lv2-studio-immersive-body" :class="{ embedded: usesEmbeddedStudioPractice }">
+                <div class="lv2-studio-immersive-content" :class="{ embedded: usesEmbeddedStudioPractice }">
+                  <header v-if="!usesEmbeddedStudioPractice" class="lv2-page-head">
+                    <div><span>{{ studios.studio.type }}</span><h1>实践</h1><p>当前只保留实践工作区；离开后回到原课程进度。</p></div>
+                  </header>
+                  <LearningPracticeStudio
+                    :subject-key="selectedSubjectKey"
+                    :course-name="selectedCourseName"
+                    :practice="studios"
+                    @goto-lesson="selectPage('lesson')"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          </Teleport>
         </template>
 
         <template v-else-if="activePage === 'practice'">
@@ -1274,21 +1545,7 @@ onBeforeUnmount(() => {
       </aside>
       </div>
     </main>
-
-    <Teleport to="body">
-      <div v-if="libraryOpen" class="lv2-library-mask" :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }" @click.self="closeLibrary">
-        <div ref="libraryDialog" class="lv2-library-shell">
-          <LearningLibrary
-            :records="libraryRecords"
-            :accent="subject.accent"
-            :tint="subject.tint"
-            @close="closeLibrary"
-            @open-book="openLibraryBook"
-            @read-book="openReadingBook"
-          />
-        </div>
-      </div>
-    </Teleport>
+    </template>
 
     <Teleport to="body">
       <LearningBookReader

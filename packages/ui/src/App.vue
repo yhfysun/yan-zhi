@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': isMobilePlatform, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute, 'has-statusbar': showStatusBar, 'is-learning': activeMode === 'learning' }">
+  <div class="app-shell" :data-mode="activeMode" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': mobileShellAsRoot, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute, 'has-statusbar': showStatusBar, 'is-learning': activeMode === 'learning' }">
 
     <!-- 独立子窗口（如差异窗口）：不套任何应用外壳，整窗交由页面自绘标题栏 -->
     <template v-if="isBareRoute">
@@ -24,15 +24,10 @@
 
         <!-- 内置默认布局 -->
         <template v-else>
-        <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；
-             web 端：WebTopBar 在 apps/web/src/App.vue 接管主导航，SideNav 也不再渲染；
-             仅 Capacitor 端仍保留竖排 SideNav 的 tab-bar 分支。
-             ★ 判据必须是 isMobilePlatform（平台），不能是 isMobile（窄窗 ∪ 平台）：
-               桌面/Web 的窄窗口下 isMobile 也为真，会渲染出 220px 的桌面侧栏，
-               以 fixed + z-index 盖住聊天区（2026-11-02 390 宽截图实见）。 -->
-        <SideNav v-if="isMobilePlatform" />
-        <!-- Mobile TopBar —— ★ 仅 Capacitor 端渲染（见 mobileShellAsRoot 注释）：
-             桌面/Web 端的窄窗口已有外层 WebTopBar，再画一条会双标题栏重叠。
+        <!-- Capacitor 与 Web 手机视口共用同一套移动壳。桌面 Electron 的窄窗口仍保留
+             桌面标题栏和紧凑 dock，避免把桌面工作流误切成手机交互。 -->
+        <SideNav v-if="mobileShellAsRoot" />
+        <!-- Mobile TopBar —— Capacitor 与 Web 手机视口渲染；宽屏 Web/桌面由外层导航接管。
 
              ★ 移动端顶栏只承担两件事（主导航已下移到 TabBar，见 SideNav 的 .tab-bar）：
                ① 定位：当前会话标题（chat）或页面名（其它页）
@@ -41,65 +36,16 @@
              竖屏下既挤又和 TabBar 语义重复。
              （对话页的搜索在会话列表抽屉里，不在此重复造一个入口。） -->
         <header v-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
-          <!-- 汉堡按钮 → 左滑抽屉（Task 11.1）：低频入口（空间切换/定时任务/技能工具/设置）。
-               对话页不渲染本顶栏（ChatTopbar 自带会话抽屉入口），故抽屉只在其余页可达。 -->
-          <button class="mobile-icon-btn" type="button" aria-label="打开菜单" @click="navDrawerOpen = true">
-            <el-icon :size="18"><Menu /></el-icon>
-          </button>
+          <MobileModeSwitch />
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
-            <!-- ★ 移动端模式切换（2026-11-15 用户实报缺失）：办公/学习白名单内的唯一入口 -->
-            <MobileModeSwitch />
-            <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom" :disabled="isTouchLike">
-              <button class="mobile-icon-btn" type="button" aria-label="切换主题" @click="toggleTheme">
-                <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
-              </button>
-            </el-tooltip>
-            <el-dropdown v-if="authStore.isLoggedIn" trigger="click">
-              <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <div class="user-dropdown-header">
-                    <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
-                  </div>
-                  <el-dropdown-item divided @click="authStore.logout()">
-                    <el-icon><SwitchButton /></el-icon>
-                    <span>退出登录</span>
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <!-- 本机单机端使用中性「本机」身份；guest 不渲染登录或切换账号入口。 -->
-            <el-dropdown v-else-if="isLocalClient" trigger="click">
-              <span class="mobile-user-avatar is-local" title="本机">{{ localIdentityInitial }}</span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <div class="user-dropdown-header">
-                    <span class="user-dropdown-name">{{ authStore.isLoggedIn ? authStore.user?.username : '本机' }}</span>
-                  </div>
-                  <el-dropdown-item @click="$router.push('/settings')">
-                    <el-icon><Setting /></el-icon>
-                    <span>设置</span>
-                  </el-dropdown-item>
-                  <el-dropdown-item @click="$router.push('/memory')">
-                    <el-icon><Collection /></el-icon>
-                    <span>记忆管理</span>
-                  </el-dropdown-item>
-                  <el-dropdown-item v-if="authStore.isLoggedIn" divided @click="logoutFromMenu">
-                    <el-icon><SwitchButton /></el-icon>
-                    <span>退出登录</span>
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <button v-else class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">
-              <!-- 用 Avatar 而非线框 User：User 已在 TabBar「智能体」上（移动端常驻同屏），
-                   同图标同时可见会被当成"重复"（2026-09-21 实测 3 处人形图标）。 -->
-              <el-icon :size="17"><Avatar /></el-icon>
+            <WorkspaceModeSwitch />
+            <button class="mobile-icon-btn" type="button" aria-label="打开更多功能" @click="openMobileNavDrawer">
+              <el-icon :size="19"><MoreFilled /></el-icon>
             </button>
           </div>
         </header>
-        <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage }">
+        <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage, 'is-office-ai-shell': officeAiShellActive }">
           <router-view v-slot="{ Component }">
             <!-- ★★ 2026-10-16 页面切换**不再用 `<transition>`**（用户实报「切模式黑屏、无任何报错」
                  ＋「切换有点慢」）。原因：`mode="out-in"` 把"旧视图可以退场了"这件事交给 Vue 的
@@ -112,7 +58,27 @@
                  换掉，没有"等谁"的环节，也就没有能停住的中间态；顺带比 out-in 少了
                  110ms 的串行 leave，切换更快。
                  :key="viewKey" 仍留着 —— 它是看门狗唯一的修复手段（内容区空了就重挂一次）。 -->
-            <component :is="Component" :key="viewKey" />
+            <div
+              v-if="officeAiShellActive"
+              class="office-ai-shell"
+              :class="{ 'sidebar-collapsed': officeAiSidebarCollapsed }"
+              :style="{ '--office-ai-sidebar-w': officeAiSidebarR.width.value + 'px' }"
+            >
+              <OfficeAiSidebar v-if="!officeAiSidebarCollapsed" />
+              <div
+                v-if="!officeAiSidebarCollapsed"
+                class="office-ai-sidebar-resize"
+                :class="{ dragging: officeAiSidebarR.dragging.value }"
+                role="separator"
+                aria-label="调整办公 AI 侧栏宽度"
+                aria-orientation="vertical"
+                @mousedown="officeAiSidebarR.startDrag($event, 'left')"
+              ></div>
+              <div class="office-ai-route">
+                <component :is="Component" :key="viewKey" />
+              </div>
+            </div>
+            <component :is="Component" v-else :key="viewKey" />
           </router-view>
         </main>
         </template>
@@ -126,8 +92,8 @@
     <!-- 独立子窗口：无应用抽屉（设置浮层属于主窗口的导航体验） -->
     <SettingsDrawer v-if="!isBareRoute" />
 
-    <!-- 移动端汉堡抽屉（Task 11.1）：仅由 mobile-topbar 的汉堡按钮打开，桌面端永不展开 -->
-    <MobileNavDrawer v-model="navDrawerOpen" />
+    <!-- 移动端更多抽屉：由移动顶栏右侧按钮打开，桌面端永不展开 -->
+    <MobileNavDrawer v-model="mobileNavDrawerOpen" />
 
     <!-- 桌面端设置弹窗（Task 10.3）：WebTopBar 头像菜单 /「更多」入口打开 -->
     <SettingsDialog v-if="!isBareRoute" />
@@ -182,9 +148,11 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
-import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
+import { MoreFilled } from '@element-plus/icons-vue';
 import AppStatusBar from './components/AppStatusBar.vue';
 import { activeMode } from './stores/mode';
+import { officeAiSidebarCollapsed } from './stores/officeWorkbench';
+import OfficeAiSidebar from './components/office/OfficeAiSidebar.vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import { usePluginStore } from './stores/plugin';
@@ -205,6 +173,9 @@ import { getEffectiveServerBase, getLicenseCode, getToken } from './api/client';
 import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
+import { useResizable } from './composables/useResizable';
+import { mobileNavDrawerOpen, openMobileNavDrawer } from './composables/useMobileNavDrawer';
+import WorkspaceModeSwitch from './components/workbench/WorkspaceModeSwitch.vue';
 import { syncPluginWindowHotkeys } from './composables/pluginWindowHotkeys';
 import { installSelectAllScope } from './utils/selectAllScope';
 import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './utils/modeWindow';
@@ -227,60 +198,28 @@ settingsStore.applyDarkMode(settingsStore.settings.darkMode);
 // 但本地缓存里的值此刻已可用；load() 完成后 settings.ts 内还会再应用一次（幂等）。
 settingsStore.applyLiteMode(settingsStore.settings.liteMode);
 const pluginStore = usePluginStore();
-/** 移动外壳判定：视口窄 或 跑在 Capacitor 端（详见 useMobileShell 注释）。
- *  ★ 与下方 isMobilePlatform 的分工：本变量管「用哪套壳」，isMobilePlatform 管
- *    「加哪个平台类名」。Capacitor 横屏时前者 true、后者也 true，桌面端两者都 false。 */
+/** 「是否按移动交互渲染」：视口窄或 Capacitor。 */
 const isMobile = useMobileShell();
 const { isDesktop, isWeb, isMobile: isMobilePlatform } = usePlatform();
 const { collapsed } = useSidebarState();
 
 /**
- * ★★ 是否由「本共享壳」承担顶部导航条 / 底部 TabBar。
- *
- * 背景（真实的适配 bug）：`isMobile` = 视口窄 **或** Capacitor 端。桌面端与 Web 端的
- * 根组件（`apps/desktop/src/App.vue` / `apps/web/src/App.vue`）**无条件**渲染 WebTopBar，
- * 而本共享壳在视口 <768px 时也会切到移动外壳（`mobile-topbar` + 底部 TabBar）。
- * 两者叠加的后果（实测 400/640px）：
- *   ① 顶部两条 36px + 48px 的横条，`mobile-topbar-title` 直接被 WebTopBar 压住；
- *   ② 底部 TabBar 与上方导航的语义重复 —— 窄屏同时存在两套主导航；
- *   ③ 内容区顶部留白按 48px 算，与 WebTopBar 的 36px 对不上。
- *
- * 处置：**只有 Capacitor 端才用自绘 mobile-topbar + TabBar**。桌面端/Web 端的窄窗口
- * 不套移动外壳，而是走 SideNav 的「宽屏 dock 紧凑形态」——语义上仍是 52px dock，
- * 与 WebTopBar 并存不冲突。
- *
- * ⚠️ 不能直接把 `isMobile` 改回宽度断点：Capacitor 横屏（视口 800+px）时会误判成 Web，
- * 底部 TabBar 与自绘顶栏一起消失（见 useMobileShell 注释里的历史坑）。
- * 所以要区分**两件事**：
- *   · `isMobile`              —— 「是否按移动交互渲染」（TabBar 项、when='mobile' 插件项、
- *                                窄屏留白/字号）→ 保持「视口窄 或 Capacitor」并集；
- *   · `mobileShellAsRoot`     —— 「本壳是否自己画顶栏/底栏」→ **仅 Capacitor**。
- *
- * 口径来源：`openspec/specs/PLATFORM.md`「移动端使用底部 TabBar」——
- * 移动端指 Capacitor 容器；桌面/Web 的窄窗口只是窄窗降级，不应变成移动端外壳。
+ * 是否由共享壳自己画移动顶栏、底部 TabBar 和单列内容区。
+ * Web 手机视口直接复用 Capacitor 壳；宽屏 Web 仍由 apps/web 的 WebTopBar 接管。
+ * Electron 保持桌面交互，不受浏览器窄屏策略影响。
  */
-const mobileShellAsRoot = isMobilePlatform;
+const mobileShellAsRoot = computed(() => (
+  isMobilePlatform || (isWeb && isMobile.value)
+));
+const officeAiShellActive = computed(() => (
+  !mobileShellAsRoot.value
+  && activeMode.value === 'office'
+  && ['/chat', '/memory', '/scheduled-tasks', '/publish-queue'].includes(route.path)
+));
+const officeAiSidebarR = useResizable('office_ai_sidebar', 268, 232, 440);
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-
-/**
- * 本机单机端（桌面 Electron ∪ 移动 Capacitor）—— 决定移动顶栏的身份区形态。
- *
- * ★ 与 `isElectron` 分开：类名 `is-electron` 只该给桌面端（有真实窗口控件语义），
- *   而「身份区要不要给登录入口」是**另一件事**，判据是"身份是否本机自带"——
- *   移动端同样跑内嵌后端、恒定 guest 身份，所以也用中性本机头像（见 api/client.ts）。
- */
-const isLocalClient = typeof window !== 'undefined'
-  && (!!(window as any).electronAPI?.isElectron || !!(window as any).Capacitor?.isNativePlatform);
-/** 本机身份首字母（与 WebTopBar 桌面端同一表述，不暴露 guest 这个内部身份） */
-const localIdentityInitial = computed(() => '本');
-
-/** 头像菜单「退出登录」（2026-11-01 RBAC）：清 token → 回登录页。 */
-function logoutFromMenu() {
-  authStore.logout();
-  setTimeout(() => { window.location.href = '/#/login'; window.location.reload(); }, 300);
-}
 
 /**
  * 独立子窗口路由（meta.bare）：不套应用外壳。
@@ -290,7 +229,7 @@ function logoutFromMenu() {
 const isBareRoute = computed(() => route.meta?.bare === true);
 /** 全局状态栏显隐：开发模式工作台自带状态栏，避免两条叠在一起 */
 const showStatusBar = computed(() =>
-  !isBareRoute.value && !isMobilePlatform && activeMode.value !== 'dev' && route.path !== '/code',
+  !isBareRoute.value && !mobileShellAsRoot.value && activeMode.value !== 'dev' && route.path !== '/code',
 );
 
 /**
@@ -336,13 +275,6 @@ if (typeof window !== 'undefined') {
 const appBooted = ref(false);
 void useRouter().isReady().then(() => { appBooted.value = true; });
 
-/** Task 11.1：移动端汉堡抽屉开合（仅 Capacitor 自绘顶栏的汉堡按钮会触发） */
-const navDrawerOpen = ref(false);
-/** 触屏（无 hover 能力）不启用 tooltip：tap 按钮后气泡会残留遮挡页面内容
- *  （2026-11-15 真机实报「切换深色模式」黑气泡压住页面标题）。口径与 ModeSwitcher 一致。 */
-const isTouchLike = (() => {
-  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
-})();
 /** Task 11.2：meta.mobilePageShell 路由（如 /settings 示范页）用页面自带四段式骨架——
  *  壳顶栏隐藏、.main-content 顶部不再让位 44px（见 .no-shell-topbar）。桌面端不受影响。 */
 const isShellPage = computed(() => route.meta?.mobilePageShell === true);
@@ -789,10 +721,6 @@ watch(() => pluginStore.modeDefs, (defs) => {
 }, { deep: true });
 
 
-function toggleTheme() {
-  settingsStore.update({ darkMode: !settingsStore.settings.darkMode });
-}
-
 const ROUTE_TITLES: Record<string, string> = {
   home: '首页',
   chat: '任务',
@@ -815,6 +743,14 @@ const ROUTE_TITLES: Record<string, string> = {
   'platform-detail': '平台详情',
   'skill-detail': 'Skill 详情',
   code: '代码',
+  ops: '运维',
+  sec: '安全',
+  shop: '店铺运营',
+  'learning-v2': '学习',
+  learning: '学习',
+  workflow: '工作流',
+  automation: '自动化',
+  clip: '剪辑',
   settings: '设置',
   login: '登录',
   'office-workbench': '办公工作台',
@@ -822,7 +758,12 @@ const ROUTE_TITLES: Record<string, string> = {
 
 const pageTitle = computed(() => {
   const name = typeof route.name === 'string' ? route.name : '';
-  return ROUTE_TITLES[name] || '日常办公助手';
+  if (ROUTE_TITLES[name]) return ROUTE_TITLES[name];
+  if (route.path.startsWith('/ops')) return '运维';
+  if (route.path.startsWith('/sec')) return '安全';
+  if (route.path.startsWith('/shop')) return '店铺运营';
+  if (route.path.startsWith('/learning')) return '学习';
+  return '言智';
 });
 
 authStore.loadUser();
@@ -945,13 +886,12 @@ body {
    包一层容器的页面（如 Agents 的 .agents-content）不受影响，各自控制间距。 */
 .page > .st-bar { margin-bottom: 14px; }
 
-/* ===== Web 端专属布局：WebTopBar 在外层（apps/web/src/App.vue）接管主导航，
-       此处只负责让 main-content 顶部避开 36px 顶栏，并清掉原来的 52px SideNav 留位 ===== */
-.platform-web.app-shell { --titlebar-h: 36px; }
+/* ===== Web 端专属布局：WebTopBar 在外层（apps/web/src/App.vue）接管主导航 ===== */
+.platform-web.app-shell { --titlebar-h: 56px; }
 .platform-web .main-content {
   margin-left: 0;                 /* web 端 SideNav 已退役（导航上移 WebTopBar），主区全宽 */
   padding-right: 0;
-  padding-top: var(--titlebar-h); /* 顶部让出 36px 给外层 WebTopBar */
+  padding-top: var(--titlebar-h);
 }
 .platform-web .page { padding-top: 24px; }  /* 主区已抬出 --titlebar-h，page 内顶部留 24px，避免与原 28px 叠加 */
 .platform-desktop .page-title { font-size: 18px; }
@@ -966,6 +906,58 @@ body {
 
 .main-content { flex: 1; overflow: hidden; position: relative; z-index: 1; margin-left: 52px; padding-right: 52px; display: flex; flex-direction: column; min-height: 0; }
 .main-content.full { overflow: visible; margin-left: 0; }
+.office-ai-shell {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: var(--office-ai-sidebar-w, 268px) minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--el-bg-color);
+}
+.office-ai-shell.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.office-ai-sidebar-resize {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--office-ai-sidebar-w, 268px) - 4px);
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.office-ai-sidebar-resize::after {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 2px;
+  height: 42px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+  transform: translateY(-50%);
+  transition: background 0.14s ease;
+}
+.office-ai-sidebar-resize:hover::after,
+.office-ai-sidebar-resize.dragging::after {
+  background: color-mix(in srgb, var(--color-primary) 65%, transparent);
+}
+.main-content.is-office-ai-shell { margin-left: 0; padding-right: 0; }
+.office-ai-route {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+.office-ai-route > * {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
 /* 可滚动页面：.page 自管滚动 */
 .page { padding: 28px 36px; flex: 1; overflow-y: auto; }
 
@@ -979,7 +971,7 @@ body {
       顶栏 48 / TabBar 56 / 留白 calc(48px) 与 calc(56px)，改一处漏两处）。
       顶栏从 48 → 44：移动端顶栏只放标题+两个图标，44px 已达触控舒适上限；
       省下的 4px 让首屏多显示小半行消息。 */
-.app-shell { --mobile-topbar-h: 44px; --mobile-tabbar-h: 56px; }
+.app-shell { --mobile-topbar-h: 56px; --mobile-tabbar-h: 60px; }
 
 .mobile-topbar {
   display: flex;
@@ -987,8 +979,8 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  height: var(--mobile-topbar-h);
-  padding: 0 12px;
+  height: calc(var(--mobile-topbar-h) + env(safe-area-inset-top, 0px));
+  padding: 0 10px;
   padding-top: env(safe-area-inset-top, 0px);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
@@ -1000,8 +992,8 @@ body {
 }
 
 .mobile-topbar-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
   color: var(--color-text);
   flex: 1;
   min-width: 0;
@@ -1013,7 +1005,7 @@ body {
 .mobile-topbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
@@ -1254,7 +1246,40 @@ body {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
-.platform-mobile { max-width: 100vw; overflow-x: hidden; }
+.platform-mobile {
+  width: 100%;
+  max-width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-size: 14px;
+  overscroll-behavior: none;
+}
+
+/* Native touch scrolling uses no persistent track/thumb. Keep the scroll
+   containers and momentum, but remove the desktop-looking WebUI scrollbars. */
+.platform-mobile * {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scrollbar-gutter: auto;
+}
+
+.platform-mobile *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.platform-mobile .page,
+.platform-mobile .main-content,
+.platform-mobile .page > * {
+  min-height: 0;
+}
+
+.platform-mobile .el-button:not(.is-circle) {
+  font-size: 13px;
+}
 
 /* ★ §4 大壳弹窗全局钳宽：768-980px 视口是 <767px 兜底的盲区（GitConflictResolver
    1240px / GitCommitDialog 860px 等在该区间直接溢出视口）。桌面正常视口下各弹窗
@@ -1267,6 +1292,170 @@ body {
    移动端顶栏承担定位职责后，页内大标题是冗余的 —— 整个隐藏。
    ★ .page-sub（副标题）保留：它是有信息量的说明文字，不是重复。 */
 .platform-mobile .page-title { display: none; }
+
+/* Capacitor 工作台：保留桌面功能，移动端先呈现可执行区，资源/授权细节后置。 */
+.platform-mobile .console-shell .cs-aside-toggle {
+  top: auto !important;
+  bottom: 12px;
+  width: 76px;
+  height: 44px;
+  gap: 6px;
+  padding: 0 8px;
+  transform: none !important;
+  border-left: 1px solid var(--glass-border);
+  border-radius: 0 12px 12px 0;
+  box-shadow: 0 8px 24px rgba(24, 31, 44, .12);
+}
+.platform-mobile .console-shell .cs-aside-toggle .el-icon { font-size: 16px; }
+.platform-mobile .console-shell .cs-aside-toggle-label {
+  display: inline;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.platform-mobile .ops-console .ops-workspace {
+  padding: 0 8px 8px;
+}
+.platform-mobile .ops-console .ops-tabs > .el-tabs__header {
+  margin: 0 0 6px;
+}
+.platform-mobile .ops-console .ops-workspace > .ops-main-tab {
+  min-width: 0;
+}
+
+.platform-mobile .sec-console {
+  padding: 0 10px 12px;
+}
+.platform-mobile .sec-console .sec-header {
+  min-height: 48px;
+  gap: 8px;
+  padding: 4px 0;
+}
+.platform-mobile .sec-console .sec-brand,
+.platform-mobile .sec-console .sec-brand-sub,
+.platform-mobile .sec-console .sec-meta,
+.platform-mobile .sec-console .sec-fullbtn:first-child {
+  display: none;
+}
+.platform-mobile .sec-console .sec-toggle {
+  width: 100%;
+  justify-content: flex-end;
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+.platform-mobile .sec-console .sec-fullbtn {
+  min-height: 36px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+.platform-mobile .sec-console .sec-switch {
+  min-height: 36px;
+}
+.platform-mobile .sec-console .sec-ribbon {
+  gap: 4px 7px;
+  padding: 7px 8px;
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+.platform-mobile .sec-console .sec-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.platform-mobile .sec-console .sec-col-right {
+  order: -1;
+  flex: none;
+  height: auto;
+  min-height: 0;
+}
+.platform-mobile .sec-console .sec-ws {
+  flex: none;
+  height: auto;
+  overflow: visible;
+}
+.platform-mobile .sec-console .sec-col-left {
+  display: flex;
+  flex: none;
+  height: auto;
+  max-height: none;
+  gap: 8px;
+}
+.platform-mobile .sec-console .sec-frame {
+  margin: 0;
+}
+.platform-mobile .sec-console .sec-scan-cards {
+  grid-template-columns: minmax(0, 1fr);
+}
+.platform-mobile .sec-console .sec-scan-card {
+  min-height: 64px;
+}
+.platform-mobile .sec-console .sec-cmdbar-tip {
+  display: none;
+}
+.platform-mobile .sec-console .sec-cmdhint {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.platform-mobile .sec-console .sec-frame-head-tab {
+  display: none;
+}
+.platform-mobile .sec-console .sec-tabs {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  overflow: visible;
+}
+.platform-mobile .sec-console .sec-tab {
+  min-width: 0;
+  min-height: 44px;
+  justify-content: center;
+  padding: 8px 4px;
+  text-align: center;
+}
+.platform-mobile .sec-console .sec-tab-num,
+.platform-mobile .sec-console .sec-tab-sub {
+  display: none;
+}
+.platform-mobile .sec-console .sec-tab-name {
+  flex: none;
+  font-size: 12px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.platform-mobile .sec-console .sec-tab-badge {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  margin-left: 0;
+  padding: 1px 4px;
+  font-size: 8px;
+}
+.platform-mobile .sec-console .sec-pane {
+  padding: 10px;
+}
+.platform-mobile .sec-console .sec-cmdbar {
+  flex-wrap: wrap;
+}
+.platform-mobile .sec-console .sec-cmdbar-input {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.platform-mobile .shop-console .shop-tabs > .el-tabs__header {
+  margin-bottom: 6px;
+}
+.platform-mobile .shop-console .shop-tabs .el-tabs__nav-wrap {
+  overflow-x: auto;
+}
 
 @media (max-width: 767px) {
   .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: flex-end !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }
@@ -1379,9 +1568,9 @@ body {
 }
 
 /* ===== Electron 桌面端：VS Code 风格 ===== */
-/* 标题栏 32px 高，SideNav 通过 --titlebar-h 变量从标题栏下方开始 */
+/* 独立窗口和兼容侧栏从应用标题栏下方开始 */
 .is-electron.app-shell {
-  --titlebar-h: 32px;
+  --titlebar-h: 56px;
 }
 /* VS Code 风格：紧凑间距、桌面字体、原生滚动条 */
 .is-electron .app-body {
