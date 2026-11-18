@@ -1413,6 +1413,11 @@ function buildAndroid() {
   info('④ 同步 Capacitor Android 工程');
   run(process.execPath, [path.join('node_modules', '@capacitor', 'cli', 'bin', 'capacitor'), 'sync', 'android'], { cwd: mobile });
 
+  // ④.5 cap sync 会重写 capacitor.settings.gradle，必须在它之后重新接回
+  // nodejs-mobile 的短路径 CMake 构建，否则 Gradle 仍会成功但 APK 缺少 libnode.so。
+  info('④.5 应用 nodejs-mobile 原生库短路径修复');
+  run(process.execPath, ['scripts/apply-native-nodejs-shortpath.cjs'], { cwd: mobile });
+
   // ⑤ gradle assembleDebug
   const tc = androidToolchain();
   if (!tc.sdk || !tc.javaHome) {
