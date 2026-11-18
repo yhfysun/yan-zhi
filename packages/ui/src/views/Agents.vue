@@ -18,7 +18,16 @@
     <template #actions v-if="currentView === 'local-agents'">
       <!-- 智能体平台默认候选池：对所有智能体生效（单个智能体未单独配时用这里） -->
       <el-button :icon="MagicStick" @click="openPools">候选池</el-button>
-      <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
+      <el-button
+        type="primary"
+        :icon="Plus"
+        class="fab-add"
+        aria-label="新建智能体"
+        title="新建智能体"
+        @click="createAgent"
+      >
+        <span class="fab-add-label">新建智能体</span>
+      </el-button>
     </template>
 
     <template #toolbar>

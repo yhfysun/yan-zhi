@@ -1233,7 +1233,10 @@ function enterMobileGroup(g: SettingsGroup) {
   if (g.tabs[0]) tab.value = g.tabs[0].name;
 }
 function openMobileSettingLink(link: SettingsGroupLink) {
-  void router.push(link.path).catch(() => {});
+  void router.push({
+    path: link.path,
+    query: { from: 'settings', group: 'intelligence' },
+  }).catch(() => {});
 }
 function exitMobileGroup() {
   mobileGroup.value = null;
@@ -1241,6 +1244,26 @@ function exitMobileGroup() {
 }
 // 移动外壳 → 桌面/宽视口（窗口拉宽等）时清掉页内层级态，避免桌面 el-tabs 头被 is-pane 吞掉
 watch(pageShell, (v) => { if (!v) { mobileGroup.value = null; tab.value = 'general'; } });
+
+/** 从设置子页返回时恢复“模型与智能”分组，而不是掉回设置首层。 */
+function applyMobileGroupQuery() {
+  if (!pageShell.value) return;
+  const key = route?.query?.group;
+  if (typeof key !== 'string') return;
+  const group = MOBILE_GROUPS_BASE.find((g) => g.key === key && !!g.links?.length);
+  if (group) mobileGroup.value = group;
+}
+watch(() => route?.query?.group, applyMobileGroupQuery);
+onMounted(applyMobileGroupQuery);
+
+/** Android 返回/侧滑的统一页内回退点。 */
+function onMobileHardwareBack(event: Event) {
+  if (!pageShell.value || !mobileGroup.value) return;
+  event.preventDefault();
+  exitMobileGroup();
+}
+onMounted(() => document.addEventListener('yz:mobile-back', onMobileHardwareBack));
+onBeforeUnmount(() => document.removeEventListener('yz:mobile-back', onMobileHardwareBack));
 
 const fileInput = ref<HTMLInputElement | null>(null);
 

@@ -172,6 +172,15 @@ describe('移动外壳归属：Capacitor 与 Web 手机视口共用', () => {
       .toMatch(/:key="item\.key"/);
   });
 
+  it('SideNav.vue：学习页只能高亮学习，点击工作必须回到办公', () => {
+    expect(SIDE_NAV, '学习模式仍把工作项的 path 算成学习路由')
+      .toMatch(/activeMode\.value === 'shop' \|\| activeMode\.value === 'learning'[\s\S]{0,80}\? '\/chat'/);
+    expect(SIDE_NAV, '工作项激活态未排除学习模式')
+      .toMatch(/activeMode\.value !== 'shop'[\s\S]{0,80}&& activeMode\.value !== 'learning'/);
+    expect(SIDE_NAV, '从学习页点击工作没有切回办公')
+      .toMatch(/activeMode\.value === 'shop' \|\| activeMode\.value === 'learning'[\s\S]{0,120}setMode\('office'\)/);
+  });
+
   it('WebTopBar.vue：320px 保留登录、主题和可访问的图标导航', () => {
     const css = stripCssComments(WEB_TOPBAR);
     expect(css, '420px 断点未收起导航文字，320px 会裁掉登录/主题入口')

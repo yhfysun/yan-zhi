@@ -37,9 +37,10 @@ describe('移动端统一导航与返回路径', () => {
   });
 
   it('移动工作台把 AI/人工切换收口到顶部，不再使用右下角悬浮按钮', () => {
+    const start = APP.indexOf('<header v-else-if="mobileShellAsRoot');
     const mobileTopbar = APP.slice(
-      APP.indexOf('<header v-if="mobileShellAsRoot'),
-      APP.indexOf('</header>', APP.indexOf('<header v-if="mobileShellAsRoot')),
+      start,
+      APP.indexOf('</header>', start),
     );
     expect(mobileTopbar).toContain('<WorkspaceModeSwitch />');
     expect(CHAT_TOPBAR).toContain('<WorkspaceModeSwitch');

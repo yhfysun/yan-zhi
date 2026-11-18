@@ -889,8 +889,18 @@ async function toggleShare(p: any) {
   .mobile-fab { display: flex; }
   .platform-list-pane { padding: 0 16px 16px; }
   .platform-grid { grid-template-columns: 1fr; gap: 14px; }
-  .card-actions { flex-wrap: wrap; gap: 6px; }
-  .card-actions .el-button { font-size: 12px; padding: 5px 10px; }
+  .card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .card-actions .el-button {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 8px;
+    font-size: 12px;
+  }
 }
 
 /* Skeleton card — looks like a real card */

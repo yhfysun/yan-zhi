@@ -50,20 +50,31 @@ function registerBackButton(): void {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       return;
     }
-    // 2) 路由能回退就回退：vue-router 在 history.state 写有 back 字段
+    // 2) 设置子页回到所属分组，而不是直接掉回设置首层
+    const current = router.currentRoute.value;
+    if (current.meta?.mobileSettingsChild) {
+      const group = typeof current.query.group === 'string' ? current.query.group : '';
+      void router.replace({ path: '/settings', query: group ? { group } : {} });
+      return;
+    }
+    // 3) 允许页面先处理自己的页内层级（如“设置分组 → 设置首层”）
+    const pageBack = new CustomEvent('yz:mobile-back', { cancelable: true });
+    document.dispatchEvent(pageBack);
+    if (pageBack.defaultPrevented) return;
+    // 4) 路由能回退就回退：vue-router 在 history.state 写有 back 字段
     const st = window.history.state as { back?: string | null } | null;
     if (st?.back) {
       router.back();
       return;
     }
-    // 3) 已在首页：2 秒内连按两次才退出，避免误触直接杀进程
+    // 5) 已在首页：2 秒内连按两次才退出，避免误触直接杀进程
     const now = Date.now();
     if (now - lastBackAt < 2000) {
       void CapApp.exitApp();
       return;
     }
     lastBackAt = now;
-    ElMessage({ message: '再按一次退出', type: 'info', duration: 2000 });
+    ElMessage({ message: '再滑动或按一次返回退出应用', type: 'info', duration: 2000 });
   });
 }
 

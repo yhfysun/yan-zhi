@@ -399,7 +399,11 @@ interface MobilePrimaryItem {
 }
 
 function openCurrentWork(): void {
-  if (activeMode.value === 'shop') setMode('office');
+  if (activeMode.value === 'shop' || activeMode.value === 'learning') {
+    setMode('office');
+    void router.push(modeRoute('office')).catch(() => {});
+    return;
+  }
   void router.push(modeRoute(activeMode.value)).catch(() => {});
 }
 
@@ -409,11 +413,16 @@ function openShop(): void {
 }
 
 const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
-  const workRoute = activeMode.value === 'shop' ? '/chat' : modeRoute(activeMode.value);
+  const workRoute = activeMode.value === 'shop' || activeMode.value === 'learning'
+    ? '/chat'
+    : modeRoute(activeMode.value);
   const shopVisible = visibleModeDefs.value.some((d) => d.key === 'shop');
   const learningVisible = visibleModeDefs.value.some((d) => d.key === 'learning');
   const learningRoute = visibleModeDefs.value.find((d) => d.key === 'learning')?.route || '/learning-v2';
-  const workActive = route.path === workRoute && activeMode.value !== 'shop';
+  const settingsChildActive = route.meta?.mobileSettingsChild === true;
+  const workActive = route.path === workRoute
+    && activeMode.value !== 'shop'
+    && activeMode.value !== 'learning';
   return [
     {
       key: 'work',
@@ -447,7 +456,7 @@ const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
       icon: User,
       kind: 'route',
       path: '/settings',
-      active: isActive('/settings'),
+      active: isActive('/settings') || settingsChildActive,
     },
   ];
 });

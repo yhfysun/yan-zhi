@@ -217,7 +217,7 @@ const routes: RouteRecordRaw[] = [
     path: '/models',
     name: 'models',
     component: () => import('../views/Models.vue'),
-    meta: { title: '模型平台' },
+    meta: { title: '模型平台', mobileSettingsChild: true },
   },
   {
     path: '/models/:platformId',
@@ -256,13 +256,13 @@ const routes: RouteRecordRaw[] = [
     path: '/skills/:id',
     name: 'skill-detail',
     component: () => import('../views/Skills.vue'),
-    meta: { title: 'Skill 详情' },
+    meta: { title: 'Skill 技能', mobileSettingsChild: true },
   },
   {
     path: '/agents',
     name: 'agents',
     component: () => import('../views/Agents.vue'),
-    meta: { title: '智能体' },
+    meta: { title: '智能体', mobileSettingsChild: true },
   },
   {
     path: '/browser',

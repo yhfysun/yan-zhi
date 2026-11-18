@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :data-mode="activeMode" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': mobileShellAsRoot, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute, 'has-statusbar': showStatusBar, 'is-learning': activeMode === 'learning' }">
+  <div class="app-shell" :data-mode="activeMode" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': mobileShellAsRoot, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute, 'has-statusbar': showStatusBar, 'is-learning': activeMode === 'learning', 'is-mobile-settings-child': isMobileSettingsChild }">
 
     <!-- 独立子窗口（如差异窗口）：不套任何应用外壳，整窗交由页面自绘标题栏 -->
     <template v-if="isBareRoute">
@@ -35,7 +35,16 @@
              原先还放着「首页/浏览器/消息/更多」横排导航 —— 那是把桌面顶栏照搬过来，
              竖屏下既挤又和 TabBar 语义重复。
              （对话页的搜索在会话列表抽屉里，不在此重复造一个入口。） -->
-        <header v-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
+        <header
+          v-if="mobileShellAsRoot && isMobileSettingsChild"
+          class="mobile-topbar mobile-settings-child-topbar"
+        >
+          <button class="mobile-icon-btn" type="button" aria-label="返回设置" @click="backToSettings">
+            <el-icon :size="19"><ArrowLeft /></el-icon>
+          </button>
+          <span class="mobile-topbar-title">{{ pageTitle }}</span>
+        </header>
+        <header v-else-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
           <MobileModeSwitch />
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
@@ -148,7 +157,7 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
-import { MoreFilled } from '@element-plus/icons-vue';
+import { ArrowLeft, MoreFilled } from '@element-plus/icons-vue';
 import AppStatusBar from './components/AppStatusBar.vue';
 import { activeMode } from './stores/mode';
 import { officeAiSidebarCollapsed } from './stores/officeWorkbench';
@@ -278,6 +287,16 @@ void useRouter().isReady().then(() => { appBooted.value = true; });
 /** Task 11.2：meta.mobilePageShell 路由（如 /settings 示范页）用页面自带四段式骨架——
  *  壳顶栏隐藏、.main-content 顶部不再让位 44px（见 .no-shell-topbar）。桌面端不受影响。 */
 const isShellPage = computed(() => route.meta?.mobilePageShell === true);
+/** 从移动设置进入的管理页：使用设置子页顶栏，不能继续显示当前业务模式切换。 */
+const isMobileSettingsChild = computed(() => route.meta?.mobileSettingsChild === true);
+
+function backToSettings(): void {
+  const group = typeof route.query.group === 'string' ? route.query.group : '';
+  void appRouter.replace({
+    path: '/settings',
+    query: group ? { group } : {},
+  }).catch(() => {});
+}
 
 /** 当前插件布局组件（懒加载函数）；null 表示用内置默认布局 */
 const pluginLayoutLoader = shallowRef<(() => Promise<unknown>) | null>(null);
@@ -1281,6 +1300,11 @@ body {
   font-size: 13px;
 }
 
+/* Dialog 外壳在移动端统一为 9999；下拉默认 2000 会藏到遮罩后面。 */
+.platform-mobile .el-select__popper {
+  z-index: 10050 !important;
+}
+
 /* ★ §4 大壳弹窗全局钳宽：768-980px 视口是 <767px 兜底的盲区（GitConflictResolver
    1240px / GitCommitDialog 860px 等在该区间直接溢出视口）。桌面正常视口下各弹窗
    宽度都小于视口，此规则不触发；只在「弹窗比视口宽」时钳住（内联 width 不设
@@ -1292,6 +1316,20 @@ body {
    移动端顶栏承担定位职责后，页内大标题是冗余的 —— 整个隐藏。
    ★ .page-sub（副标题）保留：它是有信息量的说明文字，不是重复。 */
 .platform-mobile .page-title { display: none; }
+
+/* 设置子页由共享壳提供返回+标题：只隐藏 PageFrame 的重复标题，
+   保留页头里的真实操作（如模型页「本地模型商城」）。没有操作的纯标题头直接收起。 */
+.platform-mobile.is-mobile-settings-child .page-frame > .pf-header:not(:has(.pf-actions)) {
+  display: none;
+}
+.platform-mobile.is-mobile-settings-child .page-frame > .pf-header .pf-heading {
+  display: none;
+}
+.platform-mobile.is-mobile-settings-child .page-frame > .pf-header {
+  flex-direction: row;
+  align-items: center;
+  padding-top: 8px;
+}
 
 /* Capacitor 工作台：保留桌面功能，移动端先呈现可执行区，资源/授权细节后置。 */
 .platform-mobile .console-shell .cs-aside-toggle {
@@ -1558,8 +1596,17 @@ body {
     height: 48px;
     padding: 0;
     border-radius: 50%;
-    font-size: 0;
     box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
+  .platform-mobile .el-button.fab-add {
+    width: 48px;
+    min-width: 48px;
+    height: 48px;
+    padding: 0;
+    font-size: 0;
+  }
+  .fab-add .fab-add-label {
+    display: none;
   }
   .fab-add .el-icon {
     font-size: 18px;

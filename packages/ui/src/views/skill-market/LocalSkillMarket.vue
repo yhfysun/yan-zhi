@@ -11,7 +11,16 @@
             <el-option label="全部分类" value="all" />
             <el-option v-for="c in categoryOptions" :key="c.key" :label="c.label" :value="c.key" />
           </el-select>
-          <el-button type="primary" :icon="Plus" @click="openNew" class="fab-add">新增 Skill</el-button>
+          <el-button
+            type="primary"
+            :icon="Plus"
+            class="fab-add"
+            aria-label="新增 Skill"
+            title="新增 Skill"
+            @click="openNew"
+          >
+            <span class="fab-add-label">新增 Skill</span>
+          </el-button>
           <el-tooltip content="Markdown 导入">
             <el-button @click="importMd" class="yz-icon-btn"><el-icon :size="16"><UploadFilled /></el-icon></el-button>
           </el-tooltip>

@@ -141,7 +141,20 @@
         <el-form-item label="模型 ID"><el-input v-model="form.modelId" placeholder="如：gpt-4o-mini" /></el-form-item>
         <el-form-item label="别名"><el-input v-model="form.alias" placeholder="（可选）" /></el-form-item>
         <el-form-item label="类型">
-          <el-select v-model="form.type">
+          <div v-if="isMobileShell" class="model-type-grid" role="group" aria-label="模型类型">
+            <button
+              v-for="option in modelTypeChoices"
+              :key="option.value"
+              type="button"
+              class="model-type-choice"
+              :class="{ active: form.type === option.value }"
+              :aria-pressed="form.type === option.value"
+              @click="form.type = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <el-select v-else v-model="form.type">
             <el-option label="LLM" value="llm" />
             <el-option v-if="supportsEmbeddings" label="Embedding" value="embedding" />
             <el-option label="Rerank" value="rerank" />
@@ -287,6 +300,7 @@ import ResourceAclDialog from '../components/common/ResourceAclDialog.vue';
 import { filterModels, modelTypeOptions as buildModelTypeOptions, isFilterActive } from '../utils/modelFilter';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import FormDialog from '../components/FormDialog.vue';
+import { useMobileShell } from '../composables/useMobileShell';
 
 const props = defineProps<{
   /** 弹窗内嵌时直接传入平台 ID；不传则回退到路由参数（/models/:platformId） */
@@ -352,6 +366,16 @@ function clearModelFilter() {
 }
 
 const supportsEmbeddings = computed(() => platform.value?.protocol !== 'anthropic');
+const isMobileShell = useMobileShell();
+const modelTypeChoices = computed(() => [
+  { value: 'llm', label: 'LLM' },
+  ...(supportsEmbeddings.value ? [{ value: 'embedding', label: 'Embedding' }] : []),
+  { value: 'rerank', label: 'Rerank' },
+  { value: 'image', label: '图片' },
+  { value: 'video', label: '视频' },
+  { value: 'audio', label: '音频' },
+  { value: 'tts', label: 'TTS' },
+]);
 const showAdd = ref(false);
 const editingModelId = ref('');
 const fetching = ref(false);
@@ -786,6 +810,29 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
 .add-card:hover { color: var(--color-primary); border-color: var(--color-primary); background: rgba(59,130,246,0.04); }
 
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-left: 8px; }
+.model-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+.model-type-choice {
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.model-type-choice.active {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: var(--color-primary);
+  font-weight: 600;
+}
 .ctx-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .ctx-input-row { display: flex; align-items: center; }
 .ctx-preset-btn { margin-left: 8px; }
