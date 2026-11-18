@@ -82,10 +82,11 @@ describe('移动设置 · 模型与智能管理入口', () => {
     expect(APP).toContain(
       '.platform-mobile.is-mobile-settings-child .page-frame > .pf-header .pf-heading',
     );
-    expect(APP).toMatch(/\.platform-mobile\s+\.el-button\.fab-add\s*\{[\s\S]*?font-size:\s*0/);
-    expect(APP).toMatch(/\.fab-add\s+\.fab-add-label\s*\{\s*display:\s*none/);
+    expect(APP).toMatch(/\.platform-mobile\s+\.el-button\.fab-add\s*\{[\s\S]*?justify-content:\s*center[\s\S]*?font-size:\s*0/);
+    expect(APP).toMatch(/\.platform-mobile\s+\.el-button\.fab-add\s+\.fab-add-label\s*\{\s*display:\s*none/);
     for (const source of [AGENTS, SKILL_MARKET]) {
       expect(source).toContain('class="fab-add"');
+      expect(source).toMatch(/v-if="isMobileShell"[\s\S]{0,220}circle/);
       expect(source).toContain('class="fab-add-label"');
       expect(source).toMatch(/aria-label="(?:新建智能体|新增 Skill)"/);
     }

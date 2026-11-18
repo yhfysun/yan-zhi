@@ -12,11 +12,20 @@
             <el-option v-for="c in categoryOptions" :key="c.key" :label="c.label" :value="c.key" />
           </el-select>
           <el-button
+            v-if="isMobileShell"
             type="primary"
             :icon="Plus"
+            circle
             class="fab-add"
             aria-label="新增 Skill"
             title="新增 Skill"
+            @click="openNew"
+          />
+          <el-button
+            v-else
+            type="primary"
+            :icon="Plus"
+            class="fab-add"
             @click="openNew"
           >
             <span class="fab-add-label">新增 Skill</span>
@@ -224,11 +233,13 @@ import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import type { Skill } from '../../stores/skill';
 import SearchToolbar from '../../components/common/SearchToolbar.vue';
+import { useMobileShell } from '../../composables/useMobileShell';
 import GlassCard from '../../components/common/GlassCard.vue';
 import CardGrid from '../../components/common/CardGrid.vue';
 import CollapsibleCategory from '../../components/common/CollapsibleCategory.vue';
 
 const store = useSkillStore();
+const isMobileShell = useMobileShell();
 const authStore = useAuthStore();
 /** 共享开关可见性：guest 单机恒可；multi 模式需 share.skill.publish 权限（后端也收口） */
 const aclVisible = ref(false);

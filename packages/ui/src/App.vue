@@ -1598,20 +1598,35 @@ body {
     border-radius: 50%;
     box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 45%, transparent);
   }
-  .platform-mobile .el-button.fab-add {
-    width: 48px;
-    min-width: 48px;
-    height: 48px;
-    padding: 0;
-    font-size: 0;
-  }
-  .fab-add .fab-add-label {
-    display: none;
-  }
-  .fab-add .el-icon {
-    font-size: 18px;
-    margin: 0;
-  }
+}
+
+.platform-mobile .el-button.fab-add {
+  position: fixed;
+  right: 16px;
+  bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
+  z-index: 80;
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 0;
+  border-radius: 50%;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.platform-mobile .el-button.fab-add .fab-add-label {
+  display: none;
+}
+.platform-mobile .el-button.fab-add .el-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  font-size: 18px;
+  line-height: 1;
 }
 
 /* ===== Electron 桌面端：VS Code 风格 ===== */

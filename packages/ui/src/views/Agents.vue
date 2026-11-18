@@ -19,11 +19,20 @@
       <!-- 智能体平台默认候选池：对所有智能体生效（单个智能体未单独配时用这里） -->
       <el-button :icon="MagicStick" @click="openPools">候选池</el-button>
       <el-button
+        v-if="isMobileShell"
         type="primary"
         :icon="Plus"
+        circle
         class="fab-add"
         aria-label="新建智能体"
         title="新建智能体"
+        @click="createAgent"
+      />
+      <el-button
+        v-else
+        type="primary"
+        :icon="Plus"
+        class="fab-add"
         @click="createAgent"
       >
         <span class="fab-add-label">新建智能体</span>
@@ -332,10 +341,12 @@ import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 import PageFrame from '../components/common/PageFrame.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
+import { useMobileShell } from '../composables/useMobileShell';
 
 const router = useRouter();
 const route = useRoute();
 const store = useAgentStore();
+const isMobileShell = useMobileShell();
 const platformStore = usePlatformStore();
 const modelPoolStore = useModelPoolStore();
 
