@@ -765,7 +765,34 @@ async function remove(agent: Agent) {
 @media (max-width: 767px) {
   .marketplace-grid, .agent-grid { grid-template-columns: 1fr; gap: 12px; }
   .agents-layout { flex-direction: column; gap: 10px; height: auto; padding: 0 16px 16px; }
-  .cat-sidebar { width: 100%; height: auto; position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
+  .cat-sidebar {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    position: static;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cat-sidebar::-webkit-scrollbar { display: none; }
+  .cat-sidebar-title { display: none; }
+  .cat-side-item {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 7px 12px;
+    border: 1px solid var(--color-border-light);
+    border-radius: 999px;
+    background: var(--color-surface);
+    white-space: nowrap;
+  }
   .agents-content { height: auto; }
   .agents-scroll { overflow: visible; }
   .sub-header { flex-wrap: wrap; gap: 10px; }
