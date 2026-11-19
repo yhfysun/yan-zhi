@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "言智 Web 端（PWA，IndexedDB/Dexie 本地存储）",
+  "description": "言智 Web 端（PWA，跨端 AI 智能体平台）",
   "scripts": {
     "dev": "node ../../scripts/sync-yanzhi-icons.cjs && vite",
     "build": "node ../../scripts/sync-yanzhi-icons.cjs && vue-tsc && vite build",

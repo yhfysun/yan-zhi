@@ -103,7 +103,7 @@ describe('历史任务入口', () => {
     expect(CODE).toMatch(/v-show="taskListVisible" class="ops-side-tasks"/);
   });
 
-  it('任务段仍渲染「全部会话」视图（space-id=null），四模式同构', () => {
+  it('任务段仍渲染「全部会话」视图（space-id=null），多模式共享', () => {
     expect(CODE).toMatch(/<TaskListSection[\s\S]{0,180}:space-id="null"/);
   });
 

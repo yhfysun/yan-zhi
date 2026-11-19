@@ -62,7 +62,7 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 // ===== 代码模式记忆（薄封装 → stores/mode.ts，调用方 4 处不改行为）=====
-// 语义升级：原单点标记 yz:code:active 泛化为四模式 yz:mode（office|dev|ops|sec）。
+// 语义升级：原单点标记 yz:code:active 泛化为多模式 yz:mode。
 // 兼容层保留导出，避免一次性改 useChat.ts / router / ChatMessageList / ChatInputArea。
 import { isCodeModeActiveCompat, setCodeModeActiveCompat, activeMode } from './mode';
 

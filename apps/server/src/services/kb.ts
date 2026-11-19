@@ -287,30 +287,59 @@ export async function revectorizeAllKnowledgeBases(): Promise<{ total: number; d
 
 const BUILTIN_GUIDE_BASE_ID = 'builtin-app-guide';
 const BUILTIN_GUIDE_BASE_NAME = '应用使用说明';
+const BUILTIN_GUIDE_DESC = '内置应用使用说明（系统库，公开共享，无需发布）';
+
+function builtinGuideDescription(version?: number) {
+  const tag = Number.isInteger(version) && Number(version) > 0 ? ` [guide:v${version}]` : '';
+  return `${BUILTIN_GUIDE_DESC}${tag}`;
+}
+
+function clearBuiltinGuideGraph() {
+  db.prepare('DELETE FROM kb_entity_chunk WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
+  db.prepare('DELETE FROM kb_relation WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
+  db.prepare('DELETE FROM kb_entity WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
+  db.prepare('DELETE FROM kb_processed_doc WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
+}
 
 /** 确保内置「应用使用说明」作为普通知识库存在（固定 id，public，owner=guest）。
  *  该库由系统维护：无文档时用 content 创建一份（走正常切分 → 出现在分片/图谱）。
  *  不额外校验当前用户（系统级库，所有人可读，访问走 visibility=public）。 */
-export async function ensureBuiltinAppGuide(userId: string, docs: Array<{ name?: string; content?: string }>) {
+export async function ensureBuiltinAppGuide(
+  userId: string,
+  docs: Array<{ name?: string; content?: string }>,
+  guideVersion?: number,
+) {
   const owner = 'guest';
+  const description = builtinGuideDescription(guideVersion);
   const existing = db.prepare('SELECT * FROM knowledge_base WHERE id = ?').get(BUILTIN_GUIDE_BASE_ID) as any;
   if (!existing) {
     const ts = now();
     db.prepare(
       'INSERT INTO knowledge_base (id, user_id, name, description, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(BUILTIN_GUIDE_BASE_ID, owner, BUILTIN_GUIDE_BASE_NAME, '内置的应用使用说明（系统库，公开共享，无需发布）', 'public', ts, ts);
+    ).run(BUILTIN_GUIDE_BASE_ID, owner, BUILTIN_GUIDE_BASE_NAME, description, 'public', ts, ts);
   }
   const base = db.prepare('SELECT * FROM knowledge_base WHERE id = ?').get(BUILTIN_GUIDE_BASE_ID) as any;
   if (!base) throw new Error('内置库创建失败');
   const expect = Array.isArray(docs) && docs.length ? docs.length : 1;
   const docCount = (db.prepare('SELECT COUNT(*) AS c FROM knowledge_doc WHERE base_id = ?').get(BUILTIN_GUIDE_BASE_ID) as any).c;
-  // 结构一致则复用；不一致（如旧版单文档）则按新的 docs 重建
-  if (docCount === expect) return { baseId: BUILTIN_GUIDE_BASE_ID, seeded: false, docCount };
+  const versionTag = Number.isInteger(guideVersion) && Number(guideVersion) > 0 ? `[guide:v${guideVersion}]` : '';
+  const versionMatches = !versionTag || String(base.description || '').includes(versionTag);
+  // 版本与结构都一致才复用；旧说明或旧文档数量会按当前 docs 重建一次
+  if (versionMatches && docCount === expect) {
+    if (String(base.description || '') !== description) {
+      db.prepare('UPDATE knowledge_base SET description = ?, updated_at = ? WHERE id = ?')
+        .run(description, now(), BUILTIN_GUIDE_BASE_ID);
+    }
+    return { baseId: BUILTIN_GUIDE_BASE_ID, seeded: false, docCount };
+  }
   const old = db.prepare('SELECT id FROM knowledge_doc WHERE base_id = ?').all(BUILTIN_GUIDE_BASE_ID) as any[];
   for (const d of old) {
     db.prepare('DELETE FROM knowledge_chunk WHERE doc_id = ?').run(d.id);
     db.prepare('DELETE FROM knowledge_doc WHERE id = ?').run(d.id);
   }
+  clearBuiltinGuideGraph();
+  db.prepare('UPDATE knowledge_base SET description = ?, updated_at = ? WHERE id = ?')
+    .run(description, now(), BUILTIN_GUIDE_BASE_ID);
   const seeded = seedGuideDocs(owner, BUILTIN_GUIDE_BASE_ID, docs);
   return { baseId: BUILTIN_GUIDE_BASE_ID, seeded: true, docCount: seeded };
 }
@@ -337,7 +366,11 @@ function seedGuideDocs(owner: string, baseId: string, docs: Array<{ name?: strin
 }
 
 /** 重置内置「应用使用说明」：清空旧文档+分片，按 docs（一个功能一个文档）重新写入。 */
-export function resetBuiltinAppGuide(userId: string, docs: Array<{ name?: string; content?: string }>) {
+export function resetBuiltinAppGuide(
+  userId: string,
+  docs: Array<{ name?: string; content?: string }>,
+  guideVersion?: number,
+) {
   const base = db.prepare('SELECT * FROM knowledge_base WHERE id = ?').get(BUILTIN_GUIDE_BASE_ID) as any;
   if (!base) throw new Error('内置库不存在');
   const old = db.prepare('SELECT id FROM knowledge_doc WHERE base_id = ?').all(BUILTIN_GUIDE_BASE_ID) as any[];
@@ -346,10 +379,9 @@ export function resetBuiltinAppGuide(userId: string, docs: Array<{ name?: string
     db.prepare('DELETE FROM knowledge_doc WHERE id = ?').run(d.id);
   }
   // 清掉旧实体/关系/切片关联 + 已处理标记，让重置后重新抽取
-  db.prepare('DELETE FROM kb_entity_chunk WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
-  db.prepare('DELETE FROM kb_relation WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
-  db.prepare('DELETE FROM kb_entity WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
-  db.prepare('DELETE FROM kb_processed_doc WHERE base_id = ?').run(BUILTIN_GUIDE_BASE_ID);
+  clearBuiltinGuideGraph();
+  db.prepare('UPDATE knowledge_base SET description = ?, updated_at = ? WHERE id = ?')
+    .run(builtinGuideDescription(guideVersion), now(), BUILTIN_GUIDE_BASE_ID);
   const count = seedGuideDocs('guest', BUILTIN_GUIDE_BASE_ID, docs);
   return { seeded: true, docCount: count };
 }

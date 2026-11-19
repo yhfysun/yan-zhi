@@ -89,6 +89,7 @@
 - file_edit 修改快照存原始相对路径：before 快照按进程 cwd 读取错位、`/workspace/changes` 按目录前缀过滤永远匹配不上（编辑器提示条不出现）——快照路径现按工作目录解析为绝对路径
 
 ### Changed
+- **产品文档与内置说明同步（2026-11-19）**：README 按当前九模式桌面端、五模式移动端、Learning V2、插件/远程控制/共享服务重新校准；设置“关于”改为读取实际包版本并明确 YAN-ZHI 商业授权协议（非开源）；知识库页与内置“应用使用说明”重写为当前功能口径，新增说明版本标记，已存在的系统知识库也会按版本自动刷新；首页功能详解补齐学习、五维记忆和当前设置入口，并增加文案守门测试
 - **pnpm 配置迁到 pnpm-workspace.yaml**：pnpm 10+ 不再读 `package.json` 的 `pnpm` 字段（启动即告警且配置形同废纸）——`overrides`（canvas 置空）与构建脚本策略改写到 `pnpm-workspace.yaml`：`neverBuiltDependencies` 换成 `allowBuilds`（better-sqlite3 13 已免编译，改为显式放行现存的 7 个带安装脚本依赖，保持 pnpm 9 行为）；`packageManager` 同步到 `pnpm@11.20.0`（lockfile 仍为 9.0，`pnpm install --frozen-lockfile` 校验通过）
 - 技能正文截断收敛单点 `truncateSkillBody`（DB 技能内联 2000 与项目技能常量双份、半角/全角文案刚写就漂移 —— 统一为唯一实现，带守卫测试防再分叉）
 - **hunk 级选择性接受（P2-2）**：diff 每个 hunk「✓ 接受此块」——选中的块套用、未选中的回退 before（`services/hunk-apply.ts` LCS 三方合并；盘上被手改时 409 走整文件审查）；聊天 diff 卡片与审查视图均可按块接受

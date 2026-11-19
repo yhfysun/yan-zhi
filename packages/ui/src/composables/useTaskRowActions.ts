@@ -1,4 +1,4 @@
-// 任务行共享操作逻辑 —— 办公侧栏（ChatSidebar）与四模式工作台任务段（TaskListSection）共用。
+// 任务行共享操作逻辑 —— 办公侧栏（ChatSidebar）与多模式工作台任务段（TaskListSection）共用。
 //
 // 背景（upgrade-ui-task-mobile Task 2.1）：置顶 / 重命名 / 删除 / 移动空间 / 打开激活
 // 这五类行内操作此前散在两套组件的模板与脚本里各自实现，交互口径逐渐漂移；这里收敛为一处。

@@ -910,11 +910,11 @@
       <el-tab-pane label="关于" name="about" lazy>
         <div class="about-section">
           <h3>言智 (Yan-Zhi)</h3>
-          <p>版本：v0.1.0 (MVP)</p>
-          <p>语言可控的跨端日常办公助手 · 桌面 / Web / 移动三端统一</p>
+          <p>版本：v{{ appVersion }}</p>
+          <p>语言可控的跨端智能体平台 · 桌面 / Web / 移动三端统一</p>
           <p class="about-tip">开发者：yhfysun</p>
           <p class="about-tip">源码：<a class="about-link" href="https://github.com/yhfysun/yan-zhi" target="_blank" rel="noopener">https://github.com/yhfysun/yan-zhi</a></p>
-          <p class="about-tip">开源协议：Apache-2.0</p>
+          <p class="about-tip">许可协议：YAN-ZHI 商业授权协议（专有软件，非开源）</p>
         </div>
 
         <!-- 当前数据目录（2026-10-09）
@@ -949,8 +949,10 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import QRCode from 'qrcode';
+import appPackage from '../../../../package.json';
 const props = withDefaults(defineProps<{ embedded?: boolean; pane?: string }>(), { embedded: false, pane: '' });
 const embedded = computed(() => props.embedded);
+const appVersion = String(appPackage.version || '未知');
 /**
  * pane 模式（Task 10.3）：SettingsDialog 左侧分类导航直取单个分区时传入，
  * 本组件隐藏自身 el-tabs 头、只渲染对应 pane（el-tab-pane lazy 保证未访问分区不挂载）。
@@ -1167,7 +1169,7 @@ watch(
   { immediate: true },
 );
 
-// ===== 移动端四段式层级导航（spec「设置页双端布局」）：首层分组入口 → 二级全屏子页 =====
+// ===== 移动端两段式层级导航（spec「设置页双端布局」）：首层分组入口 → 二级全屏子页 =====
 // 仅移动外壳 + /settings 独立路由页（pageShell）生效；桌面 / Web / 抽屉·弹窗内嵌不走该分支。
 // 分组把现有 10 个 tab 聚合为 6 个入口行；二级子页复用 pane 直取机制（v-model=tab + lazy pane），
 // 多 tab 分组在子页顶部给一排页内子分段。返回键经 MobilePageShell.backHandler 先退回首层而非离开路由。
@@ -1190,7 +1192,7 @@ interface SettingsGroup {
 // P5 灰度：shadow/off 模式隐藏扩展管理入口
 const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
 const MOBILE_GROUPS_BASE: SettingsGroup[] = [
-  { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
+  { key: 'general', label: '通用设置', desc: '主题与布局 · 默认模型 · 模型候选池 · 上下文与费用 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
   {
     key: 'intelligence',
     label: '模型与智能',
@@ -1209,10 +1211,10 @@ const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   // M1 卡包（2026-11-16）：已复制门禁卡的本地管理 + 一键写白卡；试验台是读卡入口
   { key: 'm1wallet', label: 'M1 卡包', desc: '已复制的门禁卡 · 贴空白卡一键写卡 · 导出', icon: CreditCard, tabs: [{ name: 'm1wallet', label: '卡包' }] },
-  { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
-  { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
-  { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网访问 · 语音包 · 本地模型 · 本地网关', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }, { name: 'localmodel', label: '本地模型' }, { name: 'gateway', label: '本地网关' }] },
-  { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
+  { key: 'data', label: '数据与日志', desc: '导出 / 导入数据备份 · 清空缓存 · 模型调用日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
+  { key: 'hooks', label: '工具与钩子', desc: '工具确认规则 · 五维记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
+  { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网与共享服务 · 本地能力', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }, { name: 'localmodel', label: '本地模型' }, { name: 'gateway', label: '本地网关' }] },
+  { key: 'about', label: '关于', desc: '版本 · 开发者 · 授权与许可', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
 ];
 const mobileGroups = computed<SettingsGroup[]>(() => {
   if (extensionsMode.value === 'on') return MOBILE_GROUPS_BASE;

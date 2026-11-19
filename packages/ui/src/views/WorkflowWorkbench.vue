@@ -1,5 +1,5 @@
 <!--
-  WorkflowWorkbench.vue —— 工作流模式（第五模式 wf，路由 /workflow）
+  WorkflowWorkbench.vue —— 工作流模式（wf，路由 /workflow）
 
   两种形态（复用 four-mode-workspace 的 lead 机制，右下角悬浮切换）：
   - 运行模式 human：左=可运行工作流与历史，中=运行表单 + 运行面板，右=任务对话

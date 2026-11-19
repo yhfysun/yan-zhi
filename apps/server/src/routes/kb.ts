@@ -53,11 +53,15 @@ router.post('/', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/kb/builtin-guide —— 确保内置「应用使用说明」库存在（首次用 docs[一个功能一个文档] 种子化并切分）
+// POST /api/kb/builtin-guide —— 确保内置「应用使用说明」库存在，并在说明版本变化时按 docs 自动重建
 router.post('/builtin-guide', async (req: Request, res: Response) => {
   try {
-    const data = await ensureBuiltinAppGuide(req.user!.userId, req.body?.docs || []);
-    // 首次种子化后，异步自动抽取内置库的实体图谱（本地模型，不阻塞）
+    const data = await ensureBuiltinAppGuide(
+      req.user!.userId,
+      req.body?.docs || [],
+      Number(req.body?.guideVersion) || undefined,
+    );
+    // 首次种子化或版本升级重建后，异步重新抽取内置库的实体图谱（本地模型，不阻塞）
     if (data.seeded) extractEntityGraph('guest', 'builtin-app-guide').catch(() => undefined);
     res.json({ data });
   } catch (e: unknown) {
@@ -68,7 +72,11 @@ router.post('/builtin-guide', async (req: Request, res: Response) => {
 // POST /api/kb/builtin-guide/reset —— 重置内置「应用使用说明」为默认 docs
 router.post('/builtin-guide/reset', async (req: Request, res: Response) => {
   try {
-    const data = await resetBuiltinAppGuide(req.user!.userId, req.body?.docs || []);
+    const data = await resetBuiltinAppGuide(
+      req.user!.userId,
+      req.body?.docs || [],
+      Number(req.body?.guideVersion) || undefined,
+    );
     // 重置后异步重新抽取实体图谱（本地模型，不阻塞）
     extractEntityGraph('guest', 'builtin-app-guide').catch(() => undefined);
     res.json({ data });

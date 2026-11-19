@@ -1,5 +1,5 @@
 <template>
-  <PageFrame title="知识库" subtitle="管理文档切片，按关键词检索知识内容" class="kb-page" :scroll="false">
+  <PageFrame title="知识库" subtitle="管理文档、分片与关系图谱；支持语义检索和关键词降级" class="kb-page" :scroll="false">
     <!-- 工具条：向量模型 + 新建（独立一行，窄屏也不会挤压标题） -->
     <template #toolbar>
       <div class="kb-header-tools">
@@ -96,7 +96,7 @@
             <el-input
               v-model="query"
               clearable
-              placeholder="输入关键词搜索知识片段"
+              placeholder="输入关键词或自然语言搜索知识片段"
               @keyup.enter="search"
             >
               <template #append>
@@ -268,7 +268,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { startVisiblePolling } from '../utils/visible-polling';
 import { useAuthStore, useSettingsStore } from '../stores';
-import { DEFAULT_APP_GUIDE, APP_GUIDE_DOCS } from '../stores/settings';
+import { DEFAULT_APP_GUIDE, APP_GUIDE_DOCS, APP_GUIDE_VERSION } from '../stores/settings';
 import KbGraph from '../components/KbGraph.vue';
 import FormDialog from '../components/FormDialog.vue';
 import {
@@ -757,7 +757,7 @@ async function search() {
 async function ensureBuiltinGuide() {
   try {
     builtinGuideText.value = settingsStore.settings.appGuide || DEFAULT_APP_GUIDE;
-    await api.post('/kb/builtin-guide', { docs: APP_GUIDE_DOCS });
+    await api.post('/kb/builtin-guide', { docs: APP_GUIDE_DOCS, guideVersion: APP_GUIDE_VERSION });
   } catch {
     // 失败不阻塞（离线/服务未就绪）
   }
@@ -770,8 +770,8 @@ async function resetBuiltinGuide() {
     return;
   }
   try {
-    await api.post('/kb/builtin-guide/reset', { docs: APP_GUIDE_DOCS });
-    await settingsStore.update({ appGuide: DEFAULT_APP_GUIDE });
+    await api.post('/kb/builtin-guide/reset', { docs: APP_GUIDE_DOCS, guideVersion: APP_GUIDE_VERSION });
+    await settingsStore.update({ appGuide: DEFAULT_APP_GUIDE, appGuideVersion: APP_GUIDE_VERSION });
     ElMessage.success('已恢复默认');
     if (selected.value) await loadDocs(selected.value.id);
   } catch (e: unknown) {

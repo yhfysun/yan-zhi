@@ -176,7 +176,7 @@ const menuItems = computed<HomeMenuItem[]>(() => [
     : []),
   { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
-  { path: '/knowledge', name: '知识库', desc: '文档切块向量化、语义检索，命中自动注入对话', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
+  { path: '/knowledge', name: '知识库', desc: '文档切分、语义检索、关系图谱，命中自动注入对话', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
   { path: '/agents', name: '智能体', desc: 'harness 对话智能体 + Vue Flow 工作流画布 + 子智能体调度', icon: User, iconName: 'User', color: '#F43F5E', key: 'agents' },
   { path: '/mcp', name: 'MCP 连接', desc: '接入外部 MCP 服务（stdio / SSE / Streamable HTTP）', icon: Connection, iconName: 'Connection', color: '#6366F1', key: 'mcp' },
   { path: '/tools', name: '工具', desc: '内置工具 + 自定义 JS 沙箱工具 + 同源商城工具', icon: Tools, iconName: 'Tools', color: '#475569', key: 'tools' },
@@ -184,9 +184,9 @@ const menuItems = computed<HomeMenuItem[]>(() => [
   { path: '/models', name: '模型平台', desc: 'OpenAI / Anthropic 双协议平台与模型管理', icon: Cpu, iconName: 'Cpu', color: '#2563EB', key: 'models' },
   { path: '/connections', name: 'IM 连接', desc: '飞书 / 企业微信 / 个人微信接入，收消息自动跑任务并回执', icon: Link, iconName: 'Link', color: '#0D9488', key: 'connections' },
   { path: '/peers', name: '客户端节点', desc: '言智节点互联：互取工具 / Skill / 智能体，可作商城服务端', icon: Platform, iconName: 'Platform', color: '#B45309', key: 'peers' },
-  { path: '/memory', name: '记忆管理', desc: '三层自动记忆：每日 / 会话 / 长期向量，自动抽取与注入', icon: Memo, iconName: 'Memo', color: '#7C2D12', key: 'memory' },
+  { path: '/memory', name: '记忆管理', desc: '五维记忆：画像 / 每日 / 会话 / 智能体 / 空间，自动抽取与注入', icon: Memo, iconName: 'Memo', color: '#7C2D12', key: 'memory' },
   { path: '/distill', name: 'Skill 蒸馏', desc: '从对话记录蒸馏出可复用的 Skill · 三屏工作台', icon: MagicStick, iconName: 'MagicStick', color: '#9333EA', key: 'distill' },
-  { path: '/settings', name: '设置', desc: '通用与数据：主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings' },
+  { path: '/settings', name: '设置', desc: '主题与模型 · 服务与连接 · 数据备份 · 关于与商业许可', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings' },
 ]);
 
 /** 打开功能详情弹窗 */

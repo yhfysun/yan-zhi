@@ -4678,7 +4678,7 @@ ${q.text}
   const treeMenu = reactive({ visible: false, x: 0, y: 0 });
   function openTreeMenu(e: MouseEvent) {
     // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单。
-    // 办公侧栏用 .conv-item / .tree-space，四模式任务段（TaskListSection）用 .tls-item / .tls-group-head。
+    // 办公侧栏用 .conv-item / .tree-space，多模式任务段（TaskListSection）用 .tls-item / .tls-group-head。
     if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head, .tls-item, .tls-group-head')) return;
     // 再右击一次空白区 = 收起
     if (treeMenu.visible) { closeTreeMenu(); return; }

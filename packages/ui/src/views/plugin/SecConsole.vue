@@ -60,7 +60,7 @@
     <div class="sec-grid">
       <!-- ============ 左栏 ============ -->
       <aside class="sec-col-left">
-        <!-- 任务段（决策 13 / 5f.5）：四模式同构会话列表，授权/资产之上 -->
+        <!-- 任务段（决策 13 / 5f.5）：多模式共享会话列表，授权/资产之上 -->
         <section class="sec-frame sec-frame-tasks">
           <TaskListSection
             :space-id="null"

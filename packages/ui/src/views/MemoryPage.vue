@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h2 class="page-title">记忆管理</h2>
-        <div class="page-sub">三层自动记忆：每日 / 会话 / 长期向量，对话中自动抽取与注入</div>
+        <div class="page-sub">五维记忆：用户画像 / 每日 / 会话 / 智能体 / 空间，对话中自动抽取与注入</div>
       </div>
     </header>
     <MemoryManage />

@@ -61,7 +61,7 @@
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import {
-  HomeFilled, ChatDotRound, Monitor, Cpu, Suitcase, Files, MagicStick, Box, Connection, Setting,
+  HomeFilled, ChatDotRound, Monitor, Cpu, Suitcase, Files, MagicStick, Box, Connection, Setting, Reading,
 } from '@element-plus/icons-vue';
 
 /** 功能信息（由 Home.vue 传入） */
@@ -80,7 +80,7 @@ const router = useRouter();
 
 /** 图标名 → 组件映射 */
 const ICON_MAP: Record<string, any> = {
-  HomeFilled, ChatDotRound, Monitor, Cpu, Suitcase, Files, MagicStick, Box, Connection, Setting,
+  HomeFilled, ChatDotRound, Monitor, Cpu, Suitcase, Files, MagicStick, Box, Connection, Setting, Reading,
 };
 const resolvedIcon = computed(() => ICON_MAP[props.feature?.icon ?? ''] ?? HomeFilled);
 
@@ -94,8 +94,8 @@ interface FeatureDetail {
 
 const FEATURE_DETAILS: Record<string, FeatureDetail> = {
   home: {
-    purpose: 'yan-zhi 一体化日常办公助手工作台，将对话、浏览器自动化、模型配置、工具、技能（Skill）、智能体（Agent）、MCP 与外部服务接入统一整合，是进入全部功能模块的门户。',
-    usage: '通过首页功能列表或星球入口进入任意模块：对话（与模型流式交流）、浏览器（网页自动化与截图）、模型（管理 OpenAI/Anthropic 平台与默认模型）、工具（内置/自定义/商城工具）、Skill（技能安装与编排）、智能体（单轮与多节点工作流）、MCP（接入外部服务）、设置（全局偏好与主题）。',
+    purpose: '言智是语言可控的跨端 AI 智能体平台，把对话、九种工作模式、知识库、记忆、文件、浏览器自动化、智能体、Skill、MCP、插件和学习系统统一到桌面、Web 与移动端。',
+    usage: '从首页功能导航进入任意模块，或在顶栏切换办公、开发、运维、安全、工作流、自动化、剪辑、店铺运营和学习模式。各模式共享会话与工作目录，但显示对应的工作台。',
     buttons: [],
   },
   chat: {
@@ -120,12 +120,36 @@ const FEATURE_DETAILS: Record<string, FeatureDetail> = {
     ],
   },
   knowledge: {
-    purpose: '共享知识库：文档自动切块并向量化（bge-small-zh），检索命中片段在对话前自动注入提示词。',
-    usage: '创建 / 编辑 / 删除知识库并添加文档；检索缺失向量模型时自动降级为关键词匹配；不登录（guest）可访问 public 库，登录用户可建 private / public 共享库（跨设备可见）。',
+    purpose: '知识库负责文档切分、语义或关键词检索、分片关系和智能体挂载；命中片段会在对话前自动注入提示词。',
+    usage: '创建公开或私有知识库并添加文档；选择 embedding 模型后可语义检索，模型不可用时自动降级关键词。内置“应用使用说明”可查看、编辑和恢复默认，默认助手已挂载该库。',
     buttons: [
       '新建知识库：填写名称与描述',
-      '添加文档：自动切块 + 向量化入库',
-      '共享级别：private / public（服务端统一一套 DB）',
+      '添加文档：自动切块并建立分片',
+      '关系图谱：查看知识库、文档与分片关系',
+      '重新向量化：模型切换后刷新语义索引',
+      '共享级别：private / public',
+    ],
+  },
+  learning: {
+    purpose: '学习模式覆盖 21 个学科，以“课程总览 + 全屏单步沉浸学习”为核心，并提供编程/算法实践、练习测评、AI 陪练和公共图书馆。',
+    usage: '先在总览层选择学科、阶段和课程，进入知识点后一次只显示当前学习步骤；退出后回到原课程位置并保留进度。编程与算法课程可在应用内运行受支持的代码。',
+    buttons: [
+      '课程地图：按阶段和全局课时顺序浏览',
+      '继续学习：进入当前课程第一个未完成步骤',
+      '独立课程 / 综合训练：切换编程课程包与项目训练',
+      '原理动画：逐步观察算法状态与不变量',
+      '图书馆：发现、书架和书源',
+    ],
+  },
+  memory: {
+    purpose: '五维记忆把用户画像、每日、会话、智能体和空间记忆分开管理，用于保持上下文连续并避免不同会话互相污染。',
+    usage: '在记忆管理中按维度查看、编辑、归档、去重、提拔和整理记忆。自动抽取会在对话过程中进行，后续对话前按需检索注入。',
+    buttons: [
+      '用户画像：跨会话偏好与背景',
+      '每日记忆：按自然日聚合',
+      '会话记忆：限定当前会话',
+      '智能体记忆：跨会话的智能体上下文',
+      '空间记忆：随工作空间保存的 MEMORY.md',
     ],
   },
   connections: {
@@ -636,12 +660,14 @@ interface McpServer {
   ← { "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`,
   },
   settings: {
-    purpose: '全局设置中心，包括默认平台/模型配置、主题切换、数据源与商城地址配置等。',
-    usage: '在设置页配置默认平台和模型（影响对话默认调用）、切换明暗主题、配置商城 API 地址与数据源。',
+    purpose: '设置中心集中管理主题皮肤、模型与候选池、上下文和费用、快捷键、数据与日志、工具钩子、五维记忆、本机服务、局域网、插件与设备能力，以及应用版本和商业许可。',
+    usage: '从设置分类进入对应分区。版本档决定可见工作模式；插件、设备和平台能力会按当前构建、授权和运行端动态显示。',
     buttons: [
-      '保存设置：持久化全局配置',
-      '主题切换：明/暗主题',
-      '默认平台/模型：设置对话默认调用目标',
+      '通用：默认模型、候选池、上下文、费用与主题',
+      '服务与连接：本机 IP、商城、局域网和共享服务',
+      '数据与日志：备份、缓存和模型调用记录',
+      '工具与钩子：确认规则、记忆和浏览器扩展',
+      '关于：实际版本、源码与商业授权协议',
     ],
   },
 };

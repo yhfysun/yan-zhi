@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "private": true,
   "license": "UNLICENSED",
-  "description": "言智 - 语言可控的智能体平台（Electron 桌面 / Web PWA / Capacitor 移动三端）",
+  "description": "言智 - 跨端 AI 智能体平台（Electron 桌面 / Web PWA / Capacitor 移动三端）",
   "scripts": {
     "dev": "pnpm --filter @yan-zhi/server dev",
     "dev:server": "pnpm --filter @yan-zhi/server dev",

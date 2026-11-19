@@ -1,5 +1,5 @@
 <!--
-  TaskListSection.vue — 四模式同构的任务（会话）列表段（openspec 决策 13 / tasks 5f）
+  TaskListSection.vue — 多模式共享的任务（会话）列表段（openspec 决策 13 / tasks 5f）
   - 数据源唯一：chatStore.conversations（按 spaceId 过滤），只读不缓存
   - 嵌入各模式左栏「任务段」：与该模式资源段并列，分隔线区隔
   - 两段各自可折叠由父级（模式左栏容器）负责，本组件自身可滚动

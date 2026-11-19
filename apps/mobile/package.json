@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "言智移动端（Capacitor，原生 SQLite 插件）",
+  "description": "言智移动端（Capacitor，跨端 AI 智能体平台）",
   "scripts": {
     "dev": "node ../../scripts/sync-yanzhi-icons.cjs && vite",
     "build": "node ../../scripts/sync-yanzhi-icons.cjs && vue-tsc && vite build",
