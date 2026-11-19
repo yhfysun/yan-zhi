@@ -1,5 +1,7 @@
 import { LEARNING_V2_RAW_CATALOG } from './v2-catalog.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
+import { ALGORITHM_SUBJECT } from './algorithms.js';
+import { PROGRAMMING_SUBJECT } from './v2-curated/programming/catalog.js';
 import { planKey } from './v2-curated/types.js';
 import type {
   LearningV2CatalogData,
@@ -13,6 +15,54 @@ import type {
   LearningV2Subject,
   LearningV2SubjectView,
 } from './v2-types.js';
+
+export {
+  JAVA_ENTERPRISE_COURSE,
+  PROGRAMMING_CURRICULUM_PHASES,
+  PROGRAMMING_COURSE_PACKAGES,
+  getProgrammingCoursePackage,
+} from './v2-curated/programming/programs.js';
+export type {
+  ProgrammingCurriculumCourseRef,
+  ProgrammingCurriculumPhase,
+  ProgrammingCoursePackage,
+  ProgrammingCourseStatus,
+  ProgrammingLessonOutline,
+  ProgrammingStageOutline,
+} from './v2-curated/programming/programs.js';
+export {
+  PROGRAMMING_PROJECTS,
+  PROGRAMMING_PROJECT_COURSE_SEEDS,
+} from './v2-curated/programming/projects.js';
+export type {
+  ProgrammingProject,
+  ProgrammingProjectKind,
+  ProgrammingProjectLevel,
+  ProgrammingProjectPhase,
+  ProgrammingProjectPhaseMode,
+} from './v2-curated/programming/projects.js';
+export {
+  ALGORITHM_SUBJECT,
+  ALGORITHM_TRACKS,
+  ALGORITHM_LESSONS,
+} from './algorithms.js';
+export type {
+  AlgorithmLesson,
+  AlgorithmTrack,
+} from './algorithms.js';
+export {
+  ALGORITHM_CATEGORY_LABELS,
+  ALGORITHM_DIFFICULTIES,
+  ALGORITHM_PRACTICE_PROBLEMS,
+  ALGORITHM_RESOURCE_SITES,
+  getAlgorithmProblemById,
+} from './algorithm-problems.js';
+export type {
+  AlgorithmProblem,
+  AlgorithmProblemCategory,
+  AlgorithmProblemDifficulty,
+  AlgorithmResourceSite,
+} from './algorithm-problems.js';
 
 const RAW = LEARNING_V2_RAW_CATALOG as unknown as LearningV2CatalogData;
 
@@ -33,7 +83,11 @@ function flattenCourses(subject: LearningV2Subject): LearningV2CourseRef[] {
   );
 }
 
-const SUBJECT_VIEWS: readonly LearningV2SubjectView[] = RAW.subjects.map((subject) => ({
+const SUBJECT_VIEWS: readonly LearningV2SubjectView[] = [
+  ...RAW.subjects,
+  PROGRAMMING_SUBJECT,
+  ALGORITHM_SUBJECT,
+].map((subject) => ({
   ...subject,
   courses: flattenCourses(subject),
 }));
@@ -64,6 +118,8 @@ const STUDIO_TASKS: Record<string, (courseName: string) => string> = {
   music: (courseName) => `围绕“${courseName}”完成四小节试奏、修改与回放。`,
   zhouyi: (courseName) => `围绕“${courseName}”完成原文核对、规则演练、天文历法与地理方位复盘。`,
   divination: (courseName) => `围绕“${courseName}”完成一次符号观察、牌阵叙事、概率提示与复盘。`,
+  programming: (courseName) => `围绕“${courseName}”完成可运行代码、测试、构建、部署观察和失败复盘。`,
+  algorithms: (courseName) => `围绕“${courseName}”完成题意建模、手算追踪、代码实现、反例、复杂度证明和基准实验。`,
 };
 
 const SUBJECT_SOURCE_URLS: Record<string, string> = {
@@ -86,6 +142,8 @@ const SUBJECT_SOURCE_URLS: Record<string, string> = {
   music: 'https://www.ihchina.cn/',
   zhouyi: 'https://ctext.org/book-of-changes',
   divination: 'https://www.metmuseum.org/toah/hd/divi/hd_divi.htm',
+  programming: 'https://developer.mozilla.org/en-US/docs/Web',
+  algorithms: 'https://oi-wiki.org/',
 };
 
 const SUBJECT_COMMON_ERRORS: Record<string, readonly string[]> = {
@@ -102,6 +160,8 @@ const SUBJECT_COMMON_ERRORS: Record<string, readonly string[]> = {
   security: ['在未授权目标上测试。', '只记漏洞名称，不说明入口、权限和影响链。', '只改前端，不在服务端复验控制。'],
   zhouyi: ['把后世注文当成卦爻辞原文。', '只追求占断结论，不核对字词和结构。', '把文化解释用于医疗、法律、金融或现实预测。'],
   divination: ['先有结论再挑符号。', '把模糊描述和巧合当作命中证据。', '越过文化娱乐边界，替代专业决策。'],
+  programming: ['只复制代码，不检查版本、边界和错误路径。', '程序能运行就认为可以发布，没有测试、观测和回滚。', '只会使用框架生成器，不能解释运行时和工具链。'],
+  algorithms: ['只背模板，不从输入规模和操作模型推导适用性。', '只测样例，没有最坏、重复、退化输入和反例。', '复杂度分析忽略了隐式复制、哈希退化、递归栈和实现常数。'],
 };
 
 function generatedSubjectSteps(

@@ -66,6 +66,7 @@ const loading = ref(true);
 const error = ref('');
 const completed = ref<Record<string, boolean>>({});
 const activeLevel = ref<SecurityLevel>('入门');
+const activeView = ref<'learn' | 'labs'>('learn');
 const levelPathMemory = ref<Partial<Record<SecurityLevel, string>>>({});
 
 const focusedModuleId = ref('');
@@ -134,6 +135,9 @@ const progressPct = computed(() => activePath.value
 const focusedModule = computed(() =>
   activePath.value?.modules.find((mod) => mod.id === focusedModuleId.value) || null,
 );
+const labModules = computed(() =>
+  (activePath.value?.modules || []).filter((mod) => !!mod.lab),
+);
 const focusedModuleIndex = computed(() =>
   activePath.value?.modules.findIndex((mod) => mod.id === focusedModuleId.value) ?? -1,
 );
@@ -182,6 +186,10 @@ function openModule(id: string) {
   resetFocusState();
   emit('focus-change', true);
   void nextTick(() => focusStageRef.value?.focus());
+}
+function openLab(id: string) {
+  openModule(id);
+  activeStep.value = 'lab';
 }
 function closeFocus() {
   if (!focusedModuleId.value) return;
@@ -345,6 +353,25 @@ onBeforeUnmount(() => {
               <span>{{ completedCount }} / {{ activePath.modules.length }} 模块</span>
             </div>
           </div>
+          <div class="sec-mode-switcher" role="group" aria-label="学习或实战">
+            <button
+              type="button"
+              data-security-view="learn"
+              :aria-pressed="activeView === 'learn'"
+              @click="activeView = 'learn'"
+            >
+              <BookOpen :size="14" />系统学习
+            </button>
+            <button
+              type="button"
+              data-security-view="labs"
+              :aria-pressed="activeView === 'labs'"
+              @click="activeView = 'labs'"
+            >
+              <FlaskConical :size="14" />授权实战
+              <b>{{ labModules.length }}</b>
+            </button>
+          </div>
           <div class="sec-level-switcher" role="group" aria-label="按难度查看安全路线">
             <button
               v-for="level in SECURITY_LEVELS"
@@ -371,7 +398,7 @@ onBeforeUnmount(() => {
           </nav>
         </header>
 
-        <section class="sec-module-browser" aria-labelledby="security-module-title">
+        <section v-if="activeView === 'learn'" class="sec-module-browser" aria-labelledby="security-module-title">
           <header class="sec-section-head">
             <div>
               <p>学习路线</p>
@@ -403,6 +430,45 @@ onBeforeUnmount(() => {
                 {{ completed[mod.id] ? '复习本节' : '开始学习' }}
                 <ArrowRight :size="15" />
               </button>
+            </article>
+          </div>
+        </section>
+
+        <section v-else class="sec-lab-browser" aria-labelledby="security-lab-title">
+          <header class="sec-section-head">
+            <div>
+              <p>从看懂到做对</p>
+              <h2 id="security-lab-title">授权实战</h2>
+            </div>
+            <span>{{ labModules.length }} 个实验</span>
+          </header>
+          <div class="sec-lab-intro">
+            <ShieldCheck :size="17" />
+            <p>所有实验只使用本地靶场、教学账号和隔离数据。开始前先确认授权范围、停止条件、日志与回滚方式。</p>
+          </div>
+          <div class="sec-lab-card-grid">
+            <article
+              v-for="(mod, index) in labModules"
+              :key="mod.id"
+              class="sec-lab-card"
+              :class="{ completed: completed[mod.id] }"
+            >
+              <header>
+                <span>{{ String(index + 1).padStart(2, '0') }}</span>
+                <em>{{ completed[mod.id] ? '已验收' : '待实战' }}</em>
+              </header>
+              <h3>{{ mod.title }}</h3>
+              <b>{{ mod.lab?.target }}</b>
+              <p>{{ mod.summary }}</p>
+              <div class="sec-lab-card-tools">
+                <span v-for="tool in mod.lab?.tools" :key="tool">{{ tool }}</span>
+              </div>
+              <footer>
+                <span>{{ mod.lab?.steps.length }} 个步骤</span>
+                <button type="button" @click="openLab(mod.id)">
+                  进入靶场<ArrowRight :size="14" />
+                </button>
+              </footer>
             </article>
           </div>
         </section>
@@ -766,6 +832,41 @@ onBeforeUnmount(() => {
   color: #0f766e;
   font-size: 12px;
 }
+.sec-mode-switcher {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: 16px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.sec-mode-switcher button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sec-mode-switcher button b {
+  min-width: 19px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  font-size: 9px;
+  text-align: center;
+}
+.sec-mode-switcher button[aria-pressed="true"] {
+  background: color-mix(in srgb, #0f766e 12%, var(--color-surface));
+  color: #0f766e;
+  font-weight: 700;
+}
 .sec-level-switcher {
   display: inline-flex;
   gap: 2px;
@@ -969,6 +1070,121 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .sec-module-start:hover { background: #0f766e; color: #fff; }
+.sec-lab-browser {
+  padding: 20px 22px 22px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.sec-lab-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #0f766e 28%, var(--color-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, #0f766e 5%, var(--color-surface));
+  color: #0f766e;
+}
+.sec-lab-intro svg { flex: 0 0 auto; margin-top: 1px; }
+.sec-lab-intro p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.sec-lab-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+.sec-lab-card {
+  display: flex;
+  min-width: 0;
+  min-height: 210px;
+  flex-direction: column;
+  padding: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--glass-bg);
+}
+.sec-lab-card.completed {
+  border-color: color-mix(in srgb, #0f766e 40%, var(--color-border));
+  background: color-mix(in srgb, #0f766e 5%, var(--color-surface));
+}
+.sec-lab-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sec-lab-card > header > span {
+  color: #0f766e;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.sec-lab-card > header > em {
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+  font-style: normal;
+}
+.sec-lab-card h3 { margin: 8px 0 0; font-size: 14px; }
+.sec-lab-card > b {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #0f766e;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sec-lab-card > p {
+  display: -webkit-box;
+  margin: 7px 0 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.sec-lab-card-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.sec-lab-card-tools span {
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-tertiary);
+  font-size: 8px;
+}
+.sec-lab-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+}
+.sec-lab-card > footer > span { color: var(--color-text-tertiary); font-size: 9px; }
+.sec-lab-card > footer > button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid #0f766e;
+  border-radius: 6px;
+  background: color-mix(in srgb, #0f766e 8%, var(--color-surface));
+  color: #0f766e;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
 .sec-overview-safety {
   display: flex;
   align-items: flex-start;
@@ -1707,7 +1923,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .sec-overview-head,
-  .sec-module-browser { padding: 16px; }
+  .sec-module-browser,
+  .sec-lab-browser { padding: 16px; }
+  .sec-mode-switcher { width: 100%; }
+  .sec-mode-switcher button { flex: 1; min-height: 44px; justify-content: center; }
   .sec-overview-title-row { gap: 16px; }
   /* ★★ v1.1 模块卡=横向滑动单行（评审定稿 §6-4）：全量模块进一条横轨，单卡 170px；
      次要文案隐藏；桌面网格逐字不变。 */
@@ -1762,6 +1981,9 @@ onBeforeUnmount(() => {
     width: 100%;
   }
   .sec-level-switcher button { min-width: 0; }
+  .sec-lab-card-grid { grid-template-columns: 1fr; }
+  .sec-lab-card { min-height: 190px; }
+  .sec-lab-card > footer > button { min-height: 44px; }
   .sec-progress { flex-direction: row; align-self: flex-start; }
   .sec-progress-ring { width: 46px; height: 46px; }
   .sec-progress-ring::before { width: 36px; height: 36px; }

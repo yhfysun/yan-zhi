@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import {
   BookMarked, BookOpen, Bookmark, BookmarkCheck, Check, ChevronRight, ExternalLink, Library,
-  LayoutGrid, List, Plus, Search, Trash2, TrendingUp, Upload, X,
+  LayoutGrid, List, LoaderCircle, Plus, Search, Trash2, TrendingUp, Upload, X,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_READING_CATEGORIES,
@@ -10,12 +10,15 @@ import {
   getLearningV2BookSources,
   getLearningV2ReadingCatalog,
   type LearningV2BookSource,
+  type LearningV2BookSourceProvider,
+  type LearningV2BookSourceRule,
   type LearningV2LibraryEntry,
   type LearningV2ReadingCategoryKey,
   type LearningV2ReadingCollectionKey,
   type LearningV2ReadingEntry,
   type LearningV2ReaderBook,
 } from '@yan-zhi/shared';
+import { api } from '../../../api/client';
 import { decodeBookBytes, parseBookText } from './library-import';
 import {
   listImportedBooks,
@@ -42,6 +45,7 @@ const DISABLED_SOURCES_KEY = 'yz.learning.v2.library.disabled-sources.v1';
 const FOLDERS_KEY = 'yz.learning.v2.library.folders.v1';
 const BOOK_FOLDERS_KEY = 'yz.learning.v2.library.book-folders.v1';
 const BOOK_VIEW_KEY = 'yz.learning.v2.library.book-view.v1';
+const SOURCE_BOOKS_KEY = 'yz.learning.v2.library.source-books.v1';
 
 type LibraryView = 'discover' | 'shelf' | 'sources';
 type CategoryFilter = LearningV2ReadingCategoryKey | 'all';
@@ -64,6 +68,8 @@ type LibraryCard = {
   readingMode?: LearningV2ReadingEntry['readingMode'];
   contentKind?: 'text' | 'comic';
   collections?: readonly LearningV2ReadingCollectionKey[];
+  source?: LearningV2BookSource;
+  sourceBook?: SourceBook;
 };
 
 type SourceForm = {
@@ -71,6 +77,26 @@ type SourceForm = {
   url: string;
   category: LearningV2ReadingCategoryKey;
   license: string;
+  json: string;
+};
+
+type SourceImportSummary = {
+  total: number;
+  imported: number;
+  skipped: number;
+  errors: Array<{ index: number; name: string; reason: string }>;
+};
+
+type SourceBook = {
+  title: string;
+  author: string;
+  bookUrl: string;
+  contentUrl?: string;
+  coverUrl?: string;
+  description: string;
+  kind?: string;
+  wordCount?: string;
+  lastChapter?: string;
 };
 
 type ShelfFolder = {
@@ -99,17 +125,28 @@ const folderError = ref('');
 const bookViewMode = ref<BookViewMode>('card');
 const sourceFormOpen = ref(false);
 const sourceError = ref('');
+const sourceImportSummary = ref<SourceImportSummary | null>(null);
+const sourceJsonFileName = ref('');
+const sourceJsonInput = ref<HTMLInputElement | null>(null);
 const sourceForm = ref<SourceForm>({
   name: '',
   url: '',
   category: 'web-novel',
   license: '用户自行添加；仅用于打开授权或公版阅读页面',
+  json: '',
 });
 const searchInput = ref<HTMLInputElement | null>(null);
 const importInput = ref<HTMLInputElement | null>(null);
 const importedBooks = ref<ImportedBookMeta[]>([]);
 const importing = ref(false);
 const importError = ref('');
+const sourceQuery = ref('');
+const sourceSearching = ref(false);
+const sourceSearchError = ref('');
+const sourceResults = ref<LibraryCard[]>([]);
+const sourcePage = ref(1);
+const sourceHasMore = ref(false);
+const remoteSourceBooks = ref<Array<SourceBook & { id: string; sourceId: string }>>([]);
 
 const builtInSources = getLearningV2BookSources();
 const readingEntries = getLearningV2ReadingCatalog();
@@ -141,7 +178,7 @@ const cards = computed<LibraryCard[]>(() => {
     license: entry.license,
     description: entry.description,
     readingEntry: entry,
-    readingMode: entry.readingMode,
+    readingMode: readableSourceForEntry(entry) ? 'source' : entry.readingMode,
     collections: entry.collections,
   }));
   const importedCards: LibraryCard[] = importedBooks.value.map((book) => ({
@@ -160,7 +197,13 @@ const cards = computed<LibraryCard[]>(() => {
     contentKind: book.kind,
     collections: ['youth', 'adult'],
   }));
-  const customCards: LibraryCard[] = customSources.value.map((source) => ({
+  const sourceCards: LibraryCard[] = remoteSourceBooks.value.flatMap((book) => {
+    const source = allSources.value.find((item) => item.id === book.sourceId);
+    return source ? [sourceCard(source, book, `source-book:${book.id}`)] : [];
+  });
+  const customCards: LibraryCard[] = customSources.value
+    .filter((source) => !isSourceSearchable(source))
+    .map((source) => ({
     id: `custom-source:${source.id}`,
     title: source.name,
     author: '自定义书源',
@@ -173,7 +216,7 @@ const cards = computed<LibraryCard[]>(() => {
     readingMode: 'external',
   }));
   const enabledSourceIds = new Set(enabledSources.value.map((source) => source.id));
-  return [...importedCards, ...readingCards, ...customCards, ...courseCards]
+  return [...importedCards, ...sourceCards, ...readingCards, ...customCards, ...courseCards]
     .filter((card) =>
       card.category === 'course'
       || card.sourceId === 'local-import'
@@ -246,6 +289,71 @@ function categoryLabel(key: LearningV2ReadingCategoryKey): string {
   return LEARNING_V2_READING_CATEGORIES.find((category) => category.key === key)?.label || key;
 }
 
+function isSourceSearchable(source: LearningV2BookSource): boolean {
+  return !!source.provider || !!source.rule;
+}
+
+function sourceProviderLabel(provider?: LearningV2BookSourceProvider): string {
+  if (provider === 'gutendex') return 'Project Gutenberg';
+  if (provider === 'mediawiki') return '开放百科';
+  return '规则书源';
+}
+
+function isInsecureSource(source: LearningV2BookSource): boolean {
+  return source.insecure === true || /^http:\/\//i.test(source.url);
+}
+
+function sourceConnectionLabel(source: LearningV2BookSource): string {
+  return isInsecureSource(source) ? 'HTTP 不安全' : accessLabel(source.access);
+}
+
+function sourceBookHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function sourceCard(source: LearningV2BookSource, book: SourceBook, id?: string): LibraryCard {
+  return {
+    id: id || `source-book:${source.id}:${sourceBookHash(book.bookUrl)}`,
+    title: book.title,
+    author: book.author,
+    category: source.category,
+    sourceId: source.id,
+    sourceName: source.name,
+    url: book.bookUrl,
+    license: source.license,
+    description: book.description || `${source.name} 书目`,
+    readingMode: 'source',
+    source,
+    sourceBook: book,
+  };
+}
+
+function readableSourceForEntry(entry: LearningV2ReadingEntry): LearningV2BookSource | undefined {
+  if (entry.readingMode !== 'external') return undefined;
+  const source = allSources.value.find((item) => item.id === entry.sourceId);
+  if (!source?.provider) return undefined;
+  try {
+    const url = new URL(entry.url);
+    if (source.provider === 'gutendex') {
+      return /gutenberg\.org$/i.test(url.hostname) && /^\/ebooks\/\d+\/?$/.test(url.pathname)
+        ? source
+        : undefined;
+    }
+    if (source.provider === 'mediawiki') {
+      const sourceHost = new URL(source.url).hostname;
+      return url.hostname === sourceHost && /^\/wiki\/[^/?#]+/.test(url.pathname) ? source : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 function coverTone(index: number): number {
   return index % 6;
 }
@@ -290,6 +398,24 @@ function readCustomSources(): LearningV2BookSource[] {
   }
 }
 
+function readRemoteSourceBooks(): Array<SourceBook & { id: string; sourceId: string }> {
+  try {
+    const value = JSON.parse(localStorage.getItem(SOURCE_BOOKS_KEY) || '[]');
+    if (!Array.isArray(value)) return [];
+    return value.filter((book): book is SourceBook & { id: string; sourceId: string } =>
+      !!book
+      && typeof book.id === 'string'
+      && typeof book.sourceId === 'string'
+      && typeof book.title === 'string'
+      && typeof book.author === 'string'
+      && typeof book.bookUrl === 'string'
+      && typeof book.description === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
 function readObject(key: string): Record<string, string> {
   try {
     const value = JSON.parse(localStorage.getItem(key) || '{}');
@@ -326,6 +452,7 @@ function persistPreferences() {
     localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders.value));
     localStorage.setItem(BOOK_FOLDERS_KEY, JSON.stringify(bookFolders.value));
     localStorage.setItem(BOOK_VIEW_KEY, bookViewMode.value);
+    localStorage.setItem(SOURCE_BOOKS_KEY, JSON.stringify(remoteSourceBooks.value));
   } catch { /* local library preferences are optional */ }
 }
 
@@ -335,6 +462,7 @@ function restorePreferences() {
   customSources.value = readCustomSources();
   folders.value = readFolders();
   bookFolders.value = readObject(BOOK_FOLDERS_KEY);
+  remoteSourceBooks.value = readRemoteSourceBooks();
   try {
     const savedView = localStorage.getItem(BOOK_VIEW_KEY);
     if (savedView === 'card' || savedView === 'list') bookViewMode.value = savedView;
@@ -365,7 +493,62 @@ function selectCard(card: LibraryCard) {
 
 function selectSource(source: LearningV2BookSource) {
   selectedSourceId.value = source.id;
+  sourceQuery.value = '';
+  sourceResults.value = [];
+  sourceSearchError.value = '';
+  sourceHasMore.value = false;
+  sourcePage.value = 1;
   detailOpen.value = true;
+}
+
+async function searchSelectedSource() {
+  const source = selectedSource.value;
+  const keyword = sourceQuery.value.trim();
+  sourceSearchError.value = '';
+  if (!source) return;
+  if (!isSourceSearchable(source)) {
+    sourceSearchError.value = '这个书源只提供官方入口，请到官方站点登录或搜索。';
+    return;
+  }
+  if (!keyword) {
+    sourceSearchError.value = '请输入书名或作者。';
+    return;
+  }
+  sourceSearching.value = true;
+  try {
+    const response = await api.post<{
+      items: SourceBook[];
+      page: number;
+      hasMore: boolean;
+    }>('/learning/library/source/search', {
+      ...(source.provider ? { sourceId: source.id } : { source }),
+      query: keyword,
+      page: 1,
+    });
+    if ('error' in response) throw new Error(response.error);
+    const items = Array.isArray(response.data.items) ? response.data.items : [];
+    sourceResults.value = items.map((book) => sourceCard(source, book));
+    sourcePage.value = Number(response.data.page) || 1;
+    sourceHasMore.value = response.data.hasMore === true;
+    if (!items.length) sourceSearchError.value = '没有找到匹配的书目，换个关键词试试。';
+  } catch (error) {
+    sourceResults.value = [];
+    sourceHasMore.value = false;
+    sourceSearchError.value = error instanceof Error ? error.message : '书源搜索失败。';
+  } finally {
+    sourceSearching.value = false;
+  }
+}
+
+function addSourceBookToShelf(card: LibraryCard) {
+  if (!card.sourceBook) return;
+  const id = card.id.replace(/^source-book:/, '');
+  remoteSourceBooks.value = [
+    { id, sourceId: card.sourceId, ...card.sourceBook },
+    ...remoteSourceBooks.value.filter((book) => book.id !== id),
+  ];
+  if (!shelfIds.value.includes(card.id)) shelfIds.value = [...shelfIds.value, card.id];
+  persistPreferences();
 }
 
 function toggleShelf(card: LibraryCard) {
@@ -495,6 +678,24 @@ function openBook(card: LibraryCard) {
     });
     return;
   }
+  if (card.source && card.sourceBook) {
+    emit('readBook', {
+      id: card.id,
+      title: card.sourceBook.title,
+      author: card.sourceBook.author,
+      language: 'zh-Hans',
+      readingMode: 'source',
+      sourceId: card.source.id,
+      source: card.source,
+      bookUrl: card.sourceBook.bookUrl,
+      contentUrl: card.sourceBook.contentUrl,
+      sourceName: card.sourceName,
+      license: card.license,
+      annotations: [],
+      collectionLabels: [categoryLabel(card.category), card.sourceName],
+    });
+    return;
+  }
   if (card.url) {
     emit('readBook', {
       id: card.id,
@@ -512,15 +713,21 @@ function openBook(card: LibraryCard) {
 }
 
 function readerBookFor(entry: LearningV2ReadingEntry): LearningV2ReaderBook {
+  const source = readableSourceForEntry(entry);
   return {
     id: entry.id,
     title: entry.title,
     author: entry.author,
     language: entry.language,
-    readingMode: entry.readingMode,
+    readingMode: source ? 'source' : entry.readingMode,
       contentKind: entry.category === 'comics' ? 'comic' : 'text',
     assetKey: entry.assetKey,
     url: entry.url,
+    ...(source ? {
+      sourceId: source.id,
+      source,
+      bookUrl: entry.url,
+    } : {}),
     sourceName: entry.sourceName,
     license: entry.license,
     annotations: entry.annotations,
@@ -536,6 +743,7 @@ function readLabel(card: LibraryCard): string {
   if (card.learningEntry) return card.learningEntry.readable ? '开始研读' : '仅书目';
   if (card.readingMode === 'builtin') return '开始阅读';
   if (card.readingMode === 'import') return '继续阅读';
+  if (card.readingMode === 'source') return '应用内阅读';
   if (card.readingMode === 'platform') return '应用内打开';
   return '阅读导读';
 }
@@ -645,50 +853,143 @@ function isSourceEnabled(source: LearningV2BookSource): boolean {
 function deleteCustomSource(source: LearningV2BookSource) {
   customSources.value = customSources.value.filter((item) => item.id !== source.id);
   disabledSourceIds.value = disabledSourceIds.value.filter((id) => id !== source.id);
+  remoteSourceBooks.value = remoteSourceBooks.value.filter((book) => book.sourceId !== source.id);
+  shelfIds.value = shelfIds.value.filter((id) => !id.startsWith(`source-book:${source.id}:`));
   if (selectedSourceId.value === source.id) selectedSourceId.value = builtInSources[0]?.id || '';
+  sourceResults.value = [];
   persistPreferences();
 }
 
-function submitCustomSource() {
+function chooseSourceJsonFile() {
+  sourceJsonInput.value?.click();
+}
+
+async function importSourceJsonFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
   sourceError.value = '';
-  const name = sourceForm.value.name.trim();
-  const license = sourceForm.value.license.trim();
-  let url = '';
-  try {
-    const parsed = new URL(sourceForm.value.url.trim());
-    if (parsed.protocol !== 'https:') throw new Error('protocol');
-    url = parsed.toString();
-  } catch {
-    sourceError.value = '书源地址必须是完整的 HTTPS 地址。';
+  if (file.size > 8 * 1024 * 1024) {
+    sourceError.value = '书源文件不能超过 8 MB。';
     return;
   }
-  if (!name || !license) {
-    sourceError.value = '请填写书源名称和许可说明。';
+  try {
+    sourceForm.value.json = await file.text();
+    sourceJsonFileName.value = file.name;
+  } catch {
+    sourceError.value = '书源文件读取失败。';
+  }
+}
+
+async function submitCustomSource() {
+  sourceError.value = '';
+  sourceImportSummary.value = null;
+  const name = sourceForm.value.name.trim();
+  const license = sourceForm.value.license.trim();
+  const sourceJson = sourceForm.value.json.trim();
+  let url = '';
+  try {
+    if (sourceForm.value.url.trim()) {
+      const parsed = new URL(sourceForm.value.url.trim());
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('protocol');
+      url = parsed.toString();
+    }
+  } catch {
+    sourceError.value = '书源地址必须是完整的 HTTP 或 HTTPS 地址。';
     return;
+  }
+  if (!license) {
+    sourceError.value = '请填写许可说明。';
+    return;
+  }
+  if (!sourceJson && !url) {
+    sourceError.value = '请填写书源地址，或粘贴标准书源 JSON。';
+    return;
+  }
+  const shouldImportJson = !!sourceJson || /\.(json|txt)(?:$|[?#])/i.test(url);
+  if (shouldImportJson) {
+    try {
+      const response = await api.post<{
+        sources: Array<{
+          name: string;
+          url: string;
+          group?: string;
+          rule: LearningV2BookSourceRule;
+        }>;
+        total?: number;
+        imported?: number;
+        skipped?: number;
+        errors?: Array<{ index: number; name: string; reason: string }>;
+      }>('/learning/library/sources/import', sourceJson ? { json: sourceJson } : { url });
+      if ('error' in response) throw new Error(response.error);
+      const imported = Array.isArray(response.data.sources) ? response.data.sources : [];
+      if (!imported.length) throw new Error('书源文件里没有可用规则。');
+      const nextSources = imported.map((item, index): LearningV2BookSource => ({
+        id: `custom-${Date.now()}-${index}`,
+        name: item.name || name || `自定义书源 ${index + 1}`,
+        url: item.url,
+        category: sourceForm.value.category,
+        access: sourceForm.value.category === 'web-novel' ? 'authorized-platform' : 'public-domain',
+        license,
+        description: `${item.group || '标准规则书源'} · 支持应用内搜索、目录与正文阅读`,
+        rule: item.rule,
+        insecure: /^http:\/\//i.test(item.url),
+      }));
+      const importedCount = Number(response.data.imported);
+      const skippedCount = Number(response.data.skipped);
+      sourceImportSummary.value = {
+        total: Number(response.data.total) || imported.length + (Number.isFinite(skippedCount) ? skippedCount : 0),
+        imported: Number.isFinite(importedCount) ? importedCount : imported.length,
+        skipped: Number.isFinite(skippedCount) ? skippedCount : 0,
+        errors: Array.isArray(response.data.errors) ? response.data.errors : [],
+      };
+      customSources.value = [...customSources.value, ...nextSources];
+      selectedSourceId.value = nextSources[0].id;
+      detailOpen.value = true;
+      sourceFormOpen.value = false;
+      sourceJsonFileName.value = '';
+      sourceForm.value = {
+        name: '',
+        url: '',
+        category: 'web-novel',
+        license: '用户自行添加；仅用于授权、公版或开放许可内容',
+        json: '',
+      };
+      persistPreferences();
+      return;
+    } catch (error) {
+      sourceError.value = error instanceof Error ? error.message : '书源导入失败。';
+      return;
+    }
   }
   const source: LearningV2BookSource = {
     id: `custom-${Date.now()}`,
-    name,
+    name: name || sourceHost(url),
     url,
     category: sourceForm.value.category,
     access: sourceForm.value.category === 'web-novel' ? 'authorized-platform' : 'public-domain',
     license,
-    description: '用户自行添加的书源。应用只保存地址，不抓取正文、不绕过登录或付费限制。',
+    description: '用户自行添加的站点入口。若站点提供标准书源 JSON，可导入后在本应用内搜索和阅读。',
+    insecure: /^http:\/\//i.test(url),
   };
   customSources.value = [...customSources.value, source];
   selectedSourceId.value = source.id;
+  detailOpen.value = true;
   sourceFormOpen.value = false;
+  sourceJsonFileName.value = '';
   sourceForm.value = {
     name: '',
     url: '',
     category: 'web-novel',
     license: '用户自行添加；仅用于打开授权或公版阅读页面',
+    json: '',
   };
   persistPreferences();
 }
 
 watch(
-  [shelfIds, customSources, disabledSourceIds, folders, bookFolders, bookViewMode],
+  [shelfIds, customSources, disabledSourceIds, folders, bookFolders, bookViewMode, remoteSourceBooks],
   persistPreferences,
   { deep: true },
 );
@@ -760,7 +1061,7 @@ onMounted(async () => {
         </div>
         <div v-else class="ll-source-note">
           <b>书源规则</b>
-          <p>只登记公版、开放许可或官方授权平台。应用不抓取正文，不绕过登录、付费或地区限制。</p>
+          <p>支持标准书源 JSON 与公版/开放接口。应用只读取可公开访问的搜索、目录和正文，不绕过登录、付费或地区限制。</p>
         </div>
       </aside>
 
@@ -942,11 +1243,20 @@ onMounted(async () => {
         <template v-else>
           <header class="ll-source-head">
             <div><span>来源管理</span><h2>书源</h2></div>
-            <button type="button" @click="sourceFormOpen = !sourceFormOpen"><Plus :size="15" />添加书源</button>
+            <button type="button" @click="sourceFormOpen = !sourceFormOpen"><Plus :size="15" />导入书源</button>
           </header>
+          <div v-if="sourceImportSummary" class="ll-source-import-result" data-source-import-summary role="status">
+            <b>已导入 {{ sourceImportSummary.imported }} 条，跳过 {{ sourceImportSummary.skipped }} 条</b>
+            <small>共 {{ sourceImportSummary.total }} 条；跳过项不会影响其他书源。</small>
+            <ul v-if="sourceImportSummary.errors.length">
+              <li v-for="error in sourceImportSummary.errors.slice(0, 4)" :key="`${error.index}-${error.name}`">
+                第 {{ error.index }} 条「{{ error.name }}」：{{ error.reason }}
+              </li>
+            </ul>
+          </div>
           <form v-if="sourceFormOpen" class="ll-source-form" @submit.prevent="submitCustomSource">
             <label><span>名称</span><input v-model="sourceForm.name" placeholder="例如：我的授权书库" /></label>
-            <label><span>HTTPS 地址</span><input v-model="sourceForm.url" type="url" placeholder="https://..." /></label>
+            <label><span>HTTP / HTTPS 地址</span><input v-model="sourceForm.url" type="url" placeholder="https://... 或 http://..." /></label>
             <label>
               <span>分类</span>
               <select v-model="sourceForm.category">
@@ -954,6 +1264,22 @@ onMounted(async () => {
               </select>
             </label>
             <label class="wide"><span>许可说明</span><input v-model="sourceForm.license" placeholder="公版、开放许可或官方授权依据" /></label>
+            <label class="wide">
+              <span>书源 JSON（可选）</span>
+              <textarea v-model="sourceForm.json" rows="5" placeholder="粘贴 JSON 内容，支持单个对象或数组；也可直接选择 .json / .txt 文件"></textarea>
+            </label>
+            <label class="wide ll-source-file-field">
+              <span>本地文件</span>
+              <button type="button" @click="chooseSourceJsonFile"><Upload :size="14" />选择 JSON 文件</button>
+              <input
+                ref="sourceJsonInput"
+                data-source-json-file
+                type="file"
+                accept=".json,.txt,application/json,text/plain"
+                @change="importSourceJsonFile"
+              />
+              <small v-if="sourceJsonFileName">{{ sourceJsonFileName }}</small>
+            </label>
             <p v-if="sourceError" class="ll-source-error">{{ sourceError }}</p>
             <div>
               <button type="button" @click="sourceFormOpen = false">取消</button>
@@ -969,8 +1295,16 @@ onMounted(async () => {
               @click="selectSource(source)"
             >
               <i><Check v-if="isSourceEnabled(source)" :size="12" /></i>
-              <span><b>{{ source.name }}</b><small>{{ categoryLabel(source.category) }} · {{ accessLabel(source.access) }}</small></span>
-              <em>{{ customSources.some((item) => item.id === source.id) ? '自定义' : '内置' }}</em>
+              <span>
+                <b>{{ source.name }}</b>
+                <small>
+                  {{ categoryLabel(source.category) }} ·
+                  {{ isSourceSearchable(source)
+                    ? `可搜索阅读${isInsecureSource(source) ? ' · HTTP 不安全' : ''}`
+                    : sourceConnectionLabel(source) }}
+                </small>
+              </span>
+              <em>{{ customSources.some((item) => item.id === source.id) ? '自定义' : isSourceSearchable(source) ? '可读' : '入口' }}</em>
             </button>
           </div>
         </template>
@@ -1018,17 +1352,58 @@ onMounted(async () => {
 
         <template v-else-if="activeView === 'sources' && selectedSource">
           <header class="ll-source-detail-head">
-            <span class="ll-source-kicker">{{ accessLabel(selectedSource.access) }}</span>
+            <span class="ll-source-kicker">{{ isInsecureSource(selectedSource) ? 'HTTP 不安全' : accessLabel(selectedSource.access) }}</span>
             <h2>{{ selectedSource.name }}</h2>
             <p>{{ selectedSource.description }}</p>
             <div class="ll-source-badges">
               <span>{{ categoryLabel(selectedSource.category) }}</span>
+              <span>{{ isSourceSearchable(selectedSource) ? sourceProviderLabel(selectedSource.provider) : '官方入口' }}</span>
+              <span v-if="isInsecureSource(selectedSource)" class="is-warning">HTTP 不安全</span>
               <span :class="{ 'is-off': !isSourceEnabled(selectedSource) }">
                 {{ isSourceEnabled(selectedSource) ? '已启用' : '已停用' }}
               </span>
               <span>{{ customSources.some((source) => source.id === selectedSource?.id) ? '自定义' : '内置' }}</span>
             </div>
           </header>
+          <form v-if="isSourceSearchable(selectedSource)" class="ll-source-search" @submit.prevent="searchSelectedSource">
+            <label>
+              <Search :size="15" />
+              <input
+                v-model="sourceQuery"
+                data-source-search
+                type="search"
+                placeholder="搜索这个书源里的书名或作者"
+              />
+            </label>
+            <button type="submit" data-source-search-submit :disabled="sourceSearching">
+              <LoaderCircle v-if="sourceSearching" class="ll-spin" :size="15" />
+              <Search v-else :size="15" />
+              {{ sourceSearching ? '搜索中' : '搜索' }}
+            </button>
+          </form>
+          <p v-if="sourceSearchError" class="ll-source-search-error" role="alert">{{ sourceSearchError }}</p>
+          <section v-if="sourceResults.length" class="ll-source-results" aria-label="书源搜索结果">
+            <article v-for="(card, index) in sourceResults" :key="card.id" class="ll-source-result">
+              <span class="ll-source-result-cover" :data-tone="coverTone(index)" aria-hidden="true">
+                {{ card.title.slice(0, 1) }}
+              </span>
+              <div>
+                <b>{{ card.title }}</b>
+                <small>{{ card.author }}</small>
+                <p>{{ card.description }}</p>
+              </div>
+              <footer>
+                <button type="button" data-source-shelf @click="addSourceBookToShelf(card)">
+                  <BookmarkCheck v-if="shelfIds.includes(card.id)" :size="14" />
+                  <Bookmark v-else :size="14" />
+                  {{ shelfIds.includes(card.id) ? '已在书架' : '加入书架' }}
+                </button>
+                <button type="button" data-source-read @click="openBook(card)">
+                  <BookOpen :size="14" />阅读
+                </button>
+              </footer>
+            </article>
+          </section>
           <section class="ll-source-detail-section">
             <h3>阅读与授权</h3>
             <p>{{ selectedSource.license }}</p>

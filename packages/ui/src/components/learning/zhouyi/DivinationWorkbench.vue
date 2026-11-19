@@ -946,7 +946,7 @@ function askAboutResult() {
 <style scoped>
 /* ===== 工作台骨架（--dv-* 私有变量；深色工作台 + 浅色纸面） =====
    ★ 中栏内嵌（用户实报「实战为啥要弹窗」）：非 fixed 弹窗，随 tab 切换挂载/卸载，
-   高度链由 Learning.vue 的 .lp-col-mid:has(> .dv-root) 特例供足。 */
+   历史旧学习页的高度链已移除；当前由 LearningV2 沉浸层和本工作台共同管理。 */
 .dv-root {
   --dv-bg: #101418;
   --dv-panel: #1a2026;
@@ -1396,7 +1396,7 @@ function askAboutResult() {
   .dv-actions button { width: 100%; }
 }
 
-/* ★★ 窄屏（≤900px，与 Learning.vue 单列断点同口径）：测算台交出高度链，内容自然撑开。
+/* ★★ 窄屏（≤900px，与 LearningV2 单列断点同口径）：测算台交出高度链，内容自然撑开。
    根因（2026-11-16 真机实报「周易课程页面无法滑动」）：
      移动端学习页单列布局下 .lp-col-mid 变 height:auto ⇒ .dv-root 的 height:100% 解析为
      auto ⇒ 其内 .dv-main(flex:1 + min-height:0) 在无确定高度的 flex 容器里自由空间为 0

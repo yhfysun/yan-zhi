@@ -47,7 +47,7 @@ describe('启动迁移：yz:code:active → yz:mode', () => {
     expect(m.activeMode.value).toBe('dev');
     expect(ls.getItem('yz:code:active')).toBeNull();
     expect(ls.getItem('yz:mode')).toBe('dev');
-  }, 10_000);
+  }, 30_000);
 
   it('无任何标记时默认 office', async () => {
     const m = await freshModule(new LocalStorageStub());

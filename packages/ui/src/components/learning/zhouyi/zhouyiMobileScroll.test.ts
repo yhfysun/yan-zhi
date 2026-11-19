@@ -16,7 +16,6 @@ import { resolve } from 'node:path';
 
 const ZY_SRC = readFileSync(resolve(__dirname, 'ZhouyiWorkbench.vue'), 'utf8');
 const DV_SRC = readFileSync(resolve(__dirname, 'DivinationWorkbench.vue'), 'utf8');
-const LEARNING_SRC = readFileSync(resolve(__dirname, '../../../views/Learning.vue'), 'utf8');
 
 /** 取某个 @media 块的内容（按最大宽度关键字定位）。 */
 function mediaBlock(src: string, maxWidth: number): string {
@@ -60,16 +59,4 @@ describe('周易 · 移动端滚动契约', () => {
     expect(block).toMatch(/\.dv-main\s*\{[^}]*overflow-y:\s*visible/);
   });
 
-  it('★★ 中栏的「桌面态 overflow:hidden」必须由**类名**驱动（:has() 特异性压不过媒体查询）', () => {
-    // 类名版规则存在
-    expect(LEARNING_SRC).toContain('.lp-col-mid--coach');
-    expect(LEARNING_SRC).toContain('.lp-col-mid--dv');
-    // 模板按 tab 挂类名
-    expect(LEARNING_SRC).toContain("'lp-col-mid--coach': tab === 'coach'");
-    expect(LEARNING_SRC).toContain("'lp-col-mid--dv': tab === 'divination'");
-    // 窄屏必须有同名覆盖（否则桌面态的 overflow:hidden 在移动端仍然裁切内容）
-    const mobile = mediaBlock(LEARNING_SRC, 900);
-    expect(mobile).toMatch(/\.lp-col-mid--coach\s*\{[^}]*overflow:\s*visible/);
-    expect(mobile).toMatch(/\.lp-col-mid--dv\s*\{[^}]*overflow:\s*visible/);
-  });
 });

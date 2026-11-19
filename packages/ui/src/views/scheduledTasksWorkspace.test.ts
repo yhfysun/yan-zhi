@@ -38,7 +38,8 @@ describe('scheduled task workspace navigation', () => {
 
   it('keeps one desktop sidebar toggle in the title bar', () => {
     expect(sidebar).toContain('class="sidebar-collapse-btn"');
-    expect(sidebar).toContain('@click="convCollapsed = true"');
+    expect(sidebar).toContain('@click="collapseTaskSidebar"');
+    expect(sidebar).toMatch(/function collapseTaskSidebar\(\): void \{[\s\S]{0,220}convCollapsed\.value = true/);
     expect(read('../components/WebTopBar.vue')).toContain('class="title-nav-item title-nav-item--icon office-sidebar-toggle"');
     expect(read('../components/office/OfficeAiSidebar.vue')).not.toContain('class="oai-collapse"');
     expect(read('../components/chat/ChatTopbar.vue')).not.toContain('class="chat-sidebar-toggle"');

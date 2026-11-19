@@ -5,6 +5,9 @@ export interface DevEnvConfig {
   mavenHome: string;
   pythonPath: string;
   nodePath: string;
+  cCompilerPath: string;
+  cppCompilerPath: string;
+  cmakePath: string;
   gitPath: string;
   defaultShell: 'powershell' | 'cmd' | 'bash';
   extraEnv: Record<string, string>;
@@ -14,7 +17,7 @@ export interface DevEnvConfig {
 }
 
 export interface DevToolStatus {
-  id: 'java' | 'maven' | 'python' | 'node' | 'git';
+  id: 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git';
   label: string;
   path: string;
   version: string;

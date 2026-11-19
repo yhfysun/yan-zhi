@@ -1133,13 +1133,13 @@ onBeforeUnmount(() => {
   .zy-plain-pair { grid-template-columns: 1fr; }
 }
 
-/* ★★ 窄屏（≤900px，与 Learning.vue 的单列断点同口径）：总览层**不再自带滚动容器**。
+/* ★★ 窄屏（≤900px，与 LearningV2 的单列断点同口径）：总览层**不再自带滚动容器**。
    根因（2026-11-16 真机实报「周易课程页面无法滑动」）：
      学习页单列布局下 .lp-col-mid 变成 height:auto ⇒ .zy-root 的 height:100% 解析为
      auto ⇒ 其内的 .zy-list(flex:1 1 0 + min-height:0) 在**无确定高度**的 flex 容器里
      自由空间为 0 ⇒ 列表高度塌成 0 ⇒ 内容被压扁、页面高度也不增长 ⇒ 整页滑不动。
    改法：窄屏下 .zy-root 交出高度链、.zy-list 不再是滚动容器（overflow 可见），
-     让内容自然撑开，由**页面级滚动**（Learning.vue 的 .main-content.has-learning
+     让内容自然撑开，由**页面级滚动**（LearningV2 的学习工作区
      overflow-y:auto）承担滚动 —— 与英语/文化等科目的单列体验一致。
    ⚠ 断点必须是 900px（不是本文件原有的 760px）：学习页在 ≤900px 就转单列，
      761~900px 区间若仍按桌面高度链走，同样会塌陷。 */

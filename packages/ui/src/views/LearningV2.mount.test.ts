@@ -220,11 +220,12 @@ describe('LearningV2', () => {
     expect(stages[1].getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('renders all 19 zero-base subjects and eight surfaces', async () => {
+  it('renders all 21 zero-base subjects and eight surfaces', async () => {
     const host = await mountPage();
-    expect(host.querySelectorAll('[data-subject]')).toHaveLength(19);
+    expect(host.querySelectorAll('[data-subject]')).toHaveLength(21);
     expect(host.querySelectorAll('[data-page]')).toHaveLength(8);
     expect(host.textContent).toContain('党史');
+    expect(host.textContent).toContain('编程');
     expect(host.textContent).toContain('学科总览');
     expect(host.textContent).not.toContain('返回旧版学习');
   });
@@ -285,6 +286,55 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('[data-specialized-security]')).toBeTruthy();
     expect(host.querySelector('.lv2-specialized-study-bar')?.textContent).toContain('多语言安全编码');
+  });
+
+  it('opens the programming course center and enters the Java zero-base lesson', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="programming"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const javaCourse = host.querySelector('[data-programming-course="java-enterprise"]') as HTMLButtonElement;
+    expect(javaCourse).toBeTruthy();
+    expect(host.textContent).toContain('中间件源码');
+    javaCourse.click();
+    await nextTick();
+
+    expect(host.querySelectorAll('[data-programming-stage]')).toHaveLength(12);
+    const firstLesson = host.querySelector('[data-programming-lesson-status="ready"]') as HTMLButtonElement;
+    expect(firstLesson.textContent).toContain('JDK、IDE 与第一个程序');
+    firstLesson.click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('Java 零基础');
+    expect(host.querySelector('.lv2-prerequisite')?.textContent).toContain('前置知识');
+    expect(host.querySelector('.lv2-step-objective')?.textContent).toContain('本步目标');
+    const stepButtons = host.querySelectorAll('.lv2-lesson > nav button');
+    (stepButtons[stepButtons.length - 1] as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson-sources')?.textContent).toContain('https://');
+  });
+
+  it('opens a project-training phase as the same immersive single-step lesson', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="programming"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    (host.querySelector('[data-learning-layer="projects"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-programming-project="studio-site"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.textContent).toContain('Studio 企业官网');
+    expect(host.querySelectorAll('[data-programming-project-phase]')).toHaveLength(10);
+
+    (host.querySelector('[data-programming-project-phase="03"] button') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson')?.textContent).toContain('Studio 企业官网 · API 契约与前端数据边界');
+    expect(host.querySelector('.lv2-lesson-copy')?.textContent).toContain('接口');
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+    expect(host.textContent).toContain('Studio 企业官网');
   });
 
   it('derives course progress labels from actual completion instead of catalog sample text', async () => {
@@ -497,6 +547,34 @@ describe('LearningV2', () => {
 
     expect(host.querySelector('.lv2-lesson')).toBeNull();
     expect(host.textContent).toContain('零基础起点');
+  });
+
+  it('makes the overview inert and keeps keyboard focus inside the immersive lesson', async () => {
+    document.body.innerHTML = '<div id="app"></div>';
+    const root = document.getElementById('app') as HTMLElement;
+    app = createApp(LearningV2);
+    app.use(createPinia());
+    app.mount(root);
+    await nextTick();
+
+    (root.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const lesson = document.querySelector('.lv2-lesson') as HTMLElement;
+    expect(lesson).toBeTruthy();
+    expect(root.hasAttribute('inert')).toBe(true);
+    expect(root.getAttribute('aria-hidden')).toBe('true');
+
+    const last = lesson.querySelector('footer button:last-child') as HTMLButtonElement;
+    last.focus();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect((document.activeElement as HTMLElement | null)?.closest('.lv2-lesson')).toBe(lesson);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(document.querySelector('.lv2-lesson')).toBeNull();
+    expect(root.hasAttribute('inert')).toBe(false);
+    expect(root.hasAttribute('aria-hidden')).toBe(false);
   });
 
   it('exits the immersive lesson from both header controls', async () => {

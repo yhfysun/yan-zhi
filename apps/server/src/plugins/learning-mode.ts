@@ -13,7 +13,7 @@ export const learningModeManifest: PluginManifest = {
   name: '学习模式',
   version: '0.1.0',
   category: '学习',
-  description: '19 科零基础课程、原文与出处、实践工作台、AI 陪练与公共图书馆。仅 Pro 档默认包含。',
+  description: '21 科零基础课程、编程企业交付、算法故事闯关与数千题型实战、原文与出处、实践工作台、AI 陪练与公共图书馆。仅 Pro 档默认包含。',
   contributes: {
     mode: {
       key: 'learning',
@@ -23,7 +23,7 @@ export const learningModeManifest: PluginManifest = {
       fallbackAgent: 'a_builtin_learning_coach',
     },
     routes: [
-      { path: '/learning', name: 'learning', component: 'views/Learning.vue' },
+      { path: '/learning', name: 'learning', component: 'views/LearningV2.vue' },
       { path: '/learning-v2', name: 'learning-v2', component: 'views/LearningV2.vue' },
     ],
   },

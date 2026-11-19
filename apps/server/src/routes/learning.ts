@@ -26,8 +26,19 @@ import { SOFT_EXAM_REGIONS, getSoftExamLiveInfo } from '../learning/soft-exam-li
 import { listSecurityPaths, getSecurityPath } from '../learning/security-curriculum.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { scorePronunciation } from '../learning/pronunciation.js';
+import {
+  normalizeBookSource,
+  parseBookSourceBatch,
+  type NormalizedBookSource,
+} from '../learning/book-source-engine.js';
+import {
+  createBookSourceService,
+  fetchRemoteSourceText,
+  type BuiltinSourceInput,
+} from '../learning/book-source-service.js';
 import type { DrillAnswer } from '../learning/srs.js';
 import { listSystemVoices, pickSystemVoiceByLanguage, systemSpeak } from '../mcp/tts-sapi.js';
+import { getLearningV2BookSources, type LearningV2BookSource } from '@yan-zhi/shared';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -35,6 +46,30 @@ import path from 'node:path';
 
 const router = Router();
 router.use(authMiddleware);
+const bookSourceService = createBookSourceService();
+
+function builtInSource(sourceId: string): LearningV2BookSource | null {
+  return getLearningV2BookSources().find((source) => source.id === sourceId) || null;
+}
+
+function customSourceFromBody(value: unknown): NormalizedBookSource {
+  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const rule = source.rule && typeof source.rule === 'object' ? source.rule as Record<string, unknown> : {};
+  return normalizeBookSource({
+    ...rule,
+    bookSourceName: source.name,
+    bookSourceUrl: source.url,
+  });
+}
+
+function builtInInput(source: LearningV2BookSource): BuiltinSourceInput {
+  return {
+    id: source.id,
+    name: source.name,
+    url: source.url,
+    ...(source.provider ? { provider: source.provider } : {}),
+  };
+}
 
 const learningVoiceCache = new Map<string, { at: number; name: string }>();
 
@@ -405,6 +440,181 @@ router.get('/readings/:id', (req, res) => {
   const r = READING_PASSAGES.find((x) => x.id === req.params.id);
   if (!r) { res.status(404).json({ error: '范文不存在' }); return; }
   res.json({ data: r });
+});
+
+// POST /api/learning/library/sources/import —— 导入标准书源 JSON（url 或 json 二选一）
+router.post('/library/sources/import', async (req, res) => {
+  try {
+    const body = req.body as { url?: unknown; json?: unknown };
+    let text = '';
+    if (typeof body.json === 'string') {
+      text = body.json;
+    } else if (body.json && typeof body.json === 'object') {
+      text = JSON.stringify(body.json);
+    } else if (typeof body.url === 'string' && body.url.trim()) {
+      const url = new URL(body.url.trim());
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        res.status(400).json({ error: '书源地址必须使用 HTTP 或 HTTPS' });
+        return;
+      }
+      text = await fetchRemoteSourceText(url.toString());
+    } else {
+      res.status(400).json({ error: '需要书源 JSON 或 HTTPS 地址' });
+      return;
+    }
+    const batch = parseBookSourceBatch(text);
+    const sources = batch.sources.map((source) => ({
+      name: source.name,
+      url: source.baseUrl,
+      group: source.group,
+      rule: {
+        searchUrl: source.searchUrl,
+        ...(source.exploreUrl ? { exploreUrl: source.exploreUrl } : {}),
+        ruleSearch: source.ruleSearch,
+        ...(source.ruleExplore ? { ruleExplore: source.ruleExplore } : {}),
+        ...(source.ruleBookInfo ? { ruleBookInfo: source.ruleBookInfo } : {}),
+        ruleToc: source.ruleToc,
+        ruleContent: source.ruleContent,
+      },
+    }));
+    if (!sources.length) {
+      res.status(400).json({
+        error: `没有可导入的书源，已跳过 ${batch.errors.length} 条`,
+        data: { sources: [], total: batch.total, imported: 0, skipped: batch.errors.length, errors: batch.errors.slice(0, 50) },
+      });
+      return;
+    }
+    res.json({
+      data: {
+        sources,
+        total: batch.total,
+        imported: sources.length,
+        skipped: batch.errors.length,
+        errors: batch.errors.slice(0, 50),
+      },
+    });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// POST /api/learning/library/source/search —— 按书源规则搜索，或搜索内置开放书源
+router.post('/library/source/search', async (req, res) => {
+  try {
+    const body = req.body as { sourceId?: unknown; source?: unknown; query?: unknown; page?: unknown };
+    const sourceId = String(body.sourceId || '').trim();
+    const query = String(body.query || '').trim();
+    const page = Math.max(1, Math.floor(Number(body.page) || 1));
+    if (!query) {
+      res.status(400).json({ error: '请输入要搜索的书名或作者' });
+      return;
+    }
+    if (query.length > 80) {
+      res.status(400).json({ error: '搜索词不能超过 80 个字符' });
+      return;
+    }
+    if (sourceId) {
+      const source = builtInSource(sourceId);
+      if (!source) {
+        res.status(404).json({ error: '内置书源不存在' });
+        return;
+      }
+      if (!source.provider) {
+        res.status(400).json({ error: '这个内置书源只提供官方入口，不支持抓取正文' });
+        return;
+      }
+      res.json({ data: await bookSourceService.searchBuiltin(builtInInput(source), query, page) });
+      return;
+    }
+    const source = customSourceFromBody(body.source);
+    res.json({ data: await bookSourceService.searchCustom(source, query, page) });
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// POST /api/learning/library/source/book —— 读取书源书目信息与章节目录
+router.post('/library/source/book', async (req, res) => {
+  try {
+    const body = req.body as { sourceId?: unknown; source?: unknown; book?: unknown };
+    const book = body.book && typeof body.book === 'object' ? body.book as Record<string, unknown> : {};
+    const bookUrl = String(book.bookUrl || '').trim();
+    if (!bookUrl) {
+      res.status(400).json({ error: '缺少书籍地址' });
+      return;
+    }
+    const summary = {
+      title: String(book.title || '').trim() || '未命名书籍',
+      author: String(book.author || '').trim() || '佚名',
+      bookUrl,
+      ...(typeof book.contentUrl === 'string' && book.contentUrl.trim() ? { contentUrl: book.contentUrl.trim() } : {}),
+      ...(typeof book.coverUrl === 'string' && book.coverUrl.trim() ? { coverUrl: book.coverUrl.trim() } : {}),
+      description: String(book.description || '').trim(),
+    };
+    const sourceId = String(body.sourceId || '').trim();
+    if (sourceId) {
+      const source = builtInSource(sourceId);
+      if (!source || !source.provider) {
+        res.status(400).json({ error: '内置书源不支持应用内阅读' });
+        return;
+      }
+      res.json({ data: await bookSourceService.openBuiltin(builtInInput(source), summary) });
+      return;
+    }
+    const source = customSourceFromBody(body.source);
+    res.json({ data: await bookSourceService.openCustom(source, summary) });
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// POST /api/learning/library/source/content —— 按章节地址只抓取当前章正文
+router.post('/library/source/content', async (req, res) => {
+  try {
+    const body = req.body as {
+      sourceId?: unknown;
+      source?: unknown;
+      book?: unknown;
+      chapterUrl?: unknown;
+    };
+    const chapterUrl = String(body.chapterUrl || '').trim();
+    if (!chapterUrl) {
+      res.status(400).json({ error: '缺少章节地址' });
+      return;
+    }
+    const sourceId = String(body.sourceId || '').trim();
+    if (sourceId) {
+      const source = builtInSource(sourceId);
+      if (!source || !source.provider) {
+        res.status(400).json({ error: '内置书源不支持应用内阅读' });
+        return;
+      }
+      const book = body.book && typeof body.book === 'object' ? body.book as Record<string, unknown> : {};
+      const bookUrl = String(book.bookUrl || '').trim();
+      if (!bookUrl) {
+        res.status(400).json({ error: '缺少书籍地址' });
+        return;
+      }
+      res.json({
+        data: await bookSourceService.readBuiltin(
+          builtInInput(source),
+          {
+            title: String(book.title || '').trim() || '未命名书籍',
+            author: String(book.author || '').trim() || '佚名',
+            bookUrl,
+            ...(typeof book.contentUrl === 'string' && book.contentUrl.trim() ? { contentUrl: book.contentUrl.trim() } : {}),
+            description: String(book.description || '').trim(),
+          },
+          chapterUrl,
+        ),
+      });
+      return;
+    }
+    const source = customSourceFromBody(body.source);
+    res.json({ data: await bookSourceService.readCustom(source, chapterUrl) });
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // POST /api/learning/library/translate —— 英文原著当前章节生成简体中文对照（按需、前端本地缓存）

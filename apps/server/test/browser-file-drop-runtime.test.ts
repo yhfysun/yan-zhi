@@ -38,8 +38,10 @@ describe.skipIf(!hasChromium)('真实 Chromium 文件拖放与 Shadow DOM input'
     fs.writeFileSync(filePath, 'yan-zhi drop test', 'utf8');
   }, 30_000);
 
-  afterAll(async () => {
-    await browser?.close();
+  afterAll(() => {
+    void page?.close().catch(() => {});
+    void context?.close().catch(() => {});
+    void browser?.close().catch(() => {});
     try { fs.rmSync(filePath, { force: true }); } catch { /* ignore */ }
   });
 

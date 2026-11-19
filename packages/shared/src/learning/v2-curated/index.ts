@@ -1,4 +1,5 @@
 import { CALLIGRAPHY_CURATED_PLANS } from './calligraphy.js';
+import { ALGORITHM_CURATED_PLANS } from '../algorithms.js';
 import { CORE_MATH_CURATED_PLANS } from './core-math.js';
 import { CORE_PHYSICS_CURATED_PLANS } from './core-physics.js';
 import { CORE_ENGLISH_CURATED_PLANS } from './core-english.js';
@@ -19,12 +20,14 @@ import { HUMANITIES_CURATED_PLANS } from './humanities.js';
 import { JAPANESE_CURATED_PLANS } from './japanese.js';
 import { PHYSICS_CURATED_PLANS } from './physics.js';
 import { PRACTICAL_CULTURE_CURATED_PLANS } from './practical-culture.js';
+import { PROGRAMMING_CURATED_PLANS } from './programming/catalog.js';
 import { PRIORITY_EXPANSION_CURATED_PLANS } from './priority-expansion.js';
 import { SECURITY_CURATED_PLANS } from './security.js';
 import { ZHOUYI_CURATED_PLANS } from './zhouyi.js';
 import type { CuratedCoursePlanMap } from './types.js';
 
 export const LEARNING_V2_CURATED_PLANS: CuratedCoursePlanMap = {
+  ...ALGORITHM_CURATED_PLANS,
   ...CORE_MATH_CURATED_PLANS,
   ...CORE_PHYSICS_CURATED_PLANS,
   ...CORE_ENGLISH_CURATED_PLANS,
@@ -45,6 +48,7 @@ export const LEARNING_V2_CURATED_PLANS: CuratedCoursePlanMap = {
   ...HUMANITIES_CURATED_PLANS,
   ...PHYSICS_CURATED_PLANS,
   ...PRACTICAL_CULTURE_CURATED_PLANS,
+  ...PROGRAMMING_CURATED_PLANS,
   ...PRIORITY_EXPANSION_CURATED_PLANS,
   ...JAPANESE_CURATED_PLANS,
   ...SECURITY_CURATED_PLANS,

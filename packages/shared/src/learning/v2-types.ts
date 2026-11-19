@@ -183,7 +183,7 @@ export type LearningV2ReadingCollectionKey =
   | 'science'
   | 'trivia';
 
-export type LearningV2ReadingMode = 'builtin' | 'external' | 'platform' | 'import';
+export type LearningV2ReadingMode = 'builtin' | 'external' | 'platform' | 'import' | 'source';
 
 export type LearningV2ReadingLanguage = 'zh-Hant' | 'zh-Hans' | 'en' | 'ja' | 'mixed';
 
@@ -203,6 +203,10 @@ export type LearningV2ReaderBook = {
   readonly assetKey?: string;
   readonly importedBookId?: string;
   readonly url?: string;
+  readonly sourceId?: string;
+  readonly source?: LearningV2BookSource;
+  readonly bookUrl?: string;
+  readonly contentUrl?: string;
   readonly sourceName: string;
   readonly license: string;
   readonly annotations: readonly LearningV2ReadingAnnotation[];
@@ -214,6 +218,38 @@ export type LearningV2BookSourceAccess =
   | 'library'
   | 'authorized-platform';
 
+export type LearningV2BookSourceProvider = 'gutendex' | 'mediawiki';
+
+export type LearningV2BookSourceFieldRule = {
+  readonly bookList?: string;
+  readonly name?: string;
+  readonly author?: string;
+  readonly intro?: string;
+  readonly coverUrl?: string;
+  readonly bookUrl?: string;
+  readonly kind?: string;
+  readonly wordCount?: string;
+  readonly lastChapter?: string;
+  readonly tocUrl?: string;
+};
+
+export type LearningV2BookSourceRule = {
+  readonly searchUrl: string;
+  readonly exploreUrl?: string;
+  readonly ruleSearch: LearningV2BookSourceFieldRule & { readonly bookList: string };
+  readonly ruleExplore?: LearningV2BookSourceFieldRule;
+  readonly ruleBookInfo?: LearningV2BookSourceFieldRule;
+  readonly ruleToc: {
+    readonly chapterList: string;
+    readonly chapterName: string;
+    readonly chapterUrl: string;
+  };
+  readonly ruleContent: {
+    readonly content: string;
+    readonly replaceRegex?: string;
+  };
+};
+
 export type LearningV2BookSource = {
   readonly id: string;
   readonly name: string;
@@ -222,6 +258,9 @@ export type LearningV2BookSource = {
   readonly access: LearningV2BookSourceAccess;
   readonly license: string;
   readonly description: string;
+  readonly provider?: LearningV2BookSourceProvider;
+  readonly rule?: LearningV2BookSourceRule;
+  readonly insecure?: boolean;
 };
 
 export type LearningV2ReadingEntry = {

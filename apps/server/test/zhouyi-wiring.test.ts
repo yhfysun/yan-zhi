@@ -62,23 +62,14 @@ describe('B5 陪练智能体接线', () => {
 });
 
 describe('B4 前端接线（源码级断言，ui 包测试另有 mount）', () => {
-  const learning = src( '../../../packages/ui/src/views/Learning.vue');
-  const ext = src( '../../../packages/ui/src/components/learning/subject-extensions.ts');
+  const learning = src('../../../packages/ui/src/views/LearningV2.vue');
+  const shared = src('../../../packages/shared/src/learning/v2-catalog.ts');
 
-  it('Learning.vue：import + 挂载两个 Workbench + tab 联合 + openCourse 分派 + inert', () => {
+  it('LearningV2：周易主线挂载 Workbench，并保留测算实践学科入口', () => {
     expect(learning).toContain("import ZhouyiWorkbench from '../components/learning/zhouyi/ZhouyiWorkbench.vue'");
-    expect(learning).toContain("import DivinationWorkbench from '../components/learning/zhouyi/DivinationWorkbench.vue'");
-    expect(learning).toContain("tab === 'zhouyi'");
-    expect(learning).toContain("tab === 'divination'");
-    expect(learning).toContain("c.kind === 'zhouyi'");
-    expect(learning).toContain('zhouyiFocusing');
-    expect(learning).toContain('gotoZhouyiLesson');
-  });
-
-  it('subject-extensions：周易 tabDefs 与服务端 agentId 成对；测算实践 Tab 在列', () => {
-    expect(ext).toContain("'周易'");
-    expect(ext).toContain("'a_builtin_zhouyi_coach'");
-    expect(ext).toContain("'divination'");
+    expect(learning).toContain("selectedSubjectKey === 'zhouyi'");
+    expect(shared).toContain('"key": "zhouyi"');
+    expect(shared).toContain('"key": "divination"');
   });
 });
 

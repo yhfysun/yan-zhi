@@ -38,7 +38,7 @@ const LOCAL_USER: JwtPayload = { userId: 'guest', username: 'guest' };
 
 /** 判断请求是否来自本机回环（127.0.0.1 / ::1 / ::ffff:127.x）。
  *  multi 模式下回环请求恒为 guest：本机桌面端零改动、历史数据（user_id='guest'）不漂移。 */
-function isLoopback(req: Request): boolean {
+export function isLoopbackRequest(req: Request): boolean {
   const addr = req.socket?.remoteAddress || '';
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1' || addr.startsWith('::ffff:127.');
 }
@@ -132,7 +132,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     res.status(401).json({ error: '登录令牌无效或已过期', code: 'UNAUTHENTICATED' });
     return;
   }
-  if (isLoopback(req)) {
+  if (isLoopbackRequest(req)) {
     req.user = LOCAL_USER;
     next();
     return;

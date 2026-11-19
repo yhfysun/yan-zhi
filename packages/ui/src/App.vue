@@ -49,6 +49,11 @@
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
             <WorkspaceModeSwitch />
+            <span v-if="authStore.isLoggedIn" class="mobile-user-avatar">
+              {{ authStore.user?.username?.slice(0, 1) || 'U' }}
+            </span>
+            <span v-else-if="isLocalClient" class="mobile-user-avatar is-local" title="本机">本</span>
+            <button v-else class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">登</button>
             <button class="mobile-icon-btn" type="button" aria-label="打开更多功能" @click="openMobileNavDrawer">
               <el-icon :size="19"><MoreFilled /></el-icon>
             </button>
@@ -177,7 +182,7 @@ import { MODE_VIEW_LOADERS } from './generated/build-modes';
 import { useLicenseStore } from './stores/license';
 import { usePlatformStore } from './stores/platform';
 import { waitForBackend } from './api/backend-ready';
-import { getEffectiveServerBase, getLicenseCode, getToken } from './api/client';
+import { getEffectiveServerBase, getLicenseCode, getToken, isLocalClient } from './api/client';
 
 import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
@@ -1026,6 +1031,11 @@ body {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  margin-left: auto;
+}
+
+@media (max-width: 360px) {
+  .mobile-topbar-title { display: none; }
 }
 
 /* 顶栏图标按钮：44×44 触控区（视觉 30px 图标底），与 TabBar 项观感一致 */

@@ -19,17 +19,21 @@ import {
   getLearningV2Subject,
   getLearningV2Subjects,
   isLearningV2CourseReady,
+  PROGRAMMING_COURSE_PACKAGES,
+  PROGRAMMING_PROJECTS,
   type LearningV2LibraryEntry,
   type LearningV2PageKey,
   type LearningV2ReaderBook,
 } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import NoteQuickCreateDialog from '../components/notes/NoteQuickCreateDialog.vue';
+import AlgorithmWorkbench from '../components/learning/AlgorithmWorkbench.vue';
 import LearningCoachPanel from '../components/learning/v2/LearningCoachPanel.vue';
 import LearningLibrary from '../components/learning/v2/LearningLibrary.vue';
 import LearningBookReader from '../components/learning/v2/LearningBookReader.vue';
 import LearningPracticeStudio from '../components/learning/v2/LearningPracticeStudio.vue';
 import LearningSpeechButton from '../components/learning/v2/LearningSpeechButton.vue';
+import ProgrammingCourseHub from '../components/learning/ProgrammingCourseHub.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
 import CyberSecurityWorkbench from '../components/learning/CyberSecurityWorkbench.vue';
 import CultureWorkbench from '../components/learning/CultureWorkbench.vue';
@@ -98,6 +102,8 @@ let compactMediaListener: ((event: MediaQueryListEvent) => void) | null = null;
 let lessonBodyOverflow = '';
 let studioBodyOverflow = '';
 let mobileSheetBodyOverflow = '';
+let immersiveReturnFocus: HTMLElement | null = null;
+let appInertSnapshot: { hadInert: boolean; ariaHidden: string | null } | null = null;
 let railResizeStartX = 0;
 let railResizeStartWidth = STUDY_RAIL_DEFAULT_WIDTH;
 
@@ -498,6 +504,10 @@ function openCourse(name: string) {
   if (selectCourse(name)) selectPage('lesson');
 }
 
+function openProgrammingLesson(courseName: string): void {
+  if (selectCourse(courseName)) selectPage('lesson');
+}
+
 function selectPage(page: LearningV2PageKey) {
   if (page === 'lesson' && !courseReady(selectedCourseName.value)) {
     activePage.value = 'overview';
@@ -670,6 +680,60 @@ function closeLibrary() {
   libraryOpen.value = false;
 }
 
+function setApplicationLayerInert(active: boolean): void {
+  if (typeof document === 'undefined') return;
+  const appRoot = document.getElementById('app');
+  if (!appRoot) return;
+  if (active) {
+    if (!appInertSnapshot) {
+      appInertSnapshot = {
+        hadInert: appRoot.hasAttribute('inert'),
+        ariaHidden: appRoot.getAttribute('aria-hidden'),
+      };
+    }
+    appRoot.setAttribute('inert', '');
+    appRoot.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  if (!appInertSnapshot) return;
+  if (!appInertSnapshot.hadInert) appRoot.removeAttribute('inert');
+  if (appInertSnapshot.ariaHidden === null) appRoot.removeAttribute('aria-hidden');
+  else appRoot.setAttribute('aria-hidden', appInertSnapshot.ariaHidden);
+  appInertSnapshot = null;
+}
+
+function restoreImmersiveFocus(): void {
+  const target = immersiveReturnFocus;
+  immersiveReturnFocus = null;
+  if (!target?.isConnected) return;
+  window.requestAnimationFrame(() => target.focus());
+}
+
+function trapLessonFocus(event: KeyboardEvent): void {
+  const root = specializedStudyRoot.value || lessonRoot.value;
+  if (!root) return;
+  const focusable = [...root.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => element.offsetParent !== null);
+  if (!focusable.length) {
+    event.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!root.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (mobileSubjectsOpen.value && event.key === 'Escape') {
     mobileSubjectsOpen.value = false;
@@ -736,6 +800,10 @@ function onKeydown(event: KeyboardEvent) {
       first.focus();
     }
   }
+  if (activePage.value === 'lesson' && event.key === 'Tab') {
+    trapLessonFocus(event);
+    return;
+  }
   if (activePage.value !== 'lesson') return;
   if (event.key === 'ArrowLeft') lessonStep.value = Math.max(0, lessonStep.value - 1);
   if (event.key === 'ArrowRight') lessonStep.value = Math.min(lessonSteps.value.length - 1, lessonStep.value + 1);
@@ -758,6 +826,19 @@ watch(libraryOpen, async (open) => {
   }
 });
 watch(activePage, async (page, previous) => {
+  const enteredImmersive = page === 'lesson' || page === 'studio';
+  const leftImmersive = (previous === 'lesson' || previous === 'studio')
+    && page !== 'lesson'
+    && page !== 'studio';
+  if (enteredImmersive && previous !== 'lesson' && previous !== 'studio') {
+    immersiveReturnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    setApplicationLayerInert(true);
+  } else if (leftImmersive) {
+    setApplicationLayerInert(false);
+    restoreImmersiveFocus();
+  }
   if (page === 'lesson') {
     lessonBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -814,6 +895,7 @@ onBeforeUnmount(() => {
   if (activePage.value === 'lesson') document.body.style.overflow = lessonBodyOverflow;
   if (activePage.value === 'studio') document.body.style.overflow = studioBodyOverflow;
   if (mobileSubjectsOpen.value) document.body.style.overflow = mobileSheetBodyOverflow;
+  setApplicationLayerInert(false);
 });
 </script>
 
@@ -1086,6 +1168,17 @@ onBeforeUnmount(() => {
           <b>{{ currentPageLabel }}</b>
         </div>
         <template v-if="activePage === 'overview'">
+          <ProgrammingCourseHub
+            v-if="selectedSubjectKey === 'programming'"
+            :courses="PROGRAMMING_COURSE_PACKAGES"
+            :projects="PROGRAMMING_PROJECTS"
+            @open-lesson="openProgrammingLesson"
+          />
+          <AlgorithmWorkbench
+            v-else-if="selectedSubjectKey === 'algorithms'"
+            @open-lesson="openProgrammingLesson"
+          />
+          <template v-if="selectedSubjectKey !== 'programming' && selectedSubjectKey !== 'algorithms'">
           <div v-if="isCompactLayout" class="lv2-mobile-overview">
             <label class="lv2-mobile-course-select">
               <el-select
@@ -1178,9 +1271,21 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </template>
+          </template>
         </template>
 
         <template v-else-if="activePage === 'roadmap'">
+          <ProgrammingCourseHub
+            v-if="selectedSubjectKey === 'programming'"
+            :courses="PROGRAMMING_COURSE_PACKAGES"
+            :projects="PROGRAMMING_PROJECTS"
+            @open-lesson="openProgrammingLesson"
+          />
+          <AlgorithmWorkbench
+            v-else-if="selectedSubjectKey === 'algorithms'"
+            @open-lesson="openProgrammingLesson"
+          />
+          <template v-if="selectedSubjectKey !== 'programming' && selectedSubjectKey !== 'algorithms'">
           <header class="lv2-page-head">
             <div><h1>课程地图</h1></div>
             <small>{{ readyCourses.length }} 门已开放</small>
@@ -1216,6 +1321,7 @@ onBeforeUnmount(() => {
               </div>
             </section>
           </div>
+          </template>
         </template>
 
         <template v-else-if="activePage === 'books'">

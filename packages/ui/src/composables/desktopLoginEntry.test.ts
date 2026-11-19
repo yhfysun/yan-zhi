@@ -99,10 +99,10 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
     expect(AUTH, '★★ isLoggedIn 退化成 !!user（guest 会被当成已登录）')
       .toMatch(/isLoggedIn = computed\(\(\) => !!user\.value && !isGuestIdentity\(user\.value\)\)/);
     // 桌面端没有 SideNav，所以 WebTopBar 是唯一身份入口 —— 这条是"必须给头像"的理由。
-    // 2026-11-02：判据从 isMobile（窄窗 ∪ 平台）收紧为 isMobilePlatform（仅 Capacitor）——
-    // 旧写法在桌面/Web 窄窗口下会渲染 220px 桌面侧栏并盖住聊天区；两者都保证桌面端无 SideNav。
+    // 2026-11-19：SideNav 的挂载条件统一收口到 mobileShellAsRoot（Capacitor 或 Web 窄屏）。
+    // Electron 桌面窄窗仍走桌面壳，不得被误切成移动侧栏。
     expect(APP, '★ SideNav 渲染条件变了（若桌面端也会渲染 SideNav，本测试前提需复核）')
-      .toMatch(/<SideNav v-if="isMobilePlatform" \/>/);
+      .toMatch(/<SideNav v-if="mobileShellAsRoot" \/>/);
   });
 
   it('★ 桌面端头像下拉给常用入口，但不提供"退出登录"', () => {

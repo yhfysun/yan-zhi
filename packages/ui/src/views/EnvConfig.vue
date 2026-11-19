@@ -48,6 +48,14 @@
         <div class="env-card-path" :title="currentTool.ok ? currentTool.path : currentTool.error">
           {{ currentTool.ok ? currentTool.path : currentTool.error }}
         </div>
+        <div v-if="currentTool && channelFor(currentTool.id)" class="env-card-links">
+          <a :href="channelFor(currentTool.id)?.download" target="_blank" rel="noopener noreferrer">
+            <el-icon :size="12"><Download /></el-icon>官方下载
+          </a>
+          <a :href="channelFor(currentTool.id)?.docs" target="_blank" rel="noopener noreferrer">
+            安装与配置文档
+          </a>
+        </div>
       </div>
 
       <!-- ===== Java ===== -->
@@ -108,6 +116,34 @@
         </SettingRow>
       </template>
 
+      <!-- ===== C / C++ / CMake ===== -->
+      <template v-else-if="activeTab === 'c'">
+        <SettingRow label="C 编译器" tip="GCC / Clang 可执行文件；留空按 gcc → clang 顺序查找 PATH。">
+          <div class="env-input-row">
+            <el-input v-model="form.cCompilerPath" size="default" placeholder="如 C:\msys64\ucrt64\bin\gcc.exe" />
+            <button class="env-pick" @click="pick('cCompilerPath', false)">浏览</button>
+          </div>
+        </SettingRow>
+      </template>
+
+      <template v-else-if="activeTab === 'cpp'">
+        <SettingRow label="C++ 编译器" tip="G++ / Clang++ 可执行文件；留空按 g++ → clang++ → c++ 顺序查找 PATH。">
+          <div class="env-input-row">
+            <el-input v-model="form.cppCompilerPath" size="default" placeholder="如 C:\msys64\ucrt64\bin\g++.exe" />
+            <button class="env-pick" @click="pick('cppCompilerPath', false)">浏览</button>
+          </div>
+        </SettingRow>
+      </template>
+
+      <template v-else-if="activeTab === 'cmake'">
+        <SettingRow label="CMake 可执行文件" tip="C/C++ 项目配置、构建和 Presets 使用；留空用 PATH 里的 cmake。">
+          <div class="env-input-row">
+            <el-input v-model="form.cmakePath" size="default" placeholder="如 C:\Program Files\CMake\bin\cmake.exe" />
+            <button class="env-pick" @click="pick('cmakePath', false)">浏览</button>
+          </div>
+        </SettingRow>
+      </template>
+
       <!-- ===== Git ===== -->
       <template v-else-if="activeTab === 'git'">
         <SettingRow label="Git 可执行文件" tip="代码模式左栏「源代码管理」与 git 相关工具使用。">
@@ -147,25 +183,44 @@ import { ElMessage } from 'element-plus';
 import { Loading, MagicStick, Select, RefreshLeft, Download } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import SettingRow from '../components/common/SettingRow.vue';
-import type { DevEnvConfig } from '../types/dev-env';
+import type { DevEnvConfig, DevToolStatus } from '../types/dev-env';
 
-interface ToolStatus { id: string; label: string; path: string; version: string; ok: boolean; error: string }
+type ToolStatus = DevToolStatus;
 
-type TabKey = 'java' | 'maven' | 'python' | 'node' | 'git' | 'general';
+type TabKey = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git' | 'general';
 
-const TABS: Array<{ key: TabKey; label: string; tool?: string }> = [
+const TABS: Array<{ key: TabKey; label: string; tool?: DevToolStatus['id'] }> = [
   { key: 'java', label: 'Java', tool: 'java' },
   { key: 'maven', label: 'Maven', tool: 'maven' },
   { key: 'python', label: 'Python', tool: 'python' },
   { key: 'node', label: 'Node', tool: 'node' },
+  { key: 'c', label: 'C', tool: 'c' },
+  { key: 'cpp', label: 'C++', tool: 'cpp' },
+  { key: 'cmake', label: 'CMake', tool: 'cmake' },
   { key: 'git', label: 'Git', tool: 'git' },
   { key: 'general', label: '通用' },
 ];
 
+const TOOL_CHANNELS: Partial<Record<DevToolStatus['id'], { download: string; docs: string }>> = {
+  java: { download: 'https://adoptium.net/temurin/releases/', docs: 'https://docs.oracle.com/en/java/' },
+  maven: { download: 'https://maven.apache.org/download.cgi', docs: 'https://maven.apache.org/install.html' },
+  python: { download: 'https://www.python.org/downloads/', docs: 'https://docs.python.org/3/using/' },
+  node: { download: 'https://nodejs.org/en/download', docs: 'https://nodejs.org/en/learn/getting-started/introduction-to-nodejs' },
+  c: { download: 'https://www.msys2.org/', docs: 'https://gcc.gnu.org/onlinedocs/' },
+  cpp: { download: 'https://www.msys2.org/', docs: 'https://gcc.gnu.org/onlinedocs/' },
+  cmake: { download: 'https://cmake.org/download/', docs: 'https://cmake.org/cmake/help/latest/guide/user-interaction/' },
+  git: { download: 'https://git-scm.com/downloads', docs: 'https://git-scm.com/doc' },
+};
+
+function channelFor(id: DevToolStatus['id']) {
+  return TOOL_CHANNELS[id];
+}
+
 const activeTab = ref<TabKey>('java');
 
 const form = reactive<DevEnvConfig>({
-  javaHome: '', mavenHome: '', pythonPath: '', nodePath: '', gitPath: '',
+  javaHome: '', mavenHome: '', pythonPath: '', nodePath: '',
+  cCompilerPath: '', cppCompilerPath: '', cmakePath: '', gitPath: '',
   defaultShell: 'powershell', extraEnv: {}, javaOpts: '', mavenOpts: '', pipIndexUrl: '',
 });
 const extraEnvText = ref('');
@@ -239,7 +294,10 @@ async function reset() {
 }
 
 /** 浏览：桌面端走原生目录/文件选择，web 端退化为手填提示 */
-async function pick(key: 'javaHome' | 'mavenHome' | 'pythonPath' | 'nodePath' | 'gitPath', isDir: boolean) {
+async function pick(
+  key: 'javaHome' | 'mavenHome' | 'pythonPath' | 'nodePath' | 'cCompilerPath' | 'cppCompilerPath' | 'cmakePath' | 'gitPath',
+  isDir: boolean,
+) {
   try {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
     const adapter = getPlatformAdapter();
@@ -341,6 +399,14 @@ onMounted(async () => {
 .env-card-path {
   margin-top: 4px; font-size: 10.5px; line-height: 1.5; color: var(--color-text-tertiary, #9c9b94);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.env-card-links {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+}
+.env-card-links a {
+  display: inline-flex; min-height: 30px; align-items: center; gap: 4px; padding: 0 8px;
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 6px;
+  color: var(--color-primary, #c2410c); font-size: 10px; text-decoration: none;
 }
 
 /* ===== 表单 =====

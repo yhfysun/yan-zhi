@@ -19,7 +19,7 @@ const BrowserPanel = defineAsyncComponent(() => import('../../BrowserPanel.vue')
 const props = defineProps<{ book: LearningV2ReaderBook }>();
 const emit = defineEmits<{ close: [] }>();
 
-type ReaderChapter = ImportedBookChapter;
+type ReaderChapter = ImportedBookChapter & { url?: string };
 type ReaderTheme = 'paper' | 'sepia' | 'green' | 'night' | 'lights-off';
 type ReaderPageWidth = 'narrow' | 'standard' | 'wide';
 
@@ -43,6 +43,8 @@ const translatedParagraphs = ref<string[]>([]);
 const translationError = ref('');
 const contentRef = ref<HTMLElement | null>(null);
 const sourceMeta = ref('');
+const chapterLoading = ref(false);
+const chapterError = ref('');
 let restoreScrollRatio = 0;
 let bodyOverflow = '';
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -119,6 +121,47 @@ function applyAsset(asset: BuiltinBookAsset) {
   sourceMeta.value = `${asset.source} · ${asset.license}`;
 }
 
+async function loadSourceChapter(index: number) {
+  const chapter = chapters.value[index];
+  if (!props.book.source || !chapter?.url || chapter.paragraphs.length) return;
+  chapterLoading.value = true;
+  chapterError.value = '';
+  try {
+    const response = await api.post<{
+      title?: string;
+      paragraphs: string[];
+    }>('/learning/library/source/content', {
+      ...(props.book.source.provider
+        ? { sourceId: props.book.source.id }
+        : { source: props.book.source }),
+      book: {
+        title: props.book.title,
+        author: props.book.author,
+        bookUrl: props.book.bookUrl,
+        contentUrl: props.book.contentUrl,
+        description: '',
+      },
+      chapterUrl: chapter.url,
+    });
+    if ('error' in response) throw new Error(response.error);
+    const paragraphs = Array.isArray(response.data.paragraphs)
+      ? response.data.paragraphs.map((paragraph) => String(paragraph || '').trim()).filter(Boolean)
+      : [];
+    if (!paragraphs.length) throw new Error('这一章没有提取到可阅读正文。');
+    chapters.value = chapters.value.map((item, itemIndex) => itemIndex === index
+      ? {
+          ...item,
+          ...(response.data.title && item.title === props.book.title ? { title: response.data.title } : {}),
+          paragraphs,
+        }
+      : item);
+  } catch (e) {
+    chapterError.value = e instanceof Error ? e.message : '章节正文加载失败。';
+  } finally {
+    chapterLoading.value = false;
+  }
+}
+
 async function loadBook() {
   loading.value = true;
   error.value = '';
@@ -142,6 +185,31 @@ async function loadBook() {
         chapters.value = record.parsedChapters;
         sourceMeta.value = `本地导入 · ${record.characterCount.toLocaleString()} 字`;
       }
+    } else if (props.book.readingMode === 'source') {
+      if (!props.book.source || !props.book.bookUrl) throw new Error('书源配置或书籍地址缺失。');
+      const response = await api.post<{
+        title: string;
+        author: string;
+        chapters: Array<{ title: string; url: string }>;
+      }>('/learning/library/source/book', {
+        ...(props.book.source.provider
+          ? { sourceId: props.book.source.id }
+          : { source: props.book.source }),
+        book: {
+          title: props.book.title,
+          author: props.book.author,
+          bookUrl: props.book.bookUrl,
+          contentUrl: props.book.contentUrl,
+          description: '',
+        },
+      });
+      if ('error' in response) throw new Error(response.error);
+      chapters.value = (response.data.chapters || []).map((chapter) => ({
+        title: chapter.title,
+        url: chapter.url,
+        paragraphs: [],
+      }));
+      sourceMeta.value = `${props.book.source.name} · 应用内正文${/^http:\/\//i.test(props.book.source.url) ? ' · HTTP 不安全' : ''}`;
     }
     if (!usesExternalReader.value && !chapters.value.length && !comicPages.value.length) {
       throw new Error('正文为空或章节解析失败。');
@@ -151,6 +219,9 @@ async function loadBook() {
       const total = comicPages.value.length || chapters.value.length;
       chapterIndex.value = Math.min(Math.max(0, progress.chapterIndex), Math.max(0, total - 1));
       restoreScrollRatio = Math.min(1, Math.max(0, progress.scrollRatio));
+    }
+    if (props.book.readingMode === 'source' && chapters.value.length) {
+      await loadSourceChapter(chapterIndex.value);
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '书籍加载失败。';
@@ -173,11 +244,13 @@ function selectChapter(index: number) {
   translationOpen.value = false;
   translatedParagraphs.value = [];
   translationError.value = '';
+  chapterError.value = '';
   chaptersOpen.value = false;
   nextTick(() => {
     if (contentRef.value) contentRef.value.scrollTop = 0;
     saveReaderProgress(props.book.id, { chapterIndex: index, scrollRatio: 0 });
   });
+  if (props.book.readingMode === 'source') void loadSourceChapter(index);
 }
 
 function goComicPage(index: number) {
@@ -453,6 +526,15 @@ onBeforeUnmount(() => {
             <p>{{ book.title }} · {{ book.author }}</p>
           </header>
           <div class="lbr-copy">
+            <div v-if="chapterLoading" class="lbr-chapter-state" role="status">
+              <LoaderCircle class="lbr-spin" :size="20" />
+              <span>正在加载本章正文…</span>
+            </div>
+            <div v-else-if="chapterError" class="lbr-chapter-state error" role="alert">
+              <b>本章暂时打不开</b>
+              <span>{{ chapterError }}</span>
+              <button type="button" @click="loadSourceChapter(chapterIndex)">重试本章</button>
+            </div>
             <template v-for="(paragraph, index) in currentChapter?.paragraphs" :key="index">
               <p>
                 <template v-for="(part, partIndex) in annotatedParts(paragraph)" :key="partIndex">
@@ -468,11 +550,11 @@ onBeforeUnmount(() => {
             <p v-else-if="translationError" class="lbr-translation error" role="alert">{{ translationError }}</p>
           </div>
           <footer>
-            <button type="button" :disabled="chapterIndex <= 0" @click="selectChapter(chapterIndex - 1)">
+            <button type="button" :disabled="chapterIndex <= 0 || chapterLoading" @click="selectChapter(chapterIndex - 1)">
               <ChevronLeft :size="16" />上一章
             </button>
             <span>{{ chapterIndex + 1 }} / {{ chapters.length }}</span>
-            <button type="button" :disabled="chapterIndex >= chapters.length - 1" @click="selectChapter(chapterIndex + 1)">
+            <button type="button" :disabled="chapterIndex >= chapters.length - 1 || chapterLoading" @click="selectChapter(chapterIndex + 1)">
               下一章<ChevronRight :size="16" />
             </button>
           </footer>

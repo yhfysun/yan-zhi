@@ -37,6 +37,12 @@ beforeEach(() => {
         },
         risk: '边界不清导致漏项。',
         control: '在评审中固定检查清单。',
+        lab: {
+          target: '本地威胁建模教学靶场',
+          tools: ['浏览器 DevTools', 'curl'],
+          steps: ['确认授权范围', '复现一个越权假设', '修复并回归'],
+          expected: '越权请求返回 403，合法请求返回 200 并留下审计记录。',
+        },
       }],
     }],
   });
@@ -65,5 +71,25 @@ describe('CyberSecurityWorkbench', () => {
     expect(focus).toBeTruthy();
     expect(focus.parentElement).toBe(document.body);
     expect(host.querySelector('.sec-focus')).toBeNull();
+  });
+
+  it('separates systematic learning from authorized practice labs', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    app = createApp(CyberSecurityWorkbench, { pathId: 'entry' });
+    app.mount(host);
+    await vi.waitFor(() => expect(host.querySelector('[data-security-view="labs"]')).toBeTruthy());
+
+    (host.querySelector('[data-security-view="labs"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.sec-lab-browser')).toBeTruthy();
+    expect(host.textContent).toContain('本地威胁建模教学靶场');
+    expect(host.textContent).toContain('浏览器 DevTools');
+    expect(host.textContent).toContain('3 个步骤');
+
+    (host.querySelector('.sec-lab-card footer button') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(document.body.querySelector('.sec-focus')?.textContent).toContain('授权靶场');
   });
 });

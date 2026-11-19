@@ -1,0 +1,166 @@
+import type {
+  LearningV2CuratedCoursePlan,
+  LearningV2Subject,
+} from '../../v2-types.js';
+import { PROGRAMMING_BACKEND_COURSES } from './backend.js';
+import { PROGRAMMING_CORE_COURSES } from './core.js';
+import { PROGRAMMING_JAVA_ADVANCED_COURSES } from './java-advanced.js';
+import { PROGRAMMING_JAVA_FOUNDATION_COURSES } from './java-foundations.js';
+import { PROGRAMMING_OTHER_COURSE_SEEDS } from './programs.js';
+import { PROGRAMMING_PROJECT_COURSE_SEEDS } from './projects.js';
+import { PROGRAMMING_SYSTEMS_COURSES } from './systems.js';
+import {
+  programmingLessonSteps,
+  programmingPlans,
+  type ProgrammingCourseSeed,
+  type ProgrammingTrackName,
+} from './shared.js';
+
+const TRACK_META: readonly {
+  readonly name: ProgrammingTrackName;
+  readonly note: string;
+}[] = [
+  { name: 'P00 · 入门与工具链', note: '终端、Git、程序生命周期、HTTP 与项目启动' },
+  { name: 'P01 · HTML / CSS / 浏览器', note: '语义、布局、响应式、渲染、性能与前端安全' },
+  { name: 'P02 · JavaScript / TypeScript', note: '语言语义、异步、模块和运行时类型边界' },
+  { name: 'P03 · Vue 企业前端', note: '响应式、组件、路由、Pinia、Nuxt 与源码' },
+  { name: 'P04 · React 企业前端', note: 'Hooks、数据缓存、Next.js、Fiber 与性能' },
+  { name: 'P05 · 后端共同基础', note: 'API、数据库、事务、权限和可观测性' },
+  { name: 'P06 · Java / JVM / Spring', note: '核心类、并发、JVM、GC、JIT、Spring 全家桶与源码' },
+  { name: 'P07 · Python 企业后端', note: 'CPython、异步、uv、FastAPI、Django 与 SQLAlchemy' },
+  { name: 'P08 · Go 企业后端', note: '接口、context、goroutine、GC、pprof、HTTP 与 gRPC' },
+  { name: 'P09 · C 系统编程', note: '指针、ABI、POSIX、系统调用、调试和 Redis/Nginx 源码' },
+  { name: 'P10 · C++ 高性能工程', note: 'RAII、模板、STL、Asio、CMake、sanitizer 和性能' },
+  { name: 'P11 · 设计模式与代码质量', note: '抽象、不变量、模式、重构、评审和安全供应链' },
+  { name: 'P12 · AI 编程与氛围编程', note: '规格、上下文、Agent、工具沙箱、提示注入和交付闭环' },
+  { name: 'P13 · 架构 / 交付 / 运维', note: 'DDD、分布式、Docker、Kubernetes、Apollo、负载均衡、CI/CD 与 SRE' },
+  { name: 'P14 · 独立语言课程', note: 'HTML、CSS、JavaScript、TypeScript、Vue、React、Python、Go、C、C++、中间件、AI 与工程课程' },
+  { name: 'P15 · 综合训练项目', note: '前端、全栈、多模块单体、微服务、AI、云原生、系统和交付平台的完整项目主线' },
+] as const;
+
+export const PROGRAMMING_COURSE_SEEDS: readonly ProgrammingCourseSeed[] = [
+  ...PROGRAMMING_CORE_COURSES,
+  ...PROGRAMMING_JAVA_FOUNDATION_COURSES,
+  ...PROGRAMMING_JAVA_ADVANCED_COURSES,
+  ...PROGRAMMING_OTHER_COURSE_SEEDS,
+  ...PROGRAMMING_BACKEND_COURSES,
+  ...PROGRAMMING_SYSTEMS_COURSES,
+  ...PROGRAMMING_PROJECT_COURSE_SEEDS,
+];
+
+export const PROGRAMMING_CURATED_PLANS: Readonly<Record<string, LearningV2CuratedCoursePlan>> = {
+  ...programmingPlans(PROGRAMMING_CORE_COURSES),
+  ...programmingPlans(PROGRAMMING_JAVA_FOUNDATION_COURSES),
+  ...programmingPlans(PROGRAMMING_JAVA_ADVANCED_COURSES),
+  ...programmingPlans(PROGRAMMING_OTHER_COURSE_SEEDS),
+  ...programmingPlans(PROGRAMMING_BACKEND_COURSES),
+  ...programmingPlans(PROGRAMMING_SYSTEMS_COURSES),
+  ...programmingPlans(PROGRAMMING_PROJECT_COURSE_SEEDS),
+};
+
+const currentCourseName = 'Java 零基础：JDK、IDE 与第一个程序';
+
+const programmingStudio = {
+  type: '企业项目交付台',
+  title: '从代码到运行图，再到发布与回滚',
+  task: '围绕当前编程知识完成环境、实现、测试、构建、部署、观测和故障复盘。',
+  steps: ['确认环境', '实现与测试', '构建制品', '部署观察', '回滚复盘'],
+  output: '可运行项目、测试、镜像、运行图和故障报告',
+  boundary: '只在本地、测试或授权环境操作；不接触生产秘密、真实用户数据和未授权目标。',
+  features: [
+    'Docker',
+    'Kubernetes',
+    'Helm',
+    'Apollo',
+    '负载均衡 / Nginx',
+    'CI/CD',
+    'OpenTelemetry',
+    '备份与回滚',
+  ],
+} as const;
+
+export const PROGRAMMING_SUBJECT: LearningV2Subject = {
+  key: 'programming',
+  name: '编程',
+  short: '编程',
+  accent: '#2365d8',
+  tint: '#edf3ff',
+  line: '从程序如何运行到企业级项目交付，完整覆盖前端、后端、系统、源码、性能、安全、AI、架构和运维。',
+  current: {
+    stage: 'P06 · Java / JVM / Spring',
+    course: currentCourseName,
+    step: '环境',
+    progress: 4,
+    minutes: 34,
+  },
+  stats: [
+    [String(TRACK_META.length), '能力轨道'],
+    [String(PROGRAMMING_COURSE_SEEDS.length), '完整课程'],
+    ['6', '语言深度'],
+  ],
+  tracks: TRACK_META.map((track) => ({
+    name: track.name,
+    note: track.note,
+    courses: PROGRAMMING_COURSE_SEEDS
+      .filter((course) => course.track === track.name)
+      .map((course) => ({
+        name: course.name,
+        meta: `${course.minutes} 分钟`,
+      })),
+  })),
+  lesson: {
+    labels: ['模型', '机制', '源码', '实验', '生产'],
+    eyebrow: 'Java 企业级后端 · 零基础起步',
+    title: currentCourseName,
+    goal: '从安装 JDK、编写第一行代码开始，建立 Java 程序从源码到进程的完整心智模型。',
+    minutes: 34,
+    steps: programmingLessonSteps(PROGRAMMING_COURSE_SEEDS, currentCourseName),
+  },
+  practice: {
+    prompt: '第一次运行 Java 程序时，最需要先确认什么？',
+    options: [
+      'java 与 javac 来自同一套 JDK，包名、文件名和类名一致',
+      '直接把堆内存调到最大',
+      '先安装 Spring Boot',
+    ],
+    answer: 0,
+    explanation: '零基础先确认工具链和程序入口，再谈框架、JVM 参数和性能。',
+    focus: 'Java 工具链',
+  },
+  review: {
+    due: 4,
+    mastery: 4,
+    items: [
+      'JDK 与 JRE 的区别',
+      'javac 与 java 各自做什么',
+      'main 方法签名',
+      'class 文件与字节码',
+      '断点与退出码',
+    ],
+  },
+  coach: {
+    opening: '告诉我你想排查的语言、运行时或线上现象。我会先要求版本、目标和证据，再一起定位。',
+    prompts: [
+      '带我从调用链读框架源码',
+      '设计一次 JVM 压测和调优',
+      '审查 Docker / K8s / 发布方案',
+      '把需求拆成企业项目里程碑',
+    ],
+  },
+  book: {
+    shelf: ['企业级编程工程手册', '阿里巴巴 Java 开发手册', 'The Site Reliability Workbook'],
+    title: '企业级编程工程手册',
+    unit: '请求、构建与发布',
+    kind: '工程原典',
+    original: 'Client -> TLS -> Load Balancer -> Gateway -> Service -> Database',
+    translation: '请求从客户端进入入口层，再经负载均衡、网关、服务与数据层完成处理，并沿日志、指标和 Trace 返回可观察证据。',
+    notes: [
+      { term: '请求链路', text: '从客户端到数据层，每一段都要有超时、错误和上下文传播。' },
+      { term: '不可变制品', text: '源码、依赖和配置版本固定后才能可靠部署和回滚。' },
+      { term: '运行时证据', text: '日志、指标、Trace、线程栈和 profile 共同解释真实行为。' },
+    ],
+    annotation: '企业项目不是语言语法的集合，而是开发、构建、测试、部署、配置、流量、观测和恢复形成闭环。课程中的每条链路都要求可执行、可验证、可回滚。',
+    source: 'WHATWG、TC39、OpenJDK、Spring、Python、Go、C/C++ 官方文档与固定版本源码。',
+  },
+  studio: programmingStudio,
+};

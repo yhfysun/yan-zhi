@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 「记到笔记」轻量创建弹窗（docs/笔记功能方案-2026-11-14.md §5 学习模式联动）。
-// 复用入口：Learning.vue（后续阅读页/词书页可同样挂载）。成功即静默关闭，不打断学习节奏。
+// 复用入口：LearningV2（后续阅读页/词书页可同样挂载）。成功即静默关闭，不打断学习节奏。
 import { ref, watch, computed } from 'vue';
 import { api } from '../../api/client';
 

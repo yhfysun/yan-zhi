@@ -4,10 +4,10 @@ import { resolve } from 'node:path';
 import { learningModeManifest } from '../src/plugins/learning-mode.js';
 
 describe('Learning V2 wiring', () => {
-  it('registers the new learning route without removing the legacy entry', () => {
+  it('keeps the legacy /learning entry while routing both paths to LearningV2', () => {
     const routes = learningModeManifest.contributes?.routes || [];
     expect(routes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: '/learning', component: 'views/Learning.vue' }),
+      expect.objectContaining({ path: '/learning', component: 'views/LearningV2.vue' }),
       expect.objectContaining({ path: '/learning-v2', component: 'views/LearningV2.vue' }),
     ]));
     expect(learningModeManifest.contributes?.mode).toEqual(expect.objectContaining({

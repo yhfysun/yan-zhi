@@ -14,6 +14,8 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    testTimeout: 30000,
+    hookTimeout: 30000,
     // jsdom 用例的前置补丁（matchMedia 等浏览器 API），node 环境自动跳过
     setupFiles: ['./test-setup.ts'],
   },

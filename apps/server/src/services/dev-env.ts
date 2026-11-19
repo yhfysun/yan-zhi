@@ -15,6 +15,12 @@ export interface DevEnvConfig {
   pythonPath: string;
   /** Node 可执行文件绝对路径；留空用 PATH 里的 node */
   nodePath: string;
+  /** C 编译器绝对路径；留空按 gcc / clang 顺序查找 PATH */
+  cCompilerPath: string;
+  /** C++ 编译器绝对路径；留空按 g++ / clang++ 顺序查找 PATH */
+  cppCompilerPath: string;
+  /** CMake 可执行文件绝对路径；留空用 PATH 里的 cmake */
+  cmakePath: string;
   /** Git 可执行文件绝对路径；留空用 PATH 里的 git */
   gitPath: string;
   /** 新建终端默认 shell */
@@ -34,6 +40,9 @@ export const DEFAULT_DEV_ENV: DevEnvConfig = {
   mavenHome: '',
   pythonPath: '',
   nodePath: '',
+  cCompilerPath: '',
+  cppCompilerPath: '',
+  cmakePath: '',
   gitPath: '',
   defaultShell: process.platform === 'win32' ? 'powershell' : 'bash',
   extraEnv: {},
@@ -68,7 +77,7 @@ export function saveDevEnv(patch: Partial<DevEnvConfig>): DevEnvConfig {
 
 // ======================== 工具探测 ========================
 
-export type ToolId = 'java' | 'maven' | 'python' | 'node' | 'git';
+export type ToolId = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git';
 
 export interface ToolStatus {
   id: ToolId;
@@ -101,8 +110,112 @@ const TOOL_SPECS: ToolSpec[] = [
   { id: 'maven', label: 'Apache Maven', commands: ['mvn', IS_WIN ? 'mvn.cmd' : 'mvn'], versionArgs: ['-v'], kind: 'home', exeRel: ['bin', IS_WIN ? 'mvn.cmd' : 'mvn'] },
   { id: 'python', label: 'Python', commands: IS_WIN ? ['python', 'py', 'python3'] : ['python3', 'python'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
   { id: 'node', label: 'Node.js', commands: ['node'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
+  { id: 'c', label: 'C 编译器', commands: ['gcc', 'clang'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
+  { id: 'cpp', label: 'C++ 编译器', commands: ['g++', 'clang++', 'c++'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
+  { id: 'cmake', label: 'CMake', commands: ['cmake'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
   { id: 'git', label: 'Git', commands: ['git'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
 ];
+
+export const DEV_ENV_TOOL_IDS: readonly ToolId[] = TOOL_SPECS.map((spec) => spec.id);
+
+function firstExisting(paths: readonly string[]): string {
+  for (const candidate of paths) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
+/**
+ * Windows 上从桌面端启动的进程常常拿不到用户后来改过的 PATH。
+ * PATH 查找失败后，再检查常见安装目录和标准环境变量，避免已安装工具被误报为缺失。
+ */
+function windowsFallbackExecutable(id: ToolId): string {
+  if (!IS_WIN) return '';
+  const root = path.parse(process.execPath).root;
+  const programFiles = [
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    'C:\\Program Files',
+    'C:\\Program Files (x86)',
+  ].filter((value): value is string => !!value);
+  const local = process.env.LOCALAPPDATA || '';
+  const user = process.env.USERPROFILE || '';
+  const joinRoot = (...parts: string[]) => path.join(root, ...parts);
+
+  if (id === 'c') {
+    return firstExisting([
+      process.env.MINGW_HOME ? path.join(process.env.MINGW_HOME, 'bin', 'gcc.exe') : '',
+      process.env.MSYS2_ROOT ? path.join(process.env.MSYS2_ROOT, 'mingw64', 'bin', 'gcc.exe') : '',
+      joinRoot('msys64', 'mingw64', 'bin', 'gcc.exe'),
+      joinRoot('msys64', 'ucrt64', 'bin', 'gcc.exe'),
+      joinRoot('mingw64', 'bin', 'gcc.exe'),
+      joinRoot('MinGW', 'bin', 'gcc.exe'),
+      joinRoot('APP', 'msys64', 'mingw64', 'bin', 'gcc.exe'),
+      joinRoot('APP', 'mingw64', 'bin', 'gcc.exe'),
+      ...programFiles.map((base) => path.join(base, 'LLVM', 'bin', 'clang.exe')),
+    ]);
+  }
+  if (id === 'cpp') {
+    return firstExisting([
+      process.env.MINGW_HOME ? path.join(process.env.MINGW_HOME, 'bin', 'g++.exe') : '',
+      process.env.MSYS2_ROOT ? path.join(process.env.MSYS2_ROOT, 'mingw64', 'bin', 'g++.exe') : '',
+      joinRoot('msys64', 'mingw64', 'bin', 'g++.exe'),
+      joinRoot('msys64', 'ucrt64', 'bin', 'g++.exe'),
+      joinRoot('mingw64', 'bin', 'g++.exe'),
+      joinRoot('MinGW', 'bin', 'g++.exe'),
+      joinRoot('APP', 'msys64', 'mingw64', 'bin', 'g++.exe'),
+      joinRoot('APP', 'mingw64', 'bin', 'g++.exe'),
+      ...programFiles.map((base) => path.join(base, 'LLVM', 'bin', 'clang++.exe')),
+    ]);
+  }
+  if (id === 'cmake') {
+    return firstExisting([
+      process.env.CMAKE_HOME ? path.join(process.env.CMAKE_HOME, 'bin', 'cmake.exe') : '',
+      ...programFiles.map((base) => path.join(base, 'CMake', 'bin', 'cmake.exe')),
+      joinRoot('APP', 'CMake', 'bin', 'cmake.exe'),
+      joinRoot('APP', 'cmake', 'bin', 'cmake.exe'),
+    ]);
+  }
+  if (id === 'git') {
+    return firstExisting([
+      ...programFiles.map((base) => path.join(base, 'Git', 'cmd', 'git.exe')),
+      joinRoot('APP', 'Git', 'cmd', 'git.exe'),
+      local ? path.join(local, 'Programs', 'Git', 'cmd', 'git.exe') : '',
+    ]);
+  }
+  if (id === 'node') {
+    return firstExisting([
+      ...programFiles.map((base) => path.join(base, 'nodejs', 'node.exe')),
+      local ? path.join(local, 'Programs', 'nodejs', 'node.exe') : '',
+      user ? path.join(user, 'AppData', 'Roaming', 'npm', 'node.exe') : '',
+    ]);
+  }
+  if (id === 'python') {
+    return firstExisting([
+      user ? path.join(user, 'miniconda3', 'python.exe') : '',
+      user ? path.join(user, 'anaconda3', 'python.exe') : '',
+      local ? path.join(local, 'Programs', 'Python', 'Python313', 'python.exe') : '',
+      local ? path.join(local, 'Programs', 'Python', 'Python312', 'python.exe') : '',
+      local ? path.join(local, 'Programs', 'Python', 'Python311', 'python.exe') : '',
+    ]);
+  }
+  if (id === 'java') {
+    return firstExisting([
+      process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', 'java.exe') : '',
+      joinRoot('APP', 'Java', 'jdk-21', 'bin', 'java.exe'),
+      joinRoot('APP', 'Java', 'jdk-17', 'bin', 'java.exe'),
+      joinRoot('APP', 'Java', 'jdk-11', 'bin', 'java.exe'),
+    ]);
+  }
+  if (id === 'maven') {
+    return firstExisting([
+      process.env.M2_HOME ? path.join(process.env.M2_HOME, 'bin', 'mvn.cmd') : '',
+      process.env.MAVEN_HOME ? path.join(process.env.MAVEN_HOME, 'bin', 'mvn.cmd') : '',
+      joinRoot('APP', 'apache-maven', 'bin', 'mvn.cmd'),
+    ]);
+  }
+  return '';
+}
 
 /** 在 PATH 中定位命令（Windows 用 where，其他用 which）；返回首个命中绝对路径 */
 export function whichSync(cmd: string): string {
@@ -112,7 +225,14 @@ export function whichSync(cmd: string): string {
       : spawnSync('which', [cmd], { encoding: 'utf8' });
     if (r.status === 0 && r.stdout) {
       const first = r.stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-      if (first) return first;
+      if (first) {
+        if (IS_WIN && !path.extname(first)) {
+          for (const ext of ['.exe', '.cmd', '.bat']) {
+            if (fs.existsSync(first + ext)) return first + ext;
+          }
+        }
+        return first;
+      }
     }
   } catch { /* ignore */ }
   return '';
@@ -127,7 +247,12 @@ function homeFromExe(exe: string): string {
 
 function readVersion(cmd: string, args: string[]): { version: string; error: string } {
   try {
-    const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const r = spawnSync(cmd, args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15000,
+      shell: IS_WIN && /\.(cmd|bat)$/i.test(cmd),
+    });
     const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
     if (r.error) return { version: '', error: r.error.message };
     if (!out) return { version: '', error: '无版本输出' };
@@ -151,15 +276,25 @@ export function resolveToolExe(id: ToolId, cfg: DevEnvConfig = loadDevEnv()): st
       const found = whichSync(c);
       if (found) return found;
     }
-    return '';
+    return windowsFallbackExecutable(id);
   }
-  const configured = id === 'python' ? cfg.pythonPath : id === 'node' ? cfg.nodePath : cfg.gitPath;
+  const configured = id === 'python'
+    ? cfg.pythonPath
+    : id === 'node'
+      ? cfg.nodePath
+      : id === 'c'
+        ? cfg.cCompilerPath
+        : id === 'cpp'
+          ? cfg.cppCompilerPath
+          : id === 'cmake'
+            ? cfg.cmakePath
+            : cfg.gitPath;
   if (configured && fs.existsSync(configured)) return configured;
   for (const c of spec.commands) {
     const found = whichSync(c);
     if (found) return found;
   }
-  return '';
+  return windowsFallbackExecutable(id);
 }
 
 /** 单次状态探测：给定工具 id，返回路径 + 版本 */
@@ -183,6 +318,9 @@ export function detectDevEnv(): { suggested: Partial<DevEnvConfig>; tools: ToolS
   const maven = by('maven'); if (maven?.ok) suggested.mavenHome = maven.path;
   const python = by('python'); if (python?.ok) suggested.pythonPath = python.path;
   const node = by('node'); if (node?.ok) suggested.nodePath = node.path;
+  const c = by('c'); if (c?.ok) suggested.cCompilerPath = c.path;
+  const cpp = by('cpp'); if (cpp?.ok) suggested.cppCompilerPath = cpp.path;
+  const cmake = by('cmake'); if (cmake?.ok) suggested.cmakePath = cmake.path;
   const git = by('git'); if (git?.ok) suggested.gitPath = git.path;
   return { suggested, tools };
 }
@@ -210,7 +348,14 @@ export function buildSpawnEnv(cfg: DevEnvConfig = loadDevEnv()): NodeJS.ProcessE
     const bin = path.join(cfg.mavenHome, 'bin');
     if (fs.existsSync(bin)) prepend.push(bin);
   }
-  for (const p of [cfg.pythonPath, cfg.nodePath, cfg.gitPath]) {
+  for (const p of [
+    cfg.pythonPath,
+    cfg.nodePath,
+    cfg.cCompilerPath,
+    cfg.cppCompilerPath,
+    cfg.cmakePath,
+    cfg.gitPath,
+  ]) {
     if (p && fs.existsSync(p)) prepend.push(path.dirname(p));
   }
   if (cfg.javaOpts.trim()) env.JAVA_OPTS = cfg.javaOpts.trim();

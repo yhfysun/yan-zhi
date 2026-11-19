@@ -117,7 +117,7 @@ test('构建清单记录排除项与标记串', () => {
   assert.ok(path.isAbsolute(MANIFEST_PATH));
 });
 
-test('Learning 是插件贡献路由，共享路由表不能写死页面 import', () => {
+test('Learning 是插件贡献路由，/learning 与 /learning-v2 都指向 LearningV2', () => {
   const uiSrc = path.resolve(__dirname, '..', '..', '..', 'packages', 'ui', 'src');
   const routerSrc = fs.readFileSync(path.join(uiSrc, 'router', 'index.ts'), 'utf8');
   assert.doesNotMatch(routerSrc, /import\(['"]\.\.\/views\/Learning\.vue['"]\)/);
@@ -126,7 +126,11 @@ test('Learning 是插件贡献路由，共享路由表不能写死页面 import'
     path.resolve(__dirname, '..', '..', '..', 'apps', 'server', 'src', 'plugins', 'learning-mode.ts'),
     'utf8',
   );
-  assert.match(pluginSrc, /component:\s*['"]views\/Learning\.vue['"]/);
+  assert.equal(
+    (pluginSrc.match(/component:\s*['"]views\/LearningV2\.vue['"]/g) || []).length,
+    2,
+  );
+  assert.doesNotMatch(pluginSrc, /views\/Learning\.vue/);
   assert.match(pluginSrc, /key:\s*['"]learning['"]/);
 
   const home = fs.readFileSync(path.join(uiSrc, 'views', 'Home.vue'), 'utf8');

@@ -11755,25 +11755,6 @@ ipcMain.handle('db:transaction', (e, sqls) => {
 // ============================================================
 // IPC：文件系统（Node.js fs）
 // ============================================================
-// 软考学习清单直接落盘：固定到「系统下载目录/言智资料/软考」，
-// 不经过 will-download，因此不会触发系统“另存为”弹窗。
-ipcMain.handle('learning:save-soft-material', async (_event, payload = {}) => {
-  try {
-    const rawName = path.basename(String(payload.filename || '软考学习清单.md'));
-    const safeName = (rawName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || '软考学习清单.md')
-      .replace(/\.md$/i, '') + '.md';
-    const content = String(payload.content || '');
-    if (!content.trim()) return { ok: false, error: '资料内容为空' };
-    const dir = path.join(app.getPath('downloads'), '言智资料', '软考');
-    await fsp.mkdir(dir, { recursive: true });
-    const savedPath = uniqueDownloadPath(dir, safeName);
-    await fsp.writeFile(savedPath, content, 'utf-8');
-    return { ok: true, path: savedPath, dir };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-});
-
 ipcMain.handle('fs:readFile', (e, p) => fsp.readFile(p, 'utf-8'));
 
 ipcMain.handle('fs:readFileBase64', async (e, p) => {

@@ -13,7 +13,7 @@ export const BUILD_MODE_DEFS = [
   { key: "rpa", label: "自动化模式", icon: "MagicStick", desc: "录制 · 固定脚本 · 运行记录", route: "/automation", pluginId: "rpa-mode" },
   { key: "clip", label: "剪辑模式", icon: "VideoCamera", desc: "剪辑 · 字幕动画 · 成片", route: "/clip", pluginId: "clip-mode" },
   { key: "shop", label: "店铺运营模式", icon: "Shop", desc: "选品 · Listing · 利润 · 仓储", route: "/shop", pluginId: "shop-ops", desktopOnly: true },
-  { key: "learning", label: "学习模式", icon: "Reading", desc: "19 科零基础课程 · 原文出处 · 实践 · 公共图书馆", route: "/learning-v2", pluginId: "learning-mode" },
+  { key: "learning", label: "学习模式", icon: "Reading", desc: "21 科零基础课程 · 编程企业交付 · 算法实战 · 原文出处 · 公共图书馆", route: "/learning-v2", pluginId: "learning-mode" },
 ] as const;
 
 export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
@@ -28,11 +28,9 @@ export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 };
 
 export const PLUGIN_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
-  "components/learning/LearnStage.vue": () => import('../components/learning/LearnStage.vue'),
   "views/AutomationWorkbench.vue": () => import('../views/AutomationWorkbench.vue'),
   "views/ClipWorkbench.vue": () => import('../views/ClipWorkbench.vue'),
   "views/CodeWorkbench.vue": () => import('../views/CodeWorkbench.vue'),
-  "views/Learning.vue": () => import('../views/Learning.vue'),
   "views/LearningV2.vue": () => import('../views/LearningV2.vue'),
   "views/WorkflowWorkbench.vue": () => import('../views/WorkflowWorkbench.vue'),
   "views/plugin/AndroidMirror.vue": () => import('../views/plugin/AndroidMirror.vue'),

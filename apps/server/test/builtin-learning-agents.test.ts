@@ -62,7 +62,7 @@ describe('英语学习陪练 · id 与 seed 结构', () => {
   });
 });
 
-describe('全科学习陪练 · 19 科通用入口', () => {
+describe('全科学习陪练 · 21 科通用入口', () => {
   it('注册通用陪练 id，且使用同一套只读学习工具', () => {
     expect(SUBJECT_COACH_AGENT_ID).toBe('a_builtin_learning_subject_coach');
     const def = builtinLearningAgentDefs.find((item) => item.id === SUBJECT_COACH_AGENT_ID);

@@ -23,7 +23,7 @@ export const CULTURE_COACH_AGENT_ID = 'a_builtin_culture_coach';
 /** 音乐陪练 id（同上） */
 export const MUSIC_COACH_AGENT_ID = 'a_builtin_music_coach';
 
-/** 周易陪练 id（独立学科，docs/周易课程方案-2026-11-15.md §3.0；与前端 subject-extensions.ts 成对维护） */
+/** 周易陪练 id（独立学科，docs/周易课程方案-2026-11-15.md §3.0；由 LearningV2 科目目录选择） */
 export const ZHOUYI_COACH_AGENT_ID = 'a_builtin_zhouyi_coach';
 
 /** 通用学科陪练 id：党史、政治、经济、军事、历史、书法、记忆、思维、数学、物理、百家、日语、软考、网络安全、占卜 */
@@ -166,7 +166,7 @@ ${LEARNING_PROMPT_CONTEXT_MARK}
 - 教学时一次只围绕当前课时，不主动跳课；测算时一次只算一件事，算完问「还有想问的吗」。
 - 输出收束自然收尾即可，没有场景结算卡、不输出任何围栏标记。`;
 
-export const SUBJECT_COACH_SYSTEM_PROMPT = `你是「言智全科学习陪练」——面向零基础学习者的苏格拉底式学科教师，服务党史、政治、经济学、军事、历史、书法、记忆训练、思维训练、数学、物理、百家思想、日语、软考、网络安全与占卜等学科。
+export const SUBJECT_COACH_SYSTEM_PROMPT = `你是「言智全科学习陪练」——面向零基础学习者的苏格拉底式学科教师，服务党史、政治、经济学、军事、历史、书法、记忆训练、思维训练、数学、物理、百家思想、英语、日语、软考、网络安全、传统文化、音乐、周易、占卜与编程等学科。
 
 ${LEARNING_PROMPT_CONTEXT_MARK}
 用户会在本轮消息中给出当前科目、课程和引用材料。你必须据此限定回答范围，不把其他科目的结论硬套进来。
@@ -276,7 +276,7 @@ export const builtinLearningAgentDefs: Array<Record<string, unknown>> = [
     id: SUBJECT_COACH_AGENT_ID,
     name: '全科学习陪练',
     description:
-      '内置全科学习陪练：零基础讲解、来源分层、原文与术语解释、苏格拉底追问、实践边界和复盘；覆盖党史、政治、经济、军事、历史、书法、记忆、思维、数学、物理、百家思想、日语、软考、网络安全与占卜',
+      '内置全科学习陪练：零基础讲解、来源分层、原文与术语解释、苏格拉底追问、实践边界和复盘；覆盖 21 科，包括算法故事闯关与题型实战、前端、后端、语言运行时、框架源码、AI 编程、架构、部署与运维',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(LEARNING_AGENT_BUILTIN_TOOLS),

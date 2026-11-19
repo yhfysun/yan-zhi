@@ -30,7 +30,7 @@ export const LEARNING_V2_READING_COLLECTIONS: readonly {
 }[] = [
   { key: 'youth', label: '青少年必读', description: '成长、想象、科学兴趣与公民视野' },
   { key: 'adult', label: '成人必读', description: '历史、社会、思想与经典重读' },
-  { key: 'subject', label: '学科拓展', description: '对应 19 个学习科目的延伸阅读' },
+  { key: 'subject', label: '学科拓展', description: '对应 20 个学习科目的延伸阅读' },
   { key: 'red', label: '红色与革命', description: '革命史、制度建设与一手文献导读' },
   { key: 'history', label: '历史视野', description: '从古代到现代的长时段材料' },
   { key: 'vision', label: '视野拓展', description: '跨文明、跨学科与公共议题' },
@@ -57,6 +57,7 @@ export const LEARNING_V2_BOOK_SOURCES: readonly LearningV2BookSource[] = [
     url: 'https://zh.wikisource.org/wiki/Wikisource:%E9%A6%96%E9%A1%B5',
     category: 'classics',
     access: 'public-domain',
+    provider: 'mediawiki',
     license: '公版与开放许可混合；每部作品需按页面版权说明复核',
     description: '中文古籍、史书、小说和公版现代文学的重要开放文本来源。',
   },
@@ -75,6 +76,7 @@ export const LEARNING_V2_BOOK_SOURCES: readonly LearningV2BookSource[] = [
     url: 'https://www.gutenberg.org/',
     category: 'classics',
     access: 'public-domain',
+    provider: 'gutendex',
     license: '公版或已获许可文本；以作品页版权状态为准',
     description: '英文经典、世界文学和公版参考书的主要全文来源。',
   },
@@ -219,8 +221,9 @@ export const LEARNING_V2_BOOK_SOURCES: readonly LearningV2BookSource[] = [
     url: 'https://zh.wikipedia.org/',
     category: 'science',
     access: 'public-domain',
+    provider: 'mediawiki',
     license: '开放协作条目；具体文字与图片许可以条目页说明为准',
-    description: '用于科学、生活常识、世界纪录与冷知识的开放百科入口，应用内只做导读和跳转。',
+    description: '用于科学、生活常识、世界纪录与冷知识的开放百科入口，支持应用内搜索与条目阅读。',
   },
 ];
 

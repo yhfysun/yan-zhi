@@ -12,18 +12,18 @@ import {
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
 
 describe('Learning V2 catalog', () => {
-  it('covers all 19 subjects and every registered course', () => {
+  it('covers all 21 subjects and every registered course', () => {
     const subjects = getLearningV2Subjects();
     const catalog = getLearningV2Catalog();
 
-    expect(subjects).toHaveLength(19);
+    expect(subjects).toHaveLength(21);
     expect(subjects.map((subject) => subject.key)).toEqual([
       'party', 'politics', 'economics', 'military', 'history', 'calligraphy',
       'memory', 'thinking', 'math', 'physics', 'schools', 'english', 'japanese',
-      'soft', 'security', 'culture', 'music', 'zhouyi', 'divination',
+      'soft', 'security', 'culture', 'music', 'zhouyi', 'divination', 'programming', 'algorithms',
     ]);
-    expect(catalog.courses).toHaveLength(327);
-    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(327);
+    expect(catalog.courses).toHaveLength(1301);
+    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(1301);
   });
 
   it('ships eight learning surfaces in both desktop and mobile', () => {
@@ -60,9 +60,9 @@ describe('Learning V2 catalog', () => {
 
   it('exposes a global library spanning every subject', () => {
     const library = getLearningV2Library();
-    expect(library.length).toBe(57);
-    expect(new Set(library.map((entry) => entry.subjectKey)).size).toBe(19);
-    expect(library.filter((entry) => entry.readable).length).toBe(19);
+    expect(library.length).toBe(63);
+    expect(new Set(library.map((entry) => entry.subjectKey)).size).toBe(21);
+    expect(library.filter((entry) => entry.readable).length).toBe(21);
     expect(library.every((entry) => entry.source.trim().length > 0)).toBe(true);
   });
 

@@ -1,15 +1,34 @@
 // 代码模式「开发环境」路由：Java / Maven / Python / Node / Git 的配置、自动探测与校验，
 // 以及 Python 断点依赖 debugpy 的一键安装。
 // 配置落 dataDir/dev-env.json；终端与运行配置通过 services/dev-env.ts 的 buildSpawnEnv 消费。
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   DEFAULT_DEV_ENV, loadDevEnv, saveDevEnv, detectDevEnv, probeTool,
-  resolveToolExe, buildSpawnEnv, type DevEnvConfig, type ToolId,
+  resolveToolExe, buildSpawnEnv, DEV_ENV_TOOL_IDS, type DevEnvConfig,
 } from '../services/dev-env.js';
+import {
+  listAlgorithmCodeRuntimes,
+  runAlgorithmCode,
+  type AlgorithmCodeLanguage,
+} from '../services/algorithm-code-runner.js';
+import { scaffoldProgrammingProject } from '../services/programming-project-scaffold.js';
+import { authMiddleware, isLoopbackRequest } from '../auth.js';
 
 const router = Router();
+router.use(authMiddleware);
+
+function requireLocalExecution(req: Request, res: Response, next: NextFunction): void {
+  if (isLoopbackRequest(req)) {
+    next();
+    return;
+  }
+  res.status(403).json({
+    error: '代码运行和环境写入只允许在本机进行',
+    code: 'LOCAL_ONLY',
+  });
+}
 
 // GET /api/env —— 当前配置
 router.get('/', (_req, res) => {
@@ -36,11 +55,53 @@ router.post('/detect', (_req, res) => {
   res.json({ data: detectDevEnv() });
 });
 
+// GET /api/env/code-runtimes —— 算法实战可用语言
+router.get('/code-runtimes', requireLocalExecution, async (_req, res) => {
+  try {
+    res.json({ data: await listAlgorithmCodeRuntimes() });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/env/run-code —— 在系统临时目录限时运行学习者代码
+router.post('/run-code', requireLocalExecution, async (req, res) => {
+  const body = (req.body || {}) as {
+    language?: AlgorithmCodeLanguage;
+    source?: string;
+    stdin?: string;
+  };
+  try {
+    const result = await runAlgorithmCode({
+      language: body.language || 'javascript',
+      source: String(body.source || ''),
+      stdin: String(body.stdin || ''),
+    });
+    res.json({ data: result });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/env/projects/scaffold —— 在应用数据目录创建安全的训练工程骨架
+router.post('/projects/scaffold', requireLocalExecution, (req, res) => {
+  const projectId = String((req.body as { projectId?: string })?.projectId || '').trim();
+  if (!projectId || projectId.length > 64) {
+    res.status(400).json({ error: '缺少或非法的 projectId' });
+    return;
+  }
+  try {
+    res.json({ data: scaffoldProgrammingProject(projectId) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(message.includes('未知项目') ? 404 : 409).json({ error: message });
+  }
+});
+
 // POST /api/env/verify —— 按当前配置逐项校验
 router.post('/verify', (req, res) => {
   const cfg = { ...loadDevEnv(), ...((req.body || {}) as Partial<DevEnvConfig>) };
-  const ids: ToolId[] = ['java', 'maven', 'python', 'node', 'git'];
-  res.json({ data: ids.map((id) => probeTool(id, cfg)) });
+  res.json({ data: DEV_ENV_TOOL_IDS.map((id) => probeTool(id, cfg)) });
 });
 
 /** 运行一条命令并收集合并输出（用于 pip install 这类需要回显日志的操作） */

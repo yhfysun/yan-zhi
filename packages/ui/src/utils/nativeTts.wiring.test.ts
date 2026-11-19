@@ -25,18 +25,6 @@ describe('移动端原生 TTS 接线契约', () => {
     expect(src).toMatch(/catch \{[\s\S]*?return false;/);
   });
 
-  it('★ Learning.vue：单词点读 speak() 原生优先（无包首选 + 包失败兜底）+ 停止/可用性判定接线', () => {
-    const src = read('../views/Learning.vue');
-    expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts'");
-    // 无语音包时原生首选（此前直接走 WebView speechSynthesis = Android 静默）
-    expect(src).toMatch(/if \(!ttsPackId\.value\) \{[\s\S]{0,200}await tryNative\(\)/);
-    // 语音包合成失败时原生兜底（移动端 sherpa 无 Android 分发必失败）
-    expect(src).toMatch(/catch \{[\s\S]{0,200}const ok = await tryNative\(\)/);
-    // 停止要停原生；听写可用性判定要计入原生
-    expect(src).toMatch(/function stopWordSpeech\(\) \{[\s\S]{0,120}nativeStopTts\(\)/);
-    expect(src).toMatch(/canReadAloud = computed[\s\S]{0,200}!!getNativeTts\(\)/);
-  });
-
   it('★ useZhSpeech：中文诵读原生通道优先（不依赖 WebView voices），stop 停原生', () => {
     const src = read('../composables/useZhSpeech.ts');
     expect(src).toContain("import { getNativeTts, nativeSpeak, nativeStopTts, warnEngineUnavailableOnce } from '../utils/nativeTts'");

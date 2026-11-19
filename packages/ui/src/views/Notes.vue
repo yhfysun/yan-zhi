@@ -134,7 +134,7 @@ function startSplitResize(event: PointerEvent) {
   window.addEventListener('pointerup', onUp, { once: true });
 }
 
-// ── 栏宽拖拽（照 Learning.vue startColumnResize 范式）：左导航可拖，主区 minmax(0,1fr) 吃满剩余 ──
+// ── 栏宽拖拽：左导航可拖，主区 minmax(0,1fr) 吃满剩余 ──
 const sideWidth = ref(300);
 let stopColumnResize: (() => void) | null = null;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -550,7 +550,7 @@ const isGuest = computed(() => !auth.isLoggedIn);
   display: flex;
   flex-direction: column;
 }
-/* 拖拽把手（照 Learning.vue lp-column-resizer） */
+/* 拖拽把手 */
 .np-col-resizer { position: relative; width: 8px; cursor: col-resize; touch-action: none; }
 .np-col-resizer::after {
   content: ""; position: absolute; top: 8px; bottom: 8px; left: 3px; width: 2px;
