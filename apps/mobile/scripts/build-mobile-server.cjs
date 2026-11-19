@@ -314,6 +314,37 @@ log('=== 步骤 3.6: 裸包导入核对（硬闸） ===');
   }
   log('裸包核对通过: ' + found.size + ' 个静态依赖全部在 node_modules 实物中');
 
+  // ── 3.6a：nodejs-mobile Node 18 引擎兼容硬闸 ──
+  // ★ 2026-11-19 真机实跑：cheerio 1.2.0 声明 Node >=20.18.1，并带入 undici 7；
+  //   undici 在模块初始化时引用全局 File，Node 18 直接抛 ReferenceError，后端进程随后崩溃。
+  //   依赖「存在」不等于「能在内嵌运行时启动」，所以按直接依赖的 engines.node 最低主版本拦截。
+  const MOBILE_NODE_MAJOR = 18;
+  const tooNewEngines = [];
+  for (const pkg of found.keys()) {
+    const pkgFile = path.join(NODEJS_DIR, 'node_modules', pkg, 'package.json');
+    if (!fs.existsSync(pkgFile)) continue;
+    let pkgJson;
+    try {
+      pkgJson = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
+    } catch {
+      continue;
+    }
+    const engine = String(pkgJson.engines?.node || '').trim();
+    const minMajorMatch = engine.match(/^\s*(?:>=|\^|~)?\s*v?(\d+)/);
+    const minMajor = minMajorMatch ? Number(minMajorMatch[1]) : 0;
+    if (minMajor > MOBILE_NODE_MAJOR) {
+      tooNewEngines.push(`${pkg}${pkgJson.version ? '@' + pkgJson.version : ''} (${engine})`);
+    }
+  }
+  if (tooNewEngines.length) {
+    for (const item of tooNewEngines) {
+      error('内嵌后端依赖声明了高于 Node ' + MOBILE_NODE_MAJOR + ' 的运行时: ' + item);
+    }
+    error('请固定到支持 Node ' + MOBILE_NODE_MAJOR + ' 的依赖版本；不要只在宿主 Node 上验证启动');
+    process.exit(1);
+  }
+  log('Node ' + MOBILE_NODE_MAJOR + ' 引擎兼容核对通过: ' + found.size + ' 个直接依赖');
+
   // ── 3.6b：Unicode 属性转义硬闸（2026-11-15 真机实报）──
   // nodejs-mobile 的老 V8 不支持 `\p{...}`：**正则字面量**在模块解析期直接 SyntaxError
   // ⇒ 后端整个起不来（与缺依赖同族：桌面绿、移动端死）。运行时构造形式
