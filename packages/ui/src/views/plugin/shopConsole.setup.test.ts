@@ -169,6 +169,15 @@ vi.mock('../../composables/chat/useChat', async () => {
     }),
   };
 });
+vi.mock('../../composables/usePlatform', () => ({
+  usePlatform: () => ({
+    platform: 'web',
+    isDesktop: false,
+    isWeb: true,
+    isMobile: false,
+    supportsBrowser: true,
+  }),
+}));
 
 import ShopConsole from './ShopConsole.vue';
 

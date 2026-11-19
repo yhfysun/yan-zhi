@@ -161,7 +161,10 @@
                 <div><dt>{{ siteFieldLabel }}</dt><dd>{{ shop.site || '—' }}</dd></div>
                 <div><dt>卖家 ID</dt><dd>{{ shop.sellerId || '—' }}</dd></div>
                 <div><dt>业务类型</dt><dd>{{ shopTypeMeta.label }} · {{ supplyMeta.label }}</dd></div>
-                <div><dt>API 凭据</dt><dd>{{ shop.hasSecret ? '已配置' : '未配置（浏览器流程仍可执行）' }}</dd></div>
+                <div>
+                  <dt>API 凭据</dt>
+                  <dd>{{ shop.hasSecret ? '已配置' : browserAvailable ? '未配置（浏览器流程仍可执行）' : '未配置' }}</dd>
+                </div>
                 <div v-if="shop.note"><dt>备注</dt><dd>{{ shop.note }}</dd></div>
               </dl>
               <div v-if="apiInfo && apiCaps.length" class="shop-detail-api">
@@ -252,6 +255,7 @@ const props = defineProps<{
   activeProjectTitle?: string;
   platformLabel: (id: string) => string;
   kindOf: (id: string) => 'store' | 'warehouse' | 'logistics';
+  browserAvailable: boolean;
 }>();
 const emit = defineEmits<{
   (e: 'open-tab', tab: string): void;
@@ -344,7 +348,7 @@ const operationTasks = computed<OperationTask[]>(() => {
     tasks.push({
       key: 'credential',
       title: '平台 API 凭据未配置',
-      desc: '浏览器流程可用，需要直连接口时再配置',
+      desc: props.browserAvailable ? '浏览器流程可用，需要直连接口时再配置' : '需要直连接口时再配置',
       action: '查看',
       tab: 'overview',
       level: 'info',

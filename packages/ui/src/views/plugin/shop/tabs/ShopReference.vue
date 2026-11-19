@@ -2,7 +2,9 @@
   <div class="shop-tab-body">
     <p class="shop-empty-hint shop-ref-lead">
       按平台列出<strong>该盯哪些指标</strong>与后台入口、登录注意事项。这里是只读参考 ——
-      具体数值由助手指引你在浏览器面板登录后取（本插件不存账号密码，也不假装能自动取到）。
+      <template v-if="browserAvailable">具体数值由助手指引你在浏览器面板登录后取。</template>
+      <template v-else>具体数值需要在电脑端登录平台后台后获取。</template>
+      本插件不存账号密码，也不假装能自动取到。
     </p>
 
     <div v-for="g in groups" :key="g.kind" class="shop-ref-group">
@@ -50,7 +52,8 @@
       <ul class="shop-ref-list">
         <li><strong>能做（人工 + 本地业务）</strong>：商品新建/编辑/上下架/改价/改库存、订单发货、库存流水、物流轨迹 —— 全部落本地业务库并审计。</li>
         <li><strong>能做（AI）</strong>：对话下指令 → 变更单 → 你确认 → 执行并回读；演示店铺立即生效，测试/生产同样走闸门（生产额外批准、禁止批量）。</li>
-        <li><strong>平台侧动作</strong>：没有管理 API 的平台返回跳转计划，在浏览器面板打开后台由你登录操作；演示店铺只返回演示计划，绝不触达真实平台。</li>
+        <li v-if="browserAvailable"><strong>平台侧动作</strong>：没有管理 API 的平台返回跳转计划，在浏览器面板打开后台由你登录操作；演示店铺只返回演示计划，绝不触达真实平台。</li>
+        <li v-else><strong>平台侧动作</strong>：没有管理 API 的平台需要到电脑端登录后台操作；演示店铺只返回演示计划，绝不触达真实平台。</li>
         <li><strong>不做（长期边界）</strong>：不代付款、不代签收、不绕过平台风控；不存平台账号密码。</li>
       </ul>
     </div>
@@ -61,6 +64,8 @@
 // 口径速查页签：平台指标 / 入口 / 登录提示 / 对接状态（只读参考）。
 import { computed } from 'vue';
 import { shopPlatforms } from '../../shopSession';
+
+defineProps<{ browserAvailable: boolean }>();
 
 type Kind = 'store' | 'warehouse' | 'logistics';
 const KIND_META: Record<Kind, { label: string; tag: 'info' | 'warning' | 'success' }> = {

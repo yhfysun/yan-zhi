@@ -37,10 +37,10 @@
       <el-button size="small" :type="chatCollapsed ? 'primary' : undefined" :icon="ChatDotRound" @click="emit('toggle-chat')">
         {{ chatCollapsed ? '问 AI' : 'AI 助手' }}
       </el-button>
-      <el-button size="small" :icon="Monitor" @click="emit('open-browser')">浏览器</el-button>
+      <el-button v-if="browserAvailable" size="small" :icon="Monitor" @click="emit('open-browser')">浏览器</el-button>
       <el-button v-if="shop" size="small" :loading="checking" @click="emit('check')">配置自检</el-button>
       <el-button v-if="shop" size="small" @click="emit('edit')">编辑</el-button>
-      <el-button v-if="shop && isStore" size="small" type="primary" plain @click="emit('open-platform')">平台后台</el-button>
+      <el-button v-if="shop && isStore && platformAvailable" size="small" type="primary" plain @click="emit('open-platform')">平台后台</el-button>
       <el-button v-if="shop" size="small" type="danger" plain @click="emit('remove')">删除</el-button>
     </div>
   </div>
@@ -60,6 +60,8 @@ const props = defineProps<{
   isStore: boolean;
   checking: boolean;
   chatCollapsed: boolean;
+  browserAvailable: boolean;
+  platformAvailable: boolean;
 }>();
 
 const emit = defineEmits<{

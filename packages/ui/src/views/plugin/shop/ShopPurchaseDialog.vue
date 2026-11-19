@@ -115,6 +115,8 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useIsMobile } from '../../../composables/useIsMobile';
+import { useMobileShell } from '../../../composables/useMobileShell';
+import { usePlatform } from '../../../composables/usePlatform';
 import { useChatStore } from '../../../stores/chat';
 import type { ShopConnection } from '../shopSession';
 import {
@@ -134,6 +136,11 @@ const emit = defineEmits<{
 }>();
 
 const isMobile = useIsMobile();
+const mobileShell = useMobileShell();
+const platformInfo = usePlatform();
+const mobileBrowserUnavailable = computed(() => (
+  platformInfo.isMobile || (platformInfo.isWeb && mobileShell.value)
+));
 const chatStore = useChatStore();
 const busy = ref(false);
 const approveProduction = ref(false);
@@ -203,6 +210,11 @@ async function go1688(p: BizPurchase): Promise<void> {
   if (!props.shop) return;
   const r = await purchaseJumpApi(props.shop.id, p.id);
   if (r.error || !r.plan) { ElMessage.error(r.error || '无法生成采购跳转'); return; }
+  if (mobileBrowserUnavailable.value) {
+    window.open(r.plan.url, '_blank', 'noopener,noreferrer');
+    ElMessage.info('已在系统浏览器打开货源页；付款必须你本人完成。');
+    return;
+  }
   let name = '1688 采购';
   try { name = new URL(r.plan.url).host || name; } catch { /* 非法 URL 用默认 */ }
   chatStore.openTab({ kind: 'browser', name, url: r.plan.url });

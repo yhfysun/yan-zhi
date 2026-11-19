@@ -1,5 +1,11 @@
 <template>
-  <ConsoleShell ref="shellRef" storage-key="shop_aside" root-class="shop-console" :default-width="260">
+  <ConsoleShell
+    ref="shellRef"
+    storage-key="shop_aside"
+    root-class="shop-console"
+    :default-width="260"
+    mobile-aside="drawer"
+  >
     <!-- ============ 左栏：项目 + 资源（ShopSidebar） ============ -->
     <template #aside>
       <ShopSidebar
@@ -14,13 +20,13 @@
         :demo-count="demoShops.length"
         :demo-busy="demoBusy"
         :counts="projectCounts"
-        @select-project="switchProject"
+        @select-project="switchProjectFromAside"
         @choose-workspace="openProjectWorkspacePicker"
-        @select-task="selectProjectTask"
+        @select-task="selectProjectTaskFromAside"
         @create-project="createProject"
         @delete-project="deleteProject"
-        @select-shop="selectShop"
-        @create-connection="openCreate()"
+        @select-shop="selectShopFromAside"
+        @create-connection="openCreateFromAside"
         @seed-demo="makeDemos"
         @clear-demo="clearDemos"
       />
@@ -32,7 +38,7 @@
       :class="{
         'is-lead-ai': lead === 'ai',
         'is-chat-collapsed': chatCollapsed,
-        'has-preview': chat.store.rightPanelOpen,
+        'has-preview': !compactMobile && chat.store.rightPanelOpen,
       }"
       :style="{ '--shop-chat-w': chatR.width.value + 'px' }"
     >
@@ -50,6 +56,8 @@
           @remove="removeShop()"
           @open-platform="tab = 'platform'"
           @open-browser="openShopBrowserPreview"
+          :browser-available="browserAvailable"
+          :platform-available="browserAvailable"
           @toggle-chat="chatCollapsed = !chatCollapsed"
         />
 
@@ -75,6 +83,7 @@
               :active-project-title="activeProjectTitle"
               :platform-label="platformLabel"
               :kind-of="kindOf"
+              :browser-available="browserAvailable"
               @open-tab="tab = $event as ShopTab"
               @ask-ai="openShopAi"
             />
@@ -93,7 +102,7 @@
             <el-tab-pane v-if="!isDropship" label="库存" name="inventory">
               <ShopInventory :shop="active" />
             </el-tab-pane>
-            <el-tab-pane label="平台后台" name="platform">
+            <el-tab-pane v-if="platformAvailable" label="平台后台" name="platform">
               <ShopPlatformView :shop="active" />
             </el-tab-pane>
           </template>
@@ -110,7 +119,7 @@
             <ShopAudit />
           </el-tab-pane>
           <el-tab-pane label="口径速查" name="reference">
-            <ShopReference />
+            <ShopReference :browser-available="browserAvailable" />
           </el-tab-pane>
         </el-tabs>
       </div>
@@ -130,7 +139,12 @@
           <span class="shop-chat-title">AI 助手</span>
           <span class="shop-chat-spacer"></span>
           <LeadToggle :model-value="lead" mode="shop" @update:model-value="onLeadChange" />
-          <button class="shop-chat-btn" title="打开浏览器预览" @click="openShopBrowserPreview">
+          <button
+            v-if="browserAvailable"
+            class="shop-chat-btn"
+            title="打开浏览器预览"
+            @click="openShopBrowserPreview"
+          >
             <el-icon :size="12"><Monitor /></el-icon>
           </button>
           <button class="shop-chat-btn" title="收起对话" @click="chatCollapsed = true">
@@ -152,7 +166,7 @@
         <ChatInputArea ref="chatInputRef" />
       </aside>
 
-      <ChatPreviewPane />
+      <ChatPreviewPane v-if="!compactMobile" />
 
     </section>
 
@@ -183,6 +197,8 @@ import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
 import { useResizable } from '../../composables/useResizable';
+import { useMobileShell } from '../../composables/useMobileShell';
+import { usePlatform } from '../../composables/usePlatform';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import { setWorkbenchContext } from '../../stores/workbenchContext';
 import ShopSidebar from './shop/ShopSidebar.vue';
@@ -229,6 +245,13 @@ import {
 // 对话栏：宽度可拖拽并持久化（与运维/工作流同一个 useResizable）
 const chatR = useResizable('shop_chat', 360, 280, 760);
 const shellRef = ref<{ collapseAside: () => void } | null>(null);
+const isMobileShell = useMobileShell();
+const platformInfo = usePlatform();
+const compactMobile = computed(() => (
+  platformInfo.isMobile || (platformInfo.isWeb && isMobileShell.value)
+));
+const browserAvailable = computed(() => platformInfo.supportsBrowser && !compactMobile.value);
+const platformAvailable = browserAvailable;
 /** 小屏（<1100）首次进入先收起对话栏，用右下角悬浮入口展开；宽屏保持常驻。 */
 const chatCollapsed = ref(typeof window !== 'undefined' && window.innerWidth < 1100);
 /** 主导方：human=工作台居中+对话在右；ai=对话居中（LeadToggle / 工作台切换同步生效） */
@@ -242,7 +265,7 @@ watch(lead, (next) => {
     chatCollapsed.value = false;
     return;
   }
-  if (typeof window !== 'undefined' && window.innerWidth < 1100) {
+  if (isMobileShell.value || (typeof window !== 'undefined' && window.innerWidth < 1100)) {
     chatCollapsed.value = true;
   }
 }, { immediate: true });
@@ -255,16 +278,25 @@ function openShopAi(): void {
 /** 平板/手机宽度下优先给工作台让位；资源栏和 AI 栏都从边缘入口按需展开。 */
 function syncNarrowShopChrome(): void {
   if (typeof window === 'undefined') return;
-  if (window.innerWidth < 1100 && lead.value !== 'ai' && !chat.store.rightPanelOpen) {
+  if ((isMobileShell.value || window.innerWidth < 1100) && lead.value !== 'ai' && !chat.store.rightPanelOpen) {
     chatCollapsed.value = true;
   }
-  if (window.innerWidth < 900) shellRef.value?.collapseAside();
+  if (isMobileShell.value || window.innerWidth < 900) shellRef.value?.collapseAside();
 }
 
 // ===== 项目 = 稳定项目 id + 多条任务会话；旧会话仍以自身 id 作为项目 id =====
 const chat = useChat();
 const chatStore = useChatStore();
 const chatInputRef = ref<{ fillAndSend: (prompt: string) => Promise<void> } | null>(null);
+
+// 移动端不提供内置浏览器；桌面端遗留的预览打开状态也不能把手机工作区挤窄。
+watch(compactMobile, (mobile) => {
+  if (!mobile) return;
+  chat.store.rightPanelOpen = false;
+  shellRef.value?.collapseAside();
+  if (lead.value !== 'ai') chatCollapsed.value = true;
+}, { immediate: true });
+
 const currentModelLabel = computed(() => {
   const selectedId = chat.selectedModelId.value;
   if (!selectedId) return '模型待选择';
@@ -281,6 +313,7 @@ const shopProjects = computed(() => buildShopProjects(chatStore.conversations));
 
 /** 店铺模式与聊天页共用同一个应用级浏览器预览；关闭时只折叠，不卸载 BrowserPanel。 */
 function openShopBrowserPreview(): void {
+  if (!browserAvailable.value) return;
   const browserTab = chat.store.previewTabs.find((tab) => tab.kind === 'browser');
   if (browserTab) chat.store.activatePreviewTab(browserTab.id);
   else chat.store.openTab({ kind: 'browser', name: '浏览器', url: '' });
@@ -294,6 +327,10 @@ function closeShopBrowserPreview(): void {
 }
 
 watch(() => chat.store.rightPanelOpen, (open) => {
+  if (compactMobile.value) {
+    if (open) chat.store.rightPanelOpen = false;
+    return;
+  }
   if (!open) return;
   chatCollapsed.value = false;
   if (typeof window !== 'undefined' && window.innerWidth < 1600) shellRef.value?.collapseAside();
@@ -410,6 +447,10 @@ const tab = ref<ShopTab>('setup');
 function ensureTabVisible(): void {
   if (!active.value) return;
   if (tab.value === 'setup') return;
+  if (!platformAvailable.value && tab.value === 'platform') {
+    tab.value = 'overview';
+    return;
+  }
   if (isLogistics.value) {
     if (!['setup', 'overview', 'logistics', 'audit', 'reference'].includes(tab.value)) tab.value = 'logistics';
     return;
@@ -437,6 +478,7 @@ watch(tab, (next) => {
 });
 
 watch(isDropship, () => ensureTabVisible());
+watch(browserAvailable, () => ensureTabVisible());
 
 // 连接列表刷新（新建/删除/演示数据）后，若当前选中项不在本项目，自动落到本项目第一条
 watch(projectConns, (list) => {
@@ -468,8 +510,28 @@ async function switchProject(id: string): Promise<void> {
   }
 }
 
+async function switchProjectFromAside(id: string): Promise<void> {
+  await switchProject(id);
+  if (isMobileShell.value) shellRef.value?.collapseAside();
+}
+
 async function selectProjectTask(id: string): Promise<void> {
   try { await chat.selectConv(id); } catch { /* 任务可能已删除 */ }
+}
+
+async function selectProjectTaskFromAside(id: string): Promise<void> {
+  await selectProjectTask(id);
+  if (isMobileShell.value) shellRef.value?.collapseAside();
+}
+
+function selectShopFromAside(id: string): void {
+  selectShop(id);
+  if (isMobileShell.value) shellRef.value?.collapseAside();
+}
+
+function openCreateFromAside(initialPlatform?: string): void {
+  openCreate(initialPlatform);
+  if (isMobileShell.value) shellRef.value?.collapseAside();
 }
 
 function openProjectWorkspacePicker(): void {
@@ -488,6 +550,7 @@ async function createProject(): Promise<void> {
     await chat.selectConv(id);
     selectShop('');
     tab.value = 'setup';
+    if (isMobileShell.value) shellRef.value?.collapseAside();
   } catch { /* 取消 */ }
 }
 
@@ -700,6 +763,7 @@ async function clearDemos(): Promise<void> {
 onMounted(async () => {
   window.addEventListener('resize', syncNarrowShopChrome, { passive: true });
   syncNarrowShopChrome();
+  if (compactMobile.value) chat.store.rightPanelOpen = false;
   await loadShopConsole();
   // 进店铺模式：没有当前会话时自动落到最近项目的最近任务；
   // 一个都没有就保持「未归属」，等用户新建项目或创建演示数据。

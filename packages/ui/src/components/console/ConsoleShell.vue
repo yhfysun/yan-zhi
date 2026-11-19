@@ -5,10 +5,27 @@
          grid），**不用这个壳**，故它不在迁移范围内。
        ★ 外壳只管"盒子"：左栏与主区的内容全部由使用方通过 slot 提供。 -->
   <div class="console-shell" :class="rootClass">
-    <div class="cs-layout" :style="{ '--cs-aside-w': (collapsed ? 0 : asideEffW) + 'px' }">
+    <div
+      class="cs-layout"
+      :class="{
+        'is-drawer': mobileAside === 'drawer' && isMobile,
+        'is-aside-open': !collapsed,
+      }"
+      :style="{ '--cs-aside-w': (collapsed ? 0 : asideEffW) + 'px' }"
+    >
+      <button
+        v-if="mobileAside === 'drawer' && isMobile"
+        v-show="!collapsed"
+        type="button"
+        class="cs-aside-scrim"
+        aria-label="关闭资源列表"
+        @click="collapseAside"
+      ></button>
+
       <aside
         v-show="!collapsed"
         class="cs-aside"
+        :aria-hidden="collapsed"
         :style="asideStyle"
         @contextmenu.prevent="$emit('aside-contextmenu', $event)"
       >
@@ -48,7 +65,7 @@
 import { computed, ref, watch } from 'vue';
 import { Expand, Fold } from '@element-plus/icons-vue';
 import { useResizable } from '../../composables/useResizable';
-import { useIsMobile } from '../../composables/useIsMobile';
+import { useMobileShell } from '../../composables/useMobileShell';
 
 const props = withDefaults(defineProps<{
   /** 宽度持久化 key（每个模式一个，如 'ops_aside' / 'shop_aside'） */
@@ -58,7 +75,15 @@ const props = withDefaults(defineProps<{
   defaultWidth?: number;
   minWidth?: number;
   maxWidth?: number;
-}>(), { rootClass: '', defaultWidth: 260, minWidth: 160, maxWidth: 460 });
+  /** mobile：push=保持内联挤压；drawer=抽屉覆盖，主工作区始终满宽。 */
+  mobileAside?: 'push' | 'drawer';
+}>(), {
+  rootClass: '',
+  defaultWidth: 260,
+  minWidth: 160,
+  maxWidth: 460,
+  mobileAside: 'push',
+});
 
 defineEmits<{ (e: 'aside-contextmenu', ev: MouseEvent): void }>();
 
@@ -66,12 +91,13 @@ const asideR = useResizable(props.storageKey, props.defaultWidth, props.minWidth
 const asideW = asideR.width;
 // ★ 移动端：默认收起侧栏（260px 吃掉 375px 屏的 70%），展开时宽度钳到 55vw
 //   （asideW 是 localStorage 持久值，手机上直接用会把主区挤成负宽）
-const isMobile = useIsMobile();
+const isMobile = useMobileShell();
 const collapsed = ref(isMobile.value);
 watch(isMobile, (m) => { if (m) collapsed.value = true; });
 const asideEffW = computed(() => {
   if (!isMobile.value) return asideW.value;
-  const cap = Math.round((typeof window !== 'undefined' ? window.innerWidth : 375) * 0.55);
+  const ratio = props.mobileAside === 'drawer' ? 0.86 : 0.55;
+  const cap = Math.round((typeof window !== 'undefined' ? window.innerWidth : 375) * ratio);
   return Math.min(asideW.value, cap);
 });
 const asideStyle = computed(() => ({ width: asideEffW.value + 'px' }));
@@ -99,6 +125,43 @@ defineExpose({ collapsed, toggleAside, collapseAside, asideW });
   padding-right: 10px; border-right: 1px solid var(--glass-border);
 }
 .cs-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+/* 移动端抽屉：资源栏脱离 flex 流，覆盖在主工作区上方。
+   桌面三栏缩成手机两栏会把主区裁成一条；这里让主区始终保有完整视口。 */
+.cs-layout.is-drawer .cs-aside {
+  position: absolute;
+  z-index: 21;
+  inset: 0 auto 0 0;
+  width: min(86vw, 340px) !important;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--glass-border);
+  background: var(--el-bg-color);
+  box-shadow: 18px 0 42px rgba(24, 31, 44, 0.18);
+}
+.cs-layout.is-drawer .cs-main {
+  width: 100%;
+  flex-basis: 100%;
+}
+.cs-aside-scrim {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgba(20, 27, 38, 0.28);
+  cursor: pointer;
+}
+.cs-layout.is-drawer .cs-aside-toggle {
+  z-index: 22;
+}
+.cs-layout.is-drawer.is-aside-open .cs-aside-toggle {
+  left: auto !important;
+  right: 12px;
+}
 
 /* 折叠条：贴左边缘竖条（与「对话」页 .conv-toggle 一致） */
 .cs-aside-toggle {

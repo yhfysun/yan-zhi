@@ -689,6 +689,22 @@
 }
 .shop-demo-hint { font-size: 11px; color: var(--el-text-color-secondary); }
 
+/* 移动抽屉里资源区随内容完整滚动，不再沿用桌面左栏的内部滚动/底部贴底。 */
+.cs-layout.is-drawer .shop-projects {
+  flex: none;
+  overflow: visible;
+}
+.cs-layout.is-drawer .shop-project-tasks {
+  margin-left: 10px;
+}
+.cs-layout.is-drawer .shop-project-task-list {
+  max-height: none;
+  overflow: visible;
+}
+.cs-layout.is-drawer .shop-demo {
+  margin-top: 12px;
+}
+
 /* 「口径速查」页签 */
 .shop-ref-lead { margin: 0 0 12px; }
 .shop-ref-group { margin-bottom: 16px; }
@@ -1126,7 +1142,7 @@
   .shop-toolbar-actions {
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
     gap: 8px;
   }
   .shop-toolbar-actions .el-button {
@@ -1145,6 +1161,18 @@
   .shop-setup-checks .el-checkbox {
     min-height: 44px;
   }
+}
+
+.platform-mobile .shop-console .shop-toolbar-actions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+.platform-mobile .shop-console .shop-toolbar-actions .el-button {
+  width: 100%;
+  min-height: 44px;
+  margin-left: 0;
 }
 @media (max-width: 720px) {
   .shop-launchpad { padding: 16px 12px 24px; }
