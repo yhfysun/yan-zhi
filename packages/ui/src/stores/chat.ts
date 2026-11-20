@@ -2866,6 +2866,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           'browser_wait_for_request': 'wait_for_request',
           'browser_get_network_log': 'get_network_log',
           'browser_get_api_data': 'get_api_data',
+          'browser_get_console_log': 'get_console_log',
+          'browser_get_debug_state': 'get_debug_state',
+          'browser_get_page_capabilities': 'get_page_capabilities',
           'browser_visual_locate': 'visual_locate',
         };
         // ★★★ B5 根治（2026-10-10）：**优先用主进程的能力清单推导**映射，`actionMap` 退为兜底。

@@ -19,6 +19,7 @@
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import type { ExecutionEvidence } from '@yan-zhi/shared';
 import { db } from '../db.js';
 import { serverState } from '../state.js';
 
@@ -34,6 +35,8 @@ export interface TaskPlanStep {
   title: string;
   status?: string;
   note?: string;
+  /** 该步骤关联的结构化证据（浏览器现场、桌面控件、命令/测试、文件等）。 */
+  evidence?: ExecutionEvidence[];
   /** 首次进入 running 的毫秒时间戳（幂等，重复 running 不覆盖） */
   startedAt?: number;
   /** 进入 done / failed 的毫秒时间戳 */
@@ -77,10 +80,38 @@ export interface PreservedStepTiming {
   status: 'done' | 'failed';
   /** 已完成步骤的证据/结论，重规划时必须一起保留，否则检查点会丢关键产物。 */
   note?: string;
+  evidence?: ExecutionEvidence[];
   startedAt?: number;
   finishedAt?: number;
   activeMs?: number;
   waitMs?: number;
+}
+
+const EVIDENCE_KINDS = new Set<ExecutionEvidence['kind']>([
+  'ui_tree', 'dom', 'screenshot', 'console', 'network', 'text', 'selector',
+  'command', 'test', 'file', 'artifact', 'note',
+]);
+
+/** 工具和模型输入都不可信；证据在落计划前统一限长、限量、限定类型。 */
+export function normalizeTaskEvidence(value: unknown): ExecutionEvidence[] {
+  if (!Array.isArray(value)) return [];
+  const out: ExecutionEvidence[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const kind = String(item.kind || '').trim() as ExecutionEvidence['kind'];
+    const summary = String(item.summary || '').trim();
+    if (!EVIDENCE_KINDS.has(kind) || !summary) continue;
+    out.push({
+      ...(item.id ? { id: String(item.id).slice(0, 120) } : {}),
+      kind,
+      summary: summary.slice(0, 1000),
+      ...(item.ref ? { ref: String(item.ref).slice(0, 2000) } : {}),
+      ...(item.data !== undefined ? { data: item.data } : {}),
+    });
+    if (out.length >= 50) break;
+  }
+  return out;
 }
 
 /** 步骤耗时：返工前的累计活跃时长 + 本轮时间窗 */
@@ -181,7 +212,10 @@ export function renderTaskPlanMarkdown(plan: TaskPlan): string {
   const lines = steps.map((s) => {
     const mark = STATUS_MARK[String(s?.status || 'pending')] || '[ ]';
     const title = String(s?.title || '(未命名步骤)');
-    return `- ${mark} ${title}${s?.note ? ` —— ${String(s.note)}` : ''}`;
+    const evidence = Array.isArray(s?.evidence)
+      ? s.evidence.map((e) => `  - 证据[${e.kind}] ${e.summary}${e.ref ? ` (${e.ref})` : ''}`).join('\n')
+      : '';
+    return `- ${mark} ${title}${s?.note ? ` —— ${String(s.note)}` : ''}${evidence ? `\n${evidence}` : ''}`;
   });
   return [
     `# 任务计划${plan?.title ? `：${plan.title}` : ''}`,
@@ -202,6 +236,20 @@ export function parseTaskPlanMarkdown(md: string): TaskPlan | null {
     const line = raw.trim();
     const titleMatch = line.match(/^#\s*任务计划[：:]\s*(.*)$/);
     if (titleMatch && !title) { title = titleMatch[1].trim(); continue; }
+    const evidenceMatch = line.match(/^- 证据\[([^\]]+)\]\s+(.+?)(?:\s+\((.*)\))?$/);
+    if (evidenceMatch && steps.length) {
+      const kind = evidenceMatch[1] as ExecutionEvidence['kind'];
+      const summary = evidenceMatch[2].trim();
+      if (EVIDENCE_KINDS.has(kind) && summary) {
+        const prev = steps[steps.length - 1];
+        prev.evidence = [...(prev.evidence || []), {
+          kind,
+          summary,
+          ...(evidenceMatch[3] ? { ref: evidenceMatch[3] } : {}),
+        }].slice(-50);
+      }
+      continue;
+    }
     const stepMatch = line.match(/^- \[(x|X|~|-| )\]\s+(.+)$/);
     if (!stepMatch) continue;
     const mark = stepMatch[1];
@@ -401,6 +449,7 @@ function carriedStepTimings(previous: TaskPlan, steps: TaskPlanStep[]): Preserve
       index: i + 1,
       status: p.status as 'done' | 'failed',
       ...(p.note ? { note: p.note } : {}),
+      ...(p.evidence?.length ? { evidence: p.evidence } : {}),
       ...(Number(p.startedAt) ? { startedAt: Number(p.startedAt) } : {}),
       ...(Number(p.finishedAt) ? { finishedAt: Number(p.finishedAt) } : {}),
       ...(Number(p.activeMs) ? { activeMs: Number(p.activeMs) } : {}),
@@ -428,6 +477,7 @@ export async function backendTaskPlan(
     .map((s: any) => ({
       title: String(s.title),
       ...(s.description ? { note: String(s.description) } : {}),
+      ...(Array.isArray(s.evidence) ? { evidence: normalizeTaskEvidence(s.evidence) } : {}),
       status: 'pending',
     }));
   if (!steps.length) return 'task_plan 失败：steps 里没有有效步骤（每项需要 title）';
@@ -441,6 +491,7 @@ export async function backendTaskPlan(
     if (!step) continue;
     step.status = p.status;
     if (p.note) step.note = p.note;
+    if (p.evidence?.length) step.evidence = normalizeTaskEvidence(p.evidence);
     if (p.startedAt) step.startedAt = p.startedAt;
     if (p.finishedAt) step.finishedAt = p.finishedAt;
     if (p.activeMs) step.activeMs = p.activeMs;
@@ -532,6 +583,10 @@ export async function backendTaskStep(
   }
   step.status = status;
   if (args?.note != null) step.note = String(args.note);
+  const evidence = normalizeTaskEvidence(args?.evidence);
+  if (evidence.length) {
+    step.evidence = [...(Array.isArray(step.evidence) ? step.evidence : []), ...evidence].slice(-50);
+  }
   derivePlanTiming(plan);
   if (!planStore.save(plan)) return 'task_step 失败：写库失败';
   // 与 task_plan 同口径：未配工作目录 = 按设计跳过，不算失败（见上方 ★★ 2026-10-26 注释）
@@ -539,4 +594,29 @@ export async function backendTaskStep(
   const ok = await planStore.writeFile(plan);
   const warn = canPersist && !ok ? '（工作目录计划文件写入失败）' : '';
   return `已更新第 ${idx} 步状态为 ${status}${warn}`;
+}
+
+/**
+ * 工具执行回执自动挂到当前 running 步骤。
+ * 失败或没有 running 步骤时静默跳过：证据增强不能阻断工具主链路。
+ */
+export async function appendEvidenceToRunningTaskStep(
+  conversationId: string,
+  value: unknown,
+): Promise<boolean> {
+  const evidence = normalizeTaskEvidence(value);
+  if (!evidence.length) return false;
+  try {
+    const store = createConversationTaskPlanStore(conversationId);
+    const plan = store.load();
+    if (!plan) return false;
+    const step = plan.steps.find((item) => item.status === 'running');
+    if (!step) return false;
+    step.evidence = [...(Array.isArray(step.evidence) ? step.evidence : []), ...evidence].slice(-50);
+    if (!store.save(plan)) return false;
+    await store.writeFile(plan);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -30,7 +30,7 @@
       </div>
     </template>
     <template v-else>
-      <h2 v-if="!(pageShell && mobileGroup)" class="page-title">设置</h2>
+      <h2 v-if="tab !== 'pet' && !(pageShell && mobileGroup)" class="page-title">设置</h2>
       <!-- 「模型与智能」是设置首层里的管理入口组：二级页只展示可进入的独立管理页，
            不把模型、智能体、Skill 的业务表单硬塞回通用设置 tab。 -->
       <div
@@ -1095,6 +1095,7 @@ function applyQueryPane() {
   // 只接受真实存在的分区名（内置组 + 插件贡献的设置页签），防 ?pane=xxx 打开空白
   const valid = new Set<string>([
     ...MOBILE_GROUPS_BASE.flatMap((g) => g.tabs.map((t) => t.name)),
+    ...(HAS_PET_ASSETS ? ['pet'] : []),
     ...pluginStore.settingsTabs.map((t) => String((t as { name?: string }).name || '')),
   ]);
   if (valid.has(qp)) tab.value = qp;

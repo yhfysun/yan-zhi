@@ -760,16 +760,39 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
     instruction TEXT NOT NULL,
     depends_on_json TEXT NOT NULL DEFAULT '[]',
     max_steps INTEGER,
+    verify_json TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     error_summary TEXT,
     artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
     result_brief TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_task_plan_item_plan ON task_plan_item(plan_id);
   CREATE INDEX IF NOT EXISTS idx_task_plan_item_conv ON task_plan_item(conversation_id);
+
+  -- 浏览器/桌面/代码工具的统一执行检查点。保存回执与前后 revision，供任务详情和审计读取。
+  CREATE TABLE IF NOT EXISTS execution_checkpoint (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    step INTEGER,
+    target TEXT NOT NULL,
+    action TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    before_revision TEXT,
+    after_revision TEXT,
+    changed INTEGER,
+    receipt_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_execution_checkpoint_task
+    ON execution_checkpoint(user_id, task_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_execution_checkpoint_conv
+    ON execution_checkpoint(conversation_id, created_at);
 
   -- 越界访问审计（2026-10-01）：模型试图访问工作目录外位置的**全部尝试**（允许/拒绝都记）。
   --
@@ -793,6 +816,9 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_path_audit_conv ON path_access_audit(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_path_audit_decision ON path_access_audit(decision);
 `);
+
+try { db.exec('ALTER TABLE task_plan_item ADD COLUMN verify_json TEXT'); } catch {}
+try { db.exec("ALTER TABLE task_plan_item ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
 
 // 迁移 file_change 表（添加 step 列：该文件变更发生在**第几步**）。
 //
@@ -1408,6 +1434,10 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 页面能力统一由 pageAgent 持有；这里只保留 call_agent 作为唯一入口。
   // 电脑使用（computer-use 内置插件，默认启用；本机 GUI 自动化：截屏/鼠标/键盘/窗口）
   'plugin_computer-use__computer_screenshot',
+  'plugin_computer-use__computer_get_ui_tree',
+  'plugin_computer-use__computer_click_element',
+  'plugin_computer-use__computer_set_value',
+  'plugin_computer-use__computer_wait_for_element',
   'plugin_computer-use__computer_list_windows',
   'plugin_computer-use__computer_activate_window',
   'plugin_computer-use__computer_mouse_move',
@@ -1532,6 +1562,9 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）+ 返回含 PageState 页面状态签名（两次读取签名相同 = 操作未生效）。★ 另含【表单状态】段（每个输入框/文本域/富文本/下拉的字段名、类型、必填、**当前值**）与【自上次读取的变化】段（哪个字段从什么变成了什么）—— **填完表单以【表单状态】的值为准判断生效，不要重复填**；【自上次读取的变化】为"无"= 上一步动作没改变任何字段，须换定位方式而非重复同一动作
 - browser_get_page_info: 元素坐标——与 get_page_content 同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、或配合 browser_screenshot(annotate=true) 时用它
 - browser_get_dom: 父子层级树——需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它
+- browser_get_debug_state: 页面调试状态——控制台日志、页面加载错误、导航时间线、慢资源和可见性一次返回。写操作或页面异常后优先用它验收
+- browser_get_console_log: 只读控制台输出，可按 level/filter/limit 缩小范围
+- browser_get_page_capabilities: 检测 WebMCP 与页面图片/视频/下载链接等结构化资产；有 WebMCP 时优先使用页面声明的工具，没有就继续专用 browser_* 操作
 - browser_get_visible_text: 纯正文——只读内容、抽取长文时用，输出最小
 - browser_get_tabs: 查看当前浏览器里的标签页与 tabId；任务收尾或页面卡死时先看有哪些 agent 打开的页
 - browser_new_tab: 新开后台标签页；需要保留当前页、并行读取另一页时用
@@ -1838,6 +1871,8 @@ const CODE_AGENT_BUILTIN_TOOLS = [
   // 架构把控：目录 / 读码 / 检索 / 大纲 / 符号引用 / 依赖图
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
   'code_search', 'code_outline', 'code_refs', 'code_graph',
+  'code_verify',
+  'git_worktree',
   // 验收：编译 / 测试 / 脚本
   'cmd_exec', 'js_exec', 'python_exec',
   // 委派：4 个专属子智能体 + pageAgent 查官方文档
@@ -1916,6 +1951,9 @@ const CODE_AGENT_SYSTEM_PROMPT = `你是「代码编写助手」（codeAgent）�
 ## 改动与验证纪律（每一级任务都适用）
 - **改文件的首选方式**：一处以上改动、或同时改实现+测试/类型 → 用 file_edit 的 **patch 模式**（以 "*** Begin Patch" 开头、以 "*** End Patch" 结尾；"*** Update File: 路径" 段内行首空格=上下文、"+"=新增、"-"=删除）。它按行定位、不需要复述整段原文，且整份补丁原子生效；上下文行从 file_read 输出逐字复制（缩进、空行都算）。单处小改可用 old_string，但同样必须逐字一致且唯一；连续失败 2 次就 file_read 重新核对或改 file_write 整段重写，不要反复猜锚点。
 - **改完必验**：每次代码改动后，编译/类型检查/测试/脚本至少实际跑其一（cmd_exec / js_exec / python_exec），把真实输出作为汇报依据。环境跑不了的明说跑不了、给出用户可自行执行的命令 —— 禁止不跑就说"应该没问题"。
+- **优先 code_verify**：项目有 typecheck / lint / test / build 脚本时，先跑 code_verify（快速验证传 mode=quick，完整验收传 mode=full，改单测时传 testPattern）；它会把每条命令的退出码、耗时和输出写成结构化回执。
+- **前端改动要开浏览器验收**：启动本地 dev server 后，用 browser_navigate 打开目标页，操作后调用 browser_get_debug_state 检查控制台错误、页面加载失败和慢资源；需要进一步定位时用 browser_get_console_log / browser_get_network_log。
+- **隔离边界要如实说明**：并行长任务用 git_worktree 建独立工作区；当前应用没有内置 Docker/OS 级沙箱，不能把宿主 Docker 或工作区权限当成“已隔离”。不可信代码应按现有权限矩阵请求授权并在受控目录验证。不要把任务交给外部 Codex/CLI 冒充应用自身编程能力。
 
 ## 工具结果与上下文（2026-10-19，实测教训）
 - 历史消息里出现「已压缩 / 已清理 / 中段省略」这类标记，只表示**旧的**工具结果被上下文管理归档以省 token；**新发起的工具调用永远返回当前完整输出**（受单次输出上限约束）。不要为了"避开清理"把读取切成几百字符的小块反复试探——那是自废效率、白烧步数。
@@ -1966,6 +2004,7 @@ const BACKEND_DEV_BUILTIN_TOOLS = [
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
   'code_search', 'code_outline', 'code_refs', 'code_graph',
   'code_diagnostics',
+  'code_verify',
   'js_exec', 'python_exec', 'cmd_exec',
   'task_plan', 'task_step', 'ask_user',
   // 工程记忆（2026-10-18）：开工读 / 收尾补坑 —— 实现者子智能体也要能读写工程记忆
@@ -2039,6 +2078,7 @@ const FRONTEND_DEV_BUILTIN_TOOLS = [
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
   'code_search', 'code_outline', 'code_refs', 'code_graph',
   'code_diagnostics',
+  'code_verify',
   'js_exec', 'python_exec', 'cmd_exec',
   'task_plan', 'task_step', 'ask_user',
   // 工程记忆（2026-10-18）：开工读 / 收尾补坑 —— 实现者子智能体也要能读写工程记忆
@@ -3187,6 +3227,11 @@ try {
 const DESKTOP_AUTO_DESC = '用 computer-use 插件操作本机桌面应用（微信/QQ/邮件/文件管理等）与系统管理（安装/卸载/强删/注册表清理）：通用 SOP=找窗口→激活→核对对象→截图定位→按钮优先提交→截图核验；含快捷键差异（微信 Ctrl+Enter/发送按钮，Enter 需开启回车发送）、纠错时效（微信 2 分钟撤回）与资金红线（红包/转账只提醒不代操作）。';
 const DESKTOP_AUTO_TRIGGERS = ['桌面自动化', '操作电脑', '操作应用', '帮我操作软件', '发微信', '微信发消息', '自动发微信', '发QQ消息', '卸载应用', '安装应用', '强制删除文件', '清理注册表残留'];
 const DESKTOP_AUTO_BODY = `# 桌面应用自动化\n\n用「电脑使用」(computer-use) 插件操作本机桌面应用（微信/QQ/钉钉/邮件客户端/文件管理器等任意有窗口的软件），并可做系统级维护（安装/卸载应用、强制删除残留、注册表清理）。**不写死任何路径/版本**：应用在哪、叫什么，一律先用工具扫出来。\n\n## 通用 SOP（每步截图核验，禁止盲点盲按）\n0. 前提：插件管理页已启用「电脑使用」；目标应用已登录（登录/扫码/验证码一律请用户自己完成，禁止代操作）；锁屏先唤醒解锁。\n1. 找应用：不确定名称/路径时先 computer_list_installed_apps { nameFilter }（已装应用+安装目录+exe 路径）、computer_list_processes（正在运行的）或 computer_list_windows { processName }（有窗口的），不要猜路径。\n   微信 4.x 注意：exe 是 Weixin.exe（进程名 Weixin/WeChatAppEx，安装目录常为 ...\\Tencent\\Weixin），注册表显示名是「微信」——list_installed_apps 的 nameFilter 用「微信」或「Weixin」，只搜 WeChat 会搜不到；同名多条时选 exeExists=true 的（false 是卸载残留，如指向已不存在的 WeChat.exe）。\n2. 激活：computer_activate_window { pid }。\n3. 核对操作对象（必做，防误操作）：computer_screenshot + image_analyze 确认当前窗口/会话/文档与用户目标一致（聊天应用=防发错群，文件操作=防删错目录）；有歧义 ask_user。\n4. 定位与操作：元素位置以截图识别为准，禁止盲猜坐标；同一元素连续失败 2 次即停下说明。\n5. 提交/发送：优先点界面按钮（「发送」「提交」「保存」），快捷键作备选——语义因应用和用户设置而异（见速查表）。\n6. 结果核验（必做）：再截图确认生效（消息气泡出现/状态变化/对话框关闭）；失败重试一次，仍失败换方式或如实报告。\n7. 回报：做了什么 + 结果证据 + 异常。\n\n## 提交快捷键速查（因应用而异，勿混用）\n- 微信：绿色「发送(S)」按钮 或 Ctrl+Enter（默认不开「回车键发送」，单独 Enter 无效；Shift+Enter 是换行）\n- QQ：Ctrl+Enter 或「发送」按钮\n- 通用表单/对话框：Enter 可能是提交也可能只是切焦点，先截图识别\n- 拿不准时先点按钮；按钮灰的再用快捷键，然后截图核验\n\n## 系统管理操作（高危，必须先确认）\n- 卸载应用 computer_uninstall_app / 安装应用 computer_install_app / 强制删除残留 computer_force_delete / 注册表清理 computer_registry_delete：先 computer_list_installed_apps 查清单 → confirm_user 逐项列出将做什么 → 用户同意后才传 confirm: true 执行。\n- 注册表删除会自动导出 .reg 备份；强制删除不进回收站不可恢复；安装 .exe 必须用确认过的静默参数，不确定就改用 winget 或让用户手动装。\n\n## 纠错时效\n不可逆操作第一时间处理与报告：微信消息 2 分钟内可右键「撤回」；文件删除进回收站可还原（computer_force_delete 除外——不可恢复）。超时无法撤销→如实告知，不谎报。\n\n## 安全红线\n- 资金操作（红包/转账/支付/收款确认）一律只提醒用户，禁止代操作\n- 密码/验证码/证件号等敏感信息不写入要发送的内容\n- 用户已明确指定的操作直接执行；未指定内容的发送/删除/支付/群发等先确认\n- 应用 UI 随版本变化，一切以截图+image_analyze 识别为准\n\n详见 .claude/skills/desktop-app-automation/SKILL.md`;
+const DESKTOP_AUTO_BODY_SEMANTIC = DESKTOP_AUTO_BODY
+  .replace('## 通用 SOP（每步截图核验，禁止盲点盲按）', '## 通用 SOP（控件树优先，截图用于视觉核验）')
+  .replace('3. 核对操作对象（必做，防误操作）：computer_screenshot + image_analyze 确认当前窗口/会话/文档与用户目标一致（聊天应用=防发错群，文件操作=防删错目录）；有歧义 ask_user。', '3. 读取控件树：computer_get_ui_tree { pid } 获取稳定 ref、控件类型、名称与焦点状态；截图只用于确认视觉对象或控件树不可用时。')
+  .replace('4. 定位与操作：元素位置以截图识别为准，禁止盲猜坐标；同一元素连续失败 2 次即停下说明。', '4. 语义操作：优先 computer_click_element / computer_set_value 按 ref 操作；等待弹窗或控件出现用 computer_wait_for_element；坐标点击只在语义模式不支持时兜底。同一元素连续失败 2 次即停下说明。')
+  .replace('6. 结果核验（必做）：再截图确认生效（消息气泡出现/状态变化/对话框关闭）；失败重试一次，仍失败换方式或如实报告。', '6. 结果核验（必做）：重新 computer_get_ui_tree 对照 revision/控件状态，必要时再截图确认生效；失败重试一次，仍失败换方式或如实报告。');
 
 try {
   const skillId = 'skill_desktop_app_automation';
@@ -3198,7 +3243,7 @@ try {
       skillId, 'guest', '桌面应用自动化',
       DESKTOP_AUTO_DESC,
       JSON.stringify(DESKTOP_AUTO_TRIGGERS),
-      DESKTOP_AUTO_BODY,
+      DESKTOP_AUTO_BODY_SEMANTIC,
       '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
@@ -3206,7 +3251,7 @@ try {
     // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动。
     if (overwriteEnabled) {
       db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
-        DESKTOP_AUTO_BODY, DESKTOP_AUTO_DESC, JSON.stringify(DESKTOP_AUTO_TRIGGERS), skillId,
+        DESKTOP_AUTO_BODY_SEMANTIC, DESKTOP_AUTO_DESC, JSON.stringify(DESKTOP_AUTO_TRIGGERS), skillId,
       );
     } else {
       db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
@@ -5629,6 +5674,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,                    -- 唯一索引按 (user_id, name)：同名不同用户不冲突
+    parent_id TEXT,                        -- 空 = 根目录；支持用户目录树
     sort INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     UNIQUE(user_id, name)
@@ -5639,11 +5685,15 @@ db.exec(`
     user_id TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'note',     -- 'note' 笔记 | 'plan' 计划
     category_id TEXT,                      -- 可空 = 未分类（删分类时笔记自动迁到这里，不丢数据）
+    template_id TEXT,                      -- 记录模板；空 = 旧版自由笔记
     title TEXT NOT NULL,
     content TEXT NOT NULL DEFAULT '',      -- Markdown
+    data_json TEXT NOT NULL DEFAULT '{}',  -- 模板字段值（JSON）
+    template_snapshot_json TEXT,           -- 创建时模板快照，模板删除后历史仍可展示
     source TEXT,                           -- 'manual' | 'learning:...' | 'chat' | ...
     pinned INTEGER NOT NULL DEFAULT 0,     -- 置顶（常用维度，顶部固定）
     starred INTEGER NOT NULL DEFAULT 0,    -- 收藏（重要维度，唯一收藏位）
+    occurred_at INTEGER,                   -- 业务发生时间，与 created_at 分开
     plan_at INTEGER,                       -- kind='plan'：计划时间(ms)
     remind_at INTEGER,                     -- 提醒时间(ms)；到点未处理 → 智能提醒
     remind_done INTEGER NOT NULL DEFAULT 0,
@@ -5651,8 +5701,118 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_note_user ON note(user_id, kind, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS note_template (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT 'NotebookPen',
+    tone TEXT NOT NULL DEFAULT 'slate',
+    kind TEXT NOT NULL DEFAULT 'custom',
+    fields_json TEXT NOT NULL DEFAULT '[]',
+    title_field TEXT NOT NULL DEFAULT 'title',
+    content_field TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS note_dictionary (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_template_user ON note_template(user_id, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_note_dictionary_user ON note_dictionary(user_id, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS note_ledger_entry (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    entry_type TEXT NOT NULL,              -- expense|income|purchase|sale
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    category_key TEXT,
+    category_dictionary_id TEXT,
+    account_key TEXT,
+    occurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_ledger_user_time
+    ON note_ledger_entry(user_id, occurred_at DESC, entry_type);
+  CREATE INDEX IF NOT EXISTS idx_note_ledger_user_category
+    ON note_ledger_entry(user_id, category_key, occurred_at DESC);
+
+  CREATE TABLE IF NOT EXISTS note_inventory_movement (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    movement_type TEXT NOT NULL,           -- purchase|sale
+    product_name TEXT NOT NULL,
+    category_key TEXT,
+    category_dictionary_id TEXT,
+    quantity REAL NOT NULL DEFAULT 0,
+    unit_price_cents INTEGER NOT NULL DEFAULT 0,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    cost_cents INTEGER NOT NULL DEFAULT 0,
+    counterparty TEXT,
+    payment_status TEXT,
+    occurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_inventory_user_time
+    ON note_inventory_movement(user_id, occurred_at DESC, movement_type);
+  CREATE INDEX IF NOT EXISTS idx_note_inventory_user_product
+    ON note_inventory_movement(user_id, product_name);
+
+  CREATE TABLE IF NOT EXISTS note_time_log (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    activity TEXT,
+    category_key TEXT,
+    category_dictionary_id TEXT,
+    minutes INTEGER NOT NULL DEFAULT 0,
+    occurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_time_user_time
+    ON note_time_log(user_id, occurred_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_note_time_user_category
+    ON note_time_log(user_id, category_key, occurred_at DESC);
+
+  CREATE TABLE IF NOT EXISTS note_task_plan (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    priority TEXT,
+    due_at INTEGER,
+    remind_at INTEGER,
+    done INTEGER NOT NULL DEFAULT 0,
+    completed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_task_user_due
+    ON note_task_plan(user_id, done, due_at);
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_note_remind ON note(remind_at) WHERE remind_done = 0'); } catch {}
+try { db.exec('ALTER TABLE note_category ADD COLUMN parent_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE note_ledger_entry ADD COLUMN category_dictionary_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE note_inventory_movement ADD COLUMN category_dictionary_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE note_time_log ADD COLUMN category_dictionary_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE note ADD COLUMN template_id TEXT'); } catch {}
+try { db.exec("ALTER TABLE note ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}'"); } catch {}
+try { db.exec('ALTER TABLE note ADD COLUMN template_snapshot_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE note ADD COLUMN occurred_at INTEGER'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_note_occurred ON note(user_id, occurred_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_note_template ON note(user_id, template_id, updated_at DESC)'); } catch {}
 
 // ===== 对话定时任务 =====
 db.exec(`
@@ -6765,7 +6925,7 @@ const STANDALONE_SKILL_DEFAULTS: Record<string, { name: string; description: str
     category: '自动化',
     description: DESKTOP_AUTO_DESC,
     triggers: DESKTOP_AUTO_TRIGGERS,
-    body: DESKTOP_AUTO_BODY,
+    body: DESKTOP_AUTO_BODY_SEMANTIC,
   },
   skill_ontology_query: {
     name: '本体取数与分析',

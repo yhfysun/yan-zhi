@@ -220,12 +220,14 @@ describe('LearningV2', () => {
     expect(stages[1].getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('renders all 21 zero-base subjects and eight surfaces', async () => {
+  it('renders all 22 zero-base subjects and eight surfaces', async () => {
     const host = await mountPage();
-    expect(host.querySelectorAll('[data-subject]')).toHaveLength(21);
+    expect(host.querySelectorAll('[data-subject]')).toHaveLength(22);
     expect(host.querySelectorAll('[data-page]')).toHaveLength(8);
     expect(host.textContent).toContain('党史');
     expect(host.textContent).toContain('编程');
+    expect(host.textContent).toContain('医学');
+    expect(host.textContent).toContain('易学');
     expect(host.textContent).toContain('学科总览');
     expect(host.textContent).not.toContain('返回旧版学习');
   });
@@ -743,5 +745,34 @@ describe('LearningV2', () => {
     await nextTick();
     await nextTick();
     expect(host.querySelector('.zy-root')).toBeTruthy();
+  });
+
+  it('opens the medicine double-path studio with synthetic cases and safety boundaries', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="medicine"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="studio"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+
+    expect(host.querySelector('[data-medical-studio]')).toBeTruthy();
+    expect(host.textContent).toContain('固定病例，双路径复盘');
+    expect(host.textContent).toContain('中医学习视角');
+    expect(host.textContent).toContain('西医学习视角');
+    expect(host.textContent).toContain('不据课程诊断真人');
+    expect(host.textContent).toContain('联系当地急救系统');
+    const atlasButton = [...host.querySelectorAll('.medical-workspace-switcher button')]
+      .find((button) => button.textContent?.includes('人体图鉴')) as HTMLButtonElement;
+    atlasButton.click();
+    await nextTick();
+    expect(host.querySelector('[data-medical-atlas]')).toBeTruthy();
+    expect(host.textContent).toContain('内脏分布');
+    expect(host.textContent).toContain('经络穴位');
+    const gameButton = [...host.querySelectorAll('.medical-workspace-switcher button')]
+      .find((button) => button.textContent?.includes('解剖小游戏')) as HTMLButtonElement;
+    gameButton.click();
+    await nextTick();
+    expect(host.querySelector('[data-medical-anatomy-game]')).toBeTruthy();
+    expect(host.textContent).toContain('动物结构配对');
   });
 });

@@ -1,6 +1,7 @@
 // @yan-zhi/shared - 全局共享类型与工具
 export * from './types/index';
 export * from './utils/index';
+export * from './execution';
 export * from './page-assets/types';
 export * from './page-assets/validate';
 export * from './page-assets/builtins';
@@ -25,3 +26,9 @@ export * from './zhouyi/index';
 // M1 门禁卡 NFC 复制教学内核（模拟器与真机适配层共用同一份判定）
 // ★ 导出名统一 m1/M1 前缀，避免与 utils/* 的同名导出经 export * 静默覆盖
 export * from './m1-nfc/index';
+
+// 记录中心：笔记/日记/账本/进货出货/时间与任务计划的模板和字典协议。
+export * from './notes/index';
+
+// 资讯中心：公开 RSS、应用内正文与证券行情共用同一套接口类型。
+export * from './news/types';

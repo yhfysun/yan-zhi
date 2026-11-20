@@ -73,7 +73,9 @@ function win(code: string, needle: string, len: number, label: string): string {
 describe('① 任务计划必须回注提示词（长任务"接力棒"）', () => {
   it('★★ buildSystemPromptForBackend 必须注入「当前任务计划（接力棒）」', () => {
     const i = anchor(LTM, 'function buildSystemPromptForBackend', '提示词构建函数');
-    const body = LTM.slice(i, i + 20000);
+    // 2026-11-20：任务计划段增加了当前下一步、证据摘要与结构化回执说明，
+    // 函数体变长；窗口随实现从 20K 扩到 32K，仍是同一函数的源码守卫。
+    const body = LTM.slice(i, i + 32000);
     expect(body, '★ 任务计划未回注 → 模型看不到"原计划还剩什么"，长任务只能从头再来')
       .toMatch(/当前任务计划（接力棒/);
     expect(body, '★ 未渲染计划进度（模型无从判断还剩几步）').toMatch(/已完成/);
@@ -82,7 +84,7 @@ describe('① 任务计划必须回注提示词（长任务"接力棒"）', () =
   it('★★ 接力规则必须写明：不要重做已完成、不要因为"没有上下文"就从头再来', () => {
     const i = anchor(LTM, 'function buildSystemPromptForBackend', '提示词构建函数');
     // ★ 必须是 slice(i, i+N)：slice(i, N) 的第二个参数是 end 下标，锚点在 10 万字符处时返回空串 → 假红
-    const body = LTM.slice(i, i + 22000);
+    const body = LTM.slice(i, i + 34000);
     expect(body, '★ 缺"不要重做已完成步骤"的规则').toMatch(/不要重做已完成/);
     expect(body, '★ 缺"别从头再来"的规则（长任务最容易踩的坑）').toMatch(/从头再来/);
     expect(body, '★ 未要求用 task_step 同步进度（下一批接力就失真）').toMatch(/task_step/);

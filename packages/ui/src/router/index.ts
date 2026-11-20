@@ -157,6 +157,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '定时任务' },
   },
   {
+    path: '/pet-settings',
+    name: 'pet-settings',
+    component: () => import('../views/PetSettings.vue'),
+    meta: { title: '宠物设置' },
+  },
+  {
     path: '/publish-queue',
     name: 'publish-queue',
     component: () => import('../views/PublishQueue.vue'),
@@ -212,6 +218,14 @@ const routes: RouteRecordRaw[] = [
     name: 'notes',
     component: () => import('../views/Notes.vue'),
     meta: { title: '笔记' },
+  },
+  {
+    // 资讯中心：公开 RSS 聚合 + 应用内正文 + 证券行情。
+    // 独立功能页，不改变当前工作模式；移动端底部导航和管理页模式切换都不承接它。
+    path: '/news',
+    name: 'news',
+    component: () => import('../views/News.vue'),
+    meta: { title: '资讯' },
   },
   {
     path: '/models',
@@ -386,6 +400,7 @@ const MOBILE_BLOCKED_PATHS = new Set([
  */
 const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/chat': 'office',
+  '/pet-settings': 'office',
   '/scheduled-tasks': 'office',
   '/publish-queue': 'office',
   '/office': 'office',

@@ -11,7 +11,7 @@ import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser
 import { scriptFuseCheck } from '../services/script-fuse.js';
 import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
-import { browserBridgeAvailable, callBrowserBridgeRaw } from '../browser-bridge.js';
+import { actionToBrowserToolName, browserBridgeAvailable, callBrowserBridgeRaw } from '../browser-bridge.js';
 import {
   createOrUpdateBackgroundJob,
   finishBackgroundJob,
@@ -1255,6 +1255,35 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
   try {
     const { url, viewport, tabId } = req.body || {};
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
+    // Electron BrowserView 是 webview target，Playwright 的 context.pages() 不可见。
+    // 桌面完整包有主进程桥时，导航必须由主进程按 conv/tab 锚定执行。
+    const bridgeConvId = convIdOf(req);
+    const bridgeUserId = req.user?.userId || 'guest';
+    if (BROWSER_MODE === 'cdp' && bridgeConvId && browserBridgeAvailable(bridgeUserId)) {
+      try {
+        const data = await callBrowserBridgeRaw(
+          bridgeConvId,
+          'browser_navigate',
+          {
+            url,
+            ...(tabId !== undefined && tabId !== null ? { tabId } : {}),
+            ...(req.body?.force === true ? { force: true } : {}),
+          },
+          COLD_START_PANEL_OPEN_TIMEOUT_MS,
+          undefined,
+          bridgeUserId,
+        );
+        if (data && typeof data === 'object' && data.error) {
+          res.status(400).json({ error: String(data.error), hint: data.hint });
+          return;
+        }
+        res.json({ data });
+        return;
+      } catch (e) {
+        res.status(502).json({ error: `浏览器主进程桥执行失败: ${(e as Error)?.message || String(e)}` });
+        return;
+      }
+    }
     // tabId 定向：导航到指定标签页（同批多导航/多页并行场景），并切为活动页
     let page: any;
     const hasExplicitTab = tabId !== undefined && tabId !== null;
@@ -1754,6 +1783,30 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
     const { action, text, key, x, y, timeout } = args;
     const selector = args.selector ? String(args.selector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")') : args.selector;
     if (!action) { res.status(400).json({ error: 'action 为必填项' }); return; }
+    // 与 /navigate 同理：完整桌面端优先把动作发给主进程 BrowserView。
+    const bridgeConvId = convIdOf(req);
+    const bridgeUserId = req.user?.userId || 'guest';
+    if (BROWSER_MODE === 'cdp' && bridgeConvId && browserBridgeAvailable(bridgeUserId)) {
+      try {
+        const data = await callBrowserBridgeRaw(
+          bridgeConvId,
+          actionToBrowserToolName(String(action)),
+          args,
+          Math.max(15_000, Math.min(60_000, Number(timeout) || 30_000)),
+          undefined,
+          bridgeUserId,
+        );
+        if (data && typeof data === 'object' && data.error) {
+          res.status(400).json({ error: String(data.error), hint: data.hint });
+          return;
+        }
+        res.json({ data });
+        return;
+      } catch (e) {
+        res.status(502).json({ error: `浏览器主进程桥执行失败: ${(e as Error)?.message || String(e)}` });
+        return;
+      }
+    }
     // tabId 定向：在指定标签页上执行动作（不切换活动页），供"按 tabId 读取/操作"场景
     const hasExplicitTab = args.tabId !== undefined && args.tabId !== null;
     const reqTabId = normalizeServerTabId(args.tabId);

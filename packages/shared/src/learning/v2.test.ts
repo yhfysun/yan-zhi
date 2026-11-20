@@ -12,18 +12,18 @@ import {
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
 
 describe('Learning V2 catalog', () => {
-  it('covers all 21 subjects and every registered course', () => {
+  it('covers all 22 subjects and every registered course', () => {
     const subjects = getLearningV2Subjects();
     const catalog = getLearningV2Catalog();
 
-    expect(subjects).toHaveLength(21);
+    expect(subjects).toHaveLength(22);
     expect(subjects.map((subject) => subject.key)).toEqual([
       'party', 'politics', 'economics', 'military', 'history', 'calligraphy',
       'memory', 'thinking', 'math', 'physics', 'schools', 'english', 'japanese',
-      'soft', 'security', 'culture', 'music', 'zhouyi', 'divination', 'programming', 'algorithms',
+      'soft', 'security', 'culture', 'music', 'zhouyi', 'divination', 'programming', 'algorithms', 'medicine',
     ]);
-    expect(catalog.courses).toHaveLength(1301);
-    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(1301);
+    expect(catalog.courses).toHaveLength(1351);
+    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(1351);
   });
 
   it('ships eight learning surfaces in both desktop and mobile', () => {
@@ -60,14 +60,17 @@ describe('Learning V2 catalog', () => {
 
   it('exposes a global library spanning every subject', () => {
     const library = getLearningV2Library();
-    expect(library.length).toBe(63);
-    expect(new Set(library.map((entry) => entry.subjectKey)).size).toBe(21);
-    expect(library.filter((entry) => entry.readable).length).toBe(21);
+    expect(library.length).toBe(66);
+    expect(new Set(library.map((entry) => entry.subjectKey)).size).toBe(22);
+    expect(library.filter((entry) => entry.readable).length).toBe(22);
     expect(library.every((entry) => entry.source.trim().length > 0)).toBe(true);
   });
 
-  it('keeps the latest Zhouyi and divination content visible', () => {
+  it('keeps the latest Yixue, medicine and divination content visible', () => {
+    expect(getLearningV2Subject('zhouyi')?.name).toBe('易学');
     expect(getLearningV2Subject('zhouyi')?.courses).toHaveLength(53);
+    expect(getLearningV2Subject('medicine')?.name).toBe('医学');
+    expect(getLearningV2Subject('medicine')?.courses).toHaveLength(50);
     expect(getLearningV2Subject('divination')?.courses).toHaveLength(20);
     expect(getCoursePracticeTask('security', 'Web 漏洞与攻击防御').features).toContain('卡/NFC安全');
     expect(getCoursePracticeTask('zhouyi', '乾卦精读').features).toContain('星图与节气');
@@ -104,6 +107,9 @@ describe('Learning V2 catalog', () => {
       ['security', '密码学与 PKI'],
       ['zhouyi', '易学导论'],
       ['zhouyi', '三易与成书'],
+      ['zhouyi', '清与近现代易学'],
+      ['medicine', '中医 · 医学通识与安全边界'],
+      ['medicine', '西医 · 人体系统总图'],
       ['party', '建党与初心'],
       ['politics', '权力与权威：服从从哪里来'],
       ['military', '战略、战役、战术的三层尺度'],

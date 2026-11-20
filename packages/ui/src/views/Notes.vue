@@ -5,22 +5,52 @@
 // 极简规范：无多余图标与 tip 文案；分类 = 既有项点击过滤 + 直接键入新名字（提交自动创建）。
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ArrowLeft, Pencil, Save, Trash2, X } from 'lucide-vue-next';
+import {
+  NOTE_BUILTIN_DICTIONARIES,
+  NOTE_BUILTIN_TEMPLATES,
+  type NoteDictionaryDefinition,
+  type NoteTemplateData,
+  type NoteTemplateDefinition,
+  type NoteTemplateField,
+} from '@yan-zhi/shared';
 import { api } from '../api/client';
 import MarkdownPreview from '../components/code/MarkdownPreview.vue';
+import NoteQuickCreate from '../components/notes/NoteQuickCreate.vue';
+import NoteTemplateStudio from '../components/notes/NoteTemplateStudio.vue';
+import NoteTemplateForm from '../components/notes/NoteTemplateForm.vue';
+import NoteDirectorySheet from '../components/notes/NoteDirectorySheet.vue';
+import NoteAnalyticsSheet from '../components/notes/NoteAnalyticsSheet.vue';
+import NotesMobileHome, {
+  type MobileNoteFilter,
+  type MobileNoteTotals,
+} from '../components/notes/NotesMobileHome.vue';
+import {
+  buildRecordPayload,
+  fieldDisplayValue,
+  templateForNote,
+  type NoteViewItem,
+} from '../components/notes/notes-view-model';
 import { planChipState, planChipLabel, toLocalInputValue, fromLocalInputValue, noteTimeLabel } from '../utils/notePlan';
 import { useAuthStore } from '../stores/auth';
+import { useMobileShell } from '../composables/useMobileShell';
 
-type NoteItem = {
-  id: string; kind: 'note' | 'plan'; categoryId: string | null; categoryName: string | null;
-  title: string; content: string; source: string | null; pinned: boolean; starred: boolean;
-  planAt: number | null; remindAt: number | null; remindDone: boolean; createdAt: number; updatedAt: number;
+type NoteItem = NoteViewItem;
+type CategoryItem = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  path: string[];
+  depth: number;
+  sort: number;
+  count: number;
 };
-type CategoryItem = { id: string; name: string; sort: number; count: number };
 type DueItem = { id: string; text: string };
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const isMobileShell = useMobileShell();
 
 function unwrap<T>(r: unknown): T | null {
   if (r && typeof r === 'object' && 'data' in r) return (r as { data: T }).data;
@@ -32,6 +62,24 @@ const categories = ref<CategoryItem[]>([]);
 const notes = ref<NoteItem[]>([]);
 const dueItems = ref<DueItem[]>([]);
 const loading = ref(true);
+const templates = ref<NoteTemplateDefinition[]>([...NOTE_BUILTIN_TEMPLATES]);
+const dictionaries = ref<NoteDictionaryDefinition[]>([...NOTE_BUILTIN_DICTIONARIES]);
+const quickCreateOpen = ref(false);
+const quickCreateTemplateId = ref('');
+const templateStudioOpen = ref(false);
+const directorySheetOpen = ref(false);
+const analyticsOpen = ref(false);
+const todayTotals = ref<MobileNoteTotals | null>(null);
+const mobileFilter = ref<MobileNoteFilter>('today');
+const mobileDetailOpen = ref(false);
+const mobileEditing = ref(false);
+const mobileDetailNote = ref<NoteItem | null>(null);
+const mobileDetailData = ref<NoteTemplateData>({});
+const mobileDetailTitle = ref('');
+const mobileDetailContent = ref('');
+const mobileDetailCategory = ref('');
+const mobileDetailCategoryId = ref('');
+const mobileDetailError = ref('');
 
 // 视图：__all__ / __starred__ / __plan__ / __none__（未分类）/ 分类 id
 const leftSel = ref<string>('__all__');
@@ -184,6 +232,16 @@ async function loadDue() {
   dueItems.value = data?.items || [];
 }
 
+async function loadTodayTotals() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const response = await api.get<{ totals: MobileNoteTotals }>(
+    `/notes/analytics?from=${start.getTime()}&to=${Date.now()}`,
+  );
+  const data = unwrap<{ totals: MobileNoteTotals }>(response);
+  todayTotals.value = data?.totals || null;
+}
+
 async function ackDue() {
   const ids = dueItems.value.map((d) => d.id);
   if (!ids.length) return;
@@ -192,7 +250,150 @@ async function ackDue() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadCategories(), loadNotes(), loadDue()]);
+  await Promise.all([loadCategories(), loadNotes(), loadDue(), loadTodayTotals()]);
+}
+
+async function loadRecordConfig() {
+  const [templateRows, dictionaryRows] = await Promise.all([
+    api.get<NoteTemplateDefinition[]>('/notes/templates'),
+    api.get<NoteDictionaryDefinition[]>('/notes/dictionaries'),
+  ]);
+  templates.value = unwrap<NoteTemplateDefinition[]>(templateRows) || [...NOTE_BUILTIN_TEMPLATES];
+  dictionaries.value = unwrap<NoteDictionaryDefinition[]>(dictionaryRows) || [...NOTE_BUILTIN_DICTIONARIES];
+}
+
+const defaultQuickCategory = computed(() => {
+  return categories.value.find((category) => category.id === leftSel.value)?.name || '';
+});
+const defaultQuickCategoryId = computed(() => (
+  leftSel.value.startsWith('__') ? '' : leftSel.value
+));
+
+const mobileDetailTemplate = computed<NoteTemplateDefinition | undefined>(() => (
+  mobileDetailNote.value ? templateForNote(mobileDetailNote.value, templates.value) : undefined
+));
+
+const mobileDetailOtherFields = computed<NoteTemplateField[]>(() => {
+  const template = mobileDetailTemplate.value;
+  if (!template) return [];
+  return template.fields.filter((field) => (
+    field.key !== template.titleField && field.key !== template.contentField
+  ));
+});
+
+function openQuickCreate(templateId = ''): void {
+  quickCreateTemplateId.value = templateId;
+  quickCreateOpen.value = true;
+}
+
+let mobileSearchTimer: number | null = null;
+function setMobileQuery(value: string): void {
+  q.value = value;
+  if (mobileSearchTimer) window.clearTimeout(mobileSearchTimer);
+  mobileSearchTimer = window.setTimeout(() => { void loadNotes(); }, 220);
+}
+
+async function setMobileCategory(categoryId: string): Promise<void> {
+  leftSel.value = categoryId;
+  await loadNotes();
+}
+
+function openMobileNote(note: NoteItem): void {
+  mobileDetailNote.value = note;
+  mobileDetailData.value = { ...note.data };
+  mobileDetailTitle.value = note.title;
+  mobileDetailContent.value = note.content;
+  mobileDetailCategory.value = note.categoryName || '';
+  mobileDetailCategoryId.value = note.categoryId || '';
+  mobileDetailError.value = '';
+  mobileEditing.value = false;
+  mobileDetailOpen.value = true;
+}
+
+function closeMobileNote(): void {
+  if (saving.value) return;
+  mobileDetailOpen.value = false;
+  mobileDetailNote.value = null;
+  mobileEditing.value = false;
+  mobileDetailError.value = '';
+}
+
+function beginMobileEdit(): void {
+  if (!mobileDetailNote.value) return;
+  mobileEditing.value = true;
+  mobileDetailError.value = '';
+}
+
+async function saveMobileRecord(): Promise<void> {
+  const note = mobileDetailNote.value;
+  const template = mobileDetailTemplate.value;
+  if (!note || !template || saving.value) return;
+  saving.value = true;
+  mobileDetailError.value = '';
+  try {
+    const nextData: NoteTemplateData = {
+      ...mobileDetailData.value,
+      [template.titleField]: mobileDetailTitle.value,
+    };
+    if (template.contentField) nextData[template.contentField] = mobileDetailContent.value;
+    const payload = buildRecordPayload(
+      template,
+      nextData,
+      mobileDetailCategory.value,
+    );
+    const templateStillExists = templates.value.some((item) => item.id === template.id);
+    const response = await api.patch(`/notes/notes/${note.id}`, {
+      title: mobileDetailTitle.value.trim() || payload.title,
+      content: mobileDetailContent.value,
+      categoryId: mobileDetailCategoryId.value || null,
+      ...(mobileDetailCategoryId.value ? {} : { categoryName: mobileDetailCategory.value }),
+      ...(templateStillExists ? { templateId: template.id } : {}),
+      data: nextData,
+      occurredAt: payload.occurredAt,
+      planAt: payload.planAt,
+      remindAt: payload.remindAt,
+    });
+    if (response && typeof response === 'object' && 'error' in response) {
+      mobileDetailError.value = String((response as { error: unknown }).error);
+      return;
+    }
+    const saved = unwrap<NoteItem>(response);
+    if (saved) {
+      mobileDetailNote.value = saved;
+      mobileDetailTitle.value = saved.title;
+      mobileDetailContent.value = saved.content;
+      mobileDetailData.value = { ...saved.data };
+      mobileDetailCategory.value = saved.categoryName || '';
+      mobileDetailCategoryId.value = saved.categoryId || '';
+    }
+    mobileEditing.value = false;
+    await refreshAll();
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function deleteMobileRecord(): Promise<void> {
+  const note = mobileDetailNote.value;
+  if (!note) return;
+  if (!window.confirm(`删除「${note.title}」？不可恢复。`)) return;
+  await api.delete(`/notes/notes/${note.id}`);
+  closeMobileNote();
+  await refreshAll();
+}
+
+async function afterRecordConfigChanged(): Promise<void> {
+  await loadRecordConfig();
+}
+
+async function afterDirectoriesChanged(): Promise<void> {
+  await Promise.all([loadCategories(), loadNotes()]);
+}
+
+async function toggleTaskFromList(note: NoteItem): Promise<void> {
+  const response = await api.post(`/notes/notes/${note.id}/task-done`);
+  if (response && typeof response === 'object' && 'error' in response) return;
+  await refreshAll();
 }
 
 // ── 左栏 ──
@@ -372,7 +573,7 @@ watch(() => String((route.query as Record<string, unknown>).noteId || ''), (id) 
 
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown);
-  await refreshAll();
+  await Promise.all([refreshAll(), loadRecordConfig()]);
   loading.value = false;
   const noteId = String((route.query as Record<string, unknown>).noteId || '');
   if (noteId) {
@@ -388,6 +589,7 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  if (mobileSearchTimer) window.clearTimeout(mobileSearchTimer);
   window.removeEventListener('keydown', onGlobalKeydown);
   offOpen?.();
   stopColumnResize?.();
@@ -399,14 +601,38 @@ const isGuest = computed(() => !auth.isLoggedIn);
 </script>
 
 <template>
-  <div class="notes-page" :style="gridStyle">
+  <NotesMobileHome
+    v-if="isMobileShell"
+    :notes="notes"
+    :categories="categories"
+    :templates="templates"
+    :dictionaries="dictionaries"
+    :loading="loading"
+    :query="q"
+    :filter="mobileFilter"
+    :category-id="leftSel"
+    :today-totals="todayTotals"
+    @update:query="setMobileQuery"
+    @update:filter="mobileFilter = $event"
+    @update:category-id="setMobileCategory"
+    @create="openQuickCreate"
+    @open="openMobileNote"
+    @manage="templateStudioOpen = true"
+    @manage-directories="directorySheetOpen = true"
+    @analytics="analyticsOpen = true"
+    @toggle-task="toggleTaskFromList"
+  />
+
+  <div v-else class="notes-page" :style="gridStyle">
     <!-- 左：窄导航（搜索 / 视图 / 分类 / 列表一体） -->
     <aside class="np-side np-card">
       <div class="np-side-top">
         <input v-model="q" class="np-search" placeholder="搜索标题与内容" @keyup.enter="loadNotes" @input="loadNotes" />
         <div class="np-side-actions">
-          <button class="np-mini" @click="createNew('note')">+ 笔记</button>
-          <button class="np-mini" @click="createNew('plan')">+ 计划</button>
+          <button class="np-mini" @click="openQuickCreate()">+ 记录</button>
+          <button class="np-mini" @click="templateStudioOpen = true">模板</button>
+          <button class="np-mini" @click="directorySheetOpen = true">目录</button>
+          <button class="np-mini" @click="analyticsOpen = true">统计</button>
           <select v-model="sort" class="np-sort" @change="loadNotes">
             <option value="updated">更新</option>
             <option value="created">创建</option>
@@ -420,7 +646,14 @@ const isGuest = computed(() => !auth.isLoggedIn);
         <div class="np-cat-item" :class="{ active: leftSel === '__none__' }" @click="selectLeft('__none__')">
           <span class="np-cat-name">未分类</span>
         </div>
-        <div v-for="c in realCategories" :key="c.id" class="np-cat-item" :class="{ active: leftSel === c.id }" @click="selectLeft(c.id)">
+        <div
+          v-for="c in realCategories"
+          :key="c.id"
+          class="np-cat-item"
+          :class="{ active: leftSel === c.id }"
+          :style="{ paddingLeft: `${10 + c.depth * 14}px` }"
+          @click="selectLeft(c.id)"
+        >
           <span class="np-cat-name">{{ c.name }}</span>
           <span class="np-count">{{ c.count }}</span>
           <span class="np-cat-ops" @click.stop>
@@ -527,6 +760,127 @@ const isGuest = computed(() => !auth.isLoggedIn);
       </div>
     </section>
   </div>
+
+  <Transition name="nmd">
+    <div v-if="isMobileShell && mobileDetailOpen && mobileDetailNote" class="nmd-mask" @click.self="closeMobileNote">
+      <section class="nmd-sheet" role="dialog" aria-modal="true" aria-labelledby="nmd-title">
+        <header class="nmd-head">
+          <button type="button" aria-label="返回记录列表" @click="closeMobileNote"><ArrowLeft :size="19" /></button>
+          <div>
+            <small>{{ mobileDetailTemplate?.name || '记录详情' }}</small>
+            <strong id="nmd-title">{{ mobileDetailNote.categoryName || '未分类' }}</strong>
+          </div>
+          <button v-if="!mobileEditing" type="button" aria-label="编辑记录" @click="beginMobileEdit"><Pencil :size="18" /></button>
+          <button v-else type="button" aria-label="取消编辑" @click="mobileEditing = false; mobileDetailData = { ...mobileDetailNote.data }; mobileDetailTitle = mobileDetailNote.title; mobileDetailContent = mobileDetailNote.content; mobileDetailCategory = mobileDetailNote.categoryName || ''; mobileDetailCategoryId = mobileDetailNote.categoryId || ''">
+            <X :size="18" />
+          </button>
+        </header>
+
+        <template v-if="!mobileEditing">
+          <div class="nmd-read">
+            <h2>{{ mobileDetailTitle }}</h2>
+            <div class="nmd-meta">
+              <span>{{ noteTimeLabel(mobileDetailNote.occurredAt || mobileDetailNote.createdAt) }}</span>
+              <span v-if="mobileDetailNote.starred">已收藏</span>
+              <span v-if="mobileDetailNote.planAt">计划 {{ planChipLabel(mobileDetailNote.planAt) }}</span>
+            </div>
+
+            <dl v-if="mobileDetailOtherFields.length" class="nmd-values">
+              <div v-for="field in mobileDetailOtherFields" :key="field.key">
+                <dt>{{ field.label }}</dt>
+                <dd>{{ fieldDisplayValue(field, mobileDetailData[field.key], dictionaries) || '未填写' }}</dd>
+              </div>
+            </dl>
+
+            <MarkdownPreview
+              v-if="mobileDetailContent"
+              :content="mobileDetailContent"
+              class="nmd-markdown"
+            />
+            <p v-else class="nmd-empty-content">这条记录没有正文。</p>
+          </div>
+          <footer class="nmd-actions">
+            <button type="button" class="danger" @click="deleteMobileRecord"><Trash2 :size="16" />删除</button>
+            <button type="button" class="primary" @click="beginMobileEdit"><Pencil :size="16" />编辑记录</button>
+          </footer>
+        </template>
+
+        <template v-else>
+          <div class="nmd-edit">
+            <label class="nmd-field title">
+              <span>{{ mobileDetailTemplate?.fields.find((field) => field.key === mobileDetailTemplate?.titleField)?.label || '标题' }}</span>
+              <input v-model="mobileDetailTitle" type="text" placeholder="标题" />
+            </label>
+
+            <label v-if="mobileDetailTemplate?.contentField" class="nmd-field">
+              <span>{{ mobileDetailTemplate.fields.find((field) => field.key === mobileDetailTemplate?.contentField)?.label || '正文' }}</span>
+              <textarea v-model="mobileDetailContent" rows="7" placeholder="正文"></textarea>
+            </label>
+
+            <NoteTemplateForm
+              v-if="mobileDetailTemplate"
+              :template="mobileDetailTemplate"
+              :model-value="mobileDetailData"
+              :dictionaries="dictionaries"
+              @update:model-value="mobileDetailData = $event"
+            />
+
+            <label class="nmd-field">
+              <span>归档到</span>
+              <select v-model="mobileDetailCategoryId">
+                <option value="">未分类</option>
+                <option v-for="category in realCategories" :key="category.id" :value="category.id">
+                  {{ category.path.join(' / ') }}
+                </option>
+              </select>
+            </label>
+            <p v-if="mobileDetailError" class="nmd-error" role="alert">{{ mobileDetailError }}</p>
+          </div>
+          <footer class="nmd-actions">
+            <button type="button" @click="mobileEditing = false">取消</button>
+            <button type="button" class="primary" :disabled="saving" @click="saveMobileRecord">
+              <Save :size="16" />{{ saving ? '保存中…' : '保存修改' }}
+            </button>
+          </footer>
+        </template>
+      </section>
+    </div>
+  </Transition>
+
+  <NoteQuickCreate
+    :visible="quickCreateOpen"
+    :templates="templates"
+    :dictionaries="dictionaries"
+    :categories="realCategories"
+    :default-category-name="defaultQuickCategory"
+    :default-category-id="defaultQuickCategoryId"
+    :initial-template-id="quickCreateTemplateId"
+    @close="quickCreateOpen = false"
+    @saved="refreshAll"
+  />
+
+  <NoteTemplateStudio
+    :visible="templateStudioOpen"
+    :templates="templates"
+    :dictionaries="dictionaries"
+    @close="templateStudioOpen = false"
+    @changed="afterRecordConfigChanged"
+  />
+
+  <NoteDirectorySheet
+    :visible="directorySheetOpen"
+    :directories="categories"
+    :selected-id="leftSel"
+    @close="directorySheetOpen = false"
+    @select="selectLeft"
+    @changed="afterDirectoriesChanged"
+  />
+
+  <NoteAnalyticsSheet
+    :visible="analyticsOpen"
+    :dictionaries="dictionaries"
+    @close="analyticsOpen = false"
+  />
 </template>
 
 <style scoped>
@@ -572,7 +926,7 @@ const isGuest = computed(() => !auth.isLoggedIn);
   background: transparent; color: inherit; outline: none;
 }
 .np-search:focus { border-color: var(--el-color-primary, #2563eb); }
-.np-side-actions { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.np-side-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
 .np-mini {
   padding: 5px 10px; font-size: 12px; white-space: nowrap; cursor: pointer;
   border: 1px solid var(--color-border, #e5e7eb); border-radius: 7px;
@@ -586,7 +940,7 @@ const isGuest = computed(() => !auth.isLoggedIn);
 }
 .np-primary:disabled { opacity: .6; cursor: default; }
 .np-sort {
-  margin-left: auto; padding: 5px 6px; font-size: 12px; border: 1px solid var(--color-border, #e5e7eb);
+  margin-left: 0; padding: 5px 6px; font-size: 12px; border: 1px solid var(--color-border, #e5e7eb);
   border-radius: 7px; background: transparent; color: inherit;
 }
 .np-view-item {
@@ -748,5 +1102,267 @@ const isGuest = computed(() => !auth.isLoggedIn);
   .notes-page { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .np-col-resizer { display: none; }
   .np-side { max-height: 45vh; }
+}
+
+/* ── 移动端记录详情 / 编辑 ── */
+.nmd-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 6100;
+  display: flex;
+  background: var(--color-bg);
+}
+
+.nmd-sheet {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.nmd-head {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 92%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.nmd-head > button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.nmd-head > button:active {
+  background: var(--color-surface-hover);
+}
+
+.nmd-head > div {
+  min-width: 0;
+}
+
+.nmd-head small,
+.nmd-head strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nmd-head small {
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+}
+
+.nmd-head strong {
+  margin-top: 1px;
+  font-size: 13px;
+}
+
+.nmd-read,
+.nmd-edit {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 16px 96px;
+}
+
+.nmd-read h2 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.nmd-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.nmd-meta span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--color-surface-hover);
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+}
+
+.nmd-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 20px 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-border);
+}
+
+.nmd-values > div {
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--color-surface);
+}
+
+.nmd-values dt {
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+}
+
+.nmd-values dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.nmd-markdown {
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.nmd-empty-content {
+  margin: 24px 0;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+}
+
+.nmd-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.nmd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nmd-field > span {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.nmd-field input,
+.nmd-field select,
+.nmd-field textarea {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  outline: none;
+  resize: vertical;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.nmd-field.title input {
+  min-height: 56px;
+  padding: 6px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  font-size: 23px;
+  font-weight: 750;
+}
+
+.nmd-field input:focus,
+.nmd-field select:focus,
+.nmd-field textarea:focus {
+  border-color: var(--color-primary);
+}
+
+.nmd-error {
+  margin: 0;
+  color: #b54737;
+  font-size: 11px;
+}
+
+.nmd-actions {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
+  gap: 9px;
+  padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.nmd-actions button {
+  display: inline-flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.nmd-actions button.primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.nmd-actions button.danger {
+  color: #a64a3c;
+}
+
+.nmd-actions button:disabled {
+  opacity: 0.58;
+}
+
+.nmd-enter-active,
+.nmd-leave-active {
+  transition: opacity 160ms ease, transform 200ms ease;
+}
+
+.nmd-enter-from,
+.nmd-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+@media (max-width: 360px) {
+  .nmd-values {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nmd-enter-active,
+  .nmd-leave-active {
+    transition: none;
+  }
 }
 </style>

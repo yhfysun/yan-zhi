@@ -216,6 +216,16 @@ import path from 'node:path';
 import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
+import { createExecutionReceipt, type ExecutionEvidence } from '@yan-zhi/shared';
+import {
+  buildPowerShellFileArgs,
+  buildWindowsUiActionScript,
+  buildWindowsUiTreeScript,
+  parseUiActionOutput,
+  uiTreeRevision,
+  type UiNode,
+  type UiTreeQuery,
+} from './computer-ui.js';
 // ★ 宿主能力一律走宿主桥（mode-pluginization）：直接 import '../db.js' 等会被
 //   build-plugins.mjs 连带把宿主单例复制进插件包（插件进程出现第二个 SQLite 实例）。
 import { db, pushPluginAudit, isWithinRoot, serverState } from '../host-bridge.js';
@@ -264,6 +274,10 @@ export const computerUseManifest: PluginManifest = {
   contributes: {
     tools: [
       'computer_screenshot',
+      'computer_get_ui_tree',
+      'computer_click_element',
+      'computer_set_value',
+      'computer_wait_for_element',
       'computer_mouse_click',
       'computer_mouse_move',
       'computer_mouse_drag',
@@ -519,7 +533,7 @@ async function ps(
   try {
     return await shell.exec(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', \`"\${file}"\`],
+      buildPowerShellFileArgs(file),
       { timeout },
     );
   } finally {
@@ -616,6 +630,9 @@ export const computerUseModule: PluginModule = {
     allowSelfWindowClick = !!cfg.allowSelfWindowClick;
     screenshotsDirOverride = String(cfg.screenshotDir || '');
     const configuredLocalExecution = cfg.localExecution === true;
+    ctx.log(
+      \`[computer-use] execution routing configuredLocal=\${configuredLocalExecution} envLocal=\${process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1'} platform=\${process.platform}\`,
+    );
 
     // 轻量壳/远程桌面在线时，所有 computer_* 工具必须回到用户本机执行。
     // 不能因为后端恰好也是 Windows 就“看起来能用”——那会操作错误机器的键鼠。
@@ -733,6 +750,289 @@ export const computerUseModule: PluginModule = {
         return errResult(e);
       }
     };
+
+    const uiEvidence = (tree: { revision?: string; nodes?: UiNode[] }, summary: string): ExecutionEvidence => ({
+      kind: 'ui_tree',
+      summary,
+      ...(tree.revision ? { ref: tree.revision } : {}),
+      data: {
+        nodeCount: Array.isArray(tree.nodes) ? tree.nodes.length : 0,
+        focused: Array.isArray(tree.nodes)
+          ? tree.nodes.filter((n) => n.focused).slice(0, 5).map((n) => ({ ref: n.ref, name: n.name, controlType: n.controlType }))
+          : [],
+      },
+    });
+
+    const resolveUiTarget = async (args: Record<string, unknown>): Promise<{ pid: number; titleContains: string }> => {
+      if (MAC) throw new Error('UI Automation 语义控件树当前仅在 Windows 可用；macOS 请继续使用截图+坐标兜底');
+      const pid = Number(args.pid);
+      const titleContains = String(args.window || args.titleContains || '').trim();
+      if (Number.isFinite(pid) && pid > 0) return { pid: Math.floor(pid), titleContains };
+      if (!titleContains) throw new Error('需要 pid，或用 window 指定可见窗口标题关键字');
+      const script = \`\${PS_BASE}
+$name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('\${b64Arg(titleContains)}'))
+$found = [CU]::FindByTitle($name)
+if (-not $found) { Write-Output ([CU]::ListWindows()); exit 2 }
+Write-Output $found\`;
+      const r = await ps(ctx.adapter.shell!, script, 15000);
+      const out = String(r.stdout || '').replace(/^\\uFEFF/, '').trim();
+      if (r.exitCode !== 0 || !out) {
+        throw new Error(\`未找到标题含「\${titleContains}」的窗口\${out ? \`：\${out.slice(0, 500)}\` : ''}\`);
+      }
+      const cols = out.split(String.fromCharCode(9));
+      const resolvedPid = Number(cols[0]);
+      if (!Number.isFinite(resolvedPid) || resolvedPid <= 0) throw new Error(\`窗口 pid 解析失败：\${out.slice(0, 300)}\`);
+      return { pid: resolvedPid, titleContains: cols[1] || titleContains };
+    };
+
+    const runUiTree = async (query: UiTreeQuery): Promise<{ ok: boolean; pid: number; title: string; revision: string; nodes: UiNode[] }> => {
+      const r = await ps(ctx.adapter.shell!, buildWindowsUiTreeScript(query), 30000);
+      const out = String(r.stdout || '').replace(/^\\uFEFF/, '').trim();
+      if (r.exitCode !== 0) throw new Error(\`读取 UIA 控件树失败：\${(r.stderr || out || 'unknown').slice(0, 1000)}\`);
+      const parsed = JSON.parse(out);
+      const nodes = Array.isArray(parsed?.nodes) ? parsed.nodes as UiNode[] : [];
+      return {
+        ok: parsed?.ok !== false,
+        pid: Number(parsed?.pid) || query.pid,
+        title: String(parsed?.title || ''),
+        revision: String(parsed?.revision || uiTreeRevision(nodes)),
+        nodes,
+      };
+    };
+
+    const uiAction = async (
+      action: 'click' | 'set_value' | 'focus',
+      args: Record<string, unknown>,
+    ): Promise<{ before: any; after: any; result: any; receipt: ReturnType<typeof createExecutionReceipt> }> => {
+      const target = await resolveUiTarget(args);
+      const before = await runUiTree({
+        ...target,
+        maxDepth: Number(args.maxDepth) || 8,
+        maxNodes: Number(args.maxNodes) || 500,
+        includeOffscreen: false,
+      });
+      const r = await ps(ctx.adapter.shell!, buildWindowsUiActionScript({
+        action,
+        ...target,
+        ref: String(args.ref || '').trim() || undefined,
+        name: String(args.name || '').trim() || undefined,
+        nameContains: String(args.nameContains || '').trim() || undefined,
+        automationId: String(args.automationId || '').trim() || undefined,
+        controlType: String(args.controlType || '').trim() || undefined,
+        value: action === 'set_value' ? String(args.value ?? '') : undefined,
+      }), 30000);
+      const result = parseUiActionOutput(String(r.stdout || ''));
+      if (r.exitCode !== 0 || result.error) {
+        throw new Error(result.error || String(r.stderr || 'UIA 动作失败').slice(0, 1000));
+      }
+      let after = await runUiTree({
+        ...target,
+        maxDepth: Number(args.maxDepth) || 8,
+        maxNodes: Number(args.maxNodes) || 500,
+        includeOffscreen: false,
+      });
+      // UIA ValuePattern 更新在部分控件上有一帧延迟；立即读 after 会把成功设值
+      // 误报成 changed=false。短暂重读，拿到真实 revision 后再写回执。
+      for (let attempt = 0; attempt < 4 && after.revision === before.revision; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        after = await runUiTree({
+          ...target,
+          maxDepth: Number(args.maxDepth) || 8,
+          maxNodes: Number(args.maxNodes) || 500,
+          includeOffscreen: false,
+        });
+      }
+      const valueChanged = action === 'set_value'
+        && String(result.value ?? '') === String(args.value ?? '');
+      const receipt = createExecutionReceipt({
+        target: 'desktop',
+        action: \`computer_\${action === 'set_value' ? 'set_value' : action}\`,
+        ok: true,
+        beforeRevision: before.revision,
+        afterRevision: after.revision,
+        changed: before.revision !== after.revision || valueChanged,
+        evidence: [
+          uiEvidence(before, '动作前控件树'),
+          uiEvidence(after, '动作后控件树'),
+          {
+            kind: 'note',
+            summary: \`控件动作由 \${String(result.method || 'unknown')} 完成\`,
+            data: {
+              ref: result.ref,
+              name: result.name,
+              controlType: result.controlType,
+              value: result.value,
+              bounds: result.bounds,
+            },
+          },
+        ],
+      });
+      return { before, after, result, receipt };
+    };
+
+    ctx.registerTool({
+      name: 'computer_get_ui_tree',
+      description:
+        '读取 Windows 原生窗口的 UI Automation 语义控件树。返回每个元素的稳定 ref、名称、控件类型、自动化 ID、坐标、可用/可见/焦点状态。'
+        + '这是桌面操作的首选观察方式；需要坐标或视觉判断时再用 computer_screenshot。传 pid，或传 window 标题关键字。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pid: { type: 'number', description: '目标进程 pid；与 window 二选一，优先 pid。' },
+          window: { type: 'string', description: '目标窗口标题关键字；会解析成 pid 并激活目标窗口。' },
+          maxDepth: { type: 'number', description: '最大层级，默认 6，最大 12。' },
+          maxNodes: { type: 'number', description: '最大节点数，默认 300，最大 600。' },
+          includeOffscreen: { type: 'boolean', description: '是否包含屏幕外元素，默认 false。' },
+        },
+      },
+      execute: (args) => runOp(
+        'get_ui_tree',
+        async () => {
+          const target = await resolveUiTarget(args as Record<string, unknown>);
+          const tree = await runUiTree({
+            ...target,
+            maxDepth: Number(args.maxDepth) || 6,
+            maxNodes: Number(args.maxNodes) || 300,
+            includeOffscreen: args.includeOffscreen === true,
+          });
+          return textResult({
+            ...tree,
+            note: '优先用 ref 调用 computer_click_element / computer_set_value；树变化后 ref 可能失效，重新读取即可。',
+          });
+        },
+        { pid: args.pid, window: args.window },
+      ),
+    });
+
+    ctx.registerTool({
+      name: 'computer_click_element',
+      description:
+        '按 UI Automation 语义点击控件。优先传 computer_get_ui_tree 返回的 ref；也可用 name/nameContains/automationId/controlType 定位。'
+        + '执行时优先使用 Invoke/Toggle/SelectionItem/ExpandCollapse 控件模式，只有控件不支持语义模式时才退回中心坐标点击。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pid: { type: 'number' },
+          window: { type: 'string', description: '窗口标题关键字；没有 pid 时使用。' },
+          ref: { type: 'string', description: 'computer_get_ui_tree 返回的 ref，例如 uia:42.123.' },
+          name: { type: 'string', description: '精确控件名称。' },
+          nameContains: { type: 'string', description: '控件名称包含匹配。' },
+          automationId: { type: 'string', description: 'AutomationId。' },
+          controlType: { type: 'string', description: '控件类型，如 Button / Edit / MenuItem。' },
+          maxDepth: { type: 'number' },
+          maxNodes: { type: 'number' },
+        },
+      },
+      execute: (args) => runOp(
+        'ui_click_element',
+        async () => {
+          const out = await uiAction('click', args as Record<string, unknown>);
+          return textResult({ result: out.result, receipt: out.receipt });
+        },
+        { ...(args as Record<string, unknown>) },
+      ),
+    });
+
+    ctx.registerTool({
+      name: 'computer_set_value',
+      description:
+        '通过 UI Automation ValuePattern（或 LegacyIAccessiblePattern）直接设置输入框/文本控件值。'
+        + '这比坐标点击后模拟键盘更稳定，尤其适合中文和长文本；控件不支持设值模式时会明确失败。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pid: { type: 'number' },
+          window: { type: 'string' },
+          ref: { type: 'string' },
+          name: { type: 'string' },
+          nameContains: { type: 'string' },
+          automationId: { type: 'string' },
+          controlType: { type: 'string' },
+          value: { type: 'string', description: '要写入的新值。' },
+          maxDepth: { type: 'number' },
+          maxNodes: { type: 'number' },
+        },
+        required: ['value'],
+      },
+      execute: (args) => runOp(
+        'ui_set_value',
+        async () => {
+          const out = await uiAction('set_value', args as Record<string, unknown>);
+          return textResult({ result: out.result, receipt: out.receipt });
+        },
+        { ...(args as Record<string, unknown>), value: String(args.value ?? '').slice(0, 200) },
+      ),
+    });
+
+    ctx.registerTool({
+      name: 'computer_wait_for_element',
+      description:
+        '等待 UI Automation 元素出现。可用 ref 或 name/nameContains/automationId/controlType 定位；出现后返回元素和当前控件树 revision。'
+        + '超时返回明确错误，不要立刻切换成坐标盲点。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pid: { type: 'number' },
+          window: { type: 'string' },
+          ref: { type: 'string' },
+          name: { type: 'string' },
+          nameContains: { type: 'string' },
+          automationId: { type: 'string' },
+          controlType: { type: 'string' },
+          timeoutMs: { type: 'number', description: '默认 10000，最大 120000。' },
+          intervalMs: { type: 'number', description: '轮询间隔，默认 500。' },
+          maxDepth: { type: 'number' },
+          maxNodes: { type: 'number' },
+        },
+      },
+      execute: (args) => runOp(
+        'ui_wait_for_element',
+        async () => {
+          if (!String(args.ref || args.name || args.nameContains || args.automationId || args.controlType || '').trim()) {
+            throw new Error('请至少提供 ref/name/nameContains/automationId/controlType 之一');
+          }
+          const target = await resolveUiTarget(args as Record<string, unknown>);
+          const timeoutMs = Math.max(1000, Math.min(120000, Number(args.timeoutMs) || 10000));
+          const intervalMs = Math.max(150, Math.min(5000, Number(args.intervalMs) || 500));
+          const deadline = Date.now() + timeoutMs;
+          let last: any = null;
+          while (Date.now() <= deadline) {
+            last = await runUiTree({
+              ...target,
+              maxDepth: Number(args.maxDepth) || 8,
+              maxNodes: Number(args.maxNodes) || 500,
+              includeOffscreen: false,
+            });
+            const wantedRef = String(args.ref || '').trim();
+            const exactName = String(args.name || '').trim();
+            const containsName = String(args.nameContains || '').trim();
+            const automationId = String(args.automationId || '').trim();
+            const controlType = String(args.controlType || '').trim();
+            const found = (last.nodes as UiNode[]).find((n) => {
+              if (wantedRef && n.ref !== wantedRef && n.runtimeId !== wantedRef) return false;
+              if (exactName && n.name !== exactName) return false;
+              if (containsName && !n.name.includes(containsName)) return false;
+              if (automationId && n.automationId !== automationId) return false;
+              if (controlType && n.controlType !== controlType) return false;
+              return !!(wantedRef || exactName || containsName || automationId || controlType);
+            });
+            if (found) {
+              const receipt = createExecutionReceipt({
+                target: 'desktop',
+                action: 'computer_wait_for_element',
+                ok: true,
+                afterRevision: last.revision,
+                evidence: [uiEvidence(last, '元素出现时的控件树')],
+              });
+              return textResult({ element: found, revision: last.revision, receipt });
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+          }
+          throw new Error(\`等待 UI Automation 元素超时（\${timeoutMs}ms）；最后控件树 revision=\${last?.revision || '-'}\`);
+        },
+        { ...(args as Record<string, unknown>) },
+      ),
+    });
 
     // -- 截屏：临时区保存 + 返回路径/坐标偏移/screenshotUrl（UI 流式期间内嵌展示）；
     //    模型本身看不到画面，需紧跟 image_analyze 完成视觉识别 --
@@ -896,20 +1196,29 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
         return runOp(
           'mouse_click',
           async () => {
+            const startedAt = Date.now();
             if (MAC) {
               if (button !== 'left' || double) {
                 throw new Error('macOS 适配 v1 仅支持左键单击（右键/双击暂不支持）');
               }
               const r = await osa(ctx.adapter.shell!, \`tell application "System Events" to click at {\${x}, \${y}}\`);
               if (r.exitCode !== 0) throw new Error(\`点击失败: \${r.stderr || r.stdout}\`);
-              return textOut(\`OK: click @ (\${x}, \${y})\`);
+              const receipt = createExecutionReceipt({
+                target: 'desktop', action: 'computer_mouse_click', ok: true, startedAt,
+                evidence: [{ kind: 'note', summary: \`macOS 左键单击 (\${x}, \${y})\` }],
+              });
+              return textResult({ ok: true, receipt }, { executionReceipt: receipt });
             }
             const r = await ps(ctx.adapter.shell!, clickScript(x, y, button, double));
             if (r.exitCode === 2 || r.stdout.startsWith('BLOCKED')) {
               throw new Error(\`目标点落在本应用自身窗口（\${r.stdout.split(String.fromCharCode(9))[1] || ''}），已拒绝。如确需操作请在插件配置开启 allowSelfWindowClick\`);
             }
             if (r.exitCode !== 0) throw new Error(\`点击失败: \${r.stderr || r.stdout}\`);
-            return textOut(\`OK: \${button}\${double ? ' double ' : ' '}click @ (\${x}, \${y})\`);
+            const receipt = createExecutionReceipt({
+              target: 'desktop', action: 'computer_mouse_click', ok: true, startedAt,
+              evidence: [{ kind: 'note', summary: \`\${button}\${double ? ' double ' : ' '}click @ (\${x}, \${y})\`, data: { x, y } }],
+            });
+            return textResult({ ok: true, receipt }, { executionReceipt: receipt });
           },
           { x, y, button, double },
         );
@@ -1007,6 +1316,7 @@ Write-Output 'OK'\`;
         return runOp(
           'scroll',
           async () => {
+            const startedAt = Date.now();
             if (MAC) throw new Error('macOS 适配 v1 不支持滚轮模拟');
             const delta = direction === 'up' ? 120 : -120;
             const script = \`\${PS_BASE}
@@ -1019,7 +1329,11 @@ for ($i = 0; $i -lt \${notches}; $i++) {
 Write-Output 'OK'\`;
             const r = await ps(ctx.adapter.shell!, script);
             if (r.exitCode !== 0) throw new Error(\`滚动失败: \${r.stderr || r.stdout}\`);
-            return textOut(\`OK: scrolled \${direction} x\${notches} @ (\${x}, \${y})\`);
+            const receipt = createExecutionReceipt({
+              target: 'desktop', action: 'computer_scroll', ok: true, startedAt,
+              evidence: [{ kind: 'note', summary: \`滚动 \${direction} x\${notches} @ (\${x}, \${y})\` }],
+            });
+            return textResult({ ok: true, receipt }, { executionReceipt: receipt });
           },
           { x, y, direction, notches },
         );
@@ -1041,13 +1355,18 @@ Write-Output 'OK'\`;
         return runOp(
           'type',
           async () => {
+            const startedAt = Date.now();
             if (MAC) {
               if (/[^\\x00-\\x7F]/.test(text)) {
                 throw new Error('macOS keystroke 不支持非 ASCII 字符（中文等），请改用剪贴板粘贴');
               }
               const r = await osa(ctx.adapter.shell!, \`tell application "System Events" to keystroke "\${osaStr(text)}"\`);
               if (r.exitCode !== 0) throw new Error(\`键入失败: \${r.stderr || r.stdout}\`);
-              return textOut(\`OK: typed \${text.length} chars\`);
+              const receipt = createExecutionReceipt({
+                target: 'desktop', action: 'computer_type', ok: true, startedAt,
+                evidence: [{ kind: 'note', summary: \`键盘输入 \${text.length} 字符\` }],
+              });
+              return textResult({ ok: true, receipt }, { executionReceipt: receipt });
             }
             const script = \`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
@@ -1057,7 +1376,11 @@ $text = [regex]::Replace($text, '([+^%~(){}\\\\[\\\\]])', '{$1}')
 Write-Output 'OK'\`;
             const r = await ps(ctx.adapter.shell!, script);
             if (r.exitCode !== 0) throw new Error(\`键入失败: \${r.stderr || r.stdout}\`);
-            return textOut(\`OK: typed \${text.length} chars\`);
+            const receipt = createExecutionReceipt({
+              target: 'desktop', action: 'computer_type', ok: true, startedAt,
+              evidence: [{ kind: 'note', summary: \`键盘输入 \${text.length} 字符\` }],
+            });
+            return textResult({ ok: true, receipt }, { executionReceipt: receipt });
           },
           { length: text.length },
         );
@@ -1080,11 +1403,16 @@ Write-Output 'OK'\`;
           return runOp(
             'press_key',
             async () => {
+              const startedAt = Date.now();
               if (MAC) {
                 const script = buildMacKeyScript(keys);
                 const r = await osa(ctx.adapter.shell!, script);
                 if (r.exitCode !== 0) throw new Error(\`按键失败: \${r.stderr || r.stdout}\`);
-                return textOut(\`OK: pressed \${keys.join('+')}\`);
+                const receipt = createExecutionReceipt({
+                  target: 'desktop', action: 'computer_press_key', ok: true, startedAt,
+                  evidence: [{ kind: 'note', summary: \`按键 \${keys.join('+')}\` }],
+                });
+                return textResult({ ok: true, receipt }, { executionReceipt: receipt });
               }
               const sendKeysSeq = buildSendKeys(keys).replace(/'/g, "''");
               const script = \`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1093,7 +1421,11 @@ Add-Type -AssemblyName System.Windows.Forms
 Write-Output 'OK'\`;
               const r = await ps(ctx.adapter.shell!, script);
               if (r.exitCode !== 0) throw new Error(\`按键失败: \${r.stderr || r.stdout}\`);
-              return textOut(\`OK: pressed \${keys.join('+')}\`);
+              const receipt = createExecutionReceipt({
+                target: 'desktop', action: 'computer_press_key', ok: true, startedAt,
+                evidence: [{ kind: 'note', summary: \`按键 \${keys.join('+')}\` }],
+              });
+              return textResult({ ok: true, receipt }, { executionReceipt: receipt });
             },
             { keys },
           );
@@ -2215,6 +2547,10 @@ export const PLUGIN_TEMPLATES: Record<string, PluginTemplate> = {
       contributes: {
         tools: [
           'computer_screenshot',
+          'computer_get_ui_tree',
+          'computer_click_element',
+          'computer_set_value',
+          'computer_wait_for_element',
           'computer_mouse_click',
           'computer_mouse_move',
           'computer_mouse_drag',
@@ -2243,6 +2579,7 @@ export const PLUGIN_TEMPLATES: Record<string, PluginTemplate> = {
       '智能体操作本机（鼠标/键盘/窗口/截屏）的完整参考实现，重点可参考：',
       '',
       '- 10 个 `computer_*` 工具的 inputSchema 与 execute 写法',
+      '- Windows UI Automation：控件树、稳定 runtimeId/ref、Invoke/Value/Toggle 等语义模式，以及坐标兜底',
       '- PowerShell `-EncodedCommand`（UTF-16LE base64）执行系统命令，规避参数注入',
       '- Win32 P/Invoke（Add-Type）：SetCursorPos / mouse_event / EnumWindows / GetWindowRect',
       '- 护栏模式：滚动窗口操作上限（checkLimit）、危险组合键与进程黑名单（BLOCKED_KEYS/BLOCKED_PROCS）、',

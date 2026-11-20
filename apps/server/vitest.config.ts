@@ -14,6 +14,9 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     environment: 'node',
     testTimeout: 15000,
+    // 全量并行时会在 beforeAll 里启动本地 Git/SFTP/数据库等真实依赖；
+    // 10s 默认 hook 超时会在机器负载高时误报，测试本身并未卡死。
+    hookTimeout: 60000,
     // ★ 全局环境隔离：给未显式设 DATA_DIR 的测试兜一个临时目录。
     //   没有它的话，任何 import 到 src/db.js 的测试（db.ts 顶层就 mkdir + 建库）
     //   都会在**源码目录** apps/server/ 里建 data.db —— 实测正是它污染了 dev 的真实库

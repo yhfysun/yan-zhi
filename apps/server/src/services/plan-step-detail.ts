@@ -8,6 +8,7 @@
 //   存量计划没有时间戳 → timingAvailable=false，返回空调用列表，**不猜**。
 import { db } from '../db.js';
 import { loadPlanJson, type TaskPlanStep } from './task-plan-file.js';
+import type { ExecutionEvidence } from '@yan-zhi/shared';
 
 const WAIT_THRESHOLD_MS = 10 * 60 * 1000;
 const RESULT_PREVIEW_LEN = 200;
@@ -37,6 +38,7 @@ export interface PlanStepDetail {
   activeMs: number;
   /** 时间窗内无活动的长间隙之和（等用户/等外部；结算时由 task-plan-file 写入） */
   waitMs: number;
+  evidence: ExecutionEvidence[];
   timingAvailable: boolean;
   /** 该步耗时 ≥10 分钟且期间没有任何工具调用 → 大概率在等用户/等外部 */
   containsWait: boolean;
@@ -153,6 +155,7 @@ export function buildPlanStepDetail(conversationId: string, index: number): Plan
         durationMs: 0,
         activeMs,
         waitMs: Number(step.waitMs) || 0,
+        evidence: Array.isArray(step.evidence) ? step.evidence : [],
         timingAvailable: false,
         containsWait: false,
         toolCallCount: 0,
@@ -189,6 +192,7 @@ export function buildPlanStepDetail(conversationId: string, index: number): Plan
       durationMs,
       activeMs,
       waitMs: Number(step.waitMs) || 0,
+      evidence: Array.isArray(step.evidence) ? step.evidence : [],
       timingAvailable: true,
       containsWait: durationMs >= WAIT_THRESHOLD_MS && toolCalls.length === 0,
       toolCallCount: toolCalls.length,

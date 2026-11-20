@@ -18,6 +18,8 @@ const TOPBAR = strip(readRepo('packages/ui/src/components/WebTopBar.vue'));
 const STATUSBAR = strip(readRepo('packages/ui/src/components/AppStatusBar.vue'));
 const WORKBENCH = strip(readRepo('packages/ui/src/views/office/OfficeWorkbench.vue'));
 const OFFICE_AI = strip(readRepo('packages/ui/src/components/office/OfficeAiSidebar.vue'));
+const PET_SETTINGS = strip(readRepo('packages/ui/src/views/PetSettings.vue'));
+const SETTINGS = strip(readRepo('packages/ui/src/views/Settings.vue'));
 const TREE = strip(readRepo('packages/ui/src/components/office/WorkspaceFileTree.vue'));
 const DOCVIEW = strip(readRepo('packages/ui/src/components/office/OfficeDocumentView.vue'));
 const WS_FILES = strip(readRepo('packages/ui/src/composables/office/useWorkspaceFiles.ts'));
@@ -58,7 +60,8 @@ describe('P2-1 办公工作台骨架', () => {
     expect(OFFICE_AI).not.toMatch(/class="oai-conv"/);
     expect(OFFICE_AI).toContain('定时任务');
     expect(OFFICE_AI).toContain('发布');
-    expect(OFFICE_AI).toContain('oai-recent-resize');
+    expect(OFFICE_AI).toContain('<div class="oai-directory">');
+    expect(OFFICE_AI).not.toContain('oai-recent-resize');
     expect(APP).toContain('officeAiSidebarR');
     expect(APP).toContain('office-ai-sidebar-resize');
     expect(CHAT_CSS).toMatch(/\.conv-main\s*\{[^}]*display:\s*grid/);
@@ -82,6 +85,18 @@ describe('P2-1 办公工作台骨架', () => {
     expect(OFFICE_AI).toContain("router.push('/publish-queue')");
     expect(OFFICE_AI).not.toMatch(/openSidePanel\('task'\)/);
     expect(OFFICE_AI).not.toMatch(/openSidePanel\('publish'\)/);
+  });
+
+  it('办公侧栏的宠物入口进入独立宠物页，并保留办公壳左侧栏', () => {
+    expect(ROUTER).toMatch(/path: '\/pet-settings'[\s\S]{0,160}PetSettings\.vue/);
+    expect(APP).toMatch(/officeAiShellActive[\s\S]{0,220}\/pet-settings/);
+    expect(OFFICE_AI).toContain("router.push('/pet-settings')");
+    expect(OFFICE_AI).toContain("route.path === '/pet-settings'");
+    expect(PET_SETTINGS).toContain('<Settings embedded pane="pet"');
+    expect(PET_SETTINGS).not.toContain('宠物伴星');
+    expect(PET_SETTINGS).not.toContain('pet-settings-page-head');
+    expect(SETTINGS).toMatch(/v-if="tab !== 'pet'/);
+    expect(OFFICE_AI).not.toMatch(/pet\?\.toggle/);
   });
 
   it('移动端把文件树收成抽屉，编辑区独占首屏且文件操作一键可达', () => {

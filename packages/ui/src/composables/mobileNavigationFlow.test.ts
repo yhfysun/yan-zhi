@@ -11,6 +11,7 @@ const MODE_SWITCH = read('components/MobileModeSwitch.vue');
 const LEAD_TOGGLE = read('components/workbench/LeadToggle.vue');
 const WORKSPACE_SWITCH = read('components/workbench/WorkspaceModeSwitch.vue');
 const LEARNING = read('views/LearningV2.vue');
+const MOBILE_NAV_DRAWER = read('components/MobileNavDrawer.vue');
 
 describe('移动端统一导航与返回路径', () => {
   it('聊天页“更多”与非聊天页共用右侧抽屉', () => {
@@ -42,7 +43,7 @@ describe('移动端统一导航与返回路径', () => {
       start,
       APP.indexOf('</header>', start),
     );
-    expect(mobileTopbar).toContain('<WorkspaceModeSwitch />');
+    expect(mobileTopbar).toContain('<WorkspaceModeSwitch v-if="!hidesMobileWorkspaceControls" />');
     expect(CHAT_TOPBAR).toContain('<WorkspaceModeSwitch');
     expect(WORKSPACE_SWITCH).toMatch(
       /@media \(max-width: 900px\), \(hover: none\)[\s\S]*?min-width:\s*48px/,
@@ -57,5 +58,21 @@ describe('移动端统一导航与返回路径', () => {
     const openReader = LEARNING.slice(start, end);
     expect(openReader).toContain('readerOpen.value = true');
     expect(openReader).not.toContain('libraryOpen.value = false');
+  });
+
+  it('店铺只通过顶部模式切换进入，不在「更多」里生成重复入口', () => {
+    expect(MOBILE_NAV_DRAWER).not.toContain("label: '店铺运营'");
+    expect(MOBILE_NAV_DRAWER).not.toContain("setMode('shop')");
+    expect(MOBILE_NAV_DRAWER).not.toContain('modeRoute(\'shop\')');
+    expect(MODE_SWITCH).toContain('visibleModeDefs');
+    expect(MODE_SWITCH).toContain('onPick(d.key)');
+  });
+
+  it('笔记与资讯是独立底部入口，移动顶栏不再重复显示办公模式切换', () => {
+    expect(APP).toContain("route.name === 'notes' || route.name === 'news' || route.path.startsWith('/learning')");
+    expect(APP).toContain('<MobileModeSwitch v-if="!hidesMobileWorkspaceControls" />');
+    expect(APP).toContain('<WorkspaceModeSwitch v-if="!hidesMobileWorkspaceControls" />');
+    expect(APP).toContain("notes: '笔记'");
+    expect(APP).toContain("news: '资讯'");
   });
 });

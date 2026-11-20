@@ -208,7 +208,7 @@
               @click.stop
               @change="toggleSelectAllInSpace(sp.id)"
             />
-            <span class="tree-count">{{ conversationsBySpace[sp.id]?.length || 0 }}</span>
+            <span class="tree-count">{{ spaceConversationCount(sp.id) }}</span>
             <el-icon class="tree-add-icon" @click.stop="startNewChat(sp.id)"><Plus /></el-icon>
           </div>
           <div v-show="!spaceCollapsed[sp.id]" class="tree-children">
@@ -234,7 +234,7 @@
                   :title="`任务模式：${taskTypeLabel(child.taskType)}（点击更改）`"
                   @click.stop="openSpaceEdit(child)"
                 >{{ taskTypeLabel(child.taskType) }}</span>
-                <span class="tree-count">{{ conversationsBySpace[child.id]?.length || 0 }}</span>
+                <span class="tree-count">{{ spaceConversationCount(child.id) }}</span>
                 <el-icon class="tree-add-icon" @click.stop="startNewChat(child.id)"><Plus /></el-icon>
               </div>
               <div v-show="!spaceCollapsed[child.id]" class="tree-children">
@@ -696,6 +696,7 @@ import FormDialog from '../FormDialog.vue';
 import EmptyState from '../common/EmptyState.vue';
 import ActionSheet from '../common/ActionSheet.vue';
 import type { ActionSheetAction } from '../common/ActionSheet.vue';
+import { countConversationsInSpaceTree } from './space-count';
 
 withDefaults(defineProps<{
   showTabs?: boolean;
@@ -761,6 +762,14 @@ function fullTime(ts?: number): string {
 function convTitle(c: { title?: string }): string {
   const t = (c.title || '').trim();
   return t || '未命名任务';
+}
+
+function spaceConversationCount(spaceId: string): number {
+  return countConversationsInSpaceTree(
+    spaceId,
+    conversationsBySpace.value,
+    (parentId) => spaceStore.childSpacesOf(parentId).map((space) => space.id),
+  );
 }
 
 const {

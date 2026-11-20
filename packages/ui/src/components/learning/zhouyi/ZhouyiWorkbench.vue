@@ -452,8 +452,8 @@ onBeforeUnmount(() => {
   <section class="zy-root">
     <header class="zy-head">
       <div>
-        <span class="zy-kicker">周易</span>
-        <h2>周易学习台 · 八径入门</h2>
+        <span class="zy-kicker">易学</span>
+        <h2>易学学习台 · 八径入门</h2>
         <p>先读卦爻，再读传注，一次一步。</p>
       </div>
       <div class="zy-progress">

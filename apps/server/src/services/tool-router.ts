@@ -47,11 +47,13 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   // 文件与执行底座
   'file_read', 'file_list', 'file_write', 'file_edit',
   'cmd_exec', 'python_exec',
+  'code_verify',
   // 后台作业状态轮询：与 python_exec background=true 配套，裁掉会让长任务永远等不到结果
   'job_status', 'job_control',
   // 浏览器四件套 + 代码模式 + 截图（pageAgent 主链路）
   'browser_navigate', 'browser_click', 'browser_type', 'browser_get_page_content',
   'browser_run_script', 'browser_screenshot', 'browser_list_upload_inputs', 'browser_upload',
+  'browser_get_debug_state',
   // ★ 确定性循环家族（2026-11-15 用户实报「这么简单的刷机任务都完不成」）：
   //   刷关/翻页/连续操作类任务的正解是 browser_run_loop **一次调用跑完整段**，
   //   被裁掉后模型只能逐轮手点 —— 每轮一次模型调用还慢，页面稍变就断。

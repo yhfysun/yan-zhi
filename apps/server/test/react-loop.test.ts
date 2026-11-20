@@ -221,7 +221,6 @@ vi.mock('@yan-zhi/core', () => ({
   invalidateDiagnosticsCache: () => {},
   SYNTHETIC_MESSAGE_IDS: new Set(['sys', 'summary', '__summary__']),
   isSyntheticMessageId: (id: string) => ['sys', 'summary', '__summary__'].includes(id),
-  adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
   LlmClient: hoisted.MockLlmClient,
   getToolRegistry: () => hoisted.mockRegistry,
   getApiToolRegistry: () => new Map(),

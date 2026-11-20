@@ -1,6 +1,7 @@
 import { LEARNING_V2_RAW_CATALOG } from './v2-catalog.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
 import { ALGORITHM_SUBJECT } from './algorithms.js';
+import { MEDICINE_SUBJECT } from './medicine.js';
 import { PROGRAMMING_SUBJECT } from './v2-curated/programming/catalog.js';
 import { planKey } from './v2-curated/types.js';
 import type {
@@ -46,10 +47,21 @@ export {
   ALGORITHM_TRACKS,
   ALGORITHM_LESSONS,
 } from './algorithms.js';
+export {
+  MEDICINE_SUBJECT,
+  MEDICINE_TRACKS,
+  MEDICINE_LESSONS,
+  MEDICINE_CURATED_PLANS,
+} from './medicine.js';
 export type {
   AlgorithmLesson,
   AlgorithmTrack,
 } from './algorithms.js';
+export type {
+  MedicineBranch,
+  MedicineLesson,
+  MedicineTrack,
+} from './medicine.js';
 export {
   ALGORITHM_CATEGORY_LABELS,
   ALGORITHM_DIFFICULTIES,
@@ -83,10 +95,29 @@ function flattenCourses(subject: LearningV2Subject): LearningV2CourseRef[] {
   );
 }
 
+/**
+ * 用户可见名称已从“周易”升级为“易学”，内部 key 继续使用 zhouyi，
+ * 避免旧会话、链接、本地进度和服务端进度记录失效。
+ */
+function normalizeSubjectName(subject: LearningV2Subject): LearningV2Subject {
+  if (subject.key !== 'zhouyi') return subject;
+  return {
+    ...subject,
+    name: '易学',
+    short: '易学',
+    line: '以《周易》经传为文本核心，结合历代注疏、现代研究与生活化讲授，练习来源分层、象数规则和解释边界。',
+    current: {
+      ...subject.current,
+      stage: subject.current.stage.replace('周易', '易学'),
+    },
+  };
+}
+
 const SUBJECT_VIEWS: readonly LearningV2SubjectView[] = [
-  ...RAW.subjects,
+  ...RAW.subjects.map(normalizeSubjectName),
   PROGRAMMING_SUBJECT,
   ALGORITHM_SUBJECT,
+  MEDICINE_SUBJECT,
 ].map((subject) => ({
   ...subject,
   courses: flattenCourses(subject),
@@ -117,6 +148,7 @@ const STUDIO_TASKS: Record<string, (courseName: string) => string> = {
   culture: (courseName) => `围绕“${courseName}”完成一次原文诵读、注释核对与对句练习。`,
   music: (courseName) => `围绕“${courseName}”完成四小节试奏、修改与回放。`,
   zhouyi: (courseName) => `围绕“${courseName}”完成原文核对、规则演练、天文历法与地理方位复盘。`,
+  medicine: (courseName) => `围绕“${courseName}”完成合成病例观察、中医与西医双路径解释、危险信号复核和就医沟通摘要。`,
   divination: (courseName) => `围绕“${courseName}”完成一次符号观察、牌阵叙事、概率提示与复盘。`,
   programming: (courseName) => `围绕“${courseName}”完成可运行代码、测试、构建、部署观察和失败复盘。`,
   algorithms: (courseName) => `围绕“${courseName}”完成题意建模、手算追踪、代码实现、反例、复杂度证明和基准实验。`,
@@ -141,6 +173,7 @@ const SUBJECT_SOURCE_URLS: Record<string, string> = {
   culture: 'https://ctext.org/',
   music: 'https://www.ihchina.cn/',
   zhouyi: 'https://ctext.org/book-of-changes',
+  medicine: 'https://www.who.int/health-topics',
   divination: 'https://www.metmuseum.org/toah/hd/divi/hd_divi.htm',
   programming: 'https://developer.mozilla.org/en-US/docs/Web',
   algorithms: 'https://oi-wiki.org/',
@@ -159,6 +192,7 @@ const SUBJECT_COMMON_ERRORS: Record<string, readonly string[]> = {
   japanese: ['只靠罗马字记忆，不建立假名和声音联系。', '逐词对译，不分析助词和句尾。', '能看懂固定例句，却不会替换成分。'],
   security: ['在未授权目标上测试。', '只记漏洞名称，不说明入口、权限和影响链。', '只改前端，不在服务端复验控制。'],
   zhouyi: ['把后世注文当成卦爻辞原文。', '只追求占断结论，不核对字词和结构。', '把文化解释用于医疗、法律、金融或现实预测。'],
+  medicine: ['把课程中的合成病例直接套到真人身上。', '把单个症状、指标或经典条文当作诊断和处方。', '忽略急症、药物相互作用、证据等级与专业转诊边界。'],
   divination: ['先有结论再挑符号。', '把模糊描述和巧合当作命中证据。', '越过文化娱乐边界，替代专业决策。'],
   programming: ['只复制代码，不检查版本、边界和错误路径。', '程序能运行就认为可以发布，没有测试、观测和回滚。', '只会使用框架生成器，不能解释运行时和工具链。'],
   algorithms: ['只背模板，不从输入规模和操作模型推导适用性。', '只测样例，没有最坏、重复、退化输入和反例。', '复杂度分析忽略了隐式复制、哈希退化、递归栈和实现常数。'],

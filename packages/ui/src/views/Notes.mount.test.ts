@@ -28,8 +28,8 @@ const { state, apiGet, apiPost, apiPatch, apiDelete, resetApi } = vi.hoisted(() 
   const apiGet = vi.fn(async (url: string) => {
     if (url.includes('/notes/categories')) {
       return { data: [
-        { id: 'c_en', name: '英语', sort: 0, count: 1 },
-        { id: '__none__', name: '未分类', sort: 9007199254740991, count: 0 },
+        { id: 'c_en', name: '英语', parentId: null, path: ['英语'], depth: 0, sort: 0, count: 1 },
+        { id: '__none__', name: '未分类', parentId: null, path: ['未分类'], depth: 0, sort: 9007199254740991, count: 0 },
       ] }
     }
     if (url.includes('/notes/reminders/due')) {
@@ -225,24 +225,54 @@ describe('主区形态三态（编辑 / 双栏 / 查看，2026-11-15 用户定�
 })
 
 describe('交互参数', () => {
-  it('新建计划：POST /notes/notes 带 kind=plan', async () => {
+  it('★ 移动模板入口：选「任务计划」后创建 kind=plan 的结构化记录', async () => {
     const el = await mountAndTrack()
-    const buttons = [...el.querySelectorAll('button')]
-    const planBtn = buttons.find((b) => b.textContent === '+ 计划')!
-    planBtn.click()
+    const recordBtn = [...el.querySelectorAll('button')].find((b) => b.textContent === '+ 记录')!
+    recordBtn.click()
+    await nextTick()
+    const taskTemplate = [...document.querySelectorAll('.nqc-template')]
+      .find((button) => button.textContent?.includes('任务计划')) as HTMLButtonElement
+    expect(taskTemplate).toBeTruthy()
+    taskTemplate.click()
+    await nextTick()
+    const title = document.querySelector('.nqc-title-field input') as HTMLInputElement
+    title.value = '整理货架'
+    title.dispatchEvent(new Event('input'))
+    await nextTick()
+    const save = document.querySelector('.nqc-primary') as HTMLButtonElement
+    save.click()
     await vi.waitFor(() => {
       const call = state.postCalls.find((c) => c.url.includes('/notes/notes') && (c.body as { kind?: string })?.kind === 'plan')
       expect(call).toBeTruthy()
+      expect((call!.body as { templateId: string }).templateId).toBe('template.task')
+      expect((call!.body as { data: { title: string } }).data.title).toBe('整理货架')
     })
   })
 
-  it('新建笔记默认 kind=note', async () => {
+  it('★ 移动模板入口：支出表单金额与分类写入 data，普通账本记录 kind=note', async () => {
     const el = await mountAndTrack()
-    const noteBtn = [...el.querySelectorAll('button')].find((b) => b.textContent === '+ 笔记')!
-    noteBtn.click()
+    const recordBtn = [...el.querySelectorAll('button')].find((b) => b.textContent === '+ 记录')!
+    recordBtn.click()
+    await nextTick()
+    const expenseTemplate = [...document.querySelectorAll('.nqc-template')]
+      .find((button) => button.textContent?.includes('记支出')) as HTMLButtonElement
+    expenseTemplate.click()
+    await nextTick()
+    const amount = document.querySelector('.ntf-amount input') as HTMLInputElement
+    amount.value = '28.5'
+    amount.dispatchEvent(new Event('input'))
+    const food = [...document.querySelectorAll('.ntf-option')]
+      .find((button) => button.textContent?.trim() === '餐饮') as HTMLButtonElement
+    food.click()
+    await nextTick()
+    const save = document.querySelector('.nqc-primary') as HTMLButtonElement
+    save.click()
     await vi.waitFor(() => {
       const call = state.postCalls.find((c) => c.url.includes('/notes/notes') && (c.body as { kind?: string })?.kind === 'note')
       expect(call).toBeTruthy()
+      expect((call!.body as { templateId: string }).templateId).toBe('template.expense')
+      expect((call!.body as { data: { amount: number; category: string } }).data)
+        .toMatchObject({ amount: 28.5, category: 'food' })
     })
   })
 

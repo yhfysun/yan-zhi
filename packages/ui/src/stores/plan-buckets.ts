@@ -23,6 +23,7 @@ export interface PlanStep {
   activeMs?: number;
   /** 结算时统计的等待时长（毫秒）：时间窗内无活动的长间隙（等用户/等外部） */
   waitMs?: number;
+  evidence?: import('@yan-zhi/shared').ExecutionEvidence[];
 }
 
 export interface Plan {
@@ -133,6 +134,7 @@ export function applyTaskPlan(
       title: String(s.title),
       description: s.description ? String(s.description) : undefined,
       status: 'pending' as PlanStepStatus,
+      ...(Array.isArray(s.evidence) ? { evidence: s.evidence } : {}),
     }));
   return {
     map: { ...map, [key]: { title, steps } },
@@ -155,6 +157,7 @@ export function syncPlan(
     steps?: Array<{
       id?: string; title?: string; status?: string; note?: string;
       startedAt?: number; finishedAt?: number; activeMs?: number; waitMs?: number;
+      evidence?: import('@yan-zhi/shared').ExecutionEvidence[];
     }>;
   },
 ): PlanMap {
@@ -173,6 +176,7 @@ export function syncPlan(
       ...(Number(s.finishedAt) ? { finishedAt: Number(s.finishedAt) } : {}),
       ...(Number(s.activeMs) ? { activeMs: Number(s.activeMs) } : {}),
       ...(Number(s.waitMs) ? { waitMs: Number(s.waitMs) } : {}),
+      ...(Array.isArray(s.evidence) ? { evidence: s.evidence } : {}),
     }));
   return {
     ...map,
@@ -211,10 +215,14 @@ export function applyTaskStep(
   }
   const status = String(args.status || 'done') as PlanStepStatus;
   const note = args.note != null ? String(args.note) : undefined;
+  const evidence = Array.isArray(args.evidence) ? args.evidence : [];
   const step = steps[idx - 1];
   if (step) {
     step.status = status;
     if (note !== undefined) step.note = note;
+    if (evidence.length) {
+      step.evidence = [...(Array.isArray(step.evidence) ? step.evidence : []), ...evidence as any].slice(-50);
+    }
   }
   return {
     // steps 是同一个数组引用（原地改），外层 map 引用需换新以触发响应式

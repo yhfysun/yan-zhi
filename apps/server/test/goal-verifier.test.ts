@@ -150,4 +150,24 @@ describe('goal deterministic verifier', () => {
     expect(failed).toMatchObject({ id: 'browser-fail', passed: false });
     expect(failed?.summary).toContain('页面验收未通过');
   });
+
+  it('浏览器验收可要求控制台干净且无页面加载错误', async () => {
+    const dirty = await verifyDeterministicCriterion({
+      id: 'browser-console',
+      title: '控制台干净',
+      kind: 'browser',
+      expect: { consoleClean: true, noPageErrors: true },
+    }, workspace, {
+      inspectPage: async () => ({
+        url: 'http://localhost:1420',
+        title: '测试页',
+        text: 'ok',
+        consoleLogs: [{ level: 'error', message: 'Uncaught TypeError' }],
+        pageErrors: [{ kind: 'did-fail-load', message: 'net::ERR_FAILED' }],
+      }),
+    });
+    expect(dirty).toMatchObject({ id: 'browser-console', passed: false });
+    expect(dirty?.summary).toContain('控制台');
+    expect(dirty?.evidence).toMatchObject({ consoleErrorCount: 1 });
+  });
 });

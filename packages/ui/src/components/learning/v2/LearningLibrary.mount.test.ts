@@ -429,6 +429,47 @@ describe('LearningLibrary', () => {
     expect(css).toMatch(/\.ll-source-search > button \{ width: 100%; justify-content: center; \}/);
   });
 
+  it('opens the mobile filter sheet and applies category filters without permanent filter rails', async () => {
+    const host = await mountLibrary();
+    const filter = host.querySelector('.ll-mobile-filter') as HTMLButtonElement;
+    expect(filter).toBeTruthy();
+    filter.click();
+    await nextTick();
+    const sheet = host.querySelector('.ll-filter-sheet') as HTMLElement;
+    expect(sheet).toBeTruthy();
+    const webNovel = [...sheet.querySelectorAll('.ll-filter-group button')]
+      .find((button) => button.textContent?.includes('网络小说')) as HTMLButtonElement;
+    webNovel.click();
+    await nextTick();
+    const view = [...sheet.querySelectorAll('footer button')]
+      .find((button) => button.textContent?.includes('查看')) as HTMLButtonElement;
+    view.click();
+    await nextTick();
+    expect(host.querySelector('.ll-filter-sheet')).toBeNull();
+    expect(filter.classList.contains('active')).toBe(true);
+    expect(host.textContent).toContain('番茄小说官方书库');
+  });
+
+  it('uses a one-column recommendation feed and hides desktop filter rails on mobile', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-library.css'), 'utf8');
+    expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.ll-categories,[\s\S]*?\.ll-collections\s*\{\s*display:\s*none/);
+    expect(css).toMatch(/\.ll-weekly-card\s*\{\s*display:\s*none/);
+    expect(css).toMatch(/\.ll-rank-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  });
+
+  it('uses compact mobile reading chrome instead of oversized tabs and search fields', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-library.css'), 'utf8');
+    expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.ll-head\s*\{\s*min-height:\s*44px;/);
+    expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.ll-head span small\s*\{\s*display:\s*none;/);
+    expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.ll-nav nav svg\s*\{\s*display:\s*none;/);
+    expect(css).toMatch(/\.ll-nav nav button\.active::after\s*\{[\s\S]*?background:\s*var\(--ll-accent\)/);
+    expect(css).toMatch(/\.ll-toolbar label\s*\{[\s\S]*?border-radius:\s*999px;[\s\S]*?background:\s*var\(--el-fill-color-light/);
+    expect(css).toMatch(/\.ll-toolbar label:focus-within\s*\{[\s\S]*?box-shadow:/);
+    expect(css).toMatch(/\.ll-toolbar label\s*\{[\s\S]*?min-width:\s*0;/);
+    const source = readFileSync(resolve(__dirname, 'LearningLibrary.vue'), 'utf8');
+    expect(source).toContain("if (!window.matchMedia('(max-width: 900px)').matches) searchInput.value?.focus();");
+  });
+
   it('accepts legacy HTTP sources but marks them as insecure', async () => {
     const host = await mountLibrary();
     (host.querySelectorAll('.ll-nav nav button')[2] as HTMLButtonElement).click();

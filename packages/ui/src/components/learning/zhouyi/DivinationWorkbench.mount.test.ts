@@ -79,7 +79,7 @@ describe('DivinationWorkbench · 挂载契约', () => {
     const el = await mountBench()
     expect(el.querySelector('.dv-root')).toBeTruthy()
     expect(el.querySelector('.dv-banner')?.textContent).toContain('民俗文化体验 · 教学演示')
-    expect(el.querySelector('.dv-head')?.textContent).toContain('周易测算')
+    expect(el.querySelector('.dv-head')?.textContent).toContain('易学测算')
     expect(el.querySelector('.dv-count')?.textContent).toContain('/5')
     expect(el.querySelectorAll('.dv-step').length).toBe(1)
     expect(el.querySelectorAll('details').length).toBe(0)

@@ -213,12 +213,12 @@
     </div>
   </nav>
 
-  <!-- 移动端底部 TabBar：四个核心入口（工作 / 店铺 / 学习 / 我的）。
+  <!-- 移动端底部 TabBar：五个核心入口（工作 / 笔记 / 学习 / 资讯 / 我的）。
        Capacitor 与 Web 手机视口共用；桌面/宽屏 Web 由各自的顶部导航承担。
 
-       ★ 为什么是这 4 项：移动端首屏能放的 TabBar 项上限就是 4~5 个，
+       ★ 为什么是这 5 项：移动端首屏能放的 TabBar 项上限就是 4~5 个，
        超过就必然挤压文字或降级成纯图标。这里按「用户每天真正会点开的东西」收敛：
-         工作（=当前模式主页面）/ 店铺 / 学习 / 我的。
+         工作（=当前模式主页面）/ 笔记 / 学习 / 资讯 / 我的。
        文件是任务侧栏里的二级工具，不再占用常驻位；配置管理统一收进「我的 → 设置」。 -->
   <nav v-if="isMobile" class="tab-bar">
     <template v-for="item in mobilePrimaryItems" :key="item.key">
@@ -248,7 +248,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Setting, UserFilled, User, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding, Files, Reading, Shop } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, UserFilled, User, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding, Files, Reading, Notebook, Tickets } from '@element-plus/icons-vue';
 import { Code } from 'lucide-vue-next';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
@@ -295,6 +295,7 @@ const builtinNavItems: NavItem[] = [
   { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台', hideOnMobile: true, mode: 'dev' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
+  { path: '/news', label: '资讯', tabLabel: '资讯', icon: Tickets, kind: 'route', group: '工作台' },
   { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, kind: 'route', group: '工作台' },
   { path: '/team', label: '团队工作台', tabLabel: '团队', icon: Cpu, kind: 'route', group: '工作台' },
   { path: '/page-assets', label: '页面资产', tabLabel: '页面资产', icon: Files, kind: 'route', group: '系统' },
@@ -379,12 +380,13 @@ const navGroups = computed(() => {
   }
   return groups;
 });
-/** 移动端底部 TabBar：四个核心入口（用户拍板）。
+/** 移动端底部 TabBar：五个核心入口（用户拍板）。
  *  key 单独给（不用 path 当 key）：无路由项 path 是空串，用 path 当 key 会撞车少渲染一项。
  *
  *  ★★ 这几个图标是"常驻可见"的，**必须与对话页其它区域的图标互不重叠**
  *  （TabBar 一直挂在屏幕上，撞脸最容易被用户看见）。对照表：
  *    · 学习   → Reading    ✗ 学习页内阅读动作使用书本/文档类符号，不使用同一入口图
+ *    · 资讯   → Tickets    ✗ 资讯页内收藏/票券类动作不使用同一入口图
  *    · 我的   → User       ✗ 对话页身份位、编辑动作分别使用 Avatar / Tools
  *    · 工作   → HomeFilled ✗ 页面内“首页”动作使用导航语义，不与底部常驻入口重复
  *  由 `composables/mobileIconUniqueness.test.ts` 守门（读源码断言不做跨区域撞脸）。 */
@@ -407,16 +409,18 @@ function openCurrentWork(): void {
   void router.push(modeRoute(activeMode.value)).catch(() => {});
 }
 
-function openShop(): void {
-  setMode('shop');
-  void router.push(modeRoute('shop')).catch(() => {});
+function openNotes(): void {
+  void router.push('/notes').catch(() => {});
+}
+
+function openNews(): void {
+  void router.push('/news').catch(() => {});
 }
 
 const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
   const workRoute = activeMode.value === 'shop' || activeMode.value === 'learning'
     ? '/chat'
     : modeRoute(activeMode.value);
-  const shopVisible = visibleModeDefs.value.some((d) => d.key === 'shop');
   const learningVisible = visibleModeDefs.value.some((d) => d.key === 'learning');
   const learningRoute = visibleModeDefs.value.find((d) => d.key === 'learning')?.route || '/learning-v2';
   const settingsChildActive = route.meta?.mobileSettingsChild === true;
@@ -433,15 +437,15 @@ const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
       active: workActive,
       run: openCurrentWork,
     },
-    ...(shopVisible ? [{
-      key: 'shop',
-      label: '店铺',
-      icon: Shop,
-      kind: 'action' as const,
-      path: '/shop',
-      active: route.path.startsWith('/shop'),
-      run: openShop,
-    }] : []),
+    {
+      key: 'notes',
+      label: '笔记',
+      icon: Notebook,
+      kind: 'action',
+      path: '/notes',
+      active: route.path.startsWith('/notes'),
+      run: openNotes,
+    },
     ...(learningVisible ? [{
       key: 'learning',
       label: '学习',
@@ -450,6 +454,15 @@ const mobilePrimaryItems = computed<MobilePrimaryItem[]>(() => {
       path: learningRoute,
       active: route.path.startsWith('/learning'),
     }] : []),
+    {
+      key: 'news',
+      label: '资讯',
+      icon: Tickets,
+      kind: 'action',
+      path: '/news',
+      active: route.path.startsWith('/news'),
+      run: openNews,
+    },
     {
       key: 'me',
       label: '我的',

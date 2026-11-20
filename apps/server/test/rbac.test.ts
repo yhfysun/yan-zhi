@@ -140,7 +140,7 @@ describe('③ 锚点：鉴权收口顺序与权限门', () => {
     const body = AUTH_SRC.slice(i, i + 1600);
     const guestIdx = body.indexOf("getAuthMode() === 'guest'");
     const bearerIdx = body.indexOf('verifyBearer(req)');
-    const loopbackIdx = body.indexOf('isLoopback(req)');
+    const loopbackIdx = body.indexOf('isLoopbackRequest(req)');
     // 前面还有“带无效 query token”分支也会返回 UNAUTHENTICATED；
     // 这里要锚定的是**最后一个**远程未登录 401，不是那个早退分支。
     const unauthIdx = body.lastIndexOf("code: 'UNAUTHENTICATED'");

@@ -107,6 +107,12 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
   if (!name) { res.status(400).json({ error: 'name 为必填项' }); return; }
   const rawArgs = req.body?.args;
   const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) ? rawArgs as Record<string, unknown> : {};
+  const headerConvId = req.headers['x-yz-conversation-id'];
+  const conversationId = String(
+    (Array.isArray(headerConvId) ? headerConvId[0] : headerConvId)
+      || req.body?.conversationId
+      || '',
+  ).trim() || null;
   // ★ 权限模式判定（2026-10-17）：本端点此前**完全不判 permissionMode** ——
   //   只读会话也能借它跑 file_write / cmd_exec 这类写工具，等于在权限体系上开了个侧门。
   //   · 缺省 `'all'`：保持既有语义不变（这里是"UI 试跑"＝用户自己点按钮触发，
@@ -136,6 +142,13 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
       // ★ 必须传 ToolContext.workspaceDir（2026-09-30）：否则工具里的**相对路径**解析到进程 cwd，
 //   而不是用户的工作目录（实测 `02-work` 一律 directory not found）。
       const { serverState } = await import('../state.js');
+      const browserContext = name.startsWith('browser_')
+        ? await import('@yan-zhi/core')
+        : null;
+      if (browserContext) {
+        browserContext.setBrowserToolConversationId(conversationId);
+        browserContext.setBrowserToolWorkspaceDir(serverState.workspaceDir || null);
+      }
       // ★ 工作目录边界守卫（2026-10-01）：本入口是「UI 试跑」——**用户自己点按钮触发**，
       //   已经是一次显式授权（他就是要跑这个工具），所以越界**直接放行**，只记审计不弹窗。
       //   ★ 与另两个入口（ReAct 主链路弹窗 / 工作流 fail-safe 拒绝）共用同一份判定。
@@ -150,11 +163,21 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
       if (verdict.kind === 'need-auth') {
         logger.warn(`[path-guard] UI试跑放行(用户主动触发) tool=${name} items=${verdict.items.map((i) => i.rawPath).join(' | ')}`);
       }
-      result = await Promise.race([
-        registry.execute(name, args, { workspaceDir: serverState.workspaceDir || undefined }),
-        timeout,
-      ]);
-      clearTimeout(timer);
+      try {
+        result = await Promise.race([
+          registry.execute(name, args, {
+            workspaceDir: serverState.workspaceDir || undefined,
+            ...(conversationId ? { conversationId } : {}),
+          }),
+          timeout,
+        ]);
+      } finally {
+        clearTimeout(timer);
+        if (browserContext) {
+          browserContext.setBrowserToolConversationId(null);
+          browserContext.setBrowserToolWorkspaceDir(null);
+        }
+      }
     }
     res.json({ data: result });
   } catch (e: any) {

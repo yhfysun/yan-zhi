@@ -12,6 +12,9 @@
 import { db } from '../db.js';
 import { createLogger } from './logger.js';
 import { runWithArtifactCollector, type ArtifactBrief } from './artifacts.js';
+import { verifyDeterministicCriteria } from './goal-verifier.js';
+import type { GoalCriterion } from './goal-store.js';
+import type { ExecutionEvidence } from '@yan-zhi/shared';
 
 const logger = createLogger('plan-runner');
 
@@ -46,10 +49,12 @@ export interface PlanItemRow {
   instruction: string;
   depends_on_json: string;
   max_steps: number | null;
+  verify_json: string | null;
   status: string;
   attempts: number;
   error_summary: string | null;
   artifact_ids_json: string;
+  evidence_json: string;
   result_brief: string | null;
 }
 
@@ -60,6 +65,7 @@ interface PlanDeps {
     specOverride?: any, runOpts?: { maxSteps?: number }) => Promise<string>;
   /** 计划状态变更通知（供前端"运行指示行"实时显示步骤进度）。可选：无则不发。 */
   onPlanChange?: (task: any, planId: string, plan: { title: string; steps: Array<{ id: string; title: string; status: string; note?: string }> }) => void;
+  resolveWorkspaceDir?: (conversationId: string) => string | null | undefined;
 }
 
 let planDeps: PlanDeps | null = null;
@@ -87,13 +93,26 @@ function artifactsOf(item: PlanItemRow): string[] {
   try { return JSON.parse(item.artifact_ids_json || '[]'); } catch { return []; }
 }
 
-function updateItem(id: string, fields: Partial<Pick<PlanItemRow, 'status' | 'attempts' | 'error_summary' | 'artifact_ids_json' | 'result_brief'>>): void {
+function updateItem(id: string, fields: Partial<Pick<PlanItemRow, 'status' | 'attempts' | 'error_summary' | 'artifact_ids_json' | 'evidence_json' | 'result_brief'>>): void {
   const sets: string[] = [];
   const vals: any[] = [];
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k} = ?`); vals.push(v); }
   sets.push('updated_at = ?');
   vals.push(Date.now(), id);
   db.prepare(`UPDATE task_plan_item SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+function normalizeVerify(value: unknown): GoalCriterion[] {
+  const raw = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
+  return raw
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+    .map((item, i) => ({
+      ...item,
+      id: String(item.id || `verify_${i + 1}`).slice(0, 120),
+      title: String(item.title || `验收 ${i + 1}`).slice(0, 500),
+      kind: String(item.kind || 'text').slice(0, 40),
+    }))
+    .slice(0, 20);
 }
 
 /**
@@ -128,7 +147,7 @@ export function createPlan(task: { id: string; conversationId: string; userId: s
   if (rawItems.length > MAX_PLAN_ITEMS) return { ok: false, message: `单份计划最多 ${MAX_PLAN_ITEMS} 项，请拆分提交。` };
 
   // 归一化 + 校验必填
-  const items: Array<{ key: string; title: string; agentId: string; instruction: string; deps: string[]; maxSteps?: number; platformId?: string; modelId?: string }> = [];
+  const items: Array<{ key: string; title: string; agentId: string; instruction: string; deps: string[]; verify: GoalCriterion[]; maxSteps?: number; platformId?: string; modelId?: string }> = [];
   const seenKeys = new Set<string>();
   for (let i = 0; i < rawItems.length; i++) {
     const it = rawItems[i] || {};
@@ -144,7 +163,7 @@ export function createPlan(task: { id: string; conversationId: string; userId: s
     seenKeys.add(key);
     const deps = Array.isArray(it.dependsOn) ? it.dependsOn.map((d: any) => String(d).trim()).filter(Boolean) : [];
     items.push({
-      key, title, agentId, instruction, deps,
+      key, title, agentId, instruction, deps, verify: normalizeVerify(it.verify),
       maxSteps: Number.isFinite(Number(it.maxSteps)) && Number(it.maxSteps) > 0 ? Math.floor(Number(it.maxSteps)) : undefined,
       platformId: String(it.platformId || '').trim() || undefined,
       modelId: String(it.modelId || '').trim() || undefined,
@@ -181,7 +200,7 @@ export function createPlan(task: { id: string; conversationId: string; userId: s
   const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const now = Date.now();
   const insert = db.prepare(
-    'INSERT INTO task_plan_item (id, plan_id, conversation_id, task_id, item_key, seq, title, agent_id, platform_id, model_id, instruction, depends_on_json, max_steps, status, attempts, error_summary, artifact_ids_json, result_brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?)',
+    'INSERT INTO task_plan_item (id, plan_id, conversation_id, task_id, item_key, seq, title, agent_id, platform_id, model_id, instruction, depends_on_json, max_steps, verify_json, status, attempts, error_summary, artifact_ids_json, evidence_json, result_brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, ?, ?)',
   );
   const tx = db.transaction(() => {
     items.forEach((it, i) => {
@@ -189,7 +208,8 @@ export function createPlan(task: { id: string; conversationId: string; userId: s
         'tpi_' + now.toString(36) + Math.random().toString(36).slice(2, 8),
         planId, task.conversationId, task.id, it.key, i + 1, it.title, it.agentId,
         it.platformId || null, it.modelId || null, it.instruction,
-        JSON.stringify(it.deps), it.maxSteps ?? null, 'pending', '[]', now, now,
+        JSON.stringify(it.deps), it.maxSteps ?? null, it.verify.length ? JSON.stringify(it.verify) : null,
+        'pending', '[]', '[]', now, now,
       );
     });
   });
@@ -198,7 +218,8 @@ export function createPlan(task: { id: string; conversationId: string; userId: s
   const lines = items.map((it) => {
     const dep = it.deps.length ? `（依赖 ${it.deps.join('+')}）` : '（无依赖，并行）';
     const model = it.modelId ? `，模型 ${it.modelId}` : '';
-    return `  ${it.key} 「${it.title}」 → ${it.agentId}${model} ${dep}`;
+    const verify = it.verify.length ? `，验收 ${it.verify.length} 项` : '';
+    return `  ${it.key} 「${it.title}」 → ${it.agentId}${model}${verify} ${dep}`;
   }).join('\n');
   return {
     ok: true,
@@ -303,10 +324,44 @@ async function runPlanItem(task: any, item: PlanItemRow): Promise<void> {
       onItemFailure(task, item, attempt, result);
       return;
     }
+    const verifyCriteria = (() => {
+      try { return normalizeVerify(JSON.parse(item.verify_json || '[]')); } catch { return []; }
+    })();
+    if (verifyCriteria.length) {
+      const workspaceDir = planDeps?.resolveWorkspaceDir?.(task.conversationId) || '';
+      const verification = await verifyDeterministicCriteria(verifyCriteria, workspaceDir, {
+        conversationId: task.conversationId,
+        userId: task.userId,
+      });
+      const failed = verification.results.filter((r) => !r.passed);
+      if (failed.length) {
+        const reason = failed.map((r) => `${r.title}：${r.summary}`).join('；').slice(0, 500);
+        onItemFailure(task, item, attempt, `验收未通过：${reason}`);
+        return;
+      }
+      if (verification.unresolved.length) {
+        const reason = verification.unresolved.map((c) => c.title).join('；').slice(0, 500);
+        onItemFailure(task, item, attempt, `验收无法自动判定，需要人工核验：${reason}`);
+        return;
+      }
+    }
+    const evidence: ExecutionEvidence[] = [
+      ...artifacts.map((a) => ({
+        kind: 'artifact' as const,
+        summary: `产出文件 ${a.name}`,
+        ref: a.path,
+        data: { artifactId: a.id, size: a.size, category: a.category },
+      })),
+      ...(verifyCriteria.length ? [{
+        kind: 'test' as const,
+        summary: `调度器验收通过：${verifyCriteria.map((c) => c.title).join('；')}`,
+      }] : []),
+    ];
     const brief = result.length > 800 ? result.slice(0, 800) + '…' : result;
     updateItem(item.id, {
       status: 'done',
       artifact_ids_json: JSON.stringify(artifacts.map((a: ArtifactBrief) => a.id)),
+      evidence_json: JSON.stringify(evidence),
       result_brief: brief,
       error_summary: null,
     });
@@ -379,7 +434,14 @@ function buildFinalSummaryText(task: any, planId: string): string {
         const rows = ids.map((id) => db.prepare('SELECT name, path FROM conversation_file WHERE id = ?').get(id) as any).filter(Boolean);
         files = rows.length ? `，产出：${rows.map((r) => `${r.name} → ${r.path}`).join('；')}` : '';
       }
-      parts.push(`✅ ${it.item_key}「${it.title}」${it.result_brief ? `：${it.result_brief.slice(0, 300)}` : ''}${files}`);
+      let evidence = '';
+      try {
+        const list = JSON.parse(it.evidence_json || '[]') as ExecutionEvidence[];
+        if (Array.isArray(list) && list.length) {
+          evidence = `，证据：${list.slice(0, 5).map((e) => `${e.kind}:${e.summary}`).join('；')}`;
+        }
+      } catch { /* 证据损坏不影响汇总 */ }
+      parts.push(`✅ ${it.item_key}「${it.title}」${it.result_brief ? `：${it.result_brief.slice(0, 300)}` : ''}${files}${evidence}`);
     }
     for (const it of failed) parts.push(`❌ ${it.item_key}「${it.title}」（重试 ${it.attempts} 次耗尽）：${it.error_summary || '未知原因'}。请用 reassign_task 重新分配（换执行者或改写指令），不要原样重试。`);
     for (const it of skipped) parts.push(`⏭️ ${it.item_key}「${it.title}」：因上游失败未执行`);

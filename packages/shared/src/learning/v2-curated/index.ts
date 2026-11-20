@@ -18,6 +18,7 @@ import { ECONOMICS_CURATED_PLANS } from './economics.js';
 import { FOUNDATIONS_CURATED_PLANS } from './foundations.js';
 import { HUMANITIES_CURATED_PLANS } from './humanities.js';
 import { JAPANESE_CURATED_PLANS } from './japanese.js';
+import { MEDICINE_CURATED_PLANS } from '../medicine.js';
 import { PHYSICS_CURATED_PLANS } from './physics.js';
 import { PRACTICAL_CULTURE_CURATED_PLANS } from './practical-culture.js';
 import { PROGRAMMING_CURATED_PLANS } from './programming/catalog.js';
@@ -51,6 +52,7 @@ export const LEARNING_V2_CURATED_PLANS: CuratedCoursePlanMap = {
   ...PROGRAMMING_CURATED_PLANS,
   ...PRIORITY_EXPANSION_CURATED_PLANS,
   ...JAPANESE_CURATED_PLANS,
+  ...MEDICINE_CURATED_PLANS,
   ...SECURITY_CURATED_PLANS,
   ...ZHOUYI_CURATED_PLANS,
 };

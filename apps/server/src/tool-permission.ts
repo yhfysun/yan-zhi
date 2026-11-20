@@ -33,6 +33,21 @@ const WRITE_TOOLS = new Set([
   'browser_fill_form', 'browser_submit_form', 'browser_select_option',
   'browser_check', 'browser_uncheck', 'browser_drag', 'browser_scroll_into_view',
   'browser_upload', 'browser_download', 'browser_login_saved',
+  // —— 桌面语义/坐标输入：会改变本机前台应用状态 ——
+  'computer_click_element', 'computer_set_value', 'computer_mouse_click',
+  'computer_mouse_move', 'computer_mouse_drag', 'computer_scroll',
+  'computer_type', 'computer_press_key', 'computer_open_app',
+  'computer_activate_window',
+  'plugin_computer-use__computer_click_element',
+  'plugin_computer-use__computer_set_value',
+  'plugin_computer-use__computer_mouse_click',
+  'plugin_computer-use__computer_mouse_move',
+  'plugin_computer-use__computer_mouse_drag',
+  'plugin_computer-use__computer_scroll',
+  'plugin_computer-use__computer_type',
+  'plugin_computer-use__computer_press_key',
+  'plugin_computer-use__computer_open_app',
+  'plugin_computer-use__computer_activate_window',
   // 控制统一后台任务（暂停/恢复/取消）会改变真实进程/下载状态。
   'job_control',
   // 脚本与确定性循环都能点击/输入/改页面，按写操作授权
@@ -49,6 +64,7 @@ const WRITE_TOOLS = new Set([
   'api_git_checkout', 'api_git_restore', 'api_git_stash_save', 'api_git_stash_pop',
   'api_git_tag_create', 'api_git_tag_delete', 'api_git_revert', 'api_git_reset',
   'api_git_cherry_pick', 'api_git_rebase', 'api_git_merge',
+  'git_worktree',
   // —— 数据/知识库/文件元信息写入 ——
   'api_file_set_category',
   'api_kb_create', 'api_kb_update', 'api_kb_delete',
@@ -255,7 +271,9 @@ export interface ToolPermissionVerdict {
 }
 
 /** 命令执行类工具：目标路径藏在命令/代码字符串里，静态抽不出来（与 path-guard 的 COMMAND_TOOLS 同义） */
-export const COMMAND_TOOL_NAMES = new Set(['cmd_exec', 'python_exec']);
+export const COMMAND_TOOL_NAMES = new Set([
+  'cmd_exec', 'python_exec', 'code_verify',
+]);
 
 // ───────────────────────── 审批矩阵（2026-10-19，对标 Codex 的 sandbox × approval）─────────
 //

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getToolRegistry } from '@yan-zhi/core';
 import { setNoteToolUser, NOTE_TOOL_NAMES, parseNoteTimeInput } from '../src/notes/tools';
-import { listNotes, ensureCategory } from '../src/notes/service';
+import { listNotes, ensureCategory, getNoteAnalytics } from '../src/notes/service';
 import { db } from '../src/db';
 import { buildToolsForBackend } from '../src/llm-task-manager';
 import { ensureToolsInitialized } from '../src/mcp/index';
@@ -94,6 +94,31 @@ describe('笔记工具 · 用户态与读写行为', () => {
     const r = await registry.execute('notes_add', { title: '坏时间', remind_at: 'yesterday maybe' }) as { content: Array<{ text: string }>; isError: boolean };
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('无法解析');
+  });
+
+  it('notes_add 可通过 template_id + data 创建结构化支出并进入账本汇总', async () => {
+    setNoteToolUser(uid);
+    const at = Date.now() - 1000;
+    const r = await registry.execute('notes_add', {
+      title: '工具记账',
+      template_id: 'template.expense',
+      occurred_at: at,
+      data: { amount: 36.5, category: 'food', account: 'wechat', occurredAt: at },
+    }) as { content: Array<{ text: string }>; isError: boolean };
+    expect(r.isError).toBe(false);
+    const payload = JSON.parse(r.content[0].text);
+    expect(payload.templateId).toBe('template.expense');
+    expect(payload.data.amount).toBe(36.5);
+    const report = getNoteAnalytics(uid, at - 1000, at + 1000);
+    expect(report.totals.expense).toBeGreaterThanOrEqual(36.5);
+
+    const analytics = await registry.execute('notes_analytics', { range: 'today' }) as {
+      content: Array<{ text: string }>;
+      isError: boolean;
+    };
+    expect(analytics.isError).toBe(false);
+    const summary = JSON.parse(analytics.content[0].text);
+    expect(summary.totals.expense).toBeGreaterThanOrEqual(36.5);
   });
 
   it('notes_update 按分类名迁移；空串移到未分类', async () => {

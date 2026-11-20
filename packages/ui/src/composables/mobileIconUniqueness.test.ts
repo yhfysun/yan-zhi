@@ -58,7 +58,7 @@ function importedIconsOf(src: string): string[] {
 }
 
 /**
- * TabBar 四项的图标（SideNav 的 mobilePrimaryItems）—— 这是**常驻可见**的集合，
+ * TabBar 五项的图标（SideNav 的 mobilePrimaryItems）—— 这是**常驻可见**的集合，
  * 任何"同屏可见"的图标都不得与它们重复。
  * 从源码解析而不是硬编码，这样改了 TabBar 图标本测试会自动跟着变。
  *
@@ -71,16 +71,16 @@ function tabBarIcons(): string[] {
   expect(i, '未找到 `const mobilePrimaryItems` 声明').toBeGreaterThan(0);
   const block = SIDE_NAV.slice(i, SIDE_NAV.indexOf(']);', i));
   const names = [...block.matchAll(/icon:\s*([A-Z][A-Za-z0-9]*)/g)].map((m) => m[1]);
-  expect(names.length, 'TabBar 应解析出 4 个图标').toBe(4);
+  expect(names.length, 'TabBar 应解析出 5 个图标').toBe(5);
   return names;
 }
 
 describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页同屏图标撞脸', () => {
-  it('TabBar 四项图标解析正常（4 个且互不相同）', () => {
+  it('TabBar 五项图标解析正常（5 个且互不相同）', () => {
     const icons = tabBarIcons();
-    expect(new Set(icons).size).toBe(4);
+    expect(new Set(icons).size).toBe(5);
     // 记录当前取值，方便日后 review diff 时一眼看出是否被改
-    expect(icons).toEqual(['HomeFilled', 'Shop', 'Reading', 'User']);
+    expect(icons).toEqual(['HomeFilled', 'Notebook', 'Reading', 'Tickets', 'User']);
   });
 
   it('App.vue 移动顶栏使用更多按钮，不再叠加账户人形图标', () => {

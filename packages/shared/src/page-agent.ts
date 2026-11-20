@@ -54,6 +54,9 @@ export const PAGE_AGENT_BROWSER_TOOLS = [
   'browser_wait_for',
   'browser_wait_for_request',
   'browser_get_network_log',
+  'browser_get_console_log',
+  'browser_get_debug_state',
+  'browser_get_page_capabilities',
   'browser_next_page',
   'browser_prev_page',
   // 结构化提取与脚本

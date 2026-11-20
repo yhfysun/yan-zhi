@@ -139,6 +139,21 @@ describe('renderTaskPlanMarkdown / parseTaskPlanMarkdown 往返', () => {
     expect(parseTaskPlanMarkdown(md)).toBeNull(); // 无有效步骤 → null（不伪造计划）
   });
 
+  it('证据随计划文件往返，文件回退不丢验收现场', () => {
+    const md = renderTaskPlanMarkdown({
+      title: '证据往返',
+      steps: [{
+        title: '提交表单',
+        status: 'done',
+        evidence: [{ kind: 'screenshot', summary: '成功提示', ref: '/tmp/success.png' }],
+      }],
+    } as any);
+    const back = parseTaskPlanMarkdown(md)!;
+    expect(back.steps[0].evidence).toEqual([
+      { kind: 'screenshot', summary: '成功提示', ref: '/tmp/success.png' },
+    ]);
+  });
+
   it('对 X 大写勾选与 [~] 之外的字面量容错', () => {
     const back = parseTaskPlanMarkdown('# 任务计划：t\n- [X] 大写完成\n- [x]带空格缺 —— note')!;
     expect(back.steps[0].status).toBe('done');
@@ -312,5 +327,34 @@ describe('⑦ 子智能体计划使用独立作用域', () => {
       ['上传', 'pending', undefined],
       ['回读', 'pending', undefined],
     ]);
+  });
+
+  it('task_step 持久化结构化证据，并在重规划时随完成步骤保留', async () => {
+    const store = createInMemoryTaskPlanStore();
+    await backendTaskPlan('conv_loose', { title: '带证据的任务', steps: [{ title: '提交表单' }] }, undefined, store);
+
+    await backendTaskStep('conv_loose', {
+      index: 1,
+      status: 'done',
+      note: '页面显示提交成功',
+      evidence: [
+        { kind: 'selector', summary: '成功提示可见', ref: '.toast-success' },
+        { kind: 'text', summary: '页面回读成功' },
+        { kind: 'invalid', summary: '非法证据应被丢弃' },
+      ],
+    }, store);
+
+    expect(store.load()?.steps[0].evidence).toEqual([
+      { kind: 'selector', summary: '成功提示可见', ref: '.toast-success' },
+      { kind: 'text', summary: '页面回读成功' },
+    ]);
+
+    await backendTaskPlan(
+      'conv_loose',
+      { title: '带证据的任务（继续）', steps: [{ title: '提交表单' }, { title: '回读列表' }] },
+      undefined,
+      store,
+    );
+    expect(store.load()?.steps[0].evidence).toHaveLength(2);
   });
 });

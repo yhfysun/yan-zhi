@@ -56,6 +56,7 @@ export function bridgeMode(): BridgeMode {
 export const READONLY_BRIDGE_ACTIONS = new Set([
   'get_page_info', 'get_page_content', 'get_dom', 'get_visible_text', 'get_text',
   'screenshot', 'get_tabs', 'get_url', 'is_visible', 'get_network_log', 'wait_for_request',
+  'get_console_log', 'get_debug_state', 'get_page_capabilities',
   'wait', 'wait_for', 'extract_list',
 ]);
 
@@ -89,6 +90,12 @@ const TOOL_ACTION_ALIASES: Record<string, string> = {
 export function toolNameToAction(toolName: string): string {
   const raw = toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
   return TOOL_ACTION_ALIASES[raw] || raw;
+}
+
+/** 反向映射：/api/browser/action 的 action 名 → 桥工具名。 */
+export function actionToBrowserToolName(action: string): string {
+  const raw = String(action || '').trim();
+  return raw === 'press' ? 'browser_press_key' : `browser_${raw}`;
 }
 
 /**

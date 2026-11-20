@@ -48,6 +48,15 @@
         该步骤耗时超过 10 分钟且期间没有工具调用，可能包含等待（等用户确认 / 等外部响应）。
       </div>
 
+      <div v-if="detail.evidence?.length" class="psd-evidence">
+        <div class="psd-evidence-title">验收证据</div>
+        <div v-for="(item, i) in detail.evidence.slice(-8)" :key="item.id || i" class="psd-evidence-item">
+          <span class="psd-evidence-kind">{{ item.kind }}</span>
+          <span class="psd-evidence-summary">{{ item.summary }}</span>
+          <span v-if="item.ref" class="psd-evidence-ref" :title="item.ref">{{ item.ref }}</span>
+        </div>
+      </div>
+
       <ul class="psd-calls">
         <li
           v-for="c in detail.toolCalls"
@@ -100,6 +109,7 @@ interface PlanStepDetail {
   activeMs: number;
   /** 时间窗内无活动的长间隙之和（等用户/等外部） */
   waitMs: number;
+  evidence?: Array<{ id?: string; kind: string; summary: string; ref?: string }>;
   timingAvailable: boolean;
   containsWait: boolean;
   toolCallCount: number;
@@ -279,6 +289,46 @@ defineExpose({ open });
   padding: 14px 10px;
   text-align: center;
   font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.psd-evidence {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+.psd-evidence-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.psd-evidence-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.psd-evidence-item + .psd-evidence-item { margin-top: 4px; }
+.psd-evidence-kind {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.psd-evidence-summary {
+  min-width: 0;
+  color: var(--el-text-color-regular);
+  word-break: break-word;
+}
+.psd-evidence-ref {
+  margin-left: auto;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--el-text-color-secondary);
 }
 </style>

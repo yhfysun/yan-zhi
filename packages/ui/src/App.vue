@@ -45,10 +45,10 @@
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
         </header>
         <header v-else-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
-          <MobileModeSwitch />
+          <MobileModeSwitch v-if="!hidesMobileWorkspaceControls" />
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
-            <WorkspaceModeSwitch />
+            <WorkspaceModeSwitch v-if="!hidesMobileWorkspaceControls" />
             <span v-if="authStore.isLoggedIn" class="mobile-user-avatar">
               {{ authStore.user?.username?.slice(0, 1) || 'U' }}
             </span>
@@ -228,7 +228,7 @@ const mobileShellAsRoot = computed(() => (
 const officeAiShellActive = computed(() => (
   !mobileShellAsRoot.value
   && activeMode.value === 'office'
-  && ['/chat', '/memory', '/scheduled-tasks', '/publish-queue'].includes(route.path)
+  && ['/chat', '/memory', '/scheduled-tasks', '/publish-queue', '/pet-settings'].includes(route.path)
 ));
 const officeAiSidebarR = useResizable('office_ai_sidebar', 268, 232, 440);
 
@@ -294,6 +294,10 @@ void useRouter().isReady().then(() => { appBooted.value = true; });
 const isShellPage = computed(() => route.meta?.mobilePageShell === true);
 /** 从移动设置进入的管理页：使用设置子页顶栏，不能继续显示当前业务模式切换。 */
 const isMobileSettingsChild = computed(() => route.meta?.mobileSettingsChild === true);
+/** 笔记、资讯与学习是底部独立内容区，不承载办公工作台模式与 AI/人工切换。 */
+const hidesMobileWorkspaceControls = computed(
+  () => route.name === 'notes' || route.name === 'news' || route.path.startsWith('/learning'),
+);
 
 function backToSettings(): void {
   const group = typeof route.query.group === 'string' ? route.query.group : '';
@@ -775,6 +779,9 @@ const ROUTE_TITLES: Record<string, string> = {
   workflow: '工作流',
   automation: '自动化',
   clip: '剪辑',
+  'pet-settings': '宠物设置',
+  notes: '笔记',
+  news: '资讯',
   settings: '设置',
   login: '登录',
   'office-workbench': '办公工作台',

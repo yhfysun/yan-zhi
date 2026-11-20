@@ -67,3 +67,16 @@ test('bin/dev.mjs 支持 shell 目标并构建本机能力 bundle', () => {
   assert.match(src, /build-local-capabilities\.cjs/);
   assert.match(src, /YZ_SHELL_DEV = '1'/);
 });
+
+test('桌面开发分支启动后端时显式标记本地执行端', () => {
+  const main = read('apps/desktop/main.cjs');
+  const devBranch = main.slice(
+    main.indexOf("if (!app.isPackaged) {"),
+    main.indexOf("} else {\n    // 生产模式", main.indexOf("if (!app.isPackaged) {")),
+  );
+  assert.match(devBranch, /YZ_DESKTOP_LOCAL_EXECUTION:\s*'1'/);
+  assert.ok(
+    (devBranch.match(/YZ_DESKTOP_LOCAL_EXECUTION:\s*'1'/g) || []).length >= 2,
+    'tsx 与 npx 回退路径都必须标记本地执行端',
+  );
+});

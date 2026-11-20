@@ -25,8 +25,30 @@
 
       <!-- 当前模式下拉 + 顶部工作方式切换 + 工具“更多”。 -->
       <nav v-if="!modeLocked" class="title-nav">
-        <ModeSwitcher />
-        <WorkspaceModeSwitch />
+        <ModeSwitcher class="titlebar-mode-switcher" />
+        <WorkspaceModeSwitch class="titlebar-lead-switch" />
+        <button
+          class="title-nav-item"
+          :class="{ active: isActive('/browser') }"
+          type="button"
+          title="浏览器"
+          aria-label="浏览器"
+          @click="router.push('/browser')"
+        >
+          <el-icon :size="15"><Monitor /></el-icon>
+          <span>浏览器</span>
+        </button>
+        <button
+          class="title-nav-item"
+          :class="{ active: isActive('/news') }"
+          type="button"
+          title="资讯"
+          aria-label="资讯"
+          @click="router.push('/news')"
+        >
+          <el-icon :size="15"><Tickets /></el-icon>
+          <span>资讯</span>
+        </button>
         <el-popover
           v-model:visible="moreOpen"
           :disabled="moreSuppressed"
@@ -39,7 +61,7 @@
           popper-class="yz-menu-popper more-menu-popper"
         >
           <template #reference>
-            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button" aria-label="更多">
+            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button" title="更多" aria-label="更多">
               <el-icon :size="15"><More /></el-icon>
               <span>更多</span>
             </button>
@@ -268,7 +290,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, ChatDotRound, Monitor, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, VideoPlay, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand,
+  Search, VideoCamera, SwitchButton, VideoPlay, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand, Tickets,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, useChatStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';

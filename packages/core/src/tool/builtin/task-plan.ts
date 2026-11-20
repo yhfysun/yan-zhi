@@ -69,6 +69,23 @@ export class TaskStepTool implements BuiltInTool {
         type: 'string',
         description: 'Optional note shown next to the step (e.g. a short result summary). 把已完成步骤重新打开（返工）时必填，写明返工原因。',
       },
+      evidence: {
+        type: 'array',
+        description: '可选。该步骤的可核验证据，如截图、控件树、页面状态、命令输出、测试结果、文件或产物。完成步骤时应尽量提供，失败时也记录现场。',
+        items: {
+          type: 'object',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['ui_tree', 'dom', 'screenshot', 'console', 'network', 'text', 'selector', 'command', 'test', 'file', 'artifact', 'note'],
+            },
+            summary: { type: 'string', description: '一句话说明证据证明什么。' },
+            ref: { type: 'string', description: '可选引用：文件路径、截图路径、URL、命令、元素 ref 或测试标识。' },
+            data: { description: '可选结构化证据。大对象应只保留关键摘要。' },
+          },
+          required: ['kind', 'summary'],
+        },
+      },
     },
     required: ['index', 'status'],
   };

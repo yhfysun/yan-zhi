@@ -92,7 +92,7 @@
     "learning": {
       "label": "学习模式",
       "icon": "Reading",
-      "desc": "21 科零基础课程 · 编程企业交付 · 算法故事闯关 · 原文出处 · 公共图书馆",
+      "desc": "22 科零基础课程 · 医学中西双路径 · 算法故事闯关 · 原文出处 · 公共图书馆",
       "route": "/learning-v2",
       "entry": "views/LearningV2.vue",
       "pluginId": "learning-mode",

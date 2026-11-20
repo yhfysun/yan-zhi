@@ -10,6 +10,7 @@ import lantingXu from '../../../assets/calligraphy/lanting-xu.jpg';
 import DivinationWorkbench from '../zhouyi/DivinationWorkbench.vue';
 import CultureStudio from '../culture/CultureStudio.vue';
 import CompositionStudio from '../CompositionStudio.vue';
+import MedicalPracticeStudio from './MedicalPracticeStudio.vue';
 import SecurityPracticeStudio from '../SecurityPracticeStudio.vue';
 
 type PracticeInfo = {
@@ -189,9 +190,10 @@ const isZhouyi = computed(() => props.subjectKey === 'zhouyi');
 const isDivination = computed(() => props.subjectKey === 'divination');
 const isCulture = computed(() => props.subjectKey === 'culture');
 const isCalligraphy = computed(() => props.subjectKey === 'calligraphy');
+const isMedicine = computed(() => props.subjectKey === 'medicine');
 const isMusic = computed(() => props.subjectKey === 'music');
 const useFullPracticeWorkbench = computed(() =>
-  isZhouyi.value || isDivination.value || isCulture.value || isMusic.value,
+  isZhouyi.value || isDivination.value || isCulture.value || isMedicine.value || isMusic.value,
 );
 const selectedCopybook = computed(() =>
   CALLIGRAPHY_BOOKS.find((book) => book.name === copybook.value) || CALLIGRAPHY_BOOKS[0],
@@ -461,6 +463,12 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
     />
     <CultureStudio v-else-if="isCulture" class="lv2-embedded-practice-workbench" />
     <CompositionStudio v-else-if="isMusic" class="lv2-embedded-practice-workbench" />
+    <MedicalPracticeStudio
+      v-else-if="isMedicine"
+      class="lv2-embedded-practice-workbench"
+      :course-name="courseName"
+      @goto-lesson="emit('goto-lesson')"
+    />
     <template v-else>
     <header class="lv2-studio-intro">
       <div>
@@ -542,7 +550,7 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
     </div>
 
     <div v-else-if="isZhouyi" class="lv2-rule-lab">
-      <nav aria-label="周易实践工作区">
+      <nav aria-label="易学实践工作区">
         <button type="button" :class="{ active: zhouyiWorkspace === 'source' }" @click="zhouyiWorkspace = 'source'">经传注疏</button>
         <button type="button" :class="{ active: zhouyiWorkspace === 'numbers' }" @click="zhouyiWorkspace = 'numbers'">象数推演</button>
         <button type="button" :class="{ active: zhouyiWorkspace === 'calendar' }" @click="zhouyiWorkspace = 'calendar'">天文历法</button>

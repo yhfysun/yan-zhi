@@ -172,7 +172,7 @@ interface HomeMenuItem {
 const menuItems = computed<HomeMenuItem[]>(() => [
   { path: '/chat', name: '任务', desc: '与大模型多任务并行、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
   ...(isModeAvailable('learning')
-    ? [{ path: '/learning-v2', name: '学习模式', desc: '21 科零基础课程 · 编程企业交付 · 算法故事闯关 · 实践工作台 · 公共图书馆 + AI 陪练', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' }]
+    ? [{ path: '/learning-v2', name: '学习模式', desc: '22 科零基础课程 · 医学中西双路径 · 算法故事闯关 · 实践工作台 · 公共图书馆 + AI 陪练', icon: Reading, iconName: 'Reading', color: '#0D9488', key: 'learning' }]
     : []),
   { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },

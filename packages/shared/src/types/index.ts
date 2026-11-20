@@ -5,6 +5,7 @@ export * from './cicd.js';
 // ★ 用量明细（三协议归一化后的结构，见 utils/token-usage.ts）。
 //   types 直接引 utils 的**具体文件**（不经过 utils/index），避免与 utils 侧的导出形成环。
 import type { TokenUsageDetail } from '../utils/token-usage.js';
+import type { ExecutionEvidence } from '../execution.js';
 
 /**
  * 平台协议类型（2026-10-17 新增 `openai-responses`）。
@@ -173,6 +174,8 @@ export interface Conversation {
       activeMs?: number;
       /** 结算时统计的等待时长（毫秒）：时间窗内无活动的长间隙 */
       waitMs?: number;
+      /** 该步骤关联的可核验证据（截图、控件树、命令、测试、文件等） */
+      evidence?: ExecutionEvidence[];
     }>;
   } | null;
   /**

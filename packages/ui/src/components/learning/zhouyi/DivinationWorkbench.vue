@@ -465,7 +465,7 @@ async function openChat() {
   chatConvId.value = await chat.createConversation('测算台 · 对话测算', {
     agentId: SUANMING_AGENT_ID,
     source: 'learning',
-    sourceMeta: { learningKind: 'free', learningSubject: '周易' },
+    sourceMeta: { learningKind: 'free', learningSubject: '易学' },
   });
   await chat.loadMessages(chatConvId.value);
 }
@@ -503,9 +503,9 @@ function askAboutResult() {
 </script>
 
 <template>
-  <section class="dv-root" aria-label="周易测算实践台">
+  <section class="dv-root" aria-label="易学测算实践台">
     <header class="dv-head">
-      <div class="dv-title">周易测算 · {{ methodLabel }}（{{ STAGE_NAMES[stage] }}）</div>
+      <div class="dv-title">易学测算 · {{ methodLabel }}（{{ STAGE_NAMES[stage] }}）</div>
       <div class="dv-count">步骤 {{ stageIndex + 1 }}/5</div>
     </header>
 

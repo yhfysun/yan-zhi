@@ -159,13 +159,14 @@ describe('移动外壳归属：Capacitor 与 Web 手机视口共用', () => {
       .not.toMatch(/\.platform-mobile\s+\.page-sub\s*\{\s*display:\s*none/);
   });
 
-  it('SideNav.vue：TabBar 四项为 工作/店铺/学习/我的（key 不得用 path）', () => {
+  it('SideNav.vue：TabBar 五项为 工作/笔记/学习/资讯/我的（key 不得用 path）', () => {
     const start = SIDE_NAV.indexOf('const mobilePrimaryItems');
     expect(start, '未找到 mobilePrimaryItems 声明').toBeGreaterThan(0);
     const mobileBlock = SIDE_NAV.slice(start, SIDE_NAV.indexOf(']);', start));
-    for (const label of ['工作', '店铺', '学习', '我的']) {
+    for (const label of ['工作', '笔记', '学习', '资讯', '我的']) {
       expect(mobileBlock, `TabBar 缺少「${label}」项`).toContain(`label: '${label}'`);
     }
+    expect(mobileBlock, '店铺不再占用移动底栏常驻位').not.toContain("label: '店铺'");
     expect(mobileBlock, 'TabBar 不应退回模型平台入口').not.toContain("label: '模型平台'");
     expect(mobileBlock, 'TabBar 不应退回智能体平台入口').not.toContain("label: '智能体平台'");
     expect(SIDE_NAV, 'TabBar 的 v-for key 必须用 item.key')

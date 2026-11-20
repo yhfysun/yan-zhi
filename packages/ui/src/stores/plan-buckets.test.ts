@@ -142,6 +142,16 @@ describe('applyTaskStep', () => {
     expect(p?.steps[0].status).toBe('failed');
     expect(planProgress(p).failed).toBe(true);
   });
+
+  it('task_step 追加结构化证据并保留已有证据', () => {
+    let map: PlanMap = {};
+    map = createPlan(map, CONV_A, 'A', ['提交表单']);
+    const first = { kind: 'screenshot' as const, summary: '提交前截图', ref: 'before.png' };
+    const second = { kind: 'text' as const, summary: '已出现成功提示' };
+    map = applyTaskStep(map, CONV_A, { index: 1, status: 'done', evidence: [first] }).map;
+    map = applyTaskStep(map, CONV_A, { index: 1, status: 'done', evidence: [second] }).map;
+    expect(map[CONV_A].steps[0].evidence).toEqual([first, second]);
+  });
 });
 
 describe('applyTaskPlan 的入参清洗', () => {

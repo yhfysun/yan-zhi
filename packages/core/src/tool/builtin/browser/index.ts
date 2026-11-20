@@ -2,6 +2,7 @@
 // 包含：navigate / click / type / press_key / scroll / hover / get_text / get_dom / wait / screenshot
 import type { BuiltInTool } from '../../types';
 import type { McpCallResult } from '../../../mcp/client';
+import { createExecutionReceipt, type ExecutionEvidence } from '@yan-zhi/shared';
 import { toolError } from '../../result';
 // ★ 不直接 import node:fs —— core 是平台无关层（三端可用），文件系统一律走
 //   getPlatformAdapter().fs（与 file-write.ts 同一约定）。此前误引 node:fs 会破坏
@@ -253,6 +254,43 @@ function ok(text: string): McpCallResult {
 function okWithMeta(text: string, meta: Record<string, unknown>): McpCallResult {
   return { content: [{ type: 'text', text }], _meta: meta };
 }
+
+function browserReceipt(
+  action: string,
+  args: Record<string, unknown>,
+  data: any,
+  startedAt: number,
+) {
+  const evidence: ExecutionEvidence[] = [];
+  const url = String(data?.url || '');
+  const title = String(data?.title || '');
+  if (url || title) {
+    evidence.push({
+      kind: 'text',
+      summary: `页面 ${title || url}`.trim(),
+      ...(url ? { ref: url } : {}),
+    });
+  }
+  if (args.selector) evidence.push({ kind: 'selector', summary: `定位选择器 ${String(args.selector)}`, ref: String(args.selector) });
+  if (args.index != null) evidence.push({ kind: 'selector', summary: `定位元素 index=${args.index}` });
+  if (args.target && typeof args.target === 'object') {
+    evidence.push({ kind: 'selector', summary: `语义定位 ${JSON.stringify(args.target).slice(0, 300)}` });
+  }
+  if (data?.pageChanged !== undefined) {
+    evidence.push({ kind: 'text', summary: data.pageChanged ? '页面状态发生变化' : '页面状态未变化' });
+  }
+  if (data?.screenshotUrl) evidence.push({ kind: 'screenshot', summary: '动作截图', ref: String(data.screenshotUrl) });
+  return createExecutionReceipt({
+    target: 'browser',
+    action,
+    ok: true,
+    startedAt,
+    beforeRevision: data?.beforePageState ? String(data.beforePageState) : undefined,
+    afterRevision: data?.pageState ? String(data.pageState) : undefined,
+    changed: data?.pageChanged === undefined ? undefined : data.pageChanged === true,
+    evidence,
+  });
+}
 function err(msg: string): McpCallResult {
   return toolError(msg);
 }
@@ -318,6 +356,7 @@ export class BrowserNavigateTool implements BuiltInTool {
     required: ['url'],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    const startedAt = Date.now();
     try {
       const url = extractUrlFromArgs(args);
       if (!url) return err('url is required');
@@ -335,10 +374,11 @@ export class BrowserNavigateTool implements BuiltInTool {
       //   避免"填好的表单被重置、任务反复重来"；确需刷新才传 force:true。
       const force = args.force === true ? true : undefined;
       const data = await callBrowserApi('/navigate', 'POST', { url, tabId, force }) as any;
+      const receipt = browserReceipt('browser_navigate', args, data, startedAt);
       if (data && data.alreadyOpen) {
-        return ok(`当前页面已经就是该 URL，未重复导航（alreadyOpen —— 重复导航会重置页面/清空已填表单）。\nURL: ${data.url}\nTitle: ${data.title || ''}\n${data.note || ''}${buildRecipeHint(data?.url || url)}`);
+        return okWithMeta(`当前页面已经就是该 URL，未重复导航（alreadyOpen —— 重复导航会重置页面/清空已填表单）。\nURL: ${data.url}\nTitle: ${data.title || ''}\n${data.note || ''}${buildRecipeHint(data?.url || url)}`, { executionReceipt: receipt });
       }
-      return ok(`Navigated to ${data.url}\nTitle: ${data.title}${buildRecipeHint(data?.url || url)}`);
+      return okWithMeta(`Navigated to ${data.url}\nTitle: ${data.title}${buildRecipeHint(data?.url || url)}`, { executionReceipt: receipt });
     } catch (e: any) { return err(e?.message || '导航失败'); }
   }
 }
@@ -388,6 +428,7 @@ export class BrowserClickTool implements BuiltInTool {
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    const startedAt = Date.now();
     try {
       const blocked = semanticGuard(args);
       if (blocked) return blocked;
@@ -399,10 +440,11 @@ export class BrowserClickTool implements BuiltInTool {
       const failed = browserActionResultError(data);
       if (failed) return failed;
       const text = JSON.stringify(data);
+      const receipt = browserReceipt('browser_click', args, data, startedAt);
       if (data?.downloaded?.savedPath) {
-        return ok(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`);
+        return okWithMeta(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`, { executionReceipt: receipt });
       }
-      return ok(text);
+      return okWithMeta(text, { executionReceipt: receipt });
     } catch (e: any) { return err(e?.message || '点击失败'); }
   }
 }
@@ -431,6 +473,7 @@ export class BrowserTypeTool implements BuiltInTool {
     required: [],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    const startedAt = Date.now();
     try {
       const blocked = semanticGuard(args);
       if (blocked) return blocked;
@@ -448,7 +491,9 @@ export class BrowserTypeTool implements BuiltInTool {
       }
       const failed = browserActionResultError(data);
       if (failed) return failed;
-      return ok(JSON.stringify(data));
+      return okWithMeta(JSON.stringify(data), {
+        executionReceipt: browserReceipt('browser_type', args, data, startedAt),
+      });
     } catch (e: any) { return err(e?.message || '输入失败'); }
   }
 }
@@ -1367,6 +1412,70 @@ export class BrowserGetNetworkLogTool implements BuiltInTool {
   }
 }
 
+export class BrowserGetConsoleLogTool implements BuiltInTool {
+  name = 'browser_get_console_log';
+  readsExternalState = true;
+  description = '读取当前页面最近的控制台输出（console.log/warn/error）。用于排查前端报错、验证操作是否触发错误、查看页面主动打印的诊断信息。可传 levels/filter/limit。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      levels: { type: 'array', items: { type: 'string', enum: ['debug', 'info', 'log', 'warn', 'warning', 'error'] }, description: '只返回这些级别。' },
+      filter: { type: 'string', description: '消息子串过滤。' },
+      limit: { type: 'number', description: '最多返回条数，默认 100，最大 300。' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'get_console_log',
+        levels: args.levels,
+        filter: args.filter,
+        limit: args.limit,
+      }) as any;
+      return ok(JSON.stringify(data, null, 2));
+    } catch (e: any) { return err(e?.message || '获取控制台日志失败'); }
+  }
+}
+
+export class BrowserGetDebugStateTool implements BuiltInTool {
+  name = 'browser_get_debug_state';
+  readsExternalState = true;
+  description = '一次读取浏览器调试状态：URL/标题/加载状态、可见性、近期控制台日志、页面加载/preload 错误、导航时间线、慢资源（>=1s）。这是写操作后的首选验收观察工具；只返回元数据和摘要，不读取 Cookie、请求头或敏感存储。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      tabId: { type: 'string', description: '可选：读取指定标签页；缺省当前操作页。' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_debug_state', ...(args.tabId ? { tabId: args.tabId } : {}) }) as any;
+      return ok(JSON.stringify(data, null, 2));
+    } catch (e: any) { return err(e?.message || '获取浏览器调试状态失败'); }
+  }
+}
+
+export class BrowserGetPageCapabilitiesTool implements BuiltInTool {
+  name = 'browser_get_page_capabilities';
+  readsExternalState = true;
+  description = '检测当前页面可用的结构化能力：WebMCP 是否暴露、页面图片/视频/下载链接等可复用资产摘要、视口和基础性能信息。用于判断能否走页面声明的工具而不是继续点击 DOM；不读取 Cookie、localStorage 或请求头。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      assetLimit: { type: 'number', description: '每类资产最多返回数量，默认 30，最大 100。' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'get_page_capabilities',
+        assetLimit: args.assetLimit,
+      }) as any;
+      return ok(JSON.stringify(data, null, 2));
+    } catch (e: any) { return err(e?.message || '读取页面能力失败'); }
+  }
+}
+
 // ========== C6 结构化数据提取 ==========
 export class BrowserExtractListTool implements BuiltInTool {
   name = 'browser_extract_list';
@@ -1921,6 +2030,9 @@ export const BrowserToolClasses = [
   // C5 网络请求监听
   BrowserWaitForRequestTool,
   BrowserGetNetworkLogTool,
+  BrowserGetConsoleLogTool,
+  BrowserGetDebugStateTool,
+  BrowserGetPageCapabilitiesTool,
   // C6 结构化数据提取
   BrowserExtractListTool,
   // 任务 1（2026-10-28）网络 JSON 直采
@@ -1962,6 +2074,8 @@ export const BROWSER_TOOL_NAMES = [
   'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs',
   // C5 网络请求监听
   'browser_wait_for_request', 'browser_get_network_log',
+  'browser_get_console_log', 'browser_get_debug_state',
+  'browser_get_page_capabilities',
   // C6 结构化数据提取
   'browser_extract_list',
   // 任务 1（2026-10-28）网络 JSON 直采

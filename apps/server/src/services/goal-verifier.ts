@@ -23,6 +23,8 @@ export interface GoalBrowserInspection {
   title?: string;
   text?: string;
   selectorVisible?: Record<string, boolean>;
+  consoleLogs?: Array<{ level: string; message: string }>;
+  pageErrors?: Array<{ kind?: string; message: string; url?: string }>;
 }
 
 export interface GoalVerifierContext {
@@ -195,6 +197,14 @@ async function inspectPageViaBridge(
     userId,
   );
   if (page?.error) throw new Error(String(page.error));
+  const debug = await callBrowserBridgeRaw(
+    context.conversationId,
+    'browser_get_debug_state',
+    {},
+    20_000,
+    undefined,
+    userId,
+  );
   const expect = expectObject(criterion.expect);
   const selectors = [
     ...(Array.isArray(expect.selectors) ? expect.selectors : []),
@@ -222,6 +232,12 @@ async function inspectPageViaBridge(
     title: page?.title ? String(page.title) : '',
     text: page?.text ? String(page.text) : '',
     selectorVisible,
+    consoleLogs: Array.isArray(debug?.logs)
+      ? debug.logs.map((item: any) => ({ level: String(item?.level || ''), message: String(item?.message || '') }))
+      : [],
+    pageErrors: Array.isArray(debug?.errors)
+      ? debug.errors.map((item: any) => ({ kind: String(item?.kind || ''), message: String(item?.message || ''), url: String(item?.url || '') }))
+      : [],
   };
 }
 
@@ -260,6 +276,13 @@ async function verifyBrowser(
       const expected = item?.visible !== false;
       if (actual !== expected) problems.push(`选择器 ${selector} 期望${expected ? '可见' : '不可见'}，实际${actual ? '可见' : '不可见'}`);
     }
+    if (expect.consoleClean === true) {
+      const errors = (inspection.consoleLogs || []).filter((item) => item.level === 'error');
+      if (errors.length) problems.push(`控制台有 ${errors.length} 条 error：${errors.slice(0, 3).map((item) => item.message).join('；')}`);
+    }
+    if (expect.noPageErrors === true && (inspection.pageErrors || []).length) {
+      problems.push(`页面有 ${inspection.pageErrors!.length} 条加载/preload 错误`);
+    }
     return {
       id: criterion.id,
       title: criterion.title,
@@ -270,6 +293,8 @@ async function verifyBrowser(
         title: inspection.title || '',
         text: String(inspection.text || '').slice(0, 8_000),
         selectorVisible: inspection.selectorVisible || {},
+        consoleErrorCount: (inspection.consoleLogs || []).filter((item) => item.level === 'error').length,
+        pageErrors: inspection.pageErrors || [],
       },
     };
   } catch (error: any) {

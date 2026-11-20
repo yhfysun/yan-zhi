@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import {
   BookMarked, BookOpen, Bookmark, BookmarkCheck, Check, ChevronRight, ExternalLink, Library,
   LayoutGrid, List, LoaderCircle, Plus, Search, Trash2, TrendingUp, Upload, X,
+  SlidersHorizontal,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_READING_CATEGORIES,
@@ -113,6 +114,7 @@ const query = ref('');
 const selectedCardId = ref('');
 const selectedSourceId = ref('');
 const detailOpen = ref(false);
+const mobileFilterOpen = ref(false);
 const shelfIds = ref<string[]>([]);
 const customSources = ref<LearningV2BookSource[]>([]);
 const disabledSourceIds = ref<string[]>([]);
@@ -473,6 +475,7 @@ function restorePreferences() {
 
 function selectView(view: LibraryView) {
   activeView.value = view;
+  mobileFilterOpen.value = false;
   sourceFormOpen.value = false;
   sourceError.value = '';
   selectedCardId.value = '';
@@ -1000,7 +1003,7 @@ onMounted(async () => {
   } catch {
     importedBooks.value = [];
   }
-  searchInput.value?.focus();
+  if (!window.matchMedia('(max-width: 900px)').matches) searchInput.value?.focus();
 });
 </script>
 
@@ -1075,7 +1078,10 @@ onMounted(async () => {
                 v-model="query"
                 data-library-search
                 type="search"
-                placeholder="搜索书名、作者、分类、来源或许可"
+                placeholder="搜索书名、作者或分类"
+                aria-label="搜索书名、作者或分类"
+                autocomplete="off"
+                enterkeyhint="search"
               />
             </label>
             <span>{{ visibleCards.length }} 条</span>
@@ -1099,6 +1105,15 @@ onMounted(async () => {
             </div>
             <button type="button" class="ll-import" :disabled="importing" @click="chooseImport">
               <Upload :size="15" /><span class="ll-import-label">{{ importing ? '正在导入' : '导入书/漫画' }}</span>
+            </button>
+            <button
+              type="button"
+              class="ll-mobile-filter"
+              :class="{ active: categoryFilter !== 'all' || collectionFilter !== 'all' }"
+              aria-label="筛选书目"
+              @click="mobileFilterOpen = true"
+            >
+              <SlidersHorizontal :size="16" />
             </button>
             <input
               ref="importInput"
@@ -1317,6 +1332,54 @@ onMounted(async () => {
         aria-label="关闭详情"
         @click="detailOpen = false"
       />
+
+      <div v-if="mobileFilterOpen" class="ll-filter-mask" @click.self="mobileFilterOpen = false">
+        <section class="ll-filter-sheet" role="dialog" aria-modal="true" aria-labelledby="ll-filter-title">
+          <header>
+            <div><small>缩小范围</small><h2 id="ll-filter-title">筛选书目</h2></div>
+            <button type="button" aria-label="关闭筛选" @click="mobileFilterOpen = false"><X :size="18" /></button>
+          </header>
+          <div class="ll-filter-group">
+            <strong>书籍分类</strong>
+            <div>
+              <button type="button" :class="{ active: categoryFilter === 'all' }" @click="categoryFilter = 'all'">全部</button>
+              <button
+                v-for="category in LEARNING_V2_READING_CATEGORIES"
+                :key="`filter-${category.key}`"
+                type="button"
+                :class="{ active: categoryFilter === category.key }"
+                @click="categoryFilter = category.key"
+              >{{ category.label }}<small>{{ categoryCounts[category.key] }}</small></button>
+            </div>
+          </div>
+          <div class="ll-filter-group">
+            <strong>精选书单</strong>
+            <div>
+              <button type="button" :class="{ active: collectionFilter === 'all' }" @click="collectionFilter = 'all'">全部书单</button>
+              <button
+                v-for="collection in LEARNING_V2_READING_COLLECTIONS"
+                :key="`filter-${collection.key}`"
+                type="button"
+                :class="{ active: collectionFilter === collection.key }"
+                @click="collectionFilter = collection.key"
+              >{{ collection.label }}<small>{{ collectionCounts[collection.key] }}</small></button>
+            </div>
+          </div>
+          <div class="ll-filter-group">
+            <strong>展示方式</strong>
+            <div>
+              <button type="button" :class="{ active: bookViewMode === 'card' }" @click="bookViewMode = 'card'">封面书架</button>
+              <button type="button" :class="{ active: bookViewMode === 'list' }" @click="bookViewMode = 'list'">详细列表</button>
+            </div>
+          </div>
+          <footer>
+            <button type="button" @click="categoryFilter = 'all'; collectionFilter = 'all'">重置</button>
+            <button type="button" class="primary" @click="mobileFilterOpen = false">
+              查看 {{ visibleCards.length }} 条
+            </button>
+          </footer>
+        </section>
+      </div>
       <aside class="ll-detail" :class="{ 'mobile-open': detailOpen }" aria-live="polite">
         <button class="ll-detail-close" type="button" aria-label="关闭详情" @click="detailOpen = false"><X :size="16" /></button>
         <template v-if="activeView !== 'sources' && selectedCard">

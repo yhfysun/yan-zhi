@@ -62,7 +62,7 @@ describe('英语学习陪练 · id 与 seed 结构', () => {
   });
 });
 
-describe('全科学习陪练 · 21 科通用入口', () => {
+describe('全科学习陪练 · 22 科通用入口', () => {
   it('注册通用陪练 id，且使用同一套只读学习工具', () => {
     expect(SUBJECT_COACH_AGENT_ID).toBe('a_builtin_learning_subject_coach');
     const def = builtinLearningAgentDefs.find((item) => item.id === SUBJECT_COACH_AGENT_ID);
@@ -76,6 +76,7 @@ describe('全科学习陪练 · 21 科通用入口', () => {
     expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('零基础');
     expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('绝不伪造原文');
     expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('网络安全只讨论授权靶场');
+    expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('医学只做通识、经典阅读和就医沟通训练');
     expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('占卜只作文化、象征、概率与心理复盘');
     expect(SUBJECT_COACH_SYSTEM_PROMPT).toContain('不能替用户修改进度');
   });

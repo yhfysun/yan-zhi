@@ -6,7 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class PlanTasksTool implements BuiltInTool {
   name = 'plan_tasks';
-  description = '提交一份结构化任务计划（DAG）给并行调度器执行。适用场景：长任务的复杂规划 —— 把目标拆成多个子任务，每个子任务指定执行者（子智能体）与依赖关系；无依赖的任务会异步并行执行。★ 本工具是同步阻塞的：调用后会一直等到整份计划跑完，直接返回「完成/失败汇总」，不需要你轮询。关键约定：① 每个任务完成后只回报「结论摘要 + 产出文件路径」，大数据量内容不会进入你的上下文；② 下游任务引用上游产物时在 instruction 里写 {{artifact:任务id}}（会被替换为该任务产出的文件路径）或 {{artifact:LAST}}（最近完成的产物路径）；③ 返回汇总里会列出失败项与原因，用 reassign_task 重新分配（换执行者/改指令），不要原样重试。任务步骤要克制：抓取类任务建议 maxSteps 10 以内。';
+  description = '提交一份结构化任务计划（DAG）给并行调度器执行。适用场景：长任务的复杂规划 —— 把目标拆成多个子任务，每个子任务指定执行者（子智能体）与依赖关系；无依赖的任务会异步并行执行。★ 本工具是同步阻塞的：调用后会一直等到整份计划跑完，直接返回「完成/失败汇总」，不需要你轮询。关键约定：① 每个任务完成后只回报「结论摘要 + 产出文件路径 + 验收证据」，大数据量内容不会进入你的上下文；② 下游任务引用上游产物时在 instruction 里写 {{artifact:任务id}}（会被替换为该任务产出的文件路径）或 {{artifact:LAST}}（最近完成的产物路径）；③ 每项可声明 verify，子智能体返回后由调度器执行文件/命令/HTTP/浏览器/页面验收，不通过按失败处理；④ 返回汇总里会列出失败项与原因，用 reassign_task 重新分配（换执行者/改指令），不要原样重试。任务步骤要克制：抓取类任务建议 maxSteps 10 以内。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -24,6 +24,13 @@ export class PlanTasksTool implements BuiltInTool {
             maxSteps: { type: 'number', description: '该任务步数预算（可选，如抓取类 10）。缺省用执行者自身配置。' },
             platformId: { type: 'string', description: '可选：该任务用的模型平台。简单任务路由到小模型省配额。' },
             modelId: { type: 'string', description: '可选：该任务用的模型。按任务特质选型（写文案用强模型、格式转换用小模型）。' },
+            verify: {
+              description: '可选验收器。对象或数组。kind=file_exists/command/http/browser；字段与目标模式一致（path、command+expect、url+expect、expect.urlIncludes/titleIncludes/textIncludes/selectors）。子智能体返回后自动验证，失败会重试/重派。',
+              oneOf: [
+                { type: 'object' },
+                { type: 'array', items: { type: 'object' } },
+              ],
+            },
           },
           required: ['title', 'agentId', 'instruction'],
         },

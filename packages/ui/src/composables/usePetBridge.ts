@@ -495,7 +495,7 @@ export function usePetBridge() {
         try { if (window.location.hash !== '#/chat') window.location.hash = '#/chat' } catch { /* ignore */ }
         return
       }
-      if (a.type === 'open-settings') { window.location.hash = '#/settings?pane=pet'; return }
+      if (a.type === 'open-settings') { window.location.hash = '#/pet-settings'; return }
       if (a.type === 'ask' && a.text) {
         if (a.agentId) { try { agents.selectAgent?.(String(a.agentId)) } catch { /* 智能体可能已删 */ } }
         const text = String(a.text)

@@ -91,7 +91,7 @@ const isCompactLayout = ref(
   typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
 );
 const usesEmbeddedStudioPractice = computed(() =>
-  ['zhouyi', 'divination', 'culture', 'music'].includes(selectedSubjectKey.value),
+  ['zhouyi', 'divination', 'culture', 'medicine', 'music'].includes(selectedSubjectKey.value),
 );
 const usesSpecializedLessonWorkbench = computed(() =>
   ['english', 'security', 'culture', 'music', 'zhouyi'].includes(selectedSubjectKey.value),
@@ -562,6 +562,11 @@ function exitStudio() {
   if (!libraryOpen.value) document.body.style.overflow = studioBodyOverflow;
 }
 
+function progressSubjectName(subjectKey: string, displayName: string): string {
+  // 易学只升级用户可见名称；服务端历史进度仍以“周易”存储，避免已有学习记录失联。
+  return subjectKey === 'zhouyi' ? '周易' : displayName;
+}
+
 async function loadProgress() {
   const requestId = ++progressRequestId;
   const targetSubject = subject.value;
@@ -569,7 +574,7 @@ async function loadProgress() {
   completedCourseIds.value = local;
   try {
     const response = await api.get<{ lessonIds: string[] }>(
-      `/learning/lesson-progress?subject=${encodeURIComponent(targetSubject.name)}`,
+      `/learning/lesson-progress?subject=${encodeURIComponent(progressSubjectName(targetSubject.key, targetSubject.name))}`,
     );
     if (!response || typeof response !== 'object' || !('data' in response)) return;
     const merged = [...new Set([
@@ -611,7 +616,7 @@ async function finishLesson() {
     completedCourseIds.value = [...completedCourseIds.value, completedCourse.id];
     writeLocalProgress(completedSubject.key, completedCourseIds.value);
     void api.post('/learning/lesson-progress', {
-      subject: completedSubject.name,
+      subject: progressSubjectName(completedSubject.key, completedSubject.name),
       lessonIds: [completedCourse.id],
     }).catch(() => { /* local completion remains usable while backend is offline */ });
   }

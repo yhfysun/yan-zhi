@@ -82,6 +82,7 @@ import learningMusicRoutes from './routes/learning-music.js';
 import learningZhouyiRoutes from './routes/learning-zhouyi.js';
 // 笔记（docs/笔记功能方案-2026-11-14.md）：笔记/计划/收藏/到期提醒
 import noteRoutes from './routes/notes.js';
+import newsRoutes from './routes/news.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import goalScheduleRoutes from './routes/goal-schedules.js';
 import goalGovernanceRoutes from './routes/goal-governance.js';
@@ -410,6 +411,7 @@ app.use('/api/learning/culture', learningCultureRoutes);
 app.use('/api/learning/music', learningMusicRoutes);
 app.use('/api/learning/zhouyi', learningZhouyiRoutes);
 app.use('/api/notes', noteRoutes);
+app.use('/api/news', newsRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/llm/goal-schedules', goalScheduleRoutes);
 app.use('/api/llm/goal-governance', goalGovernanceRoutes);
@@ -1096,6 +1098,18 @@ try {
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
       await registerPkgOrSource('computer-use', () => mgr.registerBuiltin(computerUseManifest, computerUseModule, true));
+      // 完整桌面包必须把“本机执行”显式写入插件配置：插件包运行时会丢失后端进程的部分
+      // Electron 环境变量，仅靠 process.env 会把完整桌面误判成轻量壳。
+      if (process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1') {
+        const plugin = mgr.get('computer-use');
+        const wasEnabled = plugin?.state === 'enabled';
+        if (wasEnabled) await mgr.disable('computer-use');
+        await mgr.setConfig('computer-use', {
+          ...(plugin?.config || {}),
+          localExecution: true,
+        });
+        if (wasEnabled) await mgr.enable('computer-use');
+      }
       // 轻量壳执行桥：浏览器/电脑使用工具必须回到壳所在机器；无连接时明确失败。
       await registerPkgOrSource('desktop-capability', () =>
         mgr.registerBuiltin(desktopCapabilityManifest, desktopCapabilityModule, true));

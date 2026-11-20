@@ -3,7 +3,7 @@
 // 内置工具（file/cmd/browser 等）后端直接执行，刷新不中断。
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
-import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
+import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing, ExecutionEvidence } from '@yan-zhi/shared';
 import {
   BROWSER_DELEGATION_PROMPT,
   formatTaskTypeContext,
@@ -15,6 +15,9 @@ import {
   estimateTokens,
   PAGE_AGENT_ID,
   WEB_PAGE_OPERATION_SKILL_ID,
+  summarizeExecutionReceipt,
+  createExecutionReceipt,
+  type ExecutionReceipt,
 } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, setBrowserToolWorkspaceDir, setBrowserToolJobContext, DEFAULT_SKIP_DIRS, BrowserRunRecipeTool, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
@@ -35,6 +38,8 @@ import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
+import { recordExecutionCheckpoint } from './services/execution-checkpoints.js';
+import { appendGoalEvent } from './services/goal-store.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress, readTaskProgressForConversation, formatProgressContext } from './services/space-memory.js';
 // 费用账本（2026-10-17）：会话级累计 + 逐次明细的唯一写入口；阈值**只提醒不停**（D4）
 import {
@@ -60,7 +65,7 @@ import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
 import {
-  backendTaskPlan, backendTaskStep, createInMemoryTaskPlanStore, loadPlanJson,
+  backendTaskPlan, backendTaskStep, appendEvidenceToRunningTaskStep, createInMemoryTaskPlanStore, loadPlanJson,
   loadTaskPlanFromFile, savePlanJson, type TaskPlan, type TaskPlanStore,
 } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
@@ -5523,6 +5528,34 @@ function isCustomToolMountedForTask(task: LlmTask, toolName: string): boolean {
   }
 }
 
+async function persistExecutionReceipt(task: LlmTask, receipt: ExecutionReceipt): Promise<void> {
+  await appendEvidenceToRunningTaskStep(task.conversationId, [
+    {
+      kind: receipt.target === 'code' ? 'test' : 'note',
+      summary: summarizeExecutionReceipt(receipt) || '工具执行回执',
+      data: receipt,
+    },
+    ...receipt.evidence,
+  ]);
+  try {
+    recordExecutionCheckpoint({
+      userId: task.userId,
+      conversationId: task.conversationId,
+      taskId: task.id,
+      step: task.step,
+      receipt,
+    });
+    if (task.goalId) {
+      appendGoalEvent(task.goalId, 'execution.checkpoint', {
+        batchId: task.goalBatchId || null,
+        taskId: task.id,
+        step: task.step,
+        receipt,
+      });
+    }
+  } catch { /* 检查点失败不影响工具执行 */ }
+}
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -6357,6 +6390,7 @@ async function executeTool(
     }
     if (exec === 'bridge') {
       const bridgeTimeout = resolveFrontendToolTimeout(toolName);
+      const bridgeStartedAt = Date.now();
       try {
         // ★ 末位 = 本流在桌面端的流键（锚/归属按它隔离，见 main.cjs 的 flowKeyOf）。
         //   主循环/并发批缺省 = 共享主面板流；子智能体由 ownership 带下来（可能是 bg:<flowId>）。
@@ -6378,6 +6412,32 @@ async function executeTool(
         //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
         if (toolName === 'browser_screenshot') {
           return await archiveDelegatedScreenshot(raw, task, metaOut);
+        }
+        if ([
+          'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
+          'browser_fill_form', 'browser_submit_form', 'browser_upload', 'browser_download',
+          'browser_scroll_into_view', 'browser_drag', 'browser_run_loop',
+        ].includes(toolName)) {
+          const rawText = String(raw || '');
+          const pageChanged = /pageChanged["']?\s*[:=]\s*true/i.test(rawText)
+            ? true
+            : /pageChanged["']?\s*[:=]\s*false/i.test(rawText)
+              ? false
+              : undefined;
+          const receipt = createExecutionReceipt({
+            target: 'browser',
+            action: toolNameToAction(toolName),
+            ok: !/浏览器操作失败|^Error|工具执行失败/i.test(rawText),
+            startedAt: bridgeStartedAt,
+            changed: pageChanged,
+            evidence: [{
+              kind: 'text',
+              summary: `${toolName} ${pageChanged === false ? '页面状态未变化' : '已执行'}`,
+              data: { result: rawText.slice(0, 4000) },
+            }],
+            error: /浏览器操作失败|^Error|工具执行失败/i.test(rawText) ? rawText.slice(0, 1000) : undefined,
+          });
+          await persistExecutionReceipt(task, receipt);
         }
         return raw;
       } catch (e: any) {
@@ -6525,9 +6585,14 @@ async function executeTool(
       beforeContent?: string | null;
       /** apply_patch 多文件补丁：工具已回传每个文件的 before/after（整份补丁原子落盘） */
       changes?: Array<{ path: string; beforeContent: string | null; afterContent: string | null }>;
+      executionReceipt?: unknown;
     } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
     if (metaOut) metaOut.value = (meta as Record<string, unknown> | undefined) || null;
+    const executionReceipt = meta?.executionReceipt as ExecutionReceipt | undefined;
+    if (executionReceipt?.schemaVersion === 1) {
+      await persistExecutionReceipt(task, executionReceipt);
+    }
     if (toolName === 'file_write' && meta?.path) {
       // file_write：路径与 before 都来自工具回传（落盘即权威）
       const after = await readFileOrNull(meta.path);
@@ -7274,6 +7339,7 @@ async function deliverSubAgentResult(task: LlmTask, agentName: string, result: s
 registerPlanRunnerDeps({
   runSubAgent: (task, args, parentToolCallId, depth, uiTools, specOverride, runOpts) =>
     runSubAgent(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts),
+  resolveWorkspaceDir: (conversationId) => resolveEffectiveWorkspaceDir(conversationId),
   // 计划状态 → 前端「运行指示行」（2026-10-08）：
   //   ① 落 conversation.task_plan_json（刷新/重连后消息流能从历史恢复出计划）；
   //   ② 发 plan:updated —— 前端把它当 task_plan 应用进 plansByConv（**零新增 UI**，
@@ -9343,13 +9409,19 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       const done = plan.steps.filter((s) => s.status === 'done').length;
       const lines = plan.steps.map((s, i) => {
         const mark = s.status === 'done' ? '[x]' : s.status === 'running' ? '[~]' : '[ ]';
-        return `${i + 1}. ${mark} ${s.title}${s.note ? ` —— ${s.note}` : ''}`;
+        const evidence = Array.isArray(s.evidence) && s.evidence.length
+          ? `\n   证据：${s.evidence.slice(-5).map(e => `${e.kind}:${e.summary}${e.ref ? `（${e.ref}）` : ''}`).join('；')}`
+          : '';
+        return `${i + 1}. ${mark} ${s.title}${s.note ? ` —— ${s.note}` : ''}${evidence}`;
       });
       const remaining = plan.steps.length - done;
+      const nextStepIndex = plan.steps.findIndex(s => s.status === 'running' || s.status === 'pending');
+      const nextStep = nextStepIndex >= 0 ? plan.steps[nextStepIndex] : null;
       parts.push([
         '---',
         `## 当前任务计划（接力棒${plan.title ? `：${plan.title}` : ''}）`,
         `进度：${done}/${plan.steps.length} 步已完成${remaining > 0 ? `，还剩 ${remaining} 步` : '（已全部完成）'}`,
+        nextStep ? `下一步：第 ${nextStepIndex + 1} 步「${nextStep.title}」` : '下一步：无（计划已到终态）',
         lines.join('\n'),
         '',
         '★ 用法（长任务接力规则）：',
@@ -9357,7 +9429,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         '- **不要重做已完成（[x]）的步骤**；也不要因为"上下文里没有前面的过程"就从头再来 ——',
         '  已完成步骤的结论可从「空间记忆」与产物文件中获取。',
         '- 每开始一步，先用 task_step 把该步标记为 running（服务端据此记录该步耗时的起点）；',
-        '  完成或失败后**立即**用 task_step 标记 done/failed，并写 note 概述结果 —— 计划与耗时统计都以它为准。',
+        '  完成或失败后**立即**用 task_step 标记 done/failed，并写 note 概述结果；同时传 evidence 记录可核验现场（截图、控件树、页面状态、测试、文件等）。',
         '- 计划与用户最新要求冲突时以用户为准，并用 task_plan 更新计划（而不是默默偏离）。',
       ].join('\n'));
     }
@@ -9438,7 +9510,15 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
  *    顺序：会话计划优先（本会话实时进度最新）→ 文件计划（跨会话共享，task_step 每步镜像）。 */
 function loadTaskPlan(conversationId?: string | null): {
   title: string;
-  steps: Array<{ title: string; status: string; note?: string; startedAt?: number; finishedAt?: number; activeMs?: number }>;
+  steps: Array<{
+    title: string;
+    status: string;
+    note?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    activeMs?: number;
+    evidence?: ExecutionEvidence[];
+  }>;
 } | null {
   if (!conversationId) return null;
   try {
@@ -9458,6 +9538,7 @@ function loadTaskPlan(conversationId?: string | null): {
             ...(Number(s?.startedAt) ? { startedAt: Number(s.startedAt) } : {}),
             ...(Number(s?.finishedAt) ? { finishedAt: Number(s.finishedAt) } : {}),
             ...(Number(s?.activeMs) ? { activeMs: Number(s.activeMs) } : {}),
+            ...(Array.isArray(s?.evidence) ? { evidence: s.evidence as ExecutionEvidence[] } : {}),
           })),
         };
       }

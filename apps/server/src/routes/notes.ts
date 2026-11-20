@@ -4,9 +4,12 @@ import { Router } from 'express';
 import { authMiddleware } from '../auth.js';
 import { saveNoteMedia } from '../notes/media.js';
 import {
-  listCategories, ensureCategory, renameCategory, deleteCategory,
+  listCategories, ensureCategory, renameCategory, deleteCategory, moveCategory,
   listNotes, createNote, updateNote, toggleStar, togglePin, deleteNote, getNote,
+  toggleTaskDone, getNoteAnalytics,
   dueReminders, drainReminders, ackReminders,
+  listNoteTemplates, createNoteTemplate, updateNoteTemplate, deleteNoteTemplate,
+  listNoteDictionaries, createNoteDictionary, updateNoteDictionary, deleteNoteDictionary,
   type NoteKind,
 } from '../notes/service.js';
 
@@ -47,16 +50,30 @@ router.get('/categories', (req, res) => {
 // POST /api/notes/categories —— 幂等创建（存在即返回既有）
 router.post('/categories', (req, res) => {
   try {
-    const name = String((req.body as any)?.name || '');
-    res.json({ data: ensureCategory(userIdOf(req), name) });
+    const body = req.body as any;
+    const name = String(body?.name || '');
+    const parentId = body?.parentId != null && String(body.parentId) ? String(body.parentId) : null;
+    res.json({ data: ensureCategory(userIdOf(req), name, parentId) });
   } catch (e) { res.status(400).json({ error: errOf(e) }); }
 });
 
 // PATCH /api/notes/categories/:id —— 重命名（撞唯一索引给明确错误）
 router.patch('/categories/:id', (req, res) => {
   try {
-    const name = String((req.body as any)?.name || '');
-    res.json({ data: renameCategory(userIdOf(req), String(req.params.id), name) });
+    const body = req.body as any;
+    const id = String(req.params.id);
+    let item = body?.name != null
+      ? renameCategory(userIdOf(req), id, String(body.name))
+      : listCategories(userIdOf(req)).find((category) => category.id === id);
+    if (!item) { res.status(404).json({ error: '分类不存在' }); return; }
+    if (body?.parentId !== undefined) {
+      item = moveCategory(
+        userIdOf(req),
+        id,
+        body.parentId == null || String(body.parentId) === '' ? null : String(body.parentId),
+      );
+    }
+    res.json({ data: item });
   } catch (e) { res.status(400).json({ error: errOf(e) }); }
 });
 
@@ -69,6 +86,88 @@ router.delete('/categories/:id', (req, res) => {
 });
 
 // ── 笔记 ──
+
+// GET /api/notes/templates —— 内置模板 + 用户模板
+router.get('/templates', (req, res) => {
+  try { res.json({ data: listNoteTemplates(userIdOf(req)) }); }
+  catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+// POST /api/notes/templates —— 创建自定义模板
+router.post('/templates', (req, res) => {
+  try {
+    const b = req.body as any;
+    res.json({ data: createNoteTemplate(userIdOf(req), {
+      name: String(b?.name || ''),
+      description: b?.description != null ? String(b.description) : '',
+      icon: b?.icon != null ? String(b.icon) : 'NotebookPen',
+      tone: b?.tone != null ? String(b.tone) : 'slate',
+      kind: b?.kind != null ? String(b.kind) as any : 'custom',
+      fields: Array.isArray(b?.fields) ? b.fields : [],
+      titleField: b?.titleField != null ? String(b.titleField) : undefined,
+      contentField: b?.contentField != null ? String(b.contentField) : undefined,
+    }) });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+// PATCH /api/notes/templates/:id —— 修改自定义模板；内置模板拒绝
+router.patch('/templates/:id', (req, res) => {
+  try {
+    const b = req.body as any;
+    res.json({ data: updateNoteTemplate(userIdOf(req), String(req.params.id), {
+      name: String(b?.name || ''),
+      description: b?.description != null ? String(b.description) : '',
+      icon: b?.icon != null ? String(b.icon) : 'NotebookPen',
+      tone: b?.tone != null ? String(b.tone) : 'slate',
+      kind: b?.kind != null ? String(b.kind) as any : 'custom',
+      fields: Array.isArray(b?.fields) ? b.fields : [],
+      titleField: b?.titleField != null ? String(b.titleField) : undefined,
+      contentField: b?.contentField != null ? String(b.contentField) : undefined,
+    }) });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+router.delete('/templates/:id', (req, res) => {
+  try {
+    deleteNoteTemplate(userIdOf(req), String(req.params.id));
+    res.json({ data: { ok: true } });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+// GET /api/notes/dictionaries —— 内置字典 + 用户字典
+router.get('/dictionaries', (req, res) => {
+  try { res.json({ data: listNoteDictionaries(userIdOf(req)) }); }
+  catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+router.post('/dictionaries', (req, res) => {
+  try {
+    const b = req.body as any;
+    res.json({ data: createNoteDictionary(userIdOf(req), {
+      name: String(b?.name || ''),
+      description: b?.description != null ? String(b.description) : '',
+      items: Array.isArray(b?.items) ? b.items : [],
+    }) });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+router.patch('/dictionaries/:id', (req, res) => {
+  try {
+    const b = req.body as any;
+    res.json({ data: updateNoteDictionary(userIdOf(req), String(req.params.id), {
+      name: b?.name != null ? String(b.name) : undefined,
+      description: b?.description != null ? String(b.description) : undefined,
+      items: Array.isArray(b?.items) ? b.items : undefined,
+    }) });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+router.delete('/dictionaries/:id', (req, res) => {
+  try {
+    deleteNoteDictionary(userIdOf(req), String(req.params.id));
+    res.json({ data: { ok: true } });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
 
 // GET /api/notes/notes?kind=&category=&starred=&q=&sort= —— 列表（q 全文搜 title+content）
 router.get('/notes', (req, res) => {
@@ -95,6 +194,10 @@ router.post('/notes', (req, res) => {
       title: String(b?.title || ''),
       content: b?.content != null ? String(b.content) : '',
       kind: b?.kind === 'plan' ? 'plan' : 'note',
+      categoryId: b?.categoryId != null && String(b.categoryId) ? String(b.categoryId) : undefined,
+      templateId: b?.templateId != null ? String(b.templateId) : undefined,
+      data: b?.data && typeof b.data === 'object' && !Array.isArray(b.data) ? b.data : undefined,
+      occurredAt: b?.occurredAt != null && Number(b.occurredAt) ? Number(b.occurredAt) : null,
       categoryName: b?.categoryName != null ? String(b.categoryName) : undefined,
       planAt: b?.planAt != null && Number(b.planAt) ? Number(b.planAt) : null,
       remindAt: b?.remindAt != null && Number(b.remindAt) ? Number(b.remindAt) : null,
@@ -119,6 +222,9 @@ router.patch('/notes/:id', (req, res) => {
     res.json({ data: updateNote(userIdOf(req), String(req.params.id), {
       title: b?.title != null ? String(b.title) : undefined,
       content: b?.content != null ? String(b.content) : undefined,
+      templateId: b?.templateId !== undefined ? (b.templateId === null ? null : String(b.templateId)) : undefined,
+      data: b?.data && typeof b.data === 'object' && !Array.isArray(b.data) ? b.data : undefined,
+      occurredAt: b?.occurredAt !== undefined ? (b.occurredAt === null ? null : Number(b.occurredAt) || null) : undefined,
       categoryId: b?.categoryId !== undefined ? (b.categoryId === null ? null : String(b.categoryId)) : undefined,
       categoryName: b?.categoryName !== undefined ? String(b.categoryName ?? '') : undefined,
       starred: typeof b?.starred === 'boolean' ? b.starred : undefined,
@@ -138,12 +244,25 @@ router.post('/notes/:id/pin', (req, res) => {
   try { res.json({ data: { pinned: togglePin(userIdOf(req), String(req.params.id)) } }); }
   catch (e) { res.status(400).json({ error: errOf(e) }); }
 });
+router.post('/notes/:id/task-done', (req, res) => {
+  try { res.json({ data: toggleTaskDone(userIdOf(req), String(req.params.id)) }); }
+  catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
 
 // DELETE /api/notes/notes/:id —— 删除
 router.delete('/notes/:id', (req, res) => {
   try {
     deleteNote(userIdOf(req), String(req.params.id));
     res.json({ data: { ok: true } });
+  } catch (e) { res.status(400).json({ error: errOf(e) }); }
+});
+
+// GET /api/notes/analytics?from=&to= —— 账本、库存、时间和任务区间汇总
+router.get('/analytics', (req, res) => {
+  try {
+    const from = Number((req.query as any)?.from) || (Date.now() - 86_400_000);
+    const to = Number((req.query as any)?.to) || Date.now();
+    res.json({ data: getNoteAnalytics(userIdOf(req), from, to) });
   } catch (e) { res.status(400).json({ error: errOf(e) }); }
 });
 

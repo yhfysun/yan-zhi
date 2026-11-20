@@ -12,6 +12,7 @@ import { diffStatLines } from '../services/hunk-apply.js';
 // 编码：编辑器要能"按实际编码读出 + 主动转码"（2026-10-21 用户追问）
 import { decodeTextBytes, decodeTextBytesAs, encodeTextBytes, resolveEncodingName, encodingLabel, looksBinaryBytes, type TextEncoding } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { listExecutionCheckpoints } from '../services/execution-checkpoints.js';
 
 const router = Router();
 
@@ -960,7 +961,12 @@ router.get('/tasks/:taskId/checkpoints', (req, res) => {
   const rows = db.prepare(
     "SELECT step, COUNT(*) AS changes, COUNT(DISTINCT path) AS files FROM file_change WHERE task_id = ? AND status = 'pending' AND step IS NOT NULL GROUP BY step ORDER BY step ASC",
   ).all(taskId) as Array<{ step: number; changes: number; files: number }>;
-  res.json({ items: rows, total: rows.reduce((s, r) => s + r.changes, 0) });
+  const executionItems = listExecutionCheckpoints(req.user!.userId, taskId);
+  res.json({
+    items: rows,
+    total: rows.reduce((s, r) => s + r.changes, 0),
+    executionItems,
+  });
 });
 
 export default router;

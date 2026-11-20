@@ -15,8 +15,9 @@
 //   6) runSubAgent 工件协议包装（有产物 → 短结论+清单）；
 //   7) artifact-hooks 有通用 `_meta.path` 钩子（任意工具产文件都登记）。
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { db } from '../src/db.js';
 import {
   createPlan, runPlanToCompletion, getPlanStatusText, reassignPlanItem, registerPlanRunnerDeps,
@@ -184,6 +185,61 @@ describe('PlanRunner 调度（真 DB + 真调度，仅 stub LLM 侧）', () => {
     expect(itemRow(plan.planId, 't1').status).toBe('failed');
     expect(itemRow(plan.planId, 't1').attempts).toBe(2);
     expect(itemRow(plan.planId, 't2').status).toBe('skipped');
+  });
+
+  it('plan_tasks verify 在子智能体返回后执行，并写入结构化证据', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'yz-plan-verify-'));
+    try {
+      writeFileSync(join(workspace, 'report.txt'), 'ok', 'utf8');
+      registerPlanRunnerDeps({
+        runSubAgent: async () => '已生成 report.txt',
+        resolveWorkspaceDir: () => workspace,
+      });
+      const plan = createPlan(mkTask(), {
+        items: [{
+          id: 't1',
+          title: '生成报告',
+          agentId: 'writer',
+          instruction: '生成报告',
+          verify: [{ kind: 'file_exists', title: '报告存在', path: 'report.txt' }],
+        }],
+      });
+      expect(plan.ok).toBe(true);
+      if (!plan.ok) return;
+      await runPlanToCompletion(mkTask(), plan.planId);
+      const row = itemRow(plan.planId, 't1');
+      expect(row.status).toBe('done');
+      expect(row.evidence_json).toContain('调度器验收通过');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('plan_tasks verify 失败时按任务失败处理', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'yz-plan-verify-fail-'));
+    try {
+      registerPlanRunnerDeps({
+        runSubAgent: async () => '我声称完成了',
+        resolveWorkspaceDir: () => workspace,
+      });
+      const plan = createPlan(mkTask(), {
+        items: [{
+          id: 't1',
+          title: '生成不存在的报告',
+          agentId: 'writer',
+          instruction: '生成报告',
+          verify: [{ kind: 'file_exists', title: '报告存在', path: 'missing.txt' }],
+        }],
+      });
+      expect(plan.ok).toBe(true);
+      if (!plan.ok) return;
+      await runPlanToCompletion(mkTask(), plan.planId);
+      const row = itemRow(plan.planId, 't1');
+      expect(row.status).toBe('failed');
+      expect(row.error_summary).toContain('验收未通过');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('重试与重派的每次执行 parentToolCallId 唯一（上下文不污染）', async () => {
