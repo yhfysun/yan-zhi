@@ -86,7 +86,7 @@ describe('computer-use 桌面能力代理', () => {
     if (process.platform === 'win32') {
       expect(result.content[0].text).toContain('moved to');
     } else {
-      expect(result.content[0].text).toMatch(/仅支持 Windows \/ macOS|macOS 适配/);
+      expect(result.content[0].text).toMatch(/当前支持 Windows \/ macOS|macOS 适配/);
     }
     expect(bridge.call).not.toHaveBeenCalled();
   });

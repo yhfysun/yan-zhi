@@ -15,11 +15,16 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const mobileDir = path.join(__dirname, '..');
 const repoRoot = path.join(mobileDir, '..', '..');
 const settingsFile = path.join(mobileDir, 'android', 'capacitor.settings.gradle');
-const shortRoot = process.env.YZ_NATIVE_LIB_DIR || 'C:/yz-libs/capnodejs';
+const shortRoot = process.env.YZ_NATIVE_LIB_DIR || (
+  process.platform === 'win32'
+    ? 'C:/yz-libs/capnodejs'
+    : path.join(os.tmpdir(), 'yz-libs', 'capnodejs')
+);
 const shortAndroid = path.join(shortRoot, 'android');
 const shortJniLibs = path.join(shortAndroid, 'src', 'main', 'jniLibs');
 
