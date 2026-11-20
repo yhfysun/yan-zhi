@@ -13,7 +13,7 @@ export const BUILD_MODE_DEFS = [
   { key: "rpa", label: "自动化模式", icon: "MagicStick", desc: "录制 · 固定脚本 · 运行记录", route: "/automation", pluginId: "rpa-mode" },
   { key: "clip", label: "剪辑模式", icon: "VideoCamera", desc: "剪辑 · 字幕动画 · 成片", route: "/clip", pluginId: "clip-mode" },
   { key: "shop", label: "店铺运营模式", icon: "Shop", desc: "选品 · Listing · 利润 · 仓储", route: "/shop", pluginId: "shop-ops", desktopOnly: true },
-  { key: "learning", label: "学习模式", icon: "Reading", desc: "22 科零基础课程 · 医学中西双路径 · 算法实战 · 原文出处 · 公共图书馆", route: "/learning-v2", pluginId: "learning-mode" },
+  { key: "learning", label: "学习模式", icon: "Reading", desc: "22 科零基础课程 · 医学中西双路径 · 算法故事闯关 · 原文出处 · 公共图书馆", route: "/learning-v2", pluginId: "learning-mode" },
 ] as const;
 
 export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
