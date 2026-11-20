@@ -334,6 +334,13 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+/** Android 手势/返回键先询问页面是否有页内层级；资讯正文必须在这里关闭弹层。 */
+function onMobileBack(event: Event): void {
+  if (!selectedItem.value || isWideLayout.value) return;
+  event.preventDefault();
+  closeArticle();
+}
+
 function lockApplicationShell(): void {
   if (shellLock || typeof document === 'undefined') return;
   const element = document.querySelector<HTMLElement>('.app-shell');
@@ -371,6 +378,7 @@ watch([selectedItem, isWideLayout], async ([item, wide]) => {
 onMounted(() => {
   media?.addEventListener('change', onWideLayoutChange);
   window.addEventListener('keydown', onKeydown);
+  document.addEventListener('yz:mobile-back', onMobileBack);
   void Promise.all([loadFeed('top'), loadMarket()]);
 });
 
@@ -378,6 +386,7 @@ onUnmounted(() => {
   unlockApplicationShell();
   media?.removeEventListener('change', onWideLayoutChange);
   window.removeEventListener('keydown', onKeydown);
+  document.removeEventListener('yz:mobile-back', onMobileBack);
 });
 </script>
 

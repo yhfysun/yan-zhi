@@ -203,6 +203,22 @@ describe('资讯中心', () => {
     });
   });
 
+  it('Android 返回手势先关闭资讯正文，不把页面带回上一路由', async () => {
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('华强北的亚太创新新周期'));
+    host.querySelector<HTMLButtonElement>('.news-feed-story')?.click();
+    await vi.waitFor(() => expect(host.hasAttribute('inert')).toBe(true));
+
+    const back = new CustomEvent('yz:mobile-back', { cancelable: true });
+    expect(document.dispatchEvent(back)).toBe(false);
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-mobile-reader')).toBeFalsy();
+      expect(host.hasAttribute('inert')).toBe(false);
+      expect(host.textContent).toContain('华强北的亚太创新新周期');
+    });
+  });
+
   it('较快返回的新正文不会被前一条慢请求覆盖', async () => {
     let resolveFirstArticle!: (value: unknown) => void;
     apiState.get.mockImplementation(async (url: string) => {
