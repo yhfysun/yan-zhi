@@ -43,13 +43,23 @@ function runPlan(plan) {
     //   必须从 env 里**删除**键 —— 置空串在 Windows 上仍是"已设置"。
     delete childEnv.ELECTRON_RUN_AS_NODE;
     childEnv.ELECTRON_ENABLE_LOGGING = '0';
-    if (process.platform === 'linux') childEnv.ELECTRON_DISABLE_SANDBOX = '1';
+    if (process.platform === 'linux') {
+      childEnv.ELECTRON_DISABLE_SANDBOX = '1';
+      childEnv.ELECTRON_OZONE_PLATFORM_HINT = 'x11';
+    }
     childEnv.YZ_MAIN_CJS = MAIN_CJS;
     childEnv.YZ_FIXTURE = FIXTURE;
     childEnv.YZ_PLAN = planFile;
     const launch = (attempt) => {
       const electronArgs = process.platform === 'linux'
-        ? ['--no-sandbox', '--disable-dev-shm-usage', RUNNER]
+        ? [
+            '--no-sandbox',
+            '--disable-gpu',
+            '--disable-gpu-sandbox',
+            '--disable-software-rasterizer',
+            '--disable-dev-shm-usage',
+            RUNNER,
+          ]
         : [RUNNER];
       execFile(electronBin, electronArgs, {
         timeout: 90_000,

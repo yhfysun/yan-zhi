@@ -58,4 +58,4 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y xvfb
           fi
-          xvfb-run -a pnpm --filter @yan-zhi/desktop test
+          xvfb-run -a -s "-screen 0 1280x1024x24" pnpm --filter @yan-zhi/desktop test
