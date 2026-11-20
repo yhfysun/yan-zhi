@@ -50,7 +50,8 @@ describe('节点控制面', () => {
     expect(created.node.capabilities).toEqual(['command']);
     expect(created.token).toMatch(/^yzn\./);
     expect((await repo.authenticateRuntimeNode(created.token))?.id).toBe(created.node.id);
-    expect(await repo.authenticateRuntimeNode(created.token.replace(/.$/, 'x'))).toBeNull();
+    const wrongToken = created.token.slice(0, -1) + (created.token.endsWith('x') ? 'y' : 'x');
+    expect(await repo.authenticateRuntimeNode(wrongToken)).toBeNull();
     expect(await repo.authenticateRuntimeNode('not-a-node-token')).toBeNull();
     await repo.close();
   });
