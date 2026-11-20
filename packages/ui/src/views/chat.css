@@ -1,7 +1,6 @@
 /* ===== 布局 ===== */
 .chat-page { display: flex; flex: 1; position: relative; min-height: 0; min-width: 0; }
 .chat-page.conv-collapsed .sidebar { overflow: hidden; border: none; }
-.chat-page.conv-collapsed .conv-toggle { left: 0; }
 
 /* ===== 侧边栏 ===== */
 /* ===== 侧边栏 =====
@@ -266,17 +265,6 @@
 .batch-bar span:first-child { font-weight: 600; }
 .conv-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .pin-icon { color: var(--color-warning); }
-
-.conv-toggle {
-  position: absolute; left: calc(var(--chat-sidebar-w, 280px) + 5px); top: 50%; transform: translateY(-50%);
-  width: 20px; height: 48px;
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-left: none; border-radius: 0 8px 8px 0;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; z-index: 5; font-size: 12px; color: var(--color-text-secondary);
-  transition: left 0.25s ease;
-}
-.conv-toggle:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
 
 /* ===== 主区 ===== */
 /* chat-main 改为行布局：左 = chat-column（顶栏+消息+输入区），右 = right-panel（文件管理/浏览器预览） */
@@ -1939,7 +1927,6 @@
     z-index: 199; backdrop-filter: blur(2px);
   }
 
-  .conv-toggle { display: none; }
   /* 移动端为纵向布局，横向拖拽分隔条无意义 */
   .rs-handle { display: none; }
   .chat-topbar {
@@ -2076,7 +2063,6 @@
    这里只补**与屏幕方向无关、必须生效**的结构性规则（纵向排布 / 输入框位置 /
    让位），不做字号、间距这类纯视觉微调（那些横屏退回桌面值是可接受的）。 */
 .platform-mobile .chat-page { flex-direction: column; }
-.platform-mobile .conv-toggle { display: none; }
 /* 横屏也不该出现横向拖拽分隔条（触屏） */
 .platform-mobile .rs-handle { display: none; }
 /* 输入区与消息区是纵向兄弟，输入框不许被压缩（与竖屏同规则） */

@@ -15,7 +15,6 @@
       @click="pick('ai')"
     >
       <Sparkles :size="15" />
-      <span>AI</span>
     </button>
     <button
       type="button"
@@ -27,7 +26,6 @@
       @click="pick('human')"
     >
       <UserRound :size="15" />
-      <span>人工</span>
     </button>
   </div>
 </template>
@@ -96,15 +94,11 @@ async function pick(next: LeadMode): Promise<void> {
   justify-content: center;
   min-width: 42px;
   height: 24px;
-  gap: 5px;
   padding: 0 9px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--color-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
   cursor: pointer;
   transition: color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
 }
@@ -140,8 +134,5 @@ async function pick(next: LeadMode): Promise<void> {
     border-radius: 9px;
   }
 
-  .workspace-lead-option span {
-    display: none;
-  }
 }
 </style>

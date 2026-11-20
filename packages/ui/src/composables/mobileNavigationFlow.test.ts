@@ -48,6 +48,12 @@ describe('移动端统一导航与返回路径', () => {
     expect(WORKSPACE_SWITCH).toMatch(
       /@media \(max-width: 900px\), \(hover: none\)[\s\S]*?min-width:\s*48px/,
     );
+    expect(WORKSPACE_SWITCH, 'AI 工作方式不应再显示文字标签')
+      .not.toContain('<span>AI</span>');
+    expect(WORKSPACE_SWITCH, '人工工作方式不应再显示文字标签')
+      .not.toContain('<span>人工</span>');
+    expect(WORKSPACE_SWITCH).toContain('aria-label="AI 协作"');
+    expect(WORKSPACE_SWITCH).toContain('aria-label="人工工作台"');
     expect(LEAD_TOGGLE).toMatch(/\.lead-toggle-wrap\s*\{[^}]*display:\s*none/);
     expect(LEAD_TOGGLE).not.toContain('display: block');
   });

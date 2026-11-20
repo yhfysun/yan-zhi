@@ -55,9 +55,15 @@ describe('P2-1 办公工作台骨架', () => {
   });
 
   it('办公 AI 侧栏保留完整空间/子目录/任务树，而不是只列最近会话', () => {
+    const CHAT = strip(readRepo('packages/ui/src/views/Chat.vue'));
     expect(OFFICE_AI).toMatch(/<ChatSidebar/);
     expect(OFFICE_AI).toMatch(/\.oai-directory/);
     expect(OFFICE_AI).not.toMatch(/class="oai-conv"/);
+    expect(CHAT).toMatch(/<ChatSidebar v-if="!isOfficeShell" \/>/);
+    expect(CHAT).toMatch(/const isOfficeShell = computed\([\s\S]{0,100}activeMode\.value === 'office'/);
+    expect(CHAT).not.toContain("officePanel.value === 'ai'");
+    expect(CHAT).not.toContain('class="conv-toggle"');
+    expect(CHAT_CSS).not.toMatch(/\.conv-toggle\s*\{/);
     expect(OFFICE_AI).toContain('定时任务');
     expect(OFFICE_AI).toContain('发布');
     expect(OFFICE_AI).toContain('<div class="oai-directory">');

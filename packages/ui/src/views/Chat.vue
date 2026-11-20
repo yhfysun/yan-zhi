@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-page" :class="{ 'conv-collapsed': sidebarCollapsed, 'drawer-open': drawerOpen, 'is-office-ai': isOfficeAi }"
+  <div class="chat-page" :class="{ 'conv-collapsed': sidebarCollapsed, 'drawer-open': drawerOpen }"
        :style="{ '--chat-sidebar-w': (sidebarCollapsed ? 0 : sidebarW) + 'px', '--chat-context-w': contextMoved ? contextW + 'px' : '', '--chat-right-w': rightMoved ? rightW + 'px' : '' }">
     <div v-if="drawerOpen" class="drawer-overlay" @click="drawerOpen = false"></div>
 
@@ -14,13 +14,9 @@
       @click="closeAllDrawers"
     ></div>
 
-    <ChatSidebar v-if="!isOfficeAi" />
+    <ChatSidebar v-if="!isOfficeShell" />
 
-    <div v-if="!isOfficeAi && !sidebarCollapsed" class="rs-handle rs-handle-left" @mousedown="sidebarR.startDrag($event, 'left')"></div>
-
-    <div v-if="!isOfficeAi" class="conv-toggle" @click="convCollapsed = !convCollapsed">
-      <el-icon><Fold v-if="!sidebarCollapsed" /><Expand v-else /></el-icon>
-    </div>
+    <div v-if="!isOfficeShell && !sidebarCollapsed" class="rs-handle rs-handle-left" @mousedown="sidebarR.startDrag($event, 'left')"></div>
 
     <section class="chat-main">
       <div class="chat-column">
@@ -62,7 +58,7 @@
 <script setup lang="ts">
 import { watch, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { Fold, Expand, FolderChecked } from '@element-plus/icons-vue';
+import { FolderChecked } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useChat } from '../composables/chat/useChat';
 import { useResizable } from '../composables/useResizable';
@@ -86,10 +82,9 @@ const { convCollapsed, isMobile, drawerOpen, store, contextSidebarOpen, currentC
 const router = useRouter();
 const mobileShell = useMobileShell();
 const sidebarCollapsed = computed(() => !mobileShell.value && !isMobile.value && convCollapsed.value);
-const isOfficeAi = computed(() => (
+const isOfficeShell = computed(() => (
   !mobileShell.value
   && activeMode.value === 'office'
-  && officePanel.value === 'ai'
 ));
 const backgroundJobs = useBackgroundJobsStore();
 const currentBackgroundJobs = computed(() => {

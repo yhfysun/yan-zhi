@@ -61,9 +61,8 @@
           popper-class="yz-menu-popper more-menu-popper"
         >
           <template #reference>
-            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button" title="更多" aria-label="更多">
+            <button class="title-nav-item title-nav-item--icon" :class="{ active: moreActive || moreOpen }" type="button" title="更多" aria-label="更多">
               <el-icon :size="15"><More /></el-icon>
-              <span>更多</span>
             </button>
           </template>
           <HoverMenu :items="moreItems" :width="196" @select="onMoreSelect" />
@@ -77,14 +76,26 @@
           v-if="officeSidebarAvailable"
           class="title-nav-item title-nav-item--icon office-sidebar-toggle"
           type="button"
-          :class="{ active: !officeAiSidebarCollapsed }"
           :title="officeAiSidebarCollapsed ? '展开办公侧栏（Ctrl+B）' : '收起办公侧栏（Ctrl+B）'"
           :aria-label="officeAiSidebarCollapsed ? '展开办公侧栏' : '收起办公侧栏'"
           :aria-pressed="!officeAiSidebarCollapsed"
           @click="toggleOfficeAiSidebar"
         >
-          <el-icon :size="15"><Expand v-if="officeAiSidebarCollapsed" /><Fold v-else /></el-icon>
-          <span>侧栏</span>
+          <svg
+            class="office-sidebar-icon"
+            viewBox="0 0 24 24"
+            width="15"
+            height="15"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="3" />
+            <path :d="officeAiSidebarCollapsed ? 'M6 4v16' : 'M9 3v18'" />
+          </svg>
         </button>
       </nav>
 
@@ -290,7 +301,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, ChatDotRound, Monitor, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand, Tickets,
+  Search, VideoCamera, SwitchButton, Notebook, Bell, CircleCheck, WarningFilled, Tickets,
 } from '@element-plus/icons-vue';
 import { Gamepad2 } from 'lucide-vue-next';
 import { useSettingsStore, useAuthStore, usePluginStore, useChatStore } from '@yan-zhi/ui';
