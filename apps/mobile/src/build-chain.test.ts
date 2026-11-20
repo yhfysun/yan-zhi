@@ -123,4 +123,14 @@ describe('Android 打包链接线', () => {
     expect(workflow).not.toContain('mkdir -p dist');
     expect(workflow).not.toMatch(/pnpm[^\n]*\btest\b/);
   });
+
+  it('★ Android 构建必须先拉取 Sherpa TTS 资源，再应用原生接线', () => {
+    const c = chain();
+    const fetchIndex = c.indexOf('node scripts/fetch-sherpa.cjs');
+    const applyIndex = c.indexOf('node scripts/apply-native-sherpa.cjs');
+
+    expect(fetchIndex).toBeGreaterThan(-1);
+    expect(applyIndex).toBeGreaterThan(-1);
+    expect(fetchIndex).toBeLessThan(applyIndex);
+  });
 });
