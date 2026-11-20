@@ -50,7 +50,7 @@ function runPlan(plan) {
       execFile(electronBin, [RUNNER], {
         timeout: 90_000,
         env: childEnv,
-      }, (err, stdout) => {
+      }, (err, stdout, stderr) => {
         // Linux 在多个测试同时拉起同一个 Electron 二进制时会短暂 ETXTBSY。
         if (err?.code === 'ETXTBSY' && attempt < 5) {
           setTimeout(() => launch(attempt + 1), 100 * (attempt + 1));
@@ -58,7 +58,7 @@ function runPlan(plan) {
         }
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
         const line = String(stdout || '').split('\n').find((l) => l.startsWith('RESULT:'));
-        if (!line) return reject(new Error('执行器没有输出 RESULT：' + String(err || stdout).slice(0, 300)));
+        if (!line) return reject(new Error('执行器没有输出 RESULT：' + String(err || stderr || stdout).slice(0, 1200)));
         resolve(JSON.parse(line.slice('RESULT:'.length)));
       });
     };

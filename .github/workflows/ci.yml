@@ -52,4 +52,10 @@ jobs:
       # desktop 用 node --test（该包不依赖 vitest）。当前覆盖 keyring 敏感值加解密：
       # 兼容语义（旧明文照常读 / 密文解不开显式失败）在真机上几乎无法构造验证，只能靠单测钉住。
       - name: 单元测试（desktop）
-        run: pnpm --filter @yan-zhi/desktop test
+        # xvfb 让“真 Electron 真页面”场景在无桌面的 Ubuntu runner 上仍能真跑，不是跳过。
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          fi
+          xvfb-run -a pnpm --filter @yan-zhi/desktop test
