@@ -57,7 +57,9 @@ describe('移动设置 · 模型与智能管理入口', () => {
     expect(APP).toMatch(/appRouter\.replace\(\{[\s\S]{0,160}query:\s*group\s*\?/);
     expect(MOBILE_MAIN).toContain('current.meta?.mobileSettingsChild');
     expect(MOBILE_MAIN).toContain("new CustomEvent('yz:mobile-back', { cancelable: true })");
-    expect(MOBILE_MAIN).toContain('再滑动或按一次返回退出应用');
+    expect(MOBILE_MAIN).toContain('ElMessageBox.confirm');
+    expect(MOBILE_MAIN).toContain("confirmButtonText: '退出应用'");
+    expect(MOBILE_MAIN).toContain("cancelButtonText: '继续使用'");
   });
 
   it('模型卡片操作在移动端收为 3×2 等宽网格，不再退化成零散换行', () => {

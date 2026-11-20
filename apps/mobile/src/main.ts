@@ -9,10 +9,11 @@ import { router } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { App as CapApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
-import { ElMessage } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
 import { mobileAdapter } from './platform';
 import { resumeSmsForwardIfEnabled } from './sms-forward';
 import { registerAndroidM1NfcDriver } from './m1-nfc';
+import { createHistoryBackGuard } from './back-navigation';
 
 setPlatformAdapter(mobileAdapter);
 // M1 NFC 真机驱动：只有 Android 原生壳会注册，其余平台保持无驱动 → 课程自动走模拟器
@@ -31,15 +32,20 @@ function mountApp(): void {
 }
 
 /**
- * Android 物理返回键。优先级：关闭 Element Plus 浮层 → 路由回退 → 首页双击退出。
+ * Android 物理返回键。优先级：关闭 Element Plus 浮层 → 路由回退 → 首页退出确认。
  * 原先完全没接 backButton：按返回键行为未定义（系统默认直接退出应用），
  * 弹窗开着也会被整个杀掉。
  */
 function registerBackButton(): void {
   // web / 预览环境没有原生壳，不注册（@capacitor/app 的 web 实现也不会有硬件返回键）
   if (!Capacitor.isNativePlatform()) return;
-  let lastBackAt = 0;
+  let exitPromptOpen = false;
+  const historyBackGuard = createHistoryBackGuard();
+  window.addEventListener('popstate', historyBackGuard.noteHistoryPop);
   CapApp.addListener('backButton', () => {
+    // Android 16 预测返回在部分厂商 WebView 上会先提交历史回退，再送原生回调。
+    // 同一次手势只能消费一个页面层级，否则资讯会从“正文 → 资讯列表”变成“正文 → 上一菜单”。
+    if (historyBackGuard.shouldIgnoreNativeBack()) return;
     // 1) 浮层优先：EP 弹窗/抽屉用 .el-overlay（v-show 关闭态带 display:none），
     //    select/日期等下拉 popper 用 aria-hidden 标记。命中即派发 ESC，
     //    交给 Element Plus 自己的全局 Esc 关闭逻辑（关最上层）。
@@ -67,14 +73,20 @@ function registerBackButton(): void {
       router.back();
       return;
     }
-    // 5) 已在首页：2 秒内连按两次才退出，避免误触直接杀进程
-    const now = Date.now();
-    if (now - lastBackAt < 2000) {
-      void CapApp.exitApp();
-      return;
-    }
-    lastBackAt = now;
-    ElMessage({ message: '再滑动或按一次返回退出应用', type: 'info', duration: 2000 });
+    // 5) 已在首页：给出明确选择，避免连续返回的隐式退出规则误关应用
+    if (exitPromptOpen) return;
+    exitPromptOpen = true;
+    void ElMessageBox.confirm('确定退出言智吗？', '退出应用', {
+      confirmButtonText: '退出应用',
+      cancelButtonText: '继续使用',
+      type: 'warning',
+      closeOnClickModal: false,
+    })
+      .then(() => CapApp.exitApp())
+      .catch(() => {})
+      .finally(() => {
+        exitPromptOpen = false;
+      });
   });
 }
 
