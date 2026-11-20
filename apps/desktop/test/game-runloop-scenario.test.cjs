@@ -25,6 +25,8 @@ const RUNNER = path.join(__dirname, 'fixtures', 'game-loop-runner.cjs');
 
 // electron 包在纯 node 环境下 require 返回二进制路径字符串
 const ELECTRON_BIN = require('electron');
+let electronBin = ELECTRON_BIN;
+let electronSandbox = '';
 
 const START_LEVEL = 396;
 const TARGET_LEVEL = 400;   // 刷 4 层即停
@@ -45,7 +47,7 @@ function runPlan(plan) {
     childEnv.YZ_FIXTURE = FIXTURE;
     childEnv.YZ_PLAN = planFile;
     const launch = (attempt) => {
-      execFile(ELECTRON_BIN, [RUNNER], {
+      execFile(electronBin, [RUNNER], {
         timeout: 90_000,
         env: childEnv,
       }, (err, stdout) => {
@@ -69,6 +71,22 @@ describe('固定脚本路径 · run_loop 秘境挑战场景（真 Electron 真�
     assert.ok(fs.existsSync(MAIN_CJS), '缺少 main.cjs');
     assert.ok(fs.existsSync(FIXTURE), '缺少模拟游戏页');
     assert.ok(fs.existsSync(RUNNER), '缺少 electron 执行器');
+    // CI 的 Ubuntu runner 上，安装器偶尔仍持有 Electron 原二进制写句柄；
+    // 从完整 dist 副本启动，避免 ETXTBSY 把真跑测试误报成失败。
+    if (process.platform === 'linux') {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yz-electron-dist-'));
+      const distCopy = path.join(tmpRoot, 'dist');
+      fs.cpSync(path.dirname(ELECTRON_BIN), distCopy, { recursive: true });
+      electronBin = path.join(distCopy, path.basename(ELECTRON_BIN));
+      electronSandbox = tmpRoot;
+      assert.ok(fs.existsSync(electronBin), 'Electron 测试副本缺少可执行文件');
+    }
+  });
+
+  after(() => {
+    if (electronSandbox) {
+      try { fs.rmSync(electronSandbox, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 
   test('关弹窗 + 结算期点「下一关」+ until 到 400 层即停', async () => {
