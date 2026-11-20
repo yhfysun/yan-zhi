@@ -11,7 +11,7 @@
 //   ② until 条件生效：达到目标层即停（aborted='until'），不会无限刷；
 //   ③ 战斗期不误点（模拟页在 fight 期吞点击，层级数只能由 settle 期点击推进）；
 //   ④ 坐标点击走真实输入事件路径（sendInputEvent），与 fast-click 通道一致。
-const { test, describe, before, after } = require('node:test');
+const { test, describe, before } = require('node:test');
 const assert = require('node:assert');
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
@@ -25,8 +25,6 @@ const RUNNER = path.join(__dirname, 'fixtures', 'game-loop-runner.cjs');
 
 // electron 包在纯 node 环境下 require 返回二进制路径字符串
 const ELECTRON_BIN = require('electron');
-let electronBin = ELECTRON_BIN;
-let electronSandbox = '';
 
 const START_LEVEL = 396;
 const TARGET_LEVEL = 400;   // 刷 4 层即停
@@ -61,13 +59,10 @@ function runPlan(plan) {
             RUNNER,
           ]
         : [RUNNER];
-      execFile(electronBin, electronArgs, {
-        timeout: 90_000,
-        env: childEnv,
-      }, (err, stdout, stderr) => {
+      const finish = (err, stdout, stderr) => {
         // Linux 在多个测试同时拉起同一个 Electron 二进制时会短暂 ETXTBSY。
-        if (err?.code === 'ETXTBSY' && attempt < 5) {
-          setTimeout(() => launch(attempt + 1), 100 * (attempt + 1));
+        if (err?.code === 'ETXTBSY' && attempt < 20) {
+          setTimeout(() => launch(attempt + 1), Math.min(1000, 100 * (attempt + 1)));
           return;
         }
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -81,7 +76,16 @@ function runPlan(plan) {
           return reject(new Error('执行器没有输出 RESULT：\n' + detail.slice(0, 2000)));
         }
         resolve(JSON.parse(line.slice('RESULT:'.length)));
-      });
+      };
+      try {
+        execFile(ELECTRON_BIN, electronArgs, {
+          timeout: 90_000,
+          env: childEnv,
+        }, (err, stdout, stderr) => finish(err, stdout, stderr));
+      } catch (err) {
+        // Linux 的 ETXTBSY 可能在 execFile 调用栈内同步抛出，不会进 callback。
+        finish(err, '', '');
+      }
     };
     launch(0);
   });
@@ -92,22 +96,6 @@ describe('固定脚本路径 · run_loop 秘境挑战场景（真 Electron 真�
     assert.ok(fs.existsSync(MAIN_CJS), '缺少 main.cjs');
     assert.ok(fs.existsSync(FIXTURE), '缺少模拟游戏页');
     assert.ok(fs.existsSync(RUNNER), '缺少 electron 执行器');
-    // CI 的 Ubuntu runner 上，安装器偶尔仍持有 Electron 原二进制写句柄；
-    // 从完整 dist 副本启动，避免 ETXTBSY 把真跑测试误报成失败。
-    if (process.platform === 'linux') {
-      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yz-electron-dist-'));
-      const distCopy = path.join(tmpRoot, 'dist');
-      fs.cpSync(path.dirname(ELECTRON_BIN), distCopy, { recursive: true });
-      electronBin = path.join(distCopy, path.basename(ELECTRON_BIN));
-      electronSandbox = tmpRoot;
-      assert.ok(fs.existsSync(electronBin), 'Electron 测试副本缺少可执行文件');
-    }
-  });
-
-  after(() => {
-    if (electronSandbox) {
-      try { fs.rmSync(electronSandbox, { recursive: true, force: true }); } catch { /* ignore */ }
-    }
   });
 
   test('关弹窗 + 结算期点「下一关」+ until 到 400 层即停', async () => {
