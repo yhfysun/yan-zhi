@@ -23,6 +23,7 @@ on:
       - 'apps/server/**'
       - 'packages/core/**'
       - 'packages/shared/**'
+      - 'packages/ui/**'
       - 'scripts/package.cjs'
       - 'scripts/package-android.cjs'
       - 'assets/icons/**'

@@ -45,8 +45,9 @@ describe('Android 打包链接线', () => {
     expect(patch).toContain('path "CMakeLists.txt"');
     expect(patch).toContain('-DLIBNODE_DIR=');
     expect(patch).toContain('legacyJniLine');
-    // nodejs-mobile 的 libnode.so 动态依赖 STL 运行库，必须按 ABI 显式打包。
-    expect(patch).toContain('libc++_shared.so');
+    // externalNativeBuild 会随 CMake 产物打包 STL；再手铺一份会触发 duplicate native lib。
+    expect(patch).toContain('externalNativeBuild');
+    expect(patch).not.toContain('libc++_shared.so');
     expect(patch).toContain("jniLibs.srcDirs += ['src/main/jniLibs']");
     // CMake 的 include_directories 指向 ../ios/PluginNative；漏掉 bridge.h 会直接断编。
     expect(patch).toContain("'PluginNative'");
@@ -120,8 +121,9 @@ describe('Android 打包链接线', () => {
     expect(vite).toBeGreaterThan(-1);
     expect(capAdd).toBeGreaterThan(-1);
     expect(vite).toBeLessThan(capAdd);
-    expect(workflow).not.toContain('mkdir -p dist');
+    expect(workflow).not.toMatch(/mkdir -p\s+dist(?:\s|$)/);
     expect(workflow).not.toMatch(/pnpm[^\n]*\btest\b/);
+    expect(workflow, 'packages/ui 变更必须触发移动端重新打包').toContain("- 'packages/ui/**'");
   });
 
   it('★ Android 构建必须先拉取 Sherpa TTS 资源，再应用原生接线', () => {
