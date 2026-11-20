@@ -43,11 +43,15 @@ function runPlan(plan) {
     //   必须从 env 里**删除**键 —— 置空串在 Windows 上仍是"已设置"。
     delete childEnv.ELECTRON_RUN_AS_NODE;
     childEnv.ELECTRON_ENABLE_LOGGING = '0';
+    if (process.platform === 'linux') childEnv.ELECTRON_DISABLE_SANDBOX = '1';
     childEnv.YZ_MAIN_CJS = MAIN_CJS;
     childEnv.YZ_FIXTURE = FIXTURE;
     childEnv.YZ_PLAN = planFile;
     const launch = (attempt) => {
-      execFile(electronBin, [RUNNER], {
+      const electronArgs = process.platform === 'linux'
+        ? ['--no-sandbox', '--disable-dev-shm-usage', RUNNER]
+        : [RUNNER];
+      execFile(electronBin, electronArgs, {
         timeout: 90_000,
         env: childEnv,
       }, (err, stdout, stderr) => {
@@ -58,7 +62,14 @@ function runPlan(plan) {
         }
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
         const line = String(stdout || '').split('\n').find((l) => l.startsWith('RESULT:'));
-        if (!line) return reject(new Error('执行器没有输出 RESULT：' + String(err || stderr || stdout).slice(0, 1200)));
+        if (!line) {
+          const detail = [
+            err ? `${err.name}: ${err.message} (code=${err.code || '-'}, signal=${err.signal || '-'})` : '',
+            String(stderr || '').trim(),
+            String(stdout || '').trim(),
+          ].filter(Boolean).join('\n');
+          return reject(new Error('执行器没有输出 RESULT：\n' + detail.slice(0, 2000)));
+        }
         resolve(JSON.parse(line.slice('RESULT:'.length)));
       });
     };
