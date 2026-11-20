@@ -44,15 +44,23 @@ function runPlan(plan) {
     childEnv.YZ_MAIN_CJS = MAIN_CJS;
     childEnv.YZ_FIXTURE = FIXTURE;
     childEnv.YZ_PLAN = planFile;
-    execFile(ELECTRON_BIN, [RUNNER], {
-      timeout: 90_000,
-      env: childEnv,
-    }, (err, stdout) => {
-      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
-      const line = String(stdout || '').split('\n').find((l) => l.startsWith('RESULT:'));
-      if (!line) return reject(new Error('执行器没有输出 RESULT：' + String(err || stdout).slice(0, 300)));
-      resolve(JSON.parse(line.slice('RESULT:'.length)));
-    });
+    const launch = (attempt) => {
+      execFile(ELECTRON_BIN, [RUNNER], {
+        timeout: 90_000,
+        env: childEnv,
+      }, (err, stdout) => {
+        // Linux 在多个测试同时拉起同一个 Electron 二进制时会短暂 ETXTBSY。
+        if (err?.code === 'ETXTBSY' && attempt < 5) {
+          setTimeout(() => launch(attempt + 1), 100 * (attempt + 1));
+          return;
+        }
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+        const line = String(stdout || '').split('\n').find((l) => l.startsWith('RESULT:'));
+        if (!line) return reject(new Error('执行器没有输出 RESULT：' + String(err || stdout).slice(0, 300)));
+        resolve(JSON.parse(line.slice('RESULT:'.length)));
+      });
+    };
+    launch(0);
   });
 }
 

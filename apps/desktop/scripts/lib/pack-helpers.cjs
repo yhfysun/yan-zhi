@@ -271,14 +271,15 @@ function androidToolchainCandidates({
 } = {}) {
   const isWin = platform === 'win32';
   const d = delimiter || (isWin ? ';' : ':');
+  const joinPath = isWin ? path.win32.join : path.posix.join;
 
   const sdkCandidates = [
     env.ANDROID_HOME,
     env.ANDROID_SDK_ROOT,
     ...(isWin
-      ? ['C:\\Android\\Sdk', env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Android', 'Sdk') : null]
+      ? ['C:\\Android\\Sdk', env.LOCALAPPDATA ? joinPath(env.LOCALAPPDATA, 'Android', 'Sdk') : null]
       : [
-          env.HOME ? path.join(env.HOME, 'Android', 'Sdk') : null,
+          env.HOME ? joinPath(env.HOME, 'Android', 'Sdk') : null,
           // ubuntu runner 自带 SDK 的默认落点（android-actions/setup-android 同源）
           '/usr/local/lib/android/sdk',
           '/opt/android-sdk',

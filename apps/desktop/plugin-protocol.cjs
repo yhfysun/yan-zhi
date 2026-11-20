@@ -103,7 +103,10 @@ function resolveYzTarget(rawUrl, ctx) {
 /** 在 root 内拼接子路径：越界（../ 穿越 / 绝对路径注入）一律返回 null */
 function safeJoin(root, sub) {
   if (!sub) return null;
-  const clean = sub.replace(/^\/+/, '');
+  const raw = String(sub);
+  // 即使运行在 POSIX，也不能把 Windows 盘符路径或 UNC 当普通相对文件名。
+  if (/^[A-Za-z]:[\\/]/.test(raw) || /^[/\\]{2}/.test(raw)) return null;
+  const clean = raw.replace(/^\/+/, '');
   if (path.isAbsolute(clean)) return null;
   const resolved = path.normalize(path.join(root, clean));
   const normalizedRoot = path.normalize(root + path.sep);
