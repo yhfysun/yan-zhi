@@ -54,6 +54,11 @@ function filterComplexOf(steps: Array<{ args: string[] }>, labelStart: string): 
   return st.args[i + 1];
 }
 
+/** 计划快照只比较语义；Windows/Linux 的路径分隔符差异不应改变快照。 */
+function portablePlanJson(plan: unknown): string {
+  return JSON.stringify(plan).replace(/\\/g, '/');
+}
+
 describe('buildTrackPlan · 计划层', () => {
   it('★ 单视频轨 + 无额外音频轨 → 与 buildRenderPlan 完全相同（出片零变化）', () => {
     const p = singleTrack();
@@ -64,8 +69,8 @@ describe('buildTrackPlan · 计划层', () => {
     const p = singleTrack();
     const input = inputOf(p);
     expect(planClipRender(input, false)).toEqual(buildRenderPlan(input));
-    const hash = crypto.createHash('sha256').update(JSON.stringify(planClipRender(input, false))).digest('hex');
-    expect(hash).toBe('f351e049cd9bf99ee99751e16f56c88a418ecd87cd18d3d156feb054842c53a4');
+    const hash = crypto.createHash('sha256').update(portablePlanJson(planClipRender(input, false))).digest('hex');
+    expect(hash).toBe('0b18d0f9897a632a544f48ad9baf8dae9518157cabf819ca8551156638f3a960');
   });
 
   it('★ P0 planClipRender：>1 视频轨自动走 buildTrackPlan；环境强制开关仍保留', () => {

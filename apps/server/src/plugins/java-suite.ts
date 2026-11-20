@@ -521,6 +521,9 @@ async function attachJavaDebugHelper(session: DebugSession): Promise<void> {
     'YanZhiJavaDebugger',
     session.host,
     String(session.port),
+    // 启动与附加都在第一次显式 continue 前保持事件集不自动恢复：
+    // 附加目标可能本身就以 suspend=y 启动，不持有会与断点安装发生竞态。
+    'hold',
   ], {
     cwd: session.projectDir || process.cwd(),
     env: buildSpawnEnv(),
@@ -553,6 +556,10 @@ async function attachJavaDebugHelper(session: DebugSession): Promise<void> {
           file: typeof message.file === 'string' ? message.file : undefined,
           line: typeof message.line === 'string' ? Number(message.line) : undefined,
         };
+        return;
+      }
+      if (message.event === 'breakpointError') {
+        session.lastError = `断点安装失败：${String(message.class || '')}:${String(message.line || '')} ${String(message.error || '')}`.trim();
         return;
       }
       if (message.event === 'exited' || message.event === 'disconnect') {

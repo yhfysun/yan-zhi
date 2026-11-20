@@ -51,9 +51,7 @@ jobs:
           chmod +x scripts/gen-license.mjs
           echo "已还原签发私钥与签发脚本，打包时将现签预置码"
 
-      # 版本档（lite / basic / pro）由 `electron:build:*` 脚本内部的 set-edition.cjs 写入
-      # apps/desktop/edition.json，无需在此额外设置 env —— 产物名后缀由 electron-build.cjs
-      # 自动注入 YZ_ARTIFACT_SUFFIX。本 workflow 只出基础版包（mac 侧同样如此）。
+      # macOS runner 只出基础版，供跨平台回归；Windows 交付档走下方 Pro 多用户链路。
       - name: 构建 macOS 基础版
         run: pnpm --filter @yan-zhi/desktop electron:build:basic
 
@@ -111,8 +109,10 @@ jobs:
           chmod +x scripts/gen-license.mjs
           echo "已还原签发私钥与签发脚本，打包时将现签预置码"
 
-      - name: 构建 Windows 基础版
-        run: pnpm --filter @yan-zhi/desktop electron:build:basic
+      # Windows 交付包固定 Pro + 多用户发行模式：包含完整插件/模式，
+      # 并把登录与账号隔离作为默认发行行为（不依赖用户机器上的 host-config）。
+      - name: 构建 Windows Pro 多用户版
+        run: pnpm package:desktop:pro:multi
 
       - name: 列出构建产物（诊断用）
         shell: pwsh
@@ -123,7 +123,7 @@ jobs:
       - name: 上传 NSIS 安装包
         uses: actions/upload-artifact@v7
         with:
-          name: Windows-Installer
+          name: Windows-Pro-Multi-Installer
           # 统一产物树：dist-release/desktop/<档>/<版本>/（见 apps/desktop/scripts/lib/pack-helpers.cjs）
           path: dist-release/desktop/*/*/*.exe
           if-no-files-found: error

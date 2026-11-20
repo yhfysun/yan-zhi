@@ -96,8 +96,11 @@ describe('英语课程随包在线语音', () => {
 });
 
 describe('随包 Python 解释器解析（launcher 死路径治理 2026-11-13）', () => {
-  it('打包环境可以通过显式路径找到随包 python.exe', () => {
-    expect(resolveBundledPython({ YZ_BUNDLED_PYTHON: BUNDLED_PY }, TEST_DIR, '')).toBe(BUNDLED_PY);
+  it('打包环境可以通过显式路径找到随包 python.exe', async () => {
+    await withFakeRepo(async (_serverDir, desktopRes) => {
+      const python = path.join(desktopRes, 'python.exe');
+      expect(resolveBundledPython({ YZ_BUNDLED_PYTHON: python }, TEST_DIR, '')).toBe(python);
+    });
   });
 
   it('开发环境可以从 apps/server 推导 apps/desktop 随包 python.exe', async () => {

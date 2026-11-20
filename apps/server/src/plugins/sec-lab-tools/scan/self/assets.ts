@@ -69,6 +69,12 @@ function localPort(target: string): number | null {
   return bare[1] ? Number(bare[1]) : 80;
 }
 
+/** 自有资产可能由另一平台登记；比较前统一分隔符，但不能改变路径语义。 */
+function resolveAssetPath(value: string): string {
+  const portable = String(value || '').replace(/[\\/]+/g, path.sep);
+  return path.resolve(portable);
+}
+
 /** 目标是否属于已发现的自有资产（不信任调用方声明） */
 export function matchSelfAsset(target: string, assets: SelfAsset[]): SelfAsset | null {
   const t = String(target || '').trim();
@@ -79,8 +85,11 @@ export function matchSelfAsset(target: string, assets: SelfAsset[]): SelfAsset |
     return hit || null;
   }
   if (/^https?:\/\//i.test(t)) return null; // 外部 URL 一律不算自有资产
-  const abs = path.resolve(t);
-  const hits = assets.filter((a) => a.kind !== 'runtime' && isInside(a.value, abs));
+  const abs = resolveAssetPath(t);
+  const hits = assets
+    .filter((a) => a.kind !== 'runtime')
+    .map((asset) => ({ asset, root: resolveAssetPath(asset.value) }))
+    .filter(({ root }) => isInside(root, abs));
   // 取最具体的（路径最长的）命中
-  return hits.sort((a, b) => b.value.length - a.value.length)[0] || null;
+  return hits.sort((a, b) => b.root.length - a.root.length)[0]?.asset || null;
 }

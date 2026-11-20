@@ -42,6 +42,10 @@ jobs:
       - name: 类型检查（typecheck）
         run: pnpm typecheck
 
+      # dist-* / workflow-session-guard 等测试直接验证编译产物；干净 runner 上必须先生成 dist。
+      - name: 构建服务端编译产物
+        run: pnpm --filter @yan-zhi/server build
+
       - name: 单元测试（core + server）
         run: pnpm --filter @yan-zhi/core --filter @yan-zhi/server test
 

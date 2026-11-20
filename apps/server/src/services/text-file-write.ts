@@ -36,9 +36,10 @@ export function writeTextFilePreservingEncoding(
   filePath: string,
   content: string,
   known?: KnownEncoding,
+  platform: NodeJS.Platform = process.platform,
 ): TextEncoding {
   const current = known ?? detectFileEncoding(filePath);
-  const plan = decideWriteEncoding(filePath, content, current);
+  const plan = decideWriteEncoding(filePath, content, current, platform);
   const body = plan.crlf ? content.replace(/\r?\n/g, '\r\n') : content;
   writeFileSync(filePath, Buffer.from(encodeTextBytes(body, plan.encoding, { withBom: plan.withBom })));
   return plan.encoding;

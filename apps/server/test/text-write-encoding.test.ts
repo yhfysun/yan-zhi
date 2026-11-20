@@ -76,7 +76,7 @@ describe('writeTextFilePreservingEncoding（真文件往返）', () => {
     try {
       const p = join(dir, 'legacy.bat');
       writeFileSync(p, Buffer.from(encodeTextBytes('echo 中文\r\n', 'gb18030')));
-      writeTextFilePreservingEncoding(p, 'echo 中文改过了\n');
+      writeTextFilePreservingEncoding(p, 'echo 中文改过了\n', undefined, 'win32');
       const back = read(p);
       expect(back.encoding).toBe('gb18030');
       expect(back.text).toBe('echo 中文改过了\r\n'); // 批处理统一 CRLF

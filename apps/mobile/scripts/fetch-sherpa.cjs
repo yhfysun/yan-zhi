@@ -14,8 +14,11 @@
  * 用法：node scripts/fetch-sherpa.cjs
  */
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 
 const ROOT = path.resolve(__dirname, '..');
 const SHERPA_DIR = path.join(ROOT, 'native', 'android-sherpa');
@@ -30,18 +33,33 @@ const MODEL_URLS = [
   'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2',
   'https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium-int8.tar.bz2',
 ];
+const TAR = process.platform === 'win32' ? 'tar.exe' : 'tar';
 
-function curl(url, dest) {
+async function download(url, dest) {
   console.log('[fetch-sherpa] 下载:', url);
-  const r = spawnSync('curl.exe', ['-sL', '-m', '900', '--retry', '3', '--retry-all-errors', '-C', '-', url, '-o', dest], { stdio: 'inherit', shell: true });
-  if (r.status !== 0) throw new Error(`下载失败 (exit ${r.status}): ${url}`);
+  const response = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15 * 60 * 1000),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`下载失败 (HTTP ${response.status}): ${url}`);
+  }
+  const partial = `${dest}.part`;
+  await fsp.rm(partial, { force: true });
+  try {
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partial));
+    await fsp.rm(dest, { force: true });
+    await fsp.rename(partial, dest);
+  } finally {
+    await fsp.rm(partial, { force: true });
+  }
 }
 
-function downloadModel(dest) {
+async function downloadModel(dest) {
   let lastError = null;
   for (const url of MODEL_URLS) {
     try {
-      curl(url, dest);
+      await download(url, dest);
       if (fs.existsSync(dest) && fs.statSync(dest).size > 10 * 1024 * 1024) return;
       throw new Error(`下载产物过小: ${dest}`);
     } catch (error) {
@@ -52,7 +70,7 @@ function downloadModel(dest) {
   throw lastError || new Error('模型下载失败');
 }
 
-function main() {
+async function main() {
   fs.mkdirSync(TMP, { recursive: true });
   fs.mkdirSync(path.dirname(LIB_DEST), { recursive: true });
 
@@ -61,11 +79,11 @@ function main() {
     console.log('[fetch-sherpa] AAR 已存在，跳过:', LIB_DEST);
   } else {
     const tgz = path.join(TMP, 'rntts.tgz');
-    curl(RN_PKG_URL, tgz);
+    await download(RN_PKG_URL, tgz);
     const aarDir = path.join(TMP, 'rntts-extract');
     fs.rmSync(aarDir, { recursive: true, force: true });
     fs.mkdirSync(aarDir, { recursive: true });
-    const ex = spawnSync('tar.exe', ['-xf', tgz, '-C', aarDir, AAR_IN_PKG], { stdio: 'inherit', shell: false });
+    const ex = spawnSync(TAR, ['-xf', tgz, '-C', aarDir, AAR_IN_PKG], { stdio: 'inherit', shell: false });
     if (ex.status !== 0) throw new Error('tar 解包失败');
     const aarSrc = path.join(aarDir, AAR_IN_PKG);
     if (!fs.existsSync(aarSrc)) throw new Error('tgz 内未找到 ' + AAR_IN_PKG);
@@ -79,10 +97,10 @@ function main() {
     console.log('[fetch-sherpa] 模型已存在，跳过:', modelMarker);
   } else {
     const tb = path.join(TMP, 'vits-amy.tar.bz2');
-    if (!fs.existsSync(tb) || fs.statSync(tb).size <= 10 * 1024 * 1024) downloadModel(tb);
+    if (!fs.existsSync(tb) || fs.statSync(tb).size <= 10 * 1024 * 1024) await downloadModel(tb);
     const exDir = path.join(ASSETS_DEST);
     fs.mkdirSync(exDir, { recursive: true });
-    const ex = spawnSync('tar.exe', ['-xjf', tb, '-C', exDir], { stdio: 'inherit', shell: false });
+    const ex = spawnSync(TAR, ['-xjf', tb, '-C', exDir], { stdio: 'inherit', shell: false });
     if (ex.status !== 0) throw new Error('模型解包失败');
     // tarball 包了一层目录 vits-piper-en_US-amy-medium-int8/，拍平
     const inner = path.join(exDir, 'vits-piper-en_US-amy-medium-int8');
@@ -105,4 +123,7 @@ function main() {
   console.log('[fetch-sherpa] 完成');
 }
 
-main();
+main().catch((error) => {
+  console.error('[fetch-sherpa]', error);
+  process.exitCode = 1;
+});

@@ -132,7 +132,9 @@ const timingEq = (a: string, b: string): boolean => {
 
 /** 上传文件名清洗：取 basename、去路径分隔/控制字符/保留名，空则回退；防穿越与非法名 */
 export function sanitizeRemoteFileName(name: string): string {
-  const base = path.basename(String(name || '')).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').trim();
+  // 上传方可能来自任意平台，不能只按当前服务端平台拆分隔符。
+  const portable = String(name || '').replace(/\\/g, '/');
+  const base = path.posix.basename(portable).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').trim();
   if (!base || base === '.' || base === '..') return `file-${Date.now()}`;
   // Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(base)) return `_${base}`;

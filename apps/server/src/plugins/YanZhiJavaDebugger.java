@@ -17,6 +17,7 @@ import com.sun.jdi.event.ClassPrepareEvent;
 import com.sun.jdi.event.Event;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
 import com.sun.jdi.event.StepEvent;
 import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
@@ -24,6 +25,7 @@ import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.ClassPrepareRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.MethodEntryRequest;
 import com.sun.jdi.request.StepRequest;
 
 import java.io.BufferedReader;
@@ -32,6 +34,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -48,15 +51,18 @@ public final class YanZhiJavaDebugger {
   private final PrintWriter output;
   private final Object stateLock = new Object();
   private final Set<String> pendingBreakpoints = new LinkedHashSet<>();
+  private final Map<String, MethodEntryRequest> pendingMethodEntries = new HashMap<>();
   private volatile ThreadReference activeThread;
   private volatile StackFrame activeFrame;
   private volatile boolean paused = false;
   private volatile boolean closed = false;
+  private volatile boolean holdAtEntry = false;
   private volatile StepRequest activeStep;
   private ClassPrepareRequest classPrepare;
 
-  private YanZhiJavaDebugger(VirtualMachine vm) {
+  private YanZhiJavaDebugger(VirtualMachine vm, boolean holdAtEntry) {
     this.vm = vm;
+    this.holdAtEntry = holdAtEntry;
     this.requests = vm.eventRequestManager();
     this.input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
     this.output = new PrintWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8), true);
@@ -77,7 +83,8 @@ public final class YanZhiJavaDebugger {
     arguments.get("hostname").setValue(host);
     arguments.get("port").setValue(String.valueOf(port));
     VirtualMachine vm = attachWithRetry(connector, arguments);
-    new YanZhiJavaDebugger(vm).run();
+    boolean holdAtEntry = args.length >= 3 && "hold".equals(args[2]);
+    new YanZhiJavaDebugger(vm, holdAtEntry).run();
   }
 
   private static VirtualMachine attachWithRetry(
@@ -125,6 +132,7 @@ public final class YanZhiJavaDebugger {
           return;
         case "continue":
           clearStep();
+          holdAtEntry = false;
           vm.resume();
           paused = false;
           respond(id, true, "continued");
@@ -159,10 +167,37 @@ public final class YanZhiJavaDebugger {
       if (classes.isEmpty()) {
         pendingBreakpoints.add(className + "\t" + line);
         classPrepare.enable();
+        armPendingMethodEntry(className);
         return "pending " + className + ":" + line;
       }
       installLoadedBreakpoint(classes, line);
       return "installed " + className + ":" + line;
+    }
+  }
+
+  /**
+   * ClassPrepare alone can miss the main class on some JDKs: the JVM may report
+   * the launch as suspended at entry before Sample has fired ClassPrepare, yet
+   * classesByName still returns empty. Arm MethodEntry as a second, deterministic
+   * rendezvous so the breakpoint is installed while the target is still suspended.
+   */
+  private void armPendingMethodEntry(String className) {
+    if (pendingMethodEntries.containsKey(className)) return;
+    MethodEntryRequest request = requests.createMethodEntryRequest();
+    request.addClassFilter(className);
+    request.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+    request.enable();
+    pendingMethodEntries.put(className, request);
+  }
+
+  private void clearPendingMethodEntry(String className) {
+    MethodEntryRequest request = pendingMethodEntries.remove(className);
+    if (request == null) return;
+    try {
+      request.disable();
+      requests.deleteEventRequest(request);
+    } catch (Throwable ignored) {
+      // request may already be removed with the event set
     }
   }
 
@@ -289,6 +324,11 @@ public final class YanZhiJavaDebugger {
           installPendingFor(prepare.referenceType());
           continue;
         }
+        if (event instanceof MethodEntryEvent) {
+          MethodEntryEvent entry = (MethodEntryEvent) event;
+          installPendingFor(entry.method().declaringType());
+          continue;
+        }
         if (event instanceof BreakpointEvent) {
           paused = true;
           resumeSet = false;
@@ -307,7 +347,7 @@ public final class YanZhiJavaDebugger {
           event("exited", "reason", "terminated");
         }
       }
-      if (resumeSet && !closed) {
+      if (resumeSet && !closed && !holdAtEntry) {
         try {
           events.resume();
         } catch (Throwable ignored) {
@@ -324,9 +364,11 @@ public final class YanZhiJavaDebugger {
         if (!type.name().equals(pieces[0])) return false;
         try {
           installLoadedBreakpoint(List.of(type), Integer.parseInt(pieces[1]));
+          clearPendingMethodEntry(type.name());
           event("breakpointInstalled", "class", type.name(), "line", pieces[1]);
           return true;
         } catch (Throwable error) {
+          clearPendingMethodEntry(type.name());
           event("breakpointError", "class", type.name(), "line", pieces[1], "error", errorMessage(error));
           return true;
         }

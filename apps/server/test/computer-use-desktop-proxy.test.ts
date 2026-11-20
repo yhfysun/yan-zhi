@@ -81,7 +81,13 @@ describe('computer-use 桌面能力代理', () => {
       { x: 10, y: 20 },
       { userId: 'guest' },
     );
-    expect(result.content[0].text).toContain('moved to');
+    // Linux 没有本机键鼠执行器，但这里必须证明请求确实落到了本机执行分支；
+    // Windows 返回成功，macOS 会返回该子能力的明确限制。
+    if (process.platform === 'win32') {
+      expect(result.content[0].text).toContain('moved to');
+    } else {
+      expect(result.content[0].text).toMatch(/仅支持 Windows \/ macOS|macOS 适配/);
+    }
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
