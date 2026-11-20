@@ -81,7 +81,7 @@
           :article="article"
           :loading="articleLoading"
           :error="articleError"
-          @close="closeArticle"
+          @close="dismissMobileReader"
           @retry="openArticle(selectedItem, true)"
         />
       </section>
@@ -135,6 +135,7 @@ let articleRequestId = 0;
 const media = typeof window !== 'undefined' ? window.matchMedia('(min-width: 901px)') : null;
 const isWideLayout = ref(media?.matches ?? true);
 const mobileReaderRoot = ref<HTMLElement | null>(null);
+let readerHistoryPushed = false;
 let shellLock: {
   element: HTMLElement;
   ariaHidden: string | null;
@@ -270,6 +271,7 @@ function selectDesktopLead(category: NewsCategory, items: NewsItem[]): void {
 async function openArticle(item: NewsItem, force = false): Promise<void> {
   const requestId = ++articleRequestId;
   selectedItem.value = item;
+  pushReaderHistory();
   article.value = null;
   articleError.value = '';
   articleLoading.value = true;
@@ -291,6 +293,44 @@ function closeArticle(): void {
   article.value = null;
   articleError.value = '';
   articleLoading.value = false;
+}
+
+function readerHistoryState(): Record<string, unknown> {
+  const state = window.history.state;
+  return state && typeof state === 'object' ? { ...state } : {};
+}
+
+function pushReaderHistory(): void {
+  if (isWideLayout.value || readerHistoryPushed || typeof window === 'undefined') return;
+  window.history.pushState({ ...readerHistoryState(), yzNewsReader: true }, '', window.location.href);
+  readerHistoryPushed = true;
+}
+
+function clearReaderHistoryMarker(): void {
+  if (!readerHistoryPushed || typeof window === 'undefined') return;
+  const { yzNewsReader: _reader, ...state } = readerHistoryState();
+  window.history.replaceState(state, '', window.location.href);
+  readerHistoryPushed = false;
+}
+
+/**
+ * 页面内关闭动作先立即收起正文，再消费掉为详情压入的历史条目。
+ * 系统右滑不经过 Capacitor 事件时，会直接 pop 这条记录并由 onPopState 收尾。
+ */
+function dismissMobileReader(): void {
+  if (!selectedItem.value || isWideLayout.value) return;
+  const consumeHistory = readerHistoryPushed;
+  closeArticle();
+  if (consumeHistory) {
+    readerHistoryPushed = false;
+    window.history.back();
+  }
+}
+
+function onPopState(): void {
+  if (!readerHistoryPushed || !selectedItem.value || isWideLayout.value) return;
+  readerHistoryPushed = false;
+  closeArticle();
 }
 
 async function refreshAll(): Promise<void> {
@@ -315,7 +355,7 @@ function onWideLayoutChange(event: MediaQueryListEvent): void {
 function onKeydown(event: KeyboardEvent): void {
   if (!selectedItem.value || isWideLayout.value) return;
   if (event.key === 'Escape') {
-    closeArticle();
+    dismissMobileReader();
     return;
   }
   if (event.key !== 'Tab' || !mobileReaderRoot.value) return;
@@ -338,7 +378,7 @@ function onKeydown(event: KeyboardEvent): void {
 function onMobileBack(event: Event): void {
   if (!selectedItem.value || isWideLayout.value) return;
   event.preventDefault();
-  closeArticle();
+  dismissMobileReader();
 }
 
 function lockApplicationShell(): void {
@@ -366,6 +406,7 @@ function unlockApplicationShell(): void {
 }
 
 watch([selectedItem, isWideLayout], async ([item, wide]) => {
+  if (wide) clearReaderHistoryMarker();
   if (item && !wide) {
     lockApplicationShell();
     await nextTick();
@@ -378,6 +419,7 @@ watch([selectedItem, isWideLayout], async ([item, wide]) => {
 onMounted(() => {
   media?.addEventListener('change', onWideLayoutChange);
   window.addEventListener('keydown', onKeydown);
+  window.addEventListener('popstate', onPopState);
   document.addEventListener('yz:mobile-back', onMobileBack);
   void Promise.all([loadFeed('top'), loadMarket()]);
 });
@@ -386,7 +428,9 @@ onUnmounted(() => {
   unlockApplicationShell();
   media?.removeEventListener('change', onWideLayoutChange);
   window.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('popstate', onPopState);
   document.removeEventListener('yz:mobile-back', onMobileBack);
+  clearReaderHistoryMarker();
 });
 </script>
 

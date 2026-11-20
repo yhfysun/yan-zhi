@@ -219,6 +219,23 @@ describe('资讯中心', () => {
     });
   });
 
+  it('系统右滑直接 pop 时也会关闭资讯正文', async () => {
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('华强北的亚太创新新周期'));
+    host.querySelector<HTMLButtonElement>('.news-feed-story')?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-mobile-reader')).toBeTruthy();
+      expect(window.history.state?.yzNewsReader).toBe(true);
+    });
+
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-mobile-reader')).toBeFalsy();
+      expect(host.hasAttribute('inert')).toBe(false);
+    });
+  });
+
   it('较快返回的新正文不会被前一条慢请求覆盖', async () => {
     let resolveFirstArticle!: (value: unknown) => void;
     apiState.get.mockImplementation(async (url: string) => {
