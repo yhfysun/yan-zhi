@@ -509,10 +509,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reveal: (id) => ipcRenderer.invoke('clipboard:panel-reveal', String(id || '')),
     // 图片/文件拖出：startDrag 必须在 dragstart 的同一用户手势里调用
     dragOut: (id) => ipcRenderer.invoke('clipboard:panel-drag-out', String(id || '')),
-    // 拖拽期间暂停失焦收起（dragstart=true / dragend=false）
-    suspendBlur: (on) => ipcRenderer.invoke('clipboard:panel-suspend-blur', !!on),
     hide: () => ipcRenderer.invoke('clipboard:panel-hide'),
+    minimize: () => ipcRenderer.invoke('clipboard:panel-minimize'),
     toggle: () => ipcRenderer.invoke('clipboard:panel-toggle'),
+    getBounds: () => ipcRenderer.invoke('clipboard:panel-get-bounds'),
+    setBounds: (bounds) => ipcRenderer.send('clipboard:panel-set-bounds', bounds || {}),
+    setPinned: (pinned) => ipcRenderer.invoke('clipboard:panel-set-pinned', !!pinned),
     getConfig: () => ipcRenderer.invoke('clipboard:panel-config'),
     // patch: { accelerator, capture:{text,image,file}, skipSensitive, maxItems }
     setConfig: (patch) => ipcRenderer.invoke('clipboard:panel-set-config', patch || {}),

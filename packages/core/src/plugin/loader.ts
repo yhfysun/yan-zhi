@@ -39,6 +39,13 @@ export async function toEntrySpecifier(entryPath: string): Promise<string> {
     if (!isAbsolute(entryPath)) return entryPath; // 相对路径交给 loader 按 importer 解析
   }
   const { pathToFileURL } = await import('node:url');
+  // Windows 盘符路径在 Linux CI 上会被 pathToFileURL 当成普通相对文件名，
+  // 产出 file:///home/.../C:%5C...。Windows 真机走原生分支；测试/跨平台调用
+  // 则统一归一成 /C:/...，保证同一输入在任何 runner 上都得到盘符 file URL。
+  if (WIN_DRIVE_PATH.test(entryPath) && process.platform !== 'win32') {
+    const normalized = entryPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    return pathToFileURL(`/${normalized}`).href;
+  }
   return pathToFileURL(entryPath).href;
 }
 

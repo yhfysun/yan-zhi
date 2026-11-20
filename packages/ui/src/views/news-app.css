@@ -929,9 +929,12 @@
 
 @media (max-width: 900px) {
   .news-page {
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
+    height: 100%;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
     background: var(--color-bg);
   }
 

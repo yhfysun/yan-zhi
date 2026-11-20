@@ -97,4 +97,30 @@ describe('Android 打包链接线', () => {
     expect(cleaner, '清理失败时不能静默留下一份新备份').not.toContain('bakDir');
     expect(cleaner).not.toMatch(/\bunlinkSync\s*\(/);
   });
+
+  it('★ 精简包模式必须与移动端白名单一致，店铺/安全/运维不能再次被裁掉', () => {
+    const modeSource = readFileSync(resolve(REPO_ROOT, 'packages/ui/src/stores/mode.ts'), 'utf8');
+    const slim = read('scripts/build-android-slim.cjs');
+    const modeList = /const MOBILE_ALLOWED_MODES[^=]*=\s*\[([^\]]+)\]/.exec(modeSource)?.[1] || '';
+    const slimList = /const SLIM_MODES\s*=\s*\[([^\]]+)\]/.exec(slim)?.[1] || '';
+    const parse = (source: string) => [...source.matchAll(/'([^']+)'/g)].map((hit) => hit[1]);
+
+    expect(parse(modeList)).toEqual(['office', 'shop', 'ops', 'sec', 'learning']);
+    expect(parse(slimList)).toEqual(parse(modeList));
+    for (const plugin of ['office-core', 'shop-ops', 'ops-shell', 'sec-lab', 'learning-mode']) {
+      expect(slim, `精简包缺少 ${plugin}`).toContain(`'${plugin}'`);
+    }
+  });
+
+  it('★ GitHub 移动打包先构建 Web 入口，再生成 Android 工程', () => {
+    const workflow = readFileSync(resolve(REPO_ROOT, '.github/workflows/build-mobile.yml'), 'utf8');
+    const vite = workflow.indexOf('pnpm --filter @yan-zhi/mobile exec vite build');
+    const capAdd = workflow.indexOf('capacitor add android');
+
+    expect(vite).toBeGreaterThan(-1);
+    expect(capAdd).toBeGreaterThan(-1);
+    expect(vite).toBeLessThan(capAdd);
+    expect(workflow).not.toContain('mkdir -p dist');
+    expect(workflow).not.toMatch(/pnpm[^\n]*\btest\b/);
+  });
 });

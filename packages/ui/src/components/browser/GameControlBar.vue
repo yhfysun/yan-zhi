@@ -16,14 +16,14 @@
     <span class="state">{{ stateText }}</span>
 
     <button class="gb-btn" :disabled="busy" @click="readState">读状态</button>
-    <button class="gb-btn" :disabled="busy" title="关掉挡住画面的礼包/公告/充值弹窗（开跑前也会自动关）"
+    <button class="gb-btn" :disabled="busy" title="关闭遮挡弹窗"
             @click="dismissPopups">关弹窗</button>
     <span class="readout" :title="readout">{{ readout }}</span>
 
     <span class="spacer"></span>
 
     <input v-model="seq" class="gb-input gb-input--seq" spellcheck="false"
-           title="按键序列：Down / Space*800（长按）/ Right+Up*600（斜向），逗号分隔"
+           title="按键序列：Down, Space*800, Right+Up*600"
            placeholder="Down,Left" />
     <input v-model.number="rounds" class="gb-input gb-input--num" type="number" min="1" max="200"
            title="轮数" />
@@ -34,7 +34,7 @@
     <!-- 显式移交（仅游戏窗）：把这一页交给智能体代玩，agent 才操作得到它 -->
     <button v-if="isGame" class="gb-btn gb-btn--handoff" :class="{ on: handoffOn }"
             :disabled="busy || handoffBusy"
-            :title="handoffOn ? '结束代玩，agent 不再操作这一页（页面不会被关闭）' : '把当前这一页交给「页面对话」的智能体就地代玩'"
+            :title="handoffOn ? '结束代玩，页面保持打开' : '把当前页交给页面对话智能体就地代玩'"
             @click="toggleHandoff">{{ handoffOn ? '收回代玩' : '交给智能体代玩' }}</button>
     <button class="gb-stop" :disabled="busy" @click="panic">急停 Esc</button>
   </div>

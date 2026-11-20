@@ -13,7 +13,9 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 15000,
+    // 全量并行时会同时跑 ffmpeg、SQLite、Git 与 SFTP 实跑；纯读取型测试在这种
+    // CPU/IO 竞争下可能超过 15s。30s 仍能及时暴露真卡死，又不会把慢机器误判成失败。
+    testTimeout: 30000,
     // 全量并行时会在 beforeAll 里启动本地 Git/SFTP/数据库等真实依赖；
     // 10s 默认 hook 超时会在机器负载高时误报，测试本身并未卡死。
     hookTimeout: 60000,

@@ -27,15 +27,15 @@
         <!-- P3-4 自愈：脚本刚跑失败才出现（只出文本、不自动执行、不改指令库） -->
         <button
           v-if="state.repairHint" class="pcd-icon-btn repair"
-          title="让 AI 看报错给出修正版脚本（只出文本，不自动执行）"
+          title="让 AI 给出修正版脚本"
           :disabled="state.streaming || convBusy" @click="onRepairScript"
         >🛠 修复脚本</button>
-        <button class="pcd-icon-btn" title="历史页面会话（列表 / 打开 / 删除）" @click="historyVisible = true">🕘 历史</button>
+        <button class="pcd-icon-btn" title="历史页面会话" @click="historyVisible = true">🕘 历史</button>
         <button
-          class="pcd-icon-btn" title="把这次页面对话蒸馏成 Skill（可存进技能商店）"
+          class="pcd-icon-btn" title="蒸馏为 Skill"
           :disabled="!distillMessages.length" @click="distillVisible = true"
         >✨ 技能</button>
-        <button class="pcd-icon-btn" title="页面指令（管理 / 新建）" @click="$emit('manage')">指令</button>
+        <button class="pcd-icon-btn" title="页面指令" @click="$emit('manage')">指令</button>
         <button class="pcd-icon-btn" :disabled="!state.messages.length" title="清空本页对话" @click="onClear">清空</button>
         <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')"><el-icon :size="14"><Close /></el-icon></button>
       </div>

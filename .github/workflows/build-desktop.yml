@@ -10,6 +10,7 @@ jobs:
     runs-on: macos-latest
     # 受限网络：可用仓库 Secrets 覆盖下载源 / pip 源（与本地 build-python-runtime.mjs 约定一致）
     env:
+      NODE_OPTIONS: '--max-old-space-size=4096'
       YZ_PYTHON_STANDALONE_MIRROR: ${{ secrets.YZ_PYTHON_STANDALONE_MIRROR }}
       YZ_PIP_INDEX_URL: ${{ secrets.YZ_PIP_INDEX_URL || 'https://pypi.org/simple' }}
     # 注意：这里不能设 CSC_IDENTITY_AUTO_DISCOVERY=false。
@@ -72,6 +73,7 @@ jobs:
     runs-on: windows-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      NODE_OPTIONS: '--max-old-space-size=4096'
       # 受限网络：可用仓库 Secrets 覆盖下载源 / pip 源（与本地 build-python-runtime.mjs 约定一致）
       YZ_PYTHON_STANDALONE_MIRROR: ${{ secrets.YZ_PYTHON_STANDALONE_MIRROR }}
       YZ_PIP_INDEX_URL: ${{ secrets.YZ_PIP_INDEX_URL || 'https://pypi.org/simple' }}

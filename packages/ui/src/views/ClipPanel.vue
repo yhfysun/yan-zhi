@@ -2,18 +2,26 @@
   ClipPanel.vue —— 超级剪贴板面板(2026-10-29,P0)
 
   这是**独立透明置顶小窗**里的唯一页面(route /clip-panel,bare)。
-  主进程 main.cjs 用 childUrl('/clip-panel') 加载,窗口 456×624(含 12px 内边距,
-  圆角与投影画在窗口内部 —— 透明窗会裁掉窗口外的阴影)。
+  主进程 main.cjs 用 childUrl('/clip-panel') 加载；窗口默认 456×624、可八向缩放。
+  单层磨砂表面 + 28px 圆角，保留当前皮肤纹理并保证正文可读。
 
   ★ 数据全部在主进程(JSON + 图片资产):这里只经 electronAPI.clipboardPanel 读写,
     渲染层不碰文件系统,也不再起一套本地状态。
   ★ 交互对齐原型 docs/prototypes/clipboard-proto.html:
     搜索 / 类型 Tab / 置顶区 / 1-9 快速粘贴 / ↑↓ Enter / Tab 切类目 / Esc 关闭 /
     横纵布局 / 右键菜单 / 拖出 / 底部状态栏。
-  ★ 失焦收起由主进程做(拖拽时暂缓,见 dragstart/dragend)。
+  ★ 失焦与主窗口最小化都不隐藏；热键、面板自己的最小化/关闭按钮控制生命周期。
 -->
 <template>
   <div class="clip-root" :class="{ 'is-grid': layout === 'grid' }">
+    <span
+      v-for="direction in RESIZE_DIRECTIONS"
+      :key="direction"
+      class="cp-resize"
+      :class="`cp-resize-${direction}`"
+      aria-hidden="true"
+      @pointerdown="startResize($event, direction)"
+    ></span>
     <section class="cp-shell">
       <!-- 头部:品牌行是窗口拖动区(-webkit-app-region: drag),按钮必须 no-drag -->
       <header class="cp-head">
@@ -22,13 +30,26 @@
           <span class="cp-title">超级剪贴板</span>
           <span class="cp-hk" :title="`全局快捷键 ${hotkeyLabel}，可在 设置 → 快捷键 修改`">{{ hotkeyLabel }}</span>
           <span class="cp-spacer"></span>
-          <button class="cp-icon" :class="{ on: selecting }" title="多选（选中后可交给 AI 合并整理）" @click="toggleSelecting">
+          <button
+            class="cp-icon"
+            :class="{ on: panelPinned }"
+            type="button"
+            :aria-pressed="panelPinned"
+            :title="panelPinned ? '取消置顶' : '置顶面板'"
+            @click="togglePanelPinned"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" :fill="panelPinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M16 3l5 5-1.4 1.4-1.4-.4-3.9 3.9.5 4.2-1.4 1.4-3.6-3.6L5 21l-2-2 5.7-5.8L5.1 9.6l1.4-1.4 4.2.5 3.9-3.9-.4-1.4z"/></svg>
+          </button>
+          <button class="cp-icon" :class="{ on: selecting }" title="多选" @click="toggleSelecting">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8.5 12.5 2.5 2.5 5-5.5"/></svg>
           </button>
           <button class="cp-icon" :class="{ on: layout === 'grid' }" title="切换横向/纵向布局" @click="toggleLayout">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
           </button>
-          <button class="cp-icon" title="关闭(Esc)" @click="hidePanel">
+          <button class="cp-icon" title="最小化" @click="minimizePanel">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+          </button>
+          <button class="cp-icon" title="关闭" @click="hidePanel">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -118,22 +139,22 @@
                     {{ groupNameOf(it.groupId) }}
                   </span>
                   <span v-for="t in (it.tags || [])" :key="t" class="cp-badge">#{{ t }}</span>
-                  <span v-if="it.hotkey" class="cp-badge hk" :title="`单条快捷键：${prettyAccel(it.hotkey)}（按下即复制并粘贴）`">{{ prettyAccel(it.hotkey) }}</span>
+                  <span v-if="it.hotkey" class="cp-badge hk" :title="`单条快捷键：${prettyAccel(it.hotkey)}`">{{ prettyAccel(it.hotkey) }}</span>
                 </div>
               </div>
 
               <div class="cp-acts">
-                <button v-if="isSensitive(it)" class="cp-act" data-act="reveal" :title="isRevealed(it) ? '隐藏敏感内容' : '显示原文（10 秒后自动隐藏）'" @click.stop="revealSensitive(it)">
+                <button v-if="isSensitive(it)" class="cp-act" data-act="reveal" :title="isRevealed(it) ? '隐藏敏感内容' : '显示原文'" @click.stop="revealSensitive(it)">
                   <svg v-if="isRevealed(it)" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c7 0 10 8 10 8a17.7 17.7 0 0 1-2.1 3.2M6.6 6.6C4.4 8.1 3 10.2 2 12c0 0 3 8 10 8a10.8 10.8 0 0 0 5.4-1.4"/></svg>
                   <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
                 </button>
                 <button class="cp-act" data-act="pin" :class="{ pin: it.pinned }" :title="it.pinned ? '取消置顶' : '置顶'" @click.stop="togglePin(it)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 3l5 5-1.4 1.4-1.4-.4-3.9 3.9.5 4.2-1.4 1.4-3.6-3.6L5 21l-2-2 5.7-5.8L5.1 9.6l1.4-1.4 4.2.5 3.9-3.9-.4-1.4z"/></svg>
                 </button>
-                <button class="cp-act" data-act="copy" title="复制（Enter 粘贴）" @click.stop="pasteItem(it)">
+                <button class="cp-act" data-act="copy" title="复制" @click.stop="pasteItem(it)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 </button>
-                <button v-if="canAi(it)" class="cp-act ai" data-act="ai" title="交给 AI 处理（翻译 / 总结 / 润色…）" @click.stop="openAiMenu($event, it)">
+                <button v-if="canAi(it)" class="cp-act ai" data-act="ai" title="交给 AI 处理" @click.stop="openAiMenu($event, it)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9l-4.6 3.6L16.4 18 12 14.9 7.6 18l1.5-5.4L4.5 9l5.6-1.4z"/></svg>
                 </button>
                 <button class="cp-act" data-act="more" title="更多操作" @click.stop="openMenu($event, it)">
@@ -153,7 +174,7 @@
 
       <!-- 底部状态栏 / 多选操作条 -->
       <footer v-if="!selecting" class="cp-foot">
-        <button class="cp-foot-btn cp-foot-group" :class="{ on: !!groupFilter }" title="按分组筛选（条目右键可归组）" @click.stop="openGroupMenu">
+        <button class="cp-foot-btn cp-foot-group" :class="{ on: !!groupFilter }" title="按分组筛选" @click.stop="openGroupMenu">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           {{ groupFilterLabel || '分组' }}
         </button>
@@ -277,7 +298,7 @@
           <span class="cp-gname-t">{{ g.name }}</span><span class="cp-ctx-key">{{ g.count }}</span>
         </button>
         <button class="cp-gact" title="重命名分组" @click.stop="openGroupRename(g)">✎</button>
-        <button class="cp-gact danger" title="删除分组（条目保留）" @click.stop="removeGroup(g)"><el-icon><Close /></el-icon></button>
+        <button class="cp-gact danger" title="删除分组" @click.stop="removeGroup(g)"><el-icon><Close /></el-icon></button>
       </div>
       <div v-if="!groups.length" class="cp-gempty">还没有分组，可以先建一个，如「工作话术」</div>
       <div class="cp-ctx-sep"></div>
@@ -385,6 +406,14 @@ const clearArmed = ref(false);
 const searchFocused = ref(false);
 const searchEl = ref<HTMLInputElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
+const panelPinned = ref(false);
+
+type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+const RESIZE_DIRECTIONS: ResizeDirection[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+const MIN_PANEL_WIDTH = 380;
+const MIN_PANEL_HEIGHT = 460;
+const MAX_PANEL_WIDTH = 1200;
+const MAX_PANEL_HEIGHT = 1400;
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -604,6 +633,77 @@ function showToast(msg: string) {
   window.clearTimeout((showToast as any)._t);
   (showToast as any)._t = window.setTimeout(() => { toast.value = ''; }, 1600);
 }
+
+async function togglePanelPinned() {
+  if (!api?.setPinned) return;
+  const next = !panelPinned.value;
+  const result = await api.setPinned(next).catch(() => null);
+  if (!result || result.ok === false) {
+    showToast('固定状态保存失败');
+    return;
+  }
+  panelPinned.value = result.pinned === true;
+  showToast(panelPinned.value ? '已置顶面板' : '已取消置顶');
+}
+
+async function startResize(event: PointerEvent, direction: ResizeDirection) {
+  if (!api?.getBounds || !api?.setBounds) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const result = await api.getBounds().catch(() => null);
+  const start = result?.bounds;
+  if (!result?.ok || !start) return;
+
+  const startX = event.screenX;
+  const startY = event.screenY;
+  let pendingBounds: { x: number; y: number; width: number; height: number } | null = null;
+  let frame = 0;
+
+  const flush = () => {
+    frame = 0;
+    if (!pendingBounds) return;
+    api.setBounds(pendingBounds);
+    pendingBounds = null;
+  };
+
+  const onMove = (moveEvent: PointerEvent) => {
+    const dx = moveEvent.screenX - startX;
+    const dy = moveEvent.screenY - startY;
+    let x = start.x;
+    let y = start.y;
+    let width = start.width;
+    let height = start.height;
+
+    if (direction.includes('e')) width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, start.width + dx));
+    if (direction.includes('s')) height = Math.min(MAX_PANEL_HEIGHT, Math.max(MIN_PANEL_HEIGHT, start.height + dy));
+    if (direction.includes('w')) {
+      width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, start.width - dx));
+      x = start.x + start.width - width;
+    }
+    if (direction.includes('n')) {
+      height = Math.min(MAX_PANEL_HEIGHT, Math.max(MIN_PANEL_HEIGHT, start.height - dy));
+      y = start.y + start.height - height;
+    }
+
+    pendingBounds = { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+    if (!frame) frame = window.requestAnimationFrame(flush);
+  };
+
+  const onEnd = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onEnd);
+    window.removeEventListener('pointercancel', onEnd);
+    if (frame) window.cancelAnimationFrame(frame);
+    flush();
+    document.documentElement.classList.remove('cp-resizing');
+  };
+
+  document.documentElement.classList.add('cp-resizing');
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onEnd);
+  window.addEventListener('pointercancel', onEnd);
+}
+
 function hidePanel() {
   // 收起面板即退出多选态:下次呼唤是"找东西粘贴"的场景,不该还带着上次的勾选
   selecting.value = false;
@@ -612,6 +712,15 @@ function hidePanel() {
   closeMenu();
   if (dialog.mode) closeDialog();
   api?.hide?.();
+}
+
+function minimizePanel() {
+  selecting.value = false;
+  selected.value = new Set();
+  groupMenu.show = false;
+  closeMenu();
+  if (dialog.mode) closeDialog();
+  api?.minimize?.();
 }
 
 async function pasteItem(it: ClipItem | null, fromMenu = false) {
@@ -935,14 +1044,10 @@ function pasteSelected() {
 /* ===== 拖动 ===== */
 function onDragStart(e: DragEvent, it: ClipItem) {
   if (!api) return;
-  api.suspendBlur?.(true);
   if (hasFile(it)) {
     // 图片/文件:交给主进程 webContents.startDrag 走原生拖放(落成文件)。
-    // ★ 这条路径不会触发 DOM dragend(preventDefault 之后拖放交给原生),所以给一个兜底复位,
-    //   否则"暂停失焦收起"会一直生效,面板再也收不起来。
     e.preventDefault();
     void api.dragOut(it.id);
-    window.setTimeout(() => api.suspendBlur?.(false), 5000);
     return;
   }
   try {
@@ -951,7 +1056,7 @@ function onDragStart(e: DragEvent, it: ClipItem) {
   } catch { /* 某些平台禁止自定义 data */ }
 }
 function onDragEnd() {
-  api?.suspendBlur?.(false);
+  // 文本走浏览器原生拖放；面板不因失焦自动隐藏，无需额外复位。
 }
 
 /* ===== 键盘 ===== */
@@ -1002,9 +1107,13 @@ function scrollSel() {
 async function loadConfig() {
   if (!api?.getConfig) return;
   const r = await api.getConfig().catch(() => null);
-  const accel = r?.config?.accelerator;
-  if (typeof accel !== 'string') return;
-  hotkeyLabel.value = accel ? accel.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + ') : '未启用';
+  const config = r?.config;
+  if (!config) return;
+  const accel = config.accelerator;
+  if (typeof accel === 'string') {
+    hotkeyLabel.value = accel ? accel.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + ') : '未启用';
+  }
+  panelPinned.value = config.pinned === true;
 }
 function onSearchEsc() {
   if (query.value) { query.value = ''; return; }
@@ -1067,7 +1176,7 @@ onBeforeUnmount(() => {
 .clip-root {
   position: fixed;
   inset: 0;
-  padding: 14px;
+  padding: 0;
   display: flex;
   background: transparent;
   color: var(--color-text);
@@ -1081,25 +1190,66 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  /* 独立剪贴板窗口必须是不透明面板。主窗口的玻璃/皮肤表面会带 alpha，
-     直接复用 --color-surface 会让后面的聊天内容透出来。 */
-  background-color: #f7f8fa;
-  background-color: var(--el-bg-color, #f7f8fa) !important;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  /* ★ 透明窗里画阴影:模糊半径 - 负扩散 必须小于 .clip-root 的 padding,
-     否则阴影被窗口边缘裁掉,四周会出现一圈发虚的灰边(实测就是这么表现出来的)。 */
-  box-shadow:
-    0 1px 1px rgba(15, 18, 30, 0.03),
-    0 4px 10px -4px rgba(15, 18, 30, 0.14),
-    0 12px 24px -12px rgba(15, 18, 30, 0.22);
+  /* 独立外置窗：保留当前皮肤纹理，但压上高不透明磨砂层，避免正文直接叠在壁纸上。 */
+  background-color: color-mix(in srgb, var(--skin-surface, #f8f9fc) 92%, transparent) !important;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--skin-surface, #f8f9fc) 78%, transparent),
+      color-mix(in srgb, var(--skin-surface, #f8f9fc) 72%, transparent)
+    ),
+    var(--skin-dialog-pattern, none) !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  backdrop-filter: blur(22px) saturate(1.08);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  border: 0;
+  border-radius: 28px;
+  box-shadow: none;
   overflow: hidden;
 }
 :global(html[data-theme="dark"]) .cp-shell {
-  box-shadow:
-    0 1px 1px rgba(0, 0, 0, 0.3),
-    0 4px 10px -4px rgba(0, 0, 0, 0.45),
-    0 12px 24px -12px rgba(0, 0, 0, 0.55);
+  background-color: color-mix(in srgb, var(--skin-surface, #191c24) 92%, transparent) !important;
+  box-shadow: none;
+}
+
+/* 八向缩放热区：四边 8px、四角 14px。视觉完全透明，只负责鼠标指针与拖拽。 */
+.cp-resize {
+  position: absolute;
+  z-index: 20;
+  -webkit-app-region: no-drag;
+}
+.cp-resize-n,
+.cp-resize-s {
+  right: 14px;
+  left: 14px;
+  height: 8px;
+}
+.cp-resize-e,
+.cp-resize-w {
+  top: 14px;
+  bottom: 14px;
+  width: 8px;
+}
+.cp-resize-n { top: 0; cursor: ns-resize; }
+.cp-resize-s { bottom: 0; cursor: ns-resize; }
+.cp-resize-e { right: 0; cursor: ew-resize; }
+.cp-resize-w { left: 0; cursor: ew-resize; }
+.cp-resize-ne,
+.cp-resize-nw,
+.cp-resize-se,
+.cp-resize-sw {
+  width: 14px;
+  height: 14px;
+}
+.cp-resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+.cp-resize-nw { top: 0; left: 0; cursor: nwse-resize; }
+.cp-resize-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.cp-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+:global(html.cp-resizing),
+:global(html.cp-resizing *) {
+  cursor: inherit !important;
+  user-select: none !important;
 }
 
 /* ===== 头部 ===== */
@@ -1372,10 +1522,16 @@ onBeforeUnmount(() => {
 }
 .cp-foot-stats { font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
 
+@media (max-width: 430px) {
+  .cp-hk { display: none; }
+  .cp-head { padding-right: 12px; padding-left: 12px; }
+  .cp-foot-hint { display: none; }
+}
+
 /* ===== 横向布局(卡片网格,与原型一致) ===== */
 .clip-root.is-grid .cp-list {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px;
   align-content: start;
   padding: 10px;
@@ -1529,7 +1685,7 @@ onBeforeUnmount(() => {
 .cp-foot-hint { font-size: 10.5px; color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cp-foot-stats { white-space: nowrap; flex-shrink: 0; }
 
-/* ===== 多选（2026-10-29）===== */
+/* ===== 多选 2026-10-29 ===== */
 .cp-check {
   width: 18px; height: 18px; border-radius: 6px; flex-shrink: 0;
   border: 1.5px solid var(--color-border-strong);

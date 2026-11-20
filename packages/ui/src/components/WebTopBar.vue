@@ -178,13 +178,13 @@
         </button>
         <!-- 超级剪贴板入口（2026-10-29）：桌面端才有独立面板窗；召唤键见设置 → 快捷键 -->
         <button v-if="clipboardAvailable" class="title-nav-item title-nav-item--icon" type="button"
-                title="超级剪贴板（全局快捷键召唤）" @click="onOpenClipboard">
+                title="超级剪贴板" @click="onOpenClipboard">
           <el-icon :size="15"><CopyDocument /></el-icon>
         </button>
         <!-- 游戏窗（P2）：独立置顶窗跑 /browser，用于网页游戏/盯盘这类不该被主窗口遮住的场景 -->
         <button v-if="gameWindowSupported" class="title-nav-item title-nav-item--icon" type="button"
-                title="游戏窗（独立置顶）" @click="onOpenGameWindow">
-          <el-icon :size="15"><VideoPlay /></el-icon>
+                title="游戏窗" @click="onOpenGameWindow">
+          <Gamepad2 :size="15" />
         </button>
       </div>
 
@@ -290,8 +290,9 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, ChatDotRound, Monitor, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton, VideoPlay, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand, Tickets,
+  Search, VideoCamera, SwitchButton, Notebook, Bell, CircleCheck, WarningFilled, Fold, Expand, Tickets,
 } from '@element-plus/icons-vue';
+import { Gamepad2 } from 'lucide-vue-next';
 import { useSettingsStore, useAuthStore, usePluginStore, useChatStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';
 import { isElectron, isCapacitor } from '../api/client';

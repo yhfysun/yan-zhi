@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   extractNewsArticle,
   getNewsArticle,
+  getNewsMarket,
   mergeNewsItems,
   parseChinaNewsRss,
+  parseEastmoneyQuotePayload,
   parseTencentKlinePayload,
   parseTencentQuotePayload,
   resolveAllowedNewsUrl,
@@ -175,5 +177,68 @@ describe('news-service', () => {
 
     expect(parseTencentKlinePayload(payload, 'sh600519')).toEqual([1442.66, 1460.21]);
     expect(parseTencentKlinePayload('{broken', 'sh600519')).toEqual([]);
+  });
+
+  it('parses Eastmoney UTF-8 market quotes without a GBK decoder', () => {
+    const payload = JSON.stringify({
+      rc: 0,
+      data: {
+        total: 2,
+        diff: [
+          { f12: '000001', f13: 1, f14: '上证指数', f2: 3511.27, f3: -1.85, f4: -66.35, f18: 3577.62 },
+          { f12: '600519', f13: 1, f14: '贵州茅台', f2: 1439.5, f3: -1.42, f4: -20.71, f18: 1460.21 },
+        ],
+      },
+    });
+
+    const quotes = parseEastmoneyQuotePayload(payload);
+
+    expect(quotes).toHaveLength(2);
+    expect(quotes[0]).toMatchObject({
+      code: 'sh000001',
+      name: '上证指数',
+      price: 3511.27,
+      previousClose: 3577.62,
+      change: -66.35,
+      changePercent: -1.85,
+      points: [],
+    });
+    expect(quotes[1].code).toBe('sh600519');
+  });
+
+  it('uses the UTF-8 Eastmoney provider for Android-compatible market data', async () => {
+    const payload = JSON.stringify({
+      rc: 0,
+      data: {
+        diff: [
+          { f12: '000001', f13: 1, f14: '上证指数', f2: 3511.27, f3: -1.85, f4: -66.35, f18: 3577.62 },
+          { f12: '399001', f13: 0, f14: '深证成指', f2: 11234.56, f3: 0.52, f4: 58.1, f18: 11176.46 },
+        ],
+      },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('push2.eastmoney.com')) {
+        return new Response(payload, {
+          status: 200,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+      }
+      throw new Error(`不应请求非 UTF-8 行情源: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const market = await getNewsMarket(true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('push2.eastmoney.com'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(market.source).toBe('东方财富行情');
+    expect(market.indices[0]).toMatchObject({
+      code: 'sh000001',
+      name: '上证指数',
+      price: 3511.27,
+    });
   });
 });

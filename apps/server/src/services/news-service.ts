@@ -49,6 +49,18 @@ const marketCache = new Map<string, CacheEntry<NewsMarketResult>>();
 
 const MARKET_INDICES = ['sh000001', 'sz399001', 'sz399006', 'sh000300'];
 const MARKET_WATCHLIST = ['sh600519', 'sz300750', 'sz002594', 'sh688981', 'sz300059', 'sh601318'];
+const EASTMONEY_SECID_BY_CODE: Record<string, string> = {
+  sh000001: '1.000001',
+  sz399001: '0.399001',
+  sz399006: '0.399006',
+  sh000300: '1.000300',
+  sh600519: '1.600519',
+  sz300750: '0.300750',
+  sz002594: '0.002594',
+  sh688981: '1.688981',
+  sz300059: '0.300059',
+  sh601318: '1.601318',
+};
 
 function setBoundedCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: CacheEntry<T>, maxEntries: number): void {
   if (!cache.has(key) && cache.size >= maxEntries) {
@@ -388,6 +400,50 @@ export function parseTencentQuotePayload(payload: string): MarketQuote[] {
   return quotes;
 }
 
+/**
+ * 东方财富行情是 UTF-8 JSON，Android 内嵌 Node 的 TextDecoder 不支持 GBK，
+ * 因此作为行情主链路；腾讯 GBK 接口仅保留为支持该编码的环境下的回退。
+ */
+export function parseEastmoneyQuotePayload(payload: string): MarketQuote[] {
+  try {
+    const parsed = JSON.parse(payload) as { data?: { diff?: unknown } };
+    const raw = parsed?.data?.diff;
+    const rows = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object'
+        ? Object.values(raw as Record<string, unknown>)
+        : [];
+    const quotes: MarketQuote[] = [];
+    const updatedAt = Date.now();
+    for (const item of rows) {
+      if (!item || typeof item !== 'object') continue;
+      const row = item as Record<string, unknown>;
+      const symbol = String(row.f12 ?? '').trim().padStart(6, '0');
+      const market = String(row.f13 ?? '').trim();
+      const name = normalizeText(String(row.f14 ?? ''));
+      const price = Number(row.f2);
+      const change = Number(row.f4);
+      const changePercent = Number(row.f3);
+      const previousClose = Number(row.f18);
+      const code = market === '1' ? `sh${symbol}` : market === '0' ? `sz${symbol}` : '';
+      if (!code || !name || !Number.isFinite(price) || !Number.isFinite(changePercent)) continue;
+      quotes.push({
+        code,
+        name,
+        price,
+        previousClose: Number.isFinite(previousClose) ? previousClose : price,
+        change: Number.isFinite(change) ? change : price - previousClose,
+        changePercent,
+        updatedAt,
+        points: [],
+      });
+    }
+    return quotes;
+  } catch {
+    return [];
+  }
+}
+
 export function parseTencentKlinePayload(payload: string, code: string): number[] {
   try {
     const parsed = JSON.parse(payload) as any;
@@ -416,28 +472,62 @@ async function getMarketQuoteSeries(code: string): Promise<number[]> {
   }
 }
 
+async function getEastmoneyMarket(): Promise<NewsMarketResult> {
+  const secids = [...MARKET_INDICES, ...MARKET_WATCHLIST]
+    .map((code) => EASTMONEY_SECID_BY_CODE[code])
+    .filter(Boolean)
+    .join(',');
+  const payload = await fetchText(
+    `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f13,f14,f2,f3,f4,f18&secids=${secids}`,
+    'utf-8',
+    8_000,
+  );
+  const quotes = parseEastmoneyQuotePayload(payload);
+  if (!quotes.length) throw new Error('东方财富行情返回为空');
+  const byCode = new Map(quotes.map((quote) => [quote.code, quote]));
+  return {
+    indices: MARKET_INDICES.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
+    watchlist: MARKET_WATCHLIST.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
+    updatedAt: quotes.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now(),
+    stale: false,
+    source: '东方财富行情',
+  };
+}
+
+async function getTencentMarket(): Promise<NewsMarketResult> {
+  const codes = [...MARKET_INDICES, ...MARKET_WATCHLIST];
+  const quoteText = await fetchText(`https://qt.gtimg.cn/q=${codes.join(',')}`, 'gbk', 8_000);
+  const quotes = parseTencentQuotePayload(quoteText);
+  if (!quotes.length) throw new Error('腾讯行情返回为空');
+  const series = await Promise.all(quotes.map((quote) => getMarketQuoteSeries(quote.code)));
+  const withSeries = quotes.map((quote, index) => ({ ...quote, points: series[index] || [] }));
+  const byCode = new Map(withSeries.map((quote) => [quote.code, quote]));
+  return {
+    indices: MARKET_INDICES.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
+    watchlist: MARKET_WATCHLIST.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
+    updatedAt: withSeries.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now(),
+    stale: false,
+    source: '腾讯行情',
+  };
+}
+
 export async function getNewsMarket(force = false): Promise<NewsMarketResult> {
   const cached = marketCache.get('cn-equities');
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
 
-  const codes = [...MARKET_INDICES, ...MARKET_WATCHLIST];
-  try {
-    const quoteText = await fetchText(`https://qt.gtimg.cn/q=${codes.join(',')}`, 'gbk', 8_000);
-    const quotes = parseTencentQuotePayload(quoteText);
-    const series = await Promise.all(quotes.map((quote) => getMarketQuoteSeries(quote.code)));
-    const withSeries = quotes.map((quote, index) => ({ ...quote, points: series[index] || [] }));
-    const byCode = new Map(withSeries.map((quote) => [quote.code, quote]));
-    const result: NewsMarketResult = {
-      indices: MARKET_INDICES.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-      watchlist: MARKET_WATCHLIST.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-      updatedAt: withSeries.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now(),
-      stale: false,
-      source: '腾讯行情',
-    };
-    marketCache.set('cn-equities', { value: result, expiresAt: Date.now() + MARKET_TTL_MS });
-    return result;
-  } catch (error) {
-    if (cached) return { ...cached.value, stale: true };
-    throw error;
+  const errors: string[] = [];
+  for (const provider of [getEastmoneyMarket, getTencentMarket]) {
+    try {
+      const result = await provider();
+      marketCache.set('cn-equities', { value: result, expiresAt: Date.now() + MARKET_TTL_MS });
+      return result;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
   }
+  if (cached) {
+    marketCache.set('cn-equities', { value: cached.value, expiresAt: Date.now() + MARKET_TTL_MS });
+    return { ...cached.value, stale: true };
+  }
+  throw new Error(`行情源暂不可用：${errors.join(' / ')}`);
 }

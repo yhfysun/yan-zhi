@@ -30,7 +30,7 @@
           <span class="tab-favicon" v-else>●</span>
           <span class="tab-title">{{ tab.title || tab.url || '新标签页' }}</span>
           <!-- 后台流的工作页打标：它是 agent 自己开的页，别让用户以为是自己开的（方案 §4.6） -->
-          <span class="tab-bg-badge" v-if="tab.background" title="后台子智能体自己开的工作页（不是你打开的那一页）">后台</span>
+          <span class="tab-bg-badge" v-if="tab.background" title="后台页面">后台</span>
           <!-- 休眠页（内存回收）：页面进程已释放，切到该 tab 会按 url 自动重载 -->
           <span class="tab-sleep-badge" v-if="tab.suspended" title="已休眠释放内存，点击切换即恢复">休眠</span>
           <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页"><el-icon><Close /></el-icon></button>
@@ -163,7 +163,7 @@
           <!-- P3-1 指令自动推荐：本站有专属指令时在按钮上打角标（全局指令每页都有，标了没信息量） -->
           <span
             v-if="siteCommandCount > 0" class="handoff-badge"
-            :title="`当前站点有 ${siteCommandCount} 条专属页面指令（AI 菜单 → 页面指令…）`"
+            :title="`当前站点有 ${siteCommandCount} 条专属页面指令`"
           >{{ siteCommandCount }}</span>
           <span class="handoff-caret">▾</span>
         </button>
@@ -181,7 +181,7 @@
       </el-dropdown>
 
       <!-- 全屏实况开关：原地放大（DOM 不动，避免 webview 重载） -->
-      <button class="nav-btn expand-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
+      <button class="nav-btn expand-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏' : '全屏实况'">
         <svg v-if="!browserExpanded" viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
         <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
       </button>
@@ -245,7 +245,7 @@
         :status="planFailed ? 'exception' : undefined"
       />
       <span class="takeover-spacer"></span>
-      <button v-if="isConvStreamingNow && !pausedNow" class="takeover-btn" @click="onPauseTask" title="暂停（当前动作完成后挂起）">
+      <button v-if="isConvStreamingNow && !pausedNow" class="takeover-btn" @click="onPauseTask" title="暂停">
         <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
         <span class="takeover-btn-text">暂停</span>
       </button>

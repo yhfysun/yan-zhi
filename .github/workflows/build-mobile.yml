@@ -43,6 +43,7 @@ jobs:
     env:
       # 内嵌后端 npm install 走官方源即可（CI 直连网络，不需要国内镜像）
       YZ_SKIP_MOBILE_NPM: '0'
+      NODE_OPTIONS: '--max-old-space-size=4096'
     steps:
       - uses: actions/checkout@v7
 
@@ -74,16 +75,17 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
+      # Cap add 会在生成工程时同步一次 Web 资源；dist 不存在或为空时 Capacitor 直接失败。
+      # 先产出真实 index.html，再生成 Android 工程。后面 package.cjs 仍会重新 build 最新产物。
+      - name: 预构建移动端 Web 入口
+        run: pnpm --filter @yan-zhi/mobile exec vite build
+
       # ★★ 生成 Android 原生工程（干净 runner 上不存在，因为 apps/mobile/android/ 被 gitignore）
-      #   webDir=dist 尚未构建，cap add 会警告「web directory does not exist」但不阻断 ——
-      #   它只负责铺脚手架，真正的 web 资源由后面 cap sync 拷进去。
       #   ★ 模板来自 @capacitor/cli 包内的 assets/android-template.tar.gz（随 npm 包本地分发），
       #     不联网，所以受限网络下也能生成。
       - name: 生成 Android 工程
         working-directory: apps/mobile
-        run: |
-          mkdir -p dist
-          node node_modules/@capacitor/cli/bin/capacitor add android
+        run: node node_modules/@capacitor/cli/bin/capacitor add android
 
       # ★★ SDK 组件必须在「生成 Android 工程」**之后**准备 —— 顺序反了就装错版本：
       #   工程未生成时读不到 variables.gradle，只能按兜底值装（实测会与真实需求差一个版本）。

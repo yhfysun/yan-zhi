@@ -1,9 +1,9 @@
 /**
- * 移动端「精简包」构建（仅办公 + 学习两模式）。
+ * 移动端「精简包」构建（办公 + 店铺 + 运维 + 安全 + 学习）。
  *
  * 目标（2026-11-16 用户诉求）：
- *   移动端 APK 约 500MB，用户要求**只保留办公模式(office) 与学习模式(learning)**
- *   的功能代码和静态资源，移除冗余内容以减小体积，且**不能影响现有移动端功能**。
+ *   移动端 APK 约 500MB，用户要求只保留移动端实际开放的五个模式，
+ *   移除开发/工作流/自动化/剪辑等桌面重工作台，减小体积且不影响现有功能。
  *
  * ★ 为什么用「物理裁剪」而不是运行时开关：
  *   仓库已有成熟的两级裁剪机制（桌面打包链在用）：
@@ -23,11 +23,11 @@
  * ★ 安全约束：
  *   - 只裁**移动端**，桌面/网页端完全不受影响（本脚本只写移动端产物 + 临时改
  *     生成文件，构建结束无条件 --restore）。
- *   - 移动端本来就只支持 office/learning 两个模式（mode.ts MOBILE_ALLOWED_MODES），
- *     其它模式在移动端 UI 上本就不可见 ⇒ 裁掉它们**不改变移动端的用户可见功能**。
- *   - office-core / learning-mode / skins 必须保留：
- *     office-core 是基座（永不裁剪），learning-mode 是学习模式的唯一入口插件，
- *     skins 是皮肤/壁纸资源（用户明确要求 3D 冰砖墙纸皮肤）。
+ *   - 精简模式必须与 mode.ts 的 MOBILE_ALLOWED_MODES 保持一致：
+ *     office / shop / ops / sec / learning。测试会直接比对两份清单。
+ *   - office-core 是基座（永不裁剪）；店铺、运维、安全、学习各自的模式插件
+ *     必须与页面同时保留，否则入口在、工作台却打不开。
+ *   - skins 是皮肤/壁纸资源（用户明确要求 3D 冰砖墙纸皮肤）。
  *   - git-explorer 体积小（1.3MB）且办公模式可能用到，保留更安全。
  *
  * 用法：
@@ -41,10 +41,18 @@ const path = require('node:path');
 const MOBILE_DIR = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(MOBILE_DIR, '..', '..');
 
-/** 精简包保留的模式（移动端唯一支持的两个）。 */
-const SLIM_MODES = ['office', 'learning'];
+/** 精简包保留的模式。必须与 packages/ui/src/stores/mode.ts 的移动白名单一致。 */
+const SLIM_MODES = ['office', 'shop', 'ops', 'sec', 'learning'];
 /** 精简包保留的后端插件包（其余裁掉）。skins = 皮肤壁纸资源，必须留。 */
-const SLIM_PLUGINS = ['office-core', 'learning-mode', 'skins', 'git-explorer'];
+const SLIM_PLUGINS = [
+  'office-core',
+  'shop-ops',
+  'ops-shell',
+  'sec-lab',
+  'learning-mode',
+  'skins',
+  'git-explorer',
+];
 /**
  * 精简包保留的 ABI（真机）。裁掉 x86/x86_64（模拟器）—— libnode.so 单份 44~52MB，
  * x86_64 那份在 APK 里占 55.6MB，纯冗余。
@@ -224,7 +232,7 @@ function reportSize() {
   log(`dist 合计: ${(total / 1024 / 1024).toFixed(1)} MB`);
 }
 
-log('===== 移动端精简包构建（office + learning）=====');
+log('===== 移动端精简包构建（office + shop + ops + sec + learning）=====');
 try {
   buildAll();
   reportSize();

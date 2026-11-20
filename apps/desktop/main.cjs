@@ -14352,9 +14352,14 @@ const CLIP_MAX_TEXT = 100 * 1024;      // 单条文本上限(字符):更大的�
 const CLIP_MAX_HTML = 256 * 1024;     // 富文本上限:超了只存纯文本
 const CLIP_POLL_MS = 600;
 const CLIP_CLEANUP_MS = 60 * 60 * 1000; // 超期清理:每小时跑一次(启动时也先跑一次)
+const CLIP_DEFAULT_WIDTH = 456;
+const CLIP_DEFAULT_HEIGHT = 624;
+const CLIP_MIN_WIDTH = 380;
+const CLIP_MIN_HEIGHT = 460;
+const CLIP_MAX_WIDTH = 1200;
+const CLIP_MAX_HEIGHT = 1400;
 const clipHotkey = { current: null };
 let clipPanelWindow = null;
-let clipDragSuspended = false;
 let clipWatcherTimer = null;
 let clipCleanupTimer = null;
 let clipLastHash = '';
@@ -14394,6 +14399,9 @@ function loadClipConfig() {
   if (clipConfigCache) return clipConfigCache;
   const saved = clipReadJson(clipConfigPath(), {}) || {};
   const cap = saved.capture || {};
+  const savedSize = saved.size || {};
+  const savedWidth = Number(savedSize.width);
+  const savedHeight = Number(savedSize.height);
   clipConfigCache = {
     accelerator: typeof saved.accelerator === 'string' ? saved.accelerator : CLIP_DEFAULT_ACCEL,
     capture: { text: cap.text !== false, image: cap.image !== false, file: cap.file !== false },
@@ -14406,6 +14414,15 @@ function loadClipConfig() {
       return Number.isFinite(n) && n > 0 ? Math.min(3650, Math.floor(n)) : 0;
     })(),
     pos: saved.pos && Number.isFinite(saved.pos.x) && Number.isFinite(saved.pos.y) ? { x: saved.pos.x, y: saved.pos.y } : null,
+    size: {
+      width: Number.isFinite(savedWidth)
+        ? Math.min(CLIP_MAX_WIDTH, Math.max(CLIP_MIN_WIDTH, Math.round(savedWidth)))
+        : CLIP_DEFAULT_WIDTH,
+      height: Number.isFinite(savedHeight)
+        ? Math.min(CLIP_MAX_HEIGHT, Math.max(CLIP_MIN_HEIGHT, Math.round(savedHeight)))
+        : CLIP_DEFAULT_HEIGHT,
+    },
+    pinned: saved.pinned === true,
   };
   return clipConfigCache;
 }
@@ -14835,7 +14852,7 @@ function startClipWatcher() {
 /** 面板位置:优先记忆位置(且仍在某块屏幕内),否则落在鼠标所在屏幕中央 */
 function clipPanelPosition() {
   const cfg = loadClipConfig();
-  const width = 456, height = 624;   // 含 12px 内边距:圆角与投影画在窗口内部(透明窗裁切)
+  const { width, height } = cfg.size;
   if (cfg.pos) {
     const inside = electronScreen.getAllDisplays().some((d) => {
       const b = d.workArea;
@@ -14852,21 +14869,25 @@ function createClipPanelWindow() {
   const url = childUrl('/clip-panel');
   if (!url) return null;
   const pos = clipPanelPosition();
+  const cfg = loadClipConfig();
+  const size = cfg.size;
   const win = new BrowserWindow({
-    width: 456, height: 624, x: pos.x, y: pos.y,
+    width: size.width, height: size.height, x: pos.x, y: pos.y,
+    minWidth: CLIP_MIN_WIDTH, minHeight: CLIP_MIN_HEIGHT,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    resizable: false,
+    resizable: true,
     movable: true,
-    minimizable: false,
+    minimizable: true,
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
-    hasShadow: true,
+    alwaysOnTop: cfg.pinned,
+    hasShadow: false,
+    thickFrame: false,
     show: false,
-    roundedCorners: true,
+    roundedCorners: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       webviewTag: false,
@@ -14876,24 +14897,39 @@ function createClipPanelWindow() {
       backgroundThrottling: false,
     },
   });
-  try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* 部分平台不支持层级参数 */ }
-  // 失焦自动收起:用户点了别的应用/别处 = 不要这个面板了。
-  // ★ 拖拽条目拖出面板时例外(见 clipboard:panel-suspend-blur),否则拖到一半面板消失。
-  win.on('blur', () => { if (!clipDragSuspended) hideClipPanel(); });
-  // 拖动位置记忆(标题栏 -webkit-app-region: drag 由系统移动窗口)
+  try { win.setAlwaysOnTop(cfg.pinned, 'screen-saver'); } catch { /* 部分平台不支持层级参数 */ }
+  // 拖动位置 / 八向缩放后的几何记忆
   win.on('moved', () => {
     if (clipPosTimer) clearTimeout(clipPosTimer);
     clipPosTimer = setTimeout(() => {
       clipPosTimer = null;
       try {
         const [x, y] = win.getPosition();
+        const [width, height] = win.getSize();
         const cfg = loadClipConfig();
         cfg.pos = { x, y };
+        cfg.size = { width, height };
         persistClipConfig();
       } catch { /* 窗口已销毁 */ }
     }, 400);
   });
-  win.on('closed', () => { clipPanelWindow = null; });
+  win.on('resized', () => {
+    if (clipPosTimer) clearTimeout(clipPosTimer);
+    clipPosTimer = setTimeout(() => {
+      clipPosTimer = null;
+      try {
+        const [x, y] = win.getPosition();
+        const [width, height] = win.getSize();
+        const cfg = loadClipConfig();
+        cfg.pos = { x, y };
+        cfg.size = { width, height };
+        persistClipConfig();
+      } catch { /* 窗口已销毁 */ }
+    }, 300);
+  });
+  win.on('closed', () => {
+    clipPanelWindow = null;
+  });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
     // ★ 白名单走 url-guard.cjs（唯一的协议判据）—— 别在这里写裸正则：
     //   裸判断会绕过 trim/未知类型的硬化，且与另外 3 处出口形成第二份判据。
@@ -14914,10 +14950,14 @@ function showClipPanel() {
   const win = ensureClipPanelWindow();
   if (!win) return { ok: false, error: '主窗口未就绪' };
   const pos = clipPanelPosition();
+  const cfg = loadClipConfig();
+  const size = cfg.size;
+  try { win.setSize(size.width, size.height); } catch { /* 窗口还没显示时也能设,失败不致命 */ }
   try { win.setPosition(pos.x, pos.y); } catch { /* 窗口还没显示时也能设,失败不致命 */ }
   const reveal = () => {
     try {
-      win.setAlwaysOnTop(true, 'screen-saver');
+      if (win.isMinimized()) win.restore();
+      win.setAlwaysOnTop(cfg.pinned, 'screen-saver');
       win.show();
       win.focus();
       win.webContents.send('clipboard:shown');
@@ -15303,24 +15343,45 @@ ipcMain.handle('clipboard:panel-drag-out', (event, id) => {
   try {
     // 拖出期间一定不能因失焦而收面板;startDrag 在 Windows 上是阻塞到 drop 的,
     // 但不同平台行为不一,给一个超时兜底(渲染层另有 5s 兜底)。
-    clipDragSuspended = true;
     event.sender.startDrag({ file, icon: natIconSafe(file) });
-    setTimeout(() => { clipDragSuspended = false; }, 800);
     return { ok: true };
   } catch (e) {
-    clipDragSuspended = false;
     return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
-/** 拖拽期间暂停失焦收起(渲染层 dragstart/dragend 调用) */
-ipcMain.handle('clipboard:panel-suspend-blur', (_e, on) => {
-  clipDragSuspended = !!on;
-  return { ok: true, suspended: clipDragSuspended };
-});
-
 ipcMain.handle('clipboard:panel-hide', () => hideClipPanel());
+ipcMain.handle('clipboard:panel-minimize', () => {
+  const win = clipPanelWindow;
+  if (!win || win.isDestroyed()) return { ok: true };
+  try { win.minimize(); } catch { /* ignore */ }
+  return { ok: true };
+});
 ipcMain.handle('clipboard:panel-toggle', () => toggleClipPanel());
+ipcMain.handle('clipboard:panel-get-bounds', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== clipPanelWindow || win.isDestroyed()) return { ok: false, error: '剪贴板面板未就绪' };
+  return { ok: true, bounds: win.getBounds() };
+});
+ipcMain.on('clipboard:panel-set-bounds', (event, next = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== clipPanelWindow || win.isDestroyed()) return;
+  try {
+    const current = win.getBounds();
+    const width = Math.min(CLIP_MAX_WIDTH, Math.max(CLIP_MIN_WIDTH, Math.round(Number(next.width) || current.width)));
+    const height = Math.min(CLIP_MAX_HEIGHT, Math.max(CLIP_MIN_HEIGHT, Math.round(Number(next.height) || current.height)));
+    const x = Number.isFinite(Number(next.x)) ? Math.round(Number(next.x)) : current.x;
+    const y = Number.isFinite(Number(next.y)) ? Math.round(Number(next.y)) : current.y;
+    win.setBounds({ x, y, width, height });
+  } catch { /* 缩放过程中的瞬时失败不致命 */ }
+});
+ipcMain.handle('clipboard:panel-set-pinned', (_event, pinned) => {
+  const cfg = loadClipConfig();
+  cfg.pinned = !!pinned;
+  persistClipConfig();
+  try { clipPanelWindow?.setAlwaysOnTop(cfg.pinned, 'screen-saver'); } catch { /* ignore */ }
+  return { ok: true, pinned: cfg.pinned };
+});
 
 ipcMain.handle('clipboard:panel-config', () => {
   const cfg = loadClipConfig();
