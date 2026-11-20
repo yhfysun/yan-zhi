@@ -57,13 +57,27 @@ function resolveAndroidNdk() {
   for (const sdkRoot of sdkRoots) {
     const ndkRoot = path.join(sdkRoot, 'ndk');
     if (!fs.existsSync(ndkRoot)) continue;
-    for (const name of fs.readdirSync(ndkRoot)) candidates.push(path.join(ndkRoot, name));
+    for (const name of fs.readdirSync(ndkRoot).sort().reverse()) candidates.push(path.join(ndkRoot, name));
   }
-  const found = candidates.find((dir) =>
-    fs.existsSync(path.join(dir, 'toolchains', 'llvm', 'prebuilt', 'windows-x86_64', 'sysroot', 'usr', 'lib')),
-  );
+  const hostTags = process.platform === 'win32'
+    ? ['windows-x86_64']
+    : process.platform === 'darwin'
+      ? ['darwin-x86_64', 'darwin-arm64']
+      : ['linux-x86_64'];
+  let found = null;
+  let foundHost = '';
+  for (const dir of candidates) {
+    const host = hostTags.find((tag) =>
+      fs.existsSync(path.join(dir, 'toolchains', 'llvm', 'prebuilt', tag, 'sysroot', 'usr', 'lib')),
+    );
+    if (host) {
+      found = dir;
+      foundHost = host;
+      break;
+    }
+  }
   if (!found) throw new Error('未找到 Android NDK（需要 libc++_shared.so）');
-  return found;
+  return { dir: found, host: foundHost };
 }
 
 // 1) 定位当前 pnpm store 里的插件 android 目录
@@ -101,9 +115,10 @@ copied += copyTree(
 
 // nodejs-mobile 的 libnode.so 动态依赖 libc++_shared.so。AGP 不会仅因
 // CMake 导入了预编译 libnode 就自动打包 STL 运行库，必须按 ABI 显式铺入。
-const ndkDir = resolveAndroidNdk();
+const ndk = resolveAndroidNdk();
+const ndkDir = ndk.dir;
 const ndkSysrootLib = path.join(
-  ndkDir, 'toolchains', 'llvm', 'prebuilt', 'windows-x86_64', 'sysroot', 'usr', 'lib',
+  ndkDir, 'toolchains', 'llvm', 'prebuilt', ndk.host, 'sysroot', 'usr', 'lib',
 );
 for (const [abi, triple] of Object.entries(ABI_TO_NDK_TRIPLE)) {
   const src = path.join(ndkSysrootLib, triple, 'libc++_shared.so');
@@ -173,4 +188,4 @@ if (text.includes(replacement)) {
 }
 console.log(`[nodejs-shortpath] 已同步 ${copied} 个原生源码文件（不清理 .cxx 缓存）`);
 console.log('[nodejs-shortpath] CMake 构建已启用（libnode.so 将进入 APK）');
-console.log(`[nodejs-shortpath] 已铺入 3 个 ABI 的 libc++_shared.so（NDK: ${ndkDir}）`);
+console.log(`[nodejs-shortpath] 已铺入 3 个 ABI 的 libc++_shared.so（NDK: ${ndkDir} / ${ndk.host}）`);
