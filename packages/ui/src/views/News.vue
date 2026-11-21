@@ -63,6 +63,15 @@
           :loading="marketLoading"
           :error="marketError"
           @retry="loadMarket(true)"
+          @select="openQuote"
+          @open-list="openQuoteList"
+        />
+        <NewsSectorPanel
+          :snapshot="sector"
+          :loading="sectorLoading"
+          :error="sectorError"
+          @retry="loadSector(true)"
+          @select="openQuote"
         />
       </aside>
     </div>
@@ -85,6 +94,27 @@
           @retry="openArticle(selectedItem, true)"
         />
       </section>
+
+      <!-- 行情详情（K 线）：移动端全屏弹层，桌面端居中弹窗 -->
+      <section
+        v-if="activeQuote"
+        class="news-quote-overlay"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`行情详情：${activeQuote.name}`"
+      >
+        <NewsQuoteDetail
+          :initial-view="quoteInitialView"
+          :quote-code="activeQuote.code"
+          :quote-name="activeQuote.name"
+          :detail="quoteDetail"
+          :loading="quoteLoading"
+          :error="quoteError"
+          @close="dismissMobileQuote"
+          @retry="openQuote(activeQuote.code, activeQuote.name)"
+          @open-chart="openQuote"
+        />
+      </section>
     </Teleport>
   </div>
 </template>
@@ -98,11 +128,15 @@ import type {
   NewsFeedResult,
   NewsItem,
   NewsMarketResult,
+  QuoteDetail,
+  SectorSnapshot,
 } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import NewsFeedList from '../components/news/NewsFeedList.vue';
 import NewsArticleReader from '../components/news/NewsArticleReader.vue';
 import MarketPulse from '../components/news/MarketPulse.vue';
+import NewsQuoteDetail from '../components/news/NewsQuoteDetail.vue';
+import NewsSectorPanel from '../components/news/NewsSectorPanel.vue';
 
 type ApiResult<T> = { data: T } | { error: string };
 
@@ -112,6 +146,13 @@ const categories: Array<{ key: NewsCategory; label: string }> = [
   { key: 'world', label: '国际' },
   { key: 'finance', label: '财经' },
   { key: 'society', label: '社会' },
+  { key: 'tech', label: '科技' },
+  { key: 'game', label: '游戏' },
+  { key: 'sports', label: '体育' },
+  { key: 'culture', label: '文化' },
+  { key: 'edu', label: '教育' },
+  { key: 'health', label: '健康' },
+  { key: 'chinese', label: '华人' },
 ];
 
 const activeCategory = ref<NewsCategory>('top');
@@ -125,7 +166,15 @@ const articleError = ref('');
 const market = ref<NewsMarketResult | null>(null);
 const marketLoading = ref(false);
 const marketError = ref('');
+const sector = ref<SectorSnapshot | null>(null);
+const sectorLoading = ref(false);
+const sectorError = ref('');
 const refreshing = ref(false);
+const activeQuote = ref<{ code: string; name: string } | null>(null);
+const quoteInitialView = ref<'list' | 'chart'>('list');
+const quoteDetail = ref<QuoteDetail | null>(null);
+const quoteLoading = ref(false);
+const quoteError = ref('');
 const feedCache = new Map<NewsCategory, NewsFeedResult>();
 const articleCache = new Map<string, NewsArticle>();
 const articlePromises = new Map<string, Promise<NewsArticle>>();
@@ -136,6 +185,8 @@ const media = typeof window !== 'undefined' ? window.matchMedia('(min-width: 901
 const isWideLayout = ref(media?.matches ?? true);
 const mobileReaderRoot = ref<HTMLElement | null>(null);
 let readerHistoryPushed = false;
+let quoteRequestId = 0;
+let quoteHistoryPushed = false;
 let shellLock: {
   element: HTMLElement;
   ariaHidden: string | null;
@@ -200,6 +251,19 @@ async function loadMarket(force = false): Promise<void> {
     marketError.value = error instanceof Error ? error.message : '行情加载失败';
   } finally {
     marketLoading.value = false;
+  }
+}
+
+async function loadSector(force = false): Promise<void> {
+  sectorLoading.value = true;
+  sectorError.value = '';
+  try {
+    const result = await api.get<SectorSnapshot>(`/news/sector${force ? '?refresh=1' : ''}`);
+    sector.value = dataOrThrow(result as ApiResult<SectorSnapshot>);
+  } catch (error) {
+    sectorError.value = error instanceof Error ? error.message : '行业板块加载失败';
+  } finally {
+    sectorLoading.value = false;
   }
 }
 
@@ -313,6 +377,19 @@ function clearReaderHistoryMarker(): void {
   readerHistoryPushed = false;
 }
 
+function pushQuoteHistory(): void {
+  if (quoteHistoryPushed || typeof window === 'undefined') return;
+  window.history.pushState({ ...readerHistoryState(), yzNewsQuote: true }, '', window.location.href);
+  quoteHistoryPushed = true;
+}
+
+function clearQuoteHistoryMarker(): void {
+  if (!quoteHistoryPushed || typeof window === 'undefined') return;
+  const { yzNewsQuote: _quote, ...state } = readerHistoryState();
+  window.history.replaceState(state, '', window.location.href);
+  quoteHistoryPushed = false;
+}
+
 /**
  * 页面内关闭动作先立即收起正文，再消费掉为详情压入的历史条目。
  * 系统右滑不经过 Capacitor 事件时，会直接 pop 这条记录并由 onPopState 收尾。
@@ -328,9 +405,69 @@ function dismissMobileReader(): void {
 }
 
 function onPopState(): void {
+  if (quoteHistoryPushed && activeQuote.value) {
+    quoteHistoryPushed = false;
+    closeQuote();
+    return;
+  }
   if (!readerHistoryPushed || !selectedItem.value || isWideLayout.value) return;
   readerHistoryPushed = false;
   closeArticle();
+}
+
+async function openQuote(code: string, name: string): Promise<void> {
+  if (!code) return;
+  quoteRequestId += 1;
+  const requestId = quoteRequestId;
+  const alreadyOpen = !!activeQuote.value;
+  activeQuote.value = { code, name };
+  quoteInitialView.value = 'chart';
+  // 同一弹层内切换品种时不重复压历史条目
+  if (!alreadyOpen) pushQuoteHistory();
+  quoteDetail.value = null;
+  quoteError.value = '';
+  quoteLoading.value = true;
+  try {
+    const result = await api.get<QuoteDetail>(`/news/quote?code=${encodeURIComponent(code)}`);
+    if (requestId !== quoteRequestId) return;
+    quoteDetail.value = dataOrThrow(result as ApiResult<QuoteDetail>);
+  } catch (error) {
+    if (requestId !== quoteRequestId) return;
+    quoteError.value = error instanceof Error ? error.message : '行情详情加载失败';
+  } finally {
+    if (requestId === quoteRequestId) quoteLoading.value = false;
+  }
+}
+
+/** 打开全市场列表视图（不预选品种）。 */
+function openQuoteList(): void {
+  const alreadyOpen = !!activeQuote.value;
+  activeQuote.value = { code: '', name: '行情列表' };
+  quoteInitialView.value = 'list';
+  quoteRequestId += 1;
+  quoteDetail.value = null;
+  quoteError.value = '';
+  quoteLoading.value = false;
+  if (!alreadyOpen) pushQuoteHistory();
+}
+
+function closeQuote(): void {
+  quoteRequestId += 1;
+  activeQuote.value = null;
+  quoteDetail.value = null;
+  quoteError.value = '';
+  quoteLoading.value = false;
+}
+
+/** 行情详情的移动端返回：先收起弹层，再消费掉为它压入的历史条目（与资讯正文同套路）。 */
+function dismissMobileQuote(): void {
+  if (!activeQuote.value) return;
+  const consumeHistory = quoteHistoryPushed;
+  closeQuote();
+  if (consumeHistory) {
+    quoteHistoryPushed = false;
+    window.history.back();
+  }
 }
 
 async function refreshAll(): Promise<void> {
@@ -339,6 +476,7 @@ async function refreshAll(): Promise<void> {
     await Promise.all([
       loadFeed(activeCategory.value, true),
       loadMarket(true),
+      loadSector(true),
     ]);
   } finally {
     refreshing.value = false;
@@ -353,6 +491,13 @@ function onWideLayoutChange(event: MediaQueryListEvent): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (activeQuote.value) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      dismissMobileQuote();
+    }
+    return;
+  }
   if (!selectedItem.value || isWideLayout.value) return;
   if (event.key === 'Escape') {
     dismissMobileReader();
@@ -374,8 +519,13 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-/** Android 手势/返回键先询问页面是否有页内层级；资讯正文必须在这里关闭弹层。 */
+/** Android 手势/返回键先询问页面是否有页内层级；行情详情、资讯正文都在这里关闭弹层。 */
 function onMobileBack(event: Event): void {
+  if (activeQuote.value) {
+    event.preventDefault();
+    dismissMobileQuote();
+    return;
+  }
   if (!selectedItem.value || isWideLayout.value) return;
   event.preventDefault();
   dismissMobileReader();
@@ -405,12 +555,16 @@ function unlockApplicationShell(): void {
   shellLock = null;
 }
 
-watch([selectedItem, isWideLayout], async ([item, wide]) => {
+watch([selectedItem, activeQuote, isWideLayout], async ([item, quote, wide]) => {
   if (wide) clearReaderHistoryMarker();
-  if (item && !wide) {
+  if ((item && !wide) || quote) {
     lockApplicationShell();
     await nextTick();
-    mobileReaderRoot.value?.querySelector<HTMLButtonElement>('.news-reader-back')?.focus();
+    if (quote) {
+      document.querySelector<HTMLButtonElement>('.news-quote-back')?.focus();
+    } else {
+      mobileReaderRoot.value?.querySelector<HTMLButtonElement>('.news-reader-back')?.focus();
+    }
   } else {
     unlockApplicationShell();
   }
@@ -421,7 +575,7 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown);
   window.addEventListener('popstate', onPopState);
   document.addEventListener('yz:mobile-back', onMobileBack);
-  void Promise.all([loadFeed('top'), loadMarket()]);
+  void Promise.all([loadFeed('top'), loadMarket(), loadSector()]);
 });
 
 onUnmounted(() => {
@@ -431,6 +585,7 @@ onUnmounted(() => {
   window.removeEventListener('popstate', onPopState);
   document.removeEventListener('yz:mobile-back', onMobileBack);
   clearReaderHistoryMarker();
+  clearQuoteHistoryMarker();
 });
 </script>
 

@@ -8,6 +8,7 @@
       <span v-if="market" class="market-updated" :class="{ stale: market.stale }">
         {{ market.stale ? '缓存 · ' : '' }}{{ formatTime(market.updatedAt) }}
       </span>
+      <button type="button" class="market-open-list" @click="emit('open-list')">全部 ›</button>
     </header>
 
     <div v-if="loading && !market" class="market-skeleton" aria-label="正在加载行情">
@@ -20,46 +21,52 @@
       <button type="button" @click="emit('retry')">重新加载</button>
     </div>
 
-    <template v-else-if="market">
-      <div class="market-index-list">
-        <div v-for="quote in market.indices" :key="quote.code" class="market-index">
-          <span class="market-quote-name">{{ quote.name }}</span>
-          <strong>{{ formatPrice(quote.price) }}</strong>
-          <span class="market-change" :class="direction(quote.change)">
-            {{ signedPercent(quote.changePercent) }}
-          </span>
-          <Sparkline :points="quote.points" :positive="quote.change >= 0" />
-        </div>
+    <template v-else-if="market && market.groups.length">
+      <!-- 分组切换：A股指数 / 热门A股 / 港股 -->
+      <div class="market-group-tabs" role="tablist" aria-label="行情分组">
+        <button
+          v-for="group in market.groups"
+          :key="group.id"
+          type="button"
+          role="tab"
+          class="market-group-tab"
+          :class="{ active: activeGroupId === group.id }"
+          :aria-selected="activeGroupId === group.id"
+          @click="activeGroupId = group.id"
+        >
+          {{ group.label }}
+        </button>
       </div>
 
-      <div class="market-watch-head">
-        <h3>自选</h3>
-        <span>{{ market.source }}</span>
-      </div>
       <div class="market-watch-list">
-        <div v-for="quote in market.watchlist" :key="quote.code" class="market-watch-row">
+        <button
+          v-for="quote in activeGroup?.quotes || []"
+          :key="quote.code"
+          type="button"
+          class="market-watch-row market-quote-row"
+          @click="emit('select', quote.code, quote.name)"
+        >
           <div class="market-watch-name">
             <strong>{{ quote.name }}</strong>
-            <small>{{ quote.code.slice(2) }}</small>
+            <small>{{ quote.code.replace(/^(sh|sz|hk)/, '') }}</small>
           </div>
-          <Sparkline :points="quote.points" :positive="quote.change >= 0" compact />
           <div class="market-watch-price">
             <strong>{{ formatPrice(quote.price) }}</strong>
             <span :class="direction(quote.change)">{{ signedPercent(quote.changePercent) }}</span>
           </div>
-        </div>
+        </button>
       </div>
-      <p class="market-disclaimer">行情仅作信息参考，不构成投资建议。</p>
+      <p class="market-disclaimer">点按任一品种可查看 K 线详情 · 行情仅作信息参考，不构成投资建议。</p>
     </template>
   </section>
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue';
 import { WifiOff } from 'lucide-vue-next';
 import type { NewsMarketResult } from '@yan-zhi/shared';
-import Sparkline from './Sparkline.vue';
 
-defineProps<{
+const props = defineProps<{
   market: NewsMarketResult | null;
   loading: boolean;
   error: string;
@@ -67,7 +74,21 @@ defineProps<{
 
 const emit = defineEmits<{
   (event: 'retry'): void;
+  (event: 'select', code: string, name: string): void;
+  (event: 'open-list'): void;
 }>();
+
+const activeGroupId = ref<string>('');
+
+// 默认选中第一个分组；行情数据更新后若当前分组消失则回退到第一个
+watch(() => props.market, (market) => {
+  if (!market?.groups.length) return;
+  if (!market.groups.some((group) => group.id === activeGroupId.value)) {
+    activeGroupId.value = market.groups[0].id;
+  }
+}, { immediate: true });
+
+const activeGroup = computed(() => props.market?.groups.find((group) => group.id === activeGroupId.value));
 
 function direction(value: number): 'up' | 'down' | 'flat' {
   return value > 0 ? 'up' : value < 0 ? 'down' : 'flat';

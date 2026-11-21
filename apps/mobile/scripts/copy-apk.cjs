@@ -25,6 +25,13 @@ if (!fs.existsSync(apkRoot)) {
 
 fs.mkdirSync(outDir, { recursive: true });
 
+// ★ 发行目录只保留本次产物：拷贝前清空 dist-release/android/<版本>/ 里的旧 APK，
+//   避免同版本多次打包后新旧文件混在一起分发错（2026-11-20 用户要求：前一次产物必须清理）。
+//   只清 android/<版本> 这一层，桌面等其他发行目录不受影响。
+for (const name of fs.readdirSync(outDir)) {
+  fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
+}
+
 let count = 0;
 /**
  * ★★ 闪退包硬闸（2026-11-16 真机实锤复盘）：曾有人把旧目录构建的 155.3MB APK

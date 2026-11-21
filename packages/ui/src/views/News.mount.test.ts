@@ -88,29 +88,37 @@ beforeEach(() => {
     }
     if (url.startsWith('/news/market')) {
       return success({
-        indices: [{
-          code: 'sh000001',
-          name: '上证指数',
-          price: 3511.27,
-          previousClose: 3577.62,
-          change: -66.35,
-          changePercent: -1.85,
-          updatedAt: Date.parse('2026-11-20T10:16:03+08:00'),
-          points: [3600, 3585, 3575, 3511],
-        }],
-        watchlist: [{
-          code: 'sh600519',
-          name: '贵州茅台',
-          price: 1439.5,
-          previousClose: 1460.21,
-          change: -20.71,
-          changePercent: -1.42,
-          updatedAt: Date.parse('2026-11-20T10:15:59+08:00'),
-          points: [1450, 1442, 1460, 1439],
-        }],
+        groups: [
+          {
+            id: 'cn-index',
+            label: 'A股指数',
+            quotes: [{
+              code: 'sh000001',
+              name: '上证指数',
+              price: 3511.27,
+              previousClose: 3577.62,
+              change: -66.35,
+              changePercent: -1.85,
+              updatedAt: Date.parse('2026-11-20T10:16:03+08:00'),
+            }],
+          },
+          {
+            id: 'hk',
+            label: '港股',
+            quotes: [{
+              code: 'hk00700',
+              name: '腾讯控股',
+              price: 682.5,
+              previousClose: 674.0,
+              change: 8.5,
+              changePercent: 1.26,
+              updatedAt: Date.parse('2026-11-20T10:15:59+08:00'),
+            }],
+          },
+        ],
         updatedAt: Date.parse('2026-11-20T10:16:03+08:00'),
         stale: false,
-        source: '腾讯行情',
+        source: '东方财富行情',
       });
     }
     return { error: 'not found' };
@@ -141,13 +149,20 @@ describe('资讯中心', () => {
       expect(host.textContent).toContain('今日重点');
       expect(host.textContent).toContain('华强北的亚太创新新周期');
       expect(host.textContent).toContain('上证指数');
-      expect(host.textContent).toContain('贵州茅台');
+      expect(host.textContent).toContain('A股指数');
+      expect(host.textContent).toContain('港股');
       expect(host.querySelector('.news-lead-cover')).toBeTruthy();
       expect(host.querySelector('.news-channel-refresh')).toBeTruthy();
       expect(host.textContent).not.toContain('DAILY BRIEF');
     });
     expect(apiState.get).toHaveBeenCalledWith('/news/feed?category=top');
     expect(apiState.get).toHaveBeenCalledWith('/news/market');
+
+    // 切到港股分组：能看到港股行情并可进入详情
+    const hkTab = [...host.querySelectorAll<HTMLButtonElement>('.market-group-tab')]
+      .find((button) => button.textContent?.includes('港股'));
+    hkTab?.click();
+    await vi.waitFor(() => expect(host.textContent).toContain('腾讯控股'));
   });
 
   it('切换国际分类会加载对应资讯', async () => {
@@ -263,11 +278,10 @@ describe('资讯中心', () => {
         });
       }
       return success({
-        indices: [],
-        watchlist: [],
+        groups: [],
         updatedAt: Date.now(),
         stale: false,
-        source: '腾讯行情',
+        source: '东方财富行情',
       });
     });
 
@@ -336,11 +350,10 @@ describe('资讯中心', () => {
         });
       }
       return success({
-        indices: [],
-        watchlist: [],
+        groups: [],
         updatedAt: Date.now(),
         stale: false,
-        source: '腾讯行情',
+        source: '东方财富行情',
       });
     });
 

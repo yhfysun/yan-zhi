@@ -5,10 +5,12 @@ import {
   getNewsMarket,
   mergeNewsItems,
   parseChinaNewsRss,
+  parseEastmoneyKlinePayload,
   parseEastmoneyQuotePayload,
   parseTencentKlinePayload,
   parseTencentQuotePayload,
   resolveAllowedNewsUrl,
+  searchQuotes,
 } from '../src/services/news-service.js';
 
 afterEach(() => {
@@ -38,6 +40,7 @@ describe('news-service', () => {
       id: 'finance',
       name: '财经',
       url: 'https://www.chinanews.com.cn/rss/finance.xml',
+      sourceName: '中国新闻网',
     });
 
     expect(items).toHaveLength(1);
@@ -162,7 +165,7 @@ describe('news-service', () => {
     expect(quotes[1].name).toBe('贵州茅台');
   });
 
-  it('parses Tencent daily K-line close prices for sparklines', () => {
+  it('parses Tencent daily K-line rows into OHLCV bars', () => {
     const payload = JSON.stringify({
       code: 0,
       data: {
@@ -175,8 +178,68 @@ describe('news-service', () => {
       },
     });
 
-    expect(parseTencentKlinePayload(payload, 'sh600519')).toEqual([1442.66, 1460.21]);
+    expect(parseTencentKlinePayload(payload, 'sh600519')).toEqual([
+      { date: '2026-11-18', open: 1450, close: 1442.66, high: 1456, low: 1431.7, volume: 29847 },
+      { date: '2026-11-19', open: 1442, close: 1460.21, high: 1464.99, low: 1432.1, volume: 42692 },
+    ]);
     expect(parseTencentKlinePayload('{broken', 'sh600519')).toEqual([]);
+  });
+
+  it('parses Eastmoney daily K-line CSV rows into OHLCV bars', () => {
+    const payload = JSON.stringify({
+      data: {
+        klines: [
+          '2026-11-18,1450.00,1442.66,1456.00,1431.70,29847',
+          '2026-11-19,1442.00,1460.21,1464.99,1432.10,42692',
+        ],
+      },
+    });
+
+    expect(parseEastmoneyKlinePayload(payload)).toEqual([
+      { date: '2026-11-18', open: 1450, close: 1442.66, high: 1456, low: 1431.7, volume: 29847 },
+      { date: '2026-11-19', open: 1442, close: 1460.21, high: 1464.99, low: 1432.1, volume: 42692 },
+    ]);
+    expect(parseEastmoneyKlinePayload('{broken')).toEqual([]);
+  });
+
+  it('parses HK quotes from the Eastmoney payload (stocks and indices)', () => {
+    const payload = JSON.stringify({
+      rc: 0,
+      data: {
+        diff: [
+          { f12: 'HSI', f13: 100, f14: '恒生指数', f2: 26451.31, f3: 0.91, f4: 238.94, f18: 26212.37 },
+          { f12: '00700', f13: 116, f14: '腾讯控股', f2: 682.5, f3: 1.26, f4: 8.5, f18: 674.0 },
+        ],
+      },
+    });
+
+    const quotes = parseEastmoneyQuotePayload(payload);
+
+    expect(quotes).toHaveLength(2);
+    expect(quotes[0]).toMatchObject({ code: 'hkHSI', name: '恒生指数', price: 26451.31 });
+    expect(quotes[1]).toMatchObject({ code: 'hk00700', name: '腾讯控股', price: 682.5 });
+  });
+
+  it('parses US quotes and disambiguates indices via the secid map', () => {
+    const payload = JSON.stringify({
+      rc: 0,
+      data: {
+        diff: [
+          { f12: 'DJIA', f13: 100, f14: '道琼斯', f2: 48220.5, f3: 0.42, f4: 201.3, f18: 48019.2 },
+          { f12: 'NVDA', f13: 105, f14: '英伟达', f2: 187.32, f3: -1.08, f4: -2.05, f18: 189.37 },
+        ],
+      },
+    });
+    const secidMap = new Map([
+      ['100.DJIA', 'usDJI'],
+      ['105.NVDA', 'usNVDA'],
+    ]);
+
+    const quotes = parseEastmoneyQuotePayload(payload, secidMap);
+
+    expect(quotes).toHaveLength(2);
+    expect(quotes[0]).toMatchObject({ code: 'usDJI', name: '道琼斯' });
+    expect(quotes[1]).toMatchObject({ code: 'usNVDA', name: '英伟达' });
   });
 
   it('parses Eastmoney UTF-8 market quotes without a GBK decoder', () => {
@@ -201,7 +264,6 @@ describe('news-service', () => {
       previousClose: 3577.62,
       change: -66.35,
       changePercent: -1.85,
-      points: [],
     });
     expect(quotes[1].code).toBe('sh600519');
   });
@@ -213,6 +275,7 @@ describe('news-service', () => {
         diff: [
           { f12: '000001', f13: 1, f14: '上证指数', f2: 3511.27, f3: -1.85, f4: -66.35, f18: 3577.62 },
           { f12: '399001', f13: 0, f14: '深证成指', f2: 11234.56, f3: 0.52, f4: 58.1, f18: 11176.46 },
+          { f12: 'HSI', f13: 100, f14: '恒生指数', f2: 26451.31, f3: 0.91, f4: 238.94, f18: 26212.37 },
         ],
       },
     });
@@ -235,10 +298,39 @@ describe('news-service', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(market.source).toBe('东方财富行情');
-    expect(market.indices[0]).toMatchObject({
+    const cnIndex = market.groups.find((group) => group.id === 'cn-index');
+    const hk = market.groups.find((group) => group.id === 'hk');
+    expect(cnIndex?.quotes[0]).toMatchObject({
       code: 'sh000001',
       name: '上证指数',
       price: 3511.27,
     });
+    expect(hk?.quotes[0]).toMatchObject({ code: 'hkHSI', name: '恒生指数' });
+  });
+
+  it('maps suggest results to unified quote codes for full-market search', async () => {
+    const payload = JSON.stringify({
+      QuotationCodeTable: {
+        Data: [
+          { Code: '600519', Name: '贵州茅台', QuoteID: '1.600519', SecurityTypeName: '沪A' },
+          { Code: '00700', Name: '腾讯控股', QuoteID: '116.00700', SecurityTypeName: '港股' },
+          { Code: 'NVDA', Name: '英伟达', QuoteID: '105.NVDA', SecurityTypeName: '美股' },
+          { Code: '999999', Name: '垃圾数据', QuoteID: '999.999999', SecurityTypeName: '未知' },
+        ],
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(payload, {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    })));
+
+    const results = await searchQuotes('600519');
+
+    expect(results).toHaveLength(3);
+    expect(results.map((item) => item.code)).toEqual(['sh600519', 'hk00700', 'usNVDA']);
+    expect(results[0]).toMatchObject({ name: '贵州茅台', market: '沪A' });
+
+    // 空查询直接返回空，不发起请求
+    expect(await searchQuotes('')).toEqual([]);
   });
 });

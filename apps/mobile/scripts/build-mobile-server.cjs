@@ -2,7 +2,10 @@
  * 移动端内嵌 Node.js 后端构建脚本
  *
  * 功能：
- * 1. 复用 apps/server 的 tsc 编译产物（rootDir=../..，已包含 core/shared）
+ * 1. **从零重建** apps/server 的 tsc 编译产物（rootDir=../..，已包含 core/shared）
+ *    —— 此前是「复用现有 dist」：apps/server/src 变了但没重编 server 时，
+ *    构建链会静默把过期 dist 打进 APK（2026-11-20 实报：资讯/学习服务端路由
+ *    404，手机上资讯空白）。现在每次打包强制重编，不再依赖打包机自觉。
  * 2. 复制到 apps/mobile/nodejs/dist/（保持 monorepo 目录结构以解析 workspace import）
  * 3. 为 @yan-zhi/core 与 @yan-zhi/shared 生成 node_modules stub（ESM 解析需要）
  * 4. 生成启动入口 apps/mobile/nodejs/index.js
@@ -56,6 +59,30 @@ function copyDirIfExists(src, dest, label) {
   return true;
 }
 
+// ── 步骤 0：从零重建 apps/server 编译产物 ──
+// 不复用任何旧 dist：apps/server 的 build 脚本自带 rmSync(dist) + tsc +
+// fix-esm-extensions + copy-plugin-assets，全程干净输出。编译失败直接中断打包，
+// 绝不带病把旧产物打进 APK。
+log('=== 步骤 0: 从零重建 apps/server ===');
+{
+  const { spawnSync } = require('node:child_process');
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  // shell:true 必须：新版 Node 对 .cmd/.bat 直接 spawn 一律 EINVAL（同步骤 3.5）
+  const r = spawnSync(npmCmd, ['run', 'build'], {
+    cwd: SERVER_DIR,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  if (r.status !== 0) {
+    error('apps/server 从零重建失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），中止打包');
+    process.exit(1);
+  }
+  if (!fs.existsSync(path.join(SERVER_DIST, 'apps', 'server', 'src', 'index.js'))) {
+    error('apps/server 重编完成但 dist 缺少入口 index.js，中止打包');
+    process.exit(1);
+  }
+}
+
 // ── 步骤 1：清理旧产物 ──
 log('=== 步骤 1: 清理旧产物 ===');
 if (fs.existsSync(NODEJS_DIST)) {
@@ -98,7 +125,31 @@ if (!okCore || !okShared) {
 // apps/server/plugins/builtin/<id>/ 由 apps/desktop/scripts/build-plugins.mjs 生成
 // （桌面打包链经 electron-build/build-all-editions 幂等补建）。服务端 builtin-packages.ts
 // 的扫描候选含 <server>/plugins/builtin —— 拷到 nodejs/dist/plugins/builtin 即被扫到。
-// 缺目录（未跑过构建）只提示不拦：源码兜底注册仍在。
+// ★ 移动端不能直接拷现成目录：builtin 是桌面链的产物，插件源码 manifest 变了它不会
+//   自动刷新（2026-11-20 实报：builtin 里的 learning-mode manifest 还是旧的 /learning，
+//   手机上学习模式整个「没有这个页面」）。这里从零重建 —— 先清空再全量重生成。
+{
+  const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
+  log('=== 步骤 2.5-pre: 从零重建 plugins/builtin ===');
+  if (fs.existsSync(builtinSrc)) {
+    fs.rmSync(builtinSrc, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  }
+  fs.mkdirSync(builtinSrc, { recursive: true });
+  const { spawnSync } = require('node:child_process');
+  const buildPlugins = path.join(ROOT, 'apps', 'desktop', 'scripts', 'build-plugins.mjs');
+  const r = spawnSync(process.execPath, [buildPlugins, '--all', '--with-frontend', `--out=${builtinSrc}`], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
+  if (r.status !== 0) {
+    error('builtin 插件包从零重建失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），中止打包');
+    process.exit(1);
+  }
+  if (!fs.existsSync(path.join(builtinSrc, 'learning-mode', 'manifest.json'))) {
+    error('builtin 重建后缺少 learning-mode/manifest.json，中止打包');
+    process.exit(1);
+  }
+}
 {
   const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
   const keepRaw = String(process.env.YZ_BUILD_PLUGIN_KEEP || '').trim();

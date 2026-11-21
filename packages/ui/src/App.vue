@@ -151,8 +151,7 @@
     <div v-if="isMobilePlatform && !appBooted" class="yz-boot-splash">
       <div class="yz-boot-card">
         <div class="yz-boot-logo">言</div>
-        <div class="yz-boot-title">正在启动本地服务…</div>
-        <div class="yz-boot-sub">首次启动需要初始化数据库，可能需要十几秒，请稍候</div>
+        <div class="yz-boot-title">加载中…</div>
       </div>
     </div>
   </div>

@@ -15,6 +15,9 @@ const relTargets = [
   'nodejs/dist',
   'android/app/src/main/assets/public',
   'android/capacitor-cordova-android-plugins',
+  // 上一次 gradle 的 APK 输出（copy-apk 会扫 outputs/apk 下所有 .apk，不清就有
+  // 把陈旧 APK 一起拷进发行目录的风险）
+  'android/app/build/outputs',
 ];
 
 /** 扫一层遗留备份（旧版手工清理留下的 *_prev_*，留在工程内会被打进 APK）。 */

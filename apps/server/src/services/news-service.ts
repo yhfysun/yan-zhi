@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import type {
+  KlineBar,
+  MarketGroupId,
   MarketQuote,
   NewsArticle,
   NewsArticleBlock,
@@ -9,12 +11,18 @@ import type {
   NewsItem,
   NewsMarketResult,
   NewsSourceStatus,
+  QuoteDetail,
+  QuoteListPage,
+  QuoteSearchResult,
+  SectorSnapshot,
 } from '@yan-zhi/shared';
 
 interface NewsSourceDefinition {
   id: Exclude<NewsCategory, 'top'>;
   name: string;
   url: string;
+  /** 条目来源媒体标签（RSS 源可能与分类域名不同）。 */
+  sourceName: string;
 }
 
 interface CacheEntry<T> {
@@ -23,44 +31,104 @@ interface CacheEntry<T> {
 }
 
 const NEWS_SOURCES: NewsSourceDefinition[] = [
-  { id: 'domestic', name: '国内', url: 'https://www.chinanews.com.cn/rss/china.xml' },
-  { id: 'world', name: '国际', url: 'https://www.chinanews.com.cn/rss/world.xml' },
-  { id: 'finance', name: '财经', url: 'https://www.chinanews.com.cn/rss/finance.xml' },
-  { id: 'society', name: '社会', url: 'https://www.chinanews.com.cn/rss/society.xml' },
+  { id: 'domestic', name: '国内', url: 'https://www.chinanews.com.cn/rss/china.xml', sourceName: '中国新闻网' },
+  { id: 'world', name: '国际', url: 'https://www.chinanews.com.cn/rss/world.xml', sourceName: '中国新闻网' },
+  { id: 'finance', name: '财经', url: 'https://www.chinanews.com.cn/rss/finance.xml', sourceName: '中国新闻网' },
+  { id: 'society', name: '社会', url: 'https://www.chinanews.com.cn/rss/society.xml', sourceName: '中国新闻网' },
+  { id: 'tech', name: '科技', url: 'https://www.ithome.com/rss', sourceName: 'IT之家' },
+  { id: 'game', name: '游戏', url: 'https://www.gcores.com/rss', sourceName: '机核' },
+  { id: 'sports', name: '体育', url: 'https://www.chinanews.com.cn/rss/sports.xml', sourceName: '中国新闻网' },
+  { id: 'culture', name: '文化', url: 'https://www.chinanews.com.cn/rss/culture.xml', sourceName: '中国新闻网' },
+  { id: 'edu', name: '教育', url: 'https://www.chinanews.com.cn/rss/edu.xml', sourceName: '中国新闻网' },
+  { id: 'health', name: '健康', url: 'https://www.chinanews.com.cn/rss/jk.xml', sourceName: '中国新闻网' },
+  { id: 'chinese', name: '华人', url: 'https://www.chinanews.com.cn/rss/chinese.xml', sourceName: '中国新闻网' },
 ];
 
-const SOURCE_BY_CATEGORY: Record<Exclude<NewsCategory, 'top'>, NewsSourceDefinition> = {
-  domestic: NEWS_SOURCES[0],
-  world: NEWS_SOURCES[1],
-  finance: NEWS_SOURCES[2],
-  society: NEWS_SOURCES[3],
-};
+const SOURCE_BY_CATEGORY = new Map(NEWS_SOURCES.map((source) => [source.id, source]));
+
+interface MarketGroupDefinition {
+  id: MarketGroupId;
+  label: string;
+  codes: string[];
+}
+
+/**
+ * 行情分组：A股指数 / 热门A股 / 港股（指数 + 权重股）/ 美股（指数 + 权重股）。
+ * 代码口径见 shared MarketQuote 注释；换源只需调整 GROUPS 与 codeToEastmoneySecid。
+ * 列表只放精选；详情页内可通过搜索覆盖全市场任意品种。
+ */
+const MARKET_GROUPS: MarketGroupDefinition[] = [
+  { id: 'cn-index', label: 'A股指数', codes: ['sh000001', 'sz399001', 'sz399006', 'sh000300'] },
+  {
+    id: 'cn-hot',
+    label: '热门A股',
+    codes: ['sh600519', 'sz300750', 'sz002594', 'sh688981', 'sz300059', 'sh601318', 'sh601899', 'sz000858'],
+  },
+  { id: 'hk', label: '港股', codes: ['hkHSI', 'hkHSCEI', 'hk00700', 'hk09988', 'hk01810', 'hk03690'] },
+  { id: 'us', label: '美股', codes: ['usDJI', 'usIXIC', 'usSPX', 'usNVDA', 'usAAPL', 'usTSLA', 'usMSFT', 'usBABA'] },
+  { id: 'metal', label: '贵金属', codes: ['auAUTD', 'auAUM', 'sh518880', 'sh518800', 'auGC00Y', 'auSI00Y'] },
+];
 
 const FEED_TTL_MS = 5 * 60_000;
 const ARTICLE_TTL_MS = 30 * 60_000;
 const MARKET_TTL_MS = 60_000;
-const ALLOWED_NEWS_HOSTS = new Set(['www.chinanews.com.cn', 'www.chinanews.com']);
+const QUOTE_TTL_MS = 60_000;
+const KLINE_BARS = 60;
+const ALLOWED_NEWS_HOSTS = new Set([
+  'www.chinanews.com.cn',
+  'www.chinanews.com',
+  'www.ithome.com',
+  'ithome.com',
+  'www.gcores.com',
+  'gcores.com',
+]);
 const COPYRIGHT_NOTE = '正文由公开 RSS 与来源页面整理，仅供个人阅读；版权归原媒体及作者所有。';
 
 const sourceCache = new Map<string, CacheEntry<NewsItem[]>>();
 const feedCache = new Map<NewsCategory, CacheEntry<NewsFeedResult>>();
 const articleCache = new Map<string, CacheEntry<NewsArticle>>();
 const marketCache = new Map<string, CacheEntry<NewsMarketResult>>();
+const quoteCache = new Map<string, CacheEntry<QuoteDetail>>();
+const searchCache = new Map<string, CacheEntry<QuoteSearchResult[]>>();
 
-const MARKET_INDICES = ['sh000001', 'sz399001', 'sz399006', 'sh000300'];
-const MARKET_WATCHLIST = ['sh600519', 'sz300750', 'sz002594', 'sh688981', 'sz300059', 'sh601318'];
-const EASTMONEY_SECID_BY_CODE: Record<string, string> = {
-  sh000001: '1.000001',
-  sz399001: '0.399001',
-  sz399006: '0.399006',
-  sh000300: '1.000300',
-  sh600519: '1.600519',
-  sz300750: '0.300750',
-  sz002594: '0.002594',
-  sh688981: '1.688981',
-  sz300059: '0.300059',
-  sh601318: '1.601318',
+/** 非常规市场代码 → 东方财富 secid（美股 NYSE / 上金所 / 上期所 / COMEX）。
+ *  上金所（市场 118）的 ulist 实测只认 AUTD；Au99.99 符号带点号会被 secid 解析吞掉，不可用。 */
+const SECID_OVERRIDES: Record<string, string> = {
+  usBABA: '106.BABA',
+  auAUTD: '118.AUTD',
+  auAUM: '113.aum',
+  auAGM: '113.agm',
+  auGC00Y: '101.GC00Y',
+  auSI00Y: '101.SI00Y',
 };
+
+/** 港股/美股指数符号 → 行情代码（f13=100 同时涵盖两类，需要符号反查消歧）。 */
+const INDEX_SYMBOL_TO_CODE: Record<string, string> = {
+  HSI: 'hkHSI',
+  HSCEI: 'hkHSCEI',
+  DJIA: 'usDJI',
+  IXIC: 'usIXIC',
+  SPX: 'usSPX',
+  NDX: 'usNDX',
+};
+
+/** 行情代码 → 东方财富 secid：sh→1.、sz→0.、港股个股→116.、港股/美股指数→100.、美股→105/106/107.、板块→90.、商品→113/101. */
+function codeToEastmoneySecid(code: string): string {
+  if (/^sh\d{6}$/.test(code)) return `1.${code.slice(2)}`;
+  if (/^sz\d{6}$/.test(code)) return `0.${code.slice(2)}`;
+  if (/^hk/.test(code)) {
+    const symbol = code.slice(2);
+    return /^\d+$/.test(symbol) ? `116.${symbol}` : `100.${symbol}`;
+  }
+  if (/^us[A-Za-z]{1,10}$/.test(code)) {
+    return SECID_OVERRIDES[code] || `105.${code.slice(2)}`;
+  }
+  if (/^au[A-Za-z0-9]{2,8}$/.test(code)) {
+    return SECID_OVERRIDES[code] || `113.${code.slice(2).toLowerCase()}`;
+  }
+  if (/^bk\d{3,6}$/i.test(code)) return `90.${code.slice(2).toUpperCase()}`;
+  return '';
+}
 
 function setBoundedCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: CacheEntry<T>, maxEntries: number): void {
   if (!cache.has(key) && cache.size >= maxEntries) {
@@ -122,7 +190,7 @@ export function parseChinaNewsRss(xml: string, source: NewsSourceDefinition): Ne
       id: stableNewsId(url, title),
       title,
       summary,
-      source: '中国新闻网',
+      source: source.sourceName,
       category: source.id,
       categoryLabel: source.name,
       publishedAt,
@@ -273,7 +341,8 @@ async function fetchText(
     const response = await fetch(url, {
       headers: {
         accept: 'application/rss+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
-        'user-agent': 'Mozilla/5.0 YanZhiNews/1.0 (+personal RSS reader)',
+        // 部分站点（IT之家等）会按 UA 拦截非浏览器请求，统一带标准浏览器前缀
+        'user-agent': 'Mozilla/5.0 (Linux; Android 16; Mobile) YanZhiNews/1.0',
       },
       redirect,
       signal: controller.signal,
@@ -310,7 +379,7 @@ async function loadSource(source: NewsSourceDefinition, force: boolean): Promise
 export async function getNewsFeed(category: NewsCategory, force = false): Promise<NewsFeedResult> {
   const cached = feedCache.get(category);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
-  const sources = category === 'top' ? NEWS_SOURCES : [SOURCE_BY_CATEGORY[category]];
+  const sources = category === 'top' ? NEWS_SOURCES : [SOURCE_BY_CATEGORY.get(category as Exclude<NewsCategory, 'top'>)].filter(Boolean) as NewsSourceDefinition[];
   const loaded = await Promise.all(sources.map((source) => loadSource(source, force)));
   const items = mergeNewsItems(loaded.flatMap((source) => source.items)).slice(0, category === 'top' ? 80 : 40);
   const result: NewsFeedResult = {
@@ -394,7 +463,6 @@ export function parseTencentQuotePayload(payload: string): MarketQuote[] {
       change: Number.isFinite(change) ? change : price - previousClose,
       changePercent,
       updatedAt: parseTencentTimestamp(fields[30] || ''),
-      points: [],
     });
   }
   return quotes;
@@ -403,8 +471,11 @@ export function parseTencentQuotePayload(payload: string): MarketQuote[] {
 /**
  * 东方财富行情是 UTF-8 JSON，Android 内嵌 Node 的 TextDecoder 不支持 GBK，
  * 因此作为行情主链路；腾讯 GBK 接口仅保留为支持该编码的环境下的回退。
+ * f13 市场：1=沪 0=深 116=港股个股 100=港股/美股指数 105/106/107=美股。
+ * secidMap（可选）：secid → 行情代码 精确反查表；f13=100 同时覆盖港股与美股指数，
+ * 带上它才能正确区分 hkHSI 与 usDJI，否则走启发式兜底。
  */
-export function parseEastmoneyQuotePayload(payload: string): MarketQuote[] {
+export function parseEastmoneyQuotePayload(payload: string, secidMap?: Map<string, string>): MarketQuote[] {
   try {
     const parsed = JSON.parse(payload) as { data?: { diff?: unknown } };
     const raw = parsed?.data?.diff;
@@ -418,14 +489,21 @@ export function parseEastmoneyQuotePayload(payload: string): MarketQuote[] {
     for (const item of rows) {
       if (!item || typeof item !== 'object') continue;
       const row = item as Record<string, unknown>;
-      const symbol = String(row.f12 ?? '').trim().padStart(6, '0');
+      const rawSymbol = String(row.f12 ?? '').trim();
       const market = String(row.f13 ?? '').trim();
       const name = normalizeText(String(row.f14 ?? ''));
       const price = Number(row.f2);
       const change = Number(row.f4);
       const changePercent = Number(row.f3);
       const previousClose = Number(row.f18);
-      const code = market === '1' ? `sh${symbol}` : market === '0' ? `sz${symbol}` : '';
+      let code = secidMap?.get(`${market}.${rawSymbol}`) || '';
+      if (!code) {
+        if (market === '1' && /^\d{1,6}$/.test(rawSymbol)) code = `sh${rawSymbol.padStart(6, '0')}`;
+        else if (market === '0' && /^\d{1,6}$/.test(rawSymbol)) code = `sz${rawSymbol.padStart(6, '0')}`;
+        else if (market === '116' && /^\d{1,5}$/.test(rawSymbol)) code = `hk${rawSymbol.padStart(5, '0')}`;
+        else if (market === '105' || market === '106' || market === '107') code = `us${rawSymbol}`;
+        else if (market === '100') code = INDEX_SYMBOL_TO_CODE[rawSymbol] || `hk${rawSymbol}`;
+      }
       if (!code || !name || !Number.isFinite(price) || !Number.isFinite(changePercent)) continue;
       quotes.push({
         code,
@@ -435,7 +513,6 @@ export function parseEastmoneyQuotePayload(payload: string): MarketQuote[] {
         change: Number.isFinite(change) ? change : price - previousClose,
         changePercent,
         updatedAt,
-        points: [],
       });
     }
     return quotes;
@@ -444,37 +521,88 @@ export function parseEastmoneyQuotePayload(payload: string): MarketQuote[] {
   }
 }
 
-export function parseTencentKlinePayload(payload: string, code: string): number[] {
+/** 东方财富日 K（fields2 f51-f56：日期,开,收,高,低,量）。 */
+export function parseEastmoneyKlinePayload(payload: string): KlineBar[] {
+  try {
+    const parsed = JSON.parse(payload) as { data?: { klines?: unknown } };
+    const rows = Array.isArray(parsed?.data?.klines) ? (parsed.data.klines as unknown[]) : [];
+    const bars: KlineBar[] = [];
+    for (const row of rows) {
+      if (typeof row !== 'string') continue;
+      const parts = row.split(',');
+      const date = (parts[0] || '').trim();
+      const open = Number(parts[1]);
+      const close = Number(parts[2]);
+      const high = Number(parts[3]);
+      const low = Number(parts[4]);
+      const volume = Number(parts[5]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (![open, close, high, low].every(Number.isFinite)) continue;
+      bars.push({ date, open, close, high, low, volume: Number.isFinite(volume) ? volume : 0 });
+    }
+    return bars;
+  } catch {
+    return [];
+  }
+}
+
+/** 腾讯日 K 回退（qfqday/hfqday/day 行：[日期, 开, 收, 高, 低, 量, ...]）。 */
+export function parseTencentKlinePayload(payload: string, code: string): KlineBar[] {
   try {
     const parsed = JSON.parse(payload) as any;
     const stock = parsed?.data?.[code];
-    const rows = stock?.day || stock?.qfqday || stock?.hfqday;
+    const rows = stock?.qfqday || stock?.hfqday || stock?.day;
     if (!Array.isArray(rows)) return [];
-    return rows
-      .map((row: unknown) => Array.isArray(row) ? Number(row[2]) : Number.NaN)
-      .filter((value: number) => Number.isFinite(value))
-      .slice(-10);
+    const bars: KlineBar[] = [];
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      const date = String(row[0] || '');
+      const open = Number(row[1]);
+      const close = Number(row[2]);
+      const high = Number(row[3]);
+      const low = Number(row[4]);
+      const volume = Number(row[5]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (![open, close, high, low].every(Number.isFinite)) continue;
+      bars.push({ date, open, close, high, low, volume: Number.isFinite(volume) ? volume : 0 });
+    }
+    return bars;
   } catch {
     return [];
   }
 }
 
-async function getMarketQuoteSeries(code: string): Promise<number[]> {
-  try {
-    const payload = await fetchText(
-      `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(code)},day,,,10,qfq`,
-      'utf-8',
-      6_000,
-    );
-    return parseTencentKlinePayload(payload, code);
-  } catch {
-    return [];
+function allMarketCodes(): string[] {
+  return [...new Set(MARKET_GROUPS.flatMap((group) => group.codes))];
+}
+
+/** secid → 行情代码 反查表（f13=100 需要精确区分港股/美股指数）。 */
+function buildSecidMap(codes: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const code of codes) {
+    const secid = codeToEastmoneySecid(code);
+    if (secid) map.set(secid, code);
   }
+  return map;
+}
+
+function buildMarketGroups(byCode: Map<string, MarketQuote>, fallbackUpdatedAt: number): NewsMarketResult {
+  const groups = MARKET_GROUPS.map((group) => ({
+    id: group.id,
+    label: group.label,
+    quotes: group.codes.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
+  })).filter((group) => group.quotes.length > 0);
+  return {
+    groups,
+    updatedAt: fallbackUpdatedAt || Date.now(),
+    stale: false,
+    source: '',
+  };
 }
 
 async function getEastmoneyMarket(): Promise<NewsMarketResult> {
-  const secids = [...MARKET_INDICES, ...MARKET_WATCHLIST]
-    .map((code) => EASTMONEY_SECID_BY_CODE[code])
+  const secids = allMarketCodes()
+    .map((code) => codeToEastmoneySecid(code))
     .filter(Boolean)
     .join(',');
   const payload = await fetchText(
@@ -482,52 +610,249 @@ async function getEastmoneyMarket(): Promise<NewsMarketResult> {
     'utf-8',
     8_000,
   );
-  const quotes = parseEastmoneyQuotePayload(payload);
+  const quotes = parseEastmoneyQuotePayload(payload, buildSecidMap(allMarketCodes()));
   if (!quotes.length) throw new Error('东方财富行情返回为空');
   const byCode = new Map(quotes.map((quote) => [quote.code, quote]));
-  return {
-    indices: MARKET_INDICES.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-    watchlist: MARKET_WATCHLIST.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-    updatedAt: quotes.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now(),
-    stale: false,
-    source: '东方财富行情',
-  };
+  const result = buildMarketGroups(byCode, 0);
+  result.source = '东方财富行情';
+  result.updatedAt = quotes.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now();
+  return result;
 }
 
 async function getTencentMarket(): Promise<NewsMarketResult> {
-  const codes = [...MARKET_INDICES, ...MARKET_WATCHLIST];
-  const quoteText = await fetchText(`https://qt.gtimg.cn/q=${codes.join(',')}`, 'gbk', 8_000);
+  const quoteText = await fetchText(`https://qt.gtimg.cn/q=${allMarketCodes().join(',')}`, 'gbk', 8_000);
   const quotes = parseTencentQuotePayload(quoteText);
   if (!quotes.length) throw new Error('腾讯行情返回为空');
-  const series = await Promise.all(quotes.map((quote) => getMarketQuoteSeries(quote.code)));
-  const withSeries = quotes.map((quote, index) => ({ ...quote, points: series[index] || [] }));
-  const byCode = new Map(withSeries.map((quote) => [quote.code, quote]));
-  return {
-    indices: MARKET_INDICES.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-    watchlist: MARKET_WATCHLIST.map((code) => byCode.get(code)).filter((quote): quote is MarketQuote => !!quote),
-    updatedAt: withSeries.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now(),
-    stale: false,
-    source: '腾讯行情',
-  };
+  const byCode = new Map(quotes.map((quote) => [quote.code, quote]));
+  const result = buildMarketGroups(byCode, 0);
+  result.source = '腾讯行情';
+  result.updatedAt = quotes.reduce((latest, quote) => Math.max(latest, quote.updatedAt), 0) || Date.now();
+  return result;
 }
 
 export async function getNewsMarket(force = false): Promise<NewsMarketResult> {
-  const cached = marketCache.get('cn-equities');
+  const cached = marketCache.get('cn-hk-equities');
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
 
   const errors: string[] = [];
   for (const provider of [getEastmoneyMarket, getTencentMarket]) {
     try {
       const result = await provider();
-      marketCache.set('cn-equities', { value: result, expiresAt: Date.now() + MARKET_TTL_MS });
+      marketCache.set('cn-hk-equities', { value: result, expiresAt: Date.now() + MARKET_TTL_MS });
       return result;
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
   if (cached) {
-    marketCache.set('cn-equities', { value: cached.value, expiresAt: Date.now() + MARKET_TTL_MS });
+    marketCache.set('cn-hk-equities', { value: cached.value, expiresAt: Date.now() + MARKET_TTL_MS });
     return { ...cached.value, stale: true };
   }
   throw new Error(`行情源暂不可用：${errors.join(' / ')}`);
+}
+
+function isValidMarketCode(code: string): boolean {
+  return /^(sh\d{6}|sz\d{6}|hk(\d{1,5}|[A-Za-z]{2,8})|us[A-Za-z]{1,10}|au[A-Za-z0-9]{2,8}|bk\d{3,6})$/.test(code);
+}
+
+/** 东方财富日 K 主链路（UTF-8，Android 兼容），腾讯为回退。 */
+async function fetchKlineBars(code: string): Promise<KlineBar[]> {
+  const secid = codeToEastmoneySecid(code);
+  if (secid) {
+    try {
+      const payload = await fetchText(
+        `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`
+          + `&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=1&end=20500101&lmt=${KLINE_BARS}`,
+        'utf-8',
+        8_000,
+      );
+      const bars = parseEastmoneyKlinePayload(payload);
+      if (bars.length) return bars;
+    } catch {
+      // 落到腾讯回退
+    }
+  }
+  const payload = await fetchText(
+    `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(code)},day,,,${KLINE_BARS},qfq`,
+    'utf-8',
+    6_000,
+  );
+  return parseTencentKlinePayload(payload, code);
+}
+
+/** 个股/指数详情：实时快照 + 近 60 根日 K，供行情详情页与 K 线图渲染。 */
+export async function getNewsQuoteDetail(rawCode: string, force = false): Promise<QuoteDetail> {
+  const code = normalizeText(rawCode).toLowerCase();
+  if (!isValidMarketCode(code)) throw new Error('不支持的商品代码');
+  const cached = quoteCache.get(code);
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  // 快照：优先东方财富（UTF-8），腾讯 GBK 回退
+  let quote: MarketQuote | null = null;
+  let source = '';
+  const secid = codeToEastmoneySecid(code);
+  if (secid) {
+    try {
+      const payload = await fetchText(
+        `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f13,f14,f2,f3,f4,f18&secids=${secid}`,
+        'utf-8',
+        8_000,
+      );
+      const found = parseEastmoneyQuotePayload(payload, buildSecidMap([code])).find((item) => item.code === code);
+      if (found) {
+        quote = found;
+        source = '东方财富行情';
+      }
+    } catch {
+      // 落到腾讯回退
+    }
+  }
+  if (!quote) {
+    const quoteText = await fetchText(`https://qt.gtimg.cn/q=${code}`, 'gbk', 8_000);
+    const found = parseTencentQuotePayload(quoteText).find((item) => item.code === code);
+    if (!found) throw new Error('未找到该商品的实时行情');
+    quote = found;
+    source = '腾讯行情';
+  }
+
+  const kline = await fetchKlineBars(code);
+  const detail: QuoteDetail = { quote, kline, fetchedAt: Date.now(), source };
+  setBoundedCache(quoteCache, code, { value: detail, expiresAt: Date.now() + QUOTE_TTL_MS }, 40);
+  return detail;
+}
+
+const SEARCH_TTL_MS = 60_000;
+const SEARCH_ENDPOINT = 'https://searchapi.eastmoney.com/api/suggest/get'
+  + '?token=D43BF722C8E33BDC906FB84D85E326E8&type=14&count=10';
+
+/**
+ * 全市场搜索：按代码或名称前缀 suggest（东方财富）。返回统一口径的行情代码，
+ * 详情页拿到 code 后直接走 /news/quote 渲染 K 线。
+ */
+export async function searchQuotes(rawQuery: string): Promise<QuoteSearchResult[]> {
+  const query = normalizeText(rawQuery);
+  if (!query || query.length > 24) return [];
+  const key = query.toLowerCase();
+  const cached = searchCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const payload = await fetchText(`${SEARCH_ENDPOINT}&input=${encodeURIComponent(query)}`, 'utf-8', 6_000);
+  let results: QuoteSearchResult[] = [];
+  try {
+    const parsed = JSON.parse(payload) as {
+      QuotationCodeTable?: { Data?: Array<Record<string, unknown>> };
+    };
+    const rows = parsed.QuotationCodeTable?.Data || [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      // suggest 返回的行情 secid 字段名为 QuoteID（形如 1.600519 / 116.00700 / 105.NVDA）
+      const quotationCode = String(row.QuoteID ?? row.QuotationCode ?? '').trim();
+      const name = normalizeText(String(row.Name ?? ''));
+      const market = normalizeText(String(row.SecurityTypeName ?? ''));
+      if (!quotationCode.includes('.') || !name) continue;
+      const [marketPart, symbol] = quotationCode.split('.', 2);
+      let code = '';
+      if (marketPart === '1' && /^\d{6}$/.test(symbol)) code = `sh${symbol}`;
+      else if (marketPart === '0' && /^\d{6}$/.test(symbol)) code = `sz${symbol}`;
+      else if (marketPart === '116' && /^\d{1,5}$/.test(symbol)) code = `hk${symbol.padStart(5, '0')}`;
+      else if (marketPart === '105' || marketPart === '106' || marketPart === '107') code = `us${symbol}`;
+      else if (marketPart === '100') code = INDEX_SYMBOL_TO_CODE[symbol] || (symbol && /^[A-Za-z]+$/.test(symbol) ? `hk${symbol}` : '');
+      if (!code || !isValidMarketCode(code) || seen.has(code)) continue;
+      seen.add(code);
+      results.push({ code, name, market: market || '行情' });
+      if (results.length >= 8) break;
+    }
+  } catch {
+    return [];
+  }
+  setBoundedCache(searchCache, key, { value: results, expiresAt: Date.now() + SEARCH_TTL_MS }, 60);
+  return results;
+}
+
+const SECTOR_TTL_MS = 60_000;
+const SECTOR_SOURCE = '东方财富行业板块';
+const sectorCache = new Map<string, CacheEntry<SectorSnapshot>>();
+
+/**
+ * 行业板块动向：东方财富 BK 板块指数（fs=m:90 t:2），按涨跌幅排序取红榜/绿榜。
+ * 板块 code（bk 开头）可直接走 /news/quote 拉板块 K 线 —— 这份结构化数据也是
+ * 后续大模型做市场分析的基础输入之一。
+ */
+export async function getSectorSnapshot(force = false): Promise<SectorSnapshot> {
+  const cached = sectorCache.get('industry');
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const payload = await fetchText(
+    'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&fid=f3'
+      + '&fs=m:90+t:2&fields=f12,f14,f3,f128,f136',
+    'utf-8',
+    8_000,
+  );
+  const parsed = JSON.parse(payload) as { data?: { diff?: unknown } };
+  const raw = parsed?.data?.diff;
+  const rows = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object'
+      ? Object.values(raw as Record<string, unknown>)
+      : [];
+  const items = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const record = row as Record<string, unknown>;
+    const boardCode = String(record.f12 ?? '').trim();
+    const name = normalizeText(String(record.f14 ?? ''));
+    const changePercent = Number(record.f3);
+    if (!/^BK\d{3,6}$/.test(boardCode) || !name || !Number.isFinite(changePercent)) continue;
+    items.push({
+      code: `bk${boardCode}`,
+      name,
+      changePercent,
+      leader: normalizeText(String(record.f128 ?? '')),
+      leaderChangePercent: Number(record.f136) || 0,
+    });
+  }
+  if (items.length < 12) throw new Error('行业板块数据不足');
+
+  const sorted = items.sort((a, b) => b.changePercent - a.changePercent);
+  const snapshot: SectorSnapshot = {
+    leaders: sorted.slice(0, 8),
+    laggards: sorted.slice(-6).reverse(),
+    updatedAt: Date.now(),
+    source: SECTOR_SOURCE,
+    stale: false,
+  };
+  sectorCache.set('industry', { value: snapshot, expiresAt: Date.now() + SECTOR_TTL_MS });
+  return snapshot;
+}
+
+const QUOTE_LIST_PAGE_SIZE = 20;
+/** 全市场列表的 clist 筛选集：A股沪深主板/创业板/科创版，港股全市场，美股三大所。 */
+const QUOTE_LIST_FS: Record<'cn' | 'hk' | 'us', string> = {
+  cn: 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',
+  hk: 'm:116',
+  us: 'm:105,m:106,m:107',
+};
+
+/**
+ * 全市场股票分页列表（行情详情「列表页」数据源），按涨跌幅降序。
+ * 返回统一口径代码，前端点选后走 /news/quote 渲染 K 线。
+ */
+export async function getQuoteListPage(market: 'cn' | 'hk' | 'us', pn: number): Promise<QuoteListPage> {
+  const fs = QUOTE_LIST_FS[market];
+  if (!fs) throw new Error('不支持的市场');
+  const page = Number.isFinite(pn) && pn >= 1 ? Math.floor(pn) : 1;
+  const payload = await fetchText(
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=${QUOTE_LIST_PAGE_SIZE}&po=1&np=1&fltt=2&fid=f3`
+      + `&fs=${encodeURIComponent(fs)}&fields=f12,f13,f14,f2,f3,f4,f18`,
+    'utf-8',
+    8_000,
+  );
+  const parsed = JSON.parse(payload) as { data?: { total?: number; diff?: unknown } };
+  const quotes = parseEastmoneyQuotePayload(payload);
+  const total = Number(parsed?.data?.total) || 0;
+  return {
+    items: quotes,
+    pn: page,
+    hasMore: page * QUOTE_LIST_PAGE_SIZE < total,
+  };
 }

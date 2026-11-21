@@ -822,6 +822,563 @@
   background: var(--color-surface);
 }
 
+/* ── 行情分组切换（A股指数 / 热门A股 / 港股） ── */
+.market-group-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 16px 6px;
+  scrollbar-width: none;
+}
+
+.market-group-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.market-group-tab {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.market-group-tab.active {
+  border-color: transparent;
+  background: var(--news-accent, #1f6feb);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 行情头部的「全部」入口 → 全市场列表 */
+.market-open-list {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--news-accent, #1f6feb);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+
+/* 列表视图的市场页签 —— 固定三市等宽分段，禁上下裁切（老 WebView overflow-x:auto
+   会连带 overflow-y 裁切），显式兜底配色（Teleport 到 body 后不依赖新闻页作用域变量） */
+.news-quote-market-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+
+.news-quote-market-tabs .market-group-tab {
+  flex: 1;
+  min-height: 38px;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 10px;
+  font-size: 14px;
+  text-align: center;
+  color: var(--color-text-secondary, #666);
+  background: var(--color-bg, #f3f4f6);
+}
+
+.news-quote-market-tabs .market-group-tab.active {
+  color: #fff;
+  background: var(--news-accent, #c92a2a);
+  font-weight: 600;
+}
+
+.news-quote-search-top {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* 「加载更多」按钮 */
+.news-quote-more {
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.news-quote-more:disabled {
+  opacity: 0.6;
+}
+
+/* 股票列表：弹层内唯一滚动区（头部/搜索/页签固定），隐藏滚动条。
+   ★ 用两级选择器压过 `.news-quote-detail > *` 的 flex:none，否则列表会被压缩不滚。 */
+.news-quote-detail > .news-quote-stocklist {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.news-quote-stocklist::-webkit-scrollbar {
+  display: none;
+}
+
+/* 行情行改为可点按钮（进入 K 线详情） */
+.market-quote-row {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 弹层内列表行：卡片化，去掉通栏底边线，按压反馈 */
+.news-quote-overlay .market-quote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 10px;
+  border-bottom: 0;
+  border-radius: 10px;
+}
+
+.market-quote-row:active {
+  background: var(--news-soft, rgba(127, 127, 127, 0.12));
+}
+
+/* ── 行情详情（列表/K线）弹层 ──
+   ★ 底部给 TabBar 让位（60px + 安全区）：Teleport 到 body 拿不到 .app-shell 上的
+     --mobile-tabbar-h，这里用同源默认值兜底 —— 用户明确要求底部导航不被盖住。
+   ★ Teleport 到 body 后 .news-page 作用域的新闻变量全部失效，这里同源补齐，
+     否则激活页签白底白字、涨幅列丢色。 */
+.news-quote-overlay {
+  position: fixed;
+  inset: 0 0 calc(var(--mobile-tabbar-h, 60px) + env(safe-area-inset-bottom, 0px)) 0;
+  z-index: 3200;
+  overflow: hidden;
+  background: var(--color-surface);
+  --news-accent: color-mix(in srgb, var(--color-danger) 82%, var(--color-text));
+  --news-soft: color-mix(in srgb, var(--color-bg) 76%, var(--color-surface));
+}
+
+/* ★ 弹层是滚动容器但不是收缩容器：子项保持自然高度、靠容器滚动。
+   缺这条时 flex-shrink 会把市场页签压成 14px 高的一条缝（overflow-x:auto
+   连带 overflow-y 也裁切），页签显示不全——真机 CDP 实测复现过。 */
+.news-quote-detail > * {
+  flex: none;
+}
+
+.news-quote-detail {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 10px 14px 18px;
+  scrollbar-width: none;
+}
+
+.news-quote-detail::-webkit-scrollbar {
+  display: none;
+}
+
+.news-quote-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.news-quote-back,
+.news-quote-refresh {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary, inherit);
+  cursor: pointer;
+}
+
+.news-quote-back:active,
+.news-quote-refresh:active {
+  background: var(--news-soft, rgba(127, 127, 127, 0.12));
+}
+
+.news-quote-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.news-quote-title strong {
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.news-quote-title span {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.4px;
+}
+
+.news-quote-loading,
+.news-quote-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 20px;
+  color: var(--color-text-secondary);
+}
+
+.news-quote-error button {
+  margin-top: 4px;
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.news-quote-spinner,
+.news-quote-loading .news-quote-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--news-accent, #1f6feb);
+  border-radius: 50%;
+  animation: news-spin 0.9s linear infinite;
+}
+
+.news-quote-snapshot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.news-quote-price {
+  font-size: 30px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.news-quote-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.news-quote-source {
+  width: 100%;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.news-quote-empty,
+.news-quote-disclaimer {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+/* 涨跌配色（A股惯例：红涨绿跌），与列表 .market-change 同色系 */
+.news-quote-price.up,
+.news-quote-changes .up {
+  color: var(--news-up, #e03131);
+}
+
+.news-quote-price.down,
+.news-quote-changes .down {
+  color: var(--news-down, #2f9e44);
+}
+
+/* ── 全市场搜索 ── */
+.news-quote-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border);
+}
+
+.news-quote-search-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.news-quote-search-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.news-quote-search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.news-quote-search-list::-webkit-scrollbar {
+  display: none;
+}
+
+.news-quote-search-item {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.news-quote-search-item:active {
+  background: var(--news-soft, rgba(127, 127, 127, 0.12));
+}
+
+.news-quote-search-item strong {
+  font-size: 14px;
+}
+
+.news-quote-search-item span {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.news-quote-search-item small {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* ── 日 K 线图 ── */
+.news-kline {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.news-kline-svg {
+  width: 100%;
+  height: 230px;
+  display: block;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.news-kline-grid line {
+  stroke: var(--color-border);
+  stroke-width: 0.5;
+  stroke-dasharray: 3 3;
+}
+
+.news-kline-tick {
+  fill: var(--color-text-secondary);
+  font-size: 8px;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 2px;
+}
+
+.news-kline-candles line.up,
+.news-kline-candles rect.up,
+.news-kline-volume rect.up {
+  stroke: var(--news-up, #e03131);
+  fill: var(--news-up, #e03131);
+}
+
+.news-kline-candles line.down,
+.news-kline-candles rect.down,
+.news-kline-volume rect.down {
+  stroke: var(--news-down, #2f9e44);
+  fill: var(--news-down, #2f9e44);
+}
+
+.news-kline-caption {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* ── 市场动向（行业板块红绿榜） ── */
+.sector-panel {
+  margin-top: 10px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.sector-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sector-head h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.sector-updated {
+  flex: 1;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.sector-refresh {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sector-loading,
+.sector-error {
+  padding: 12px 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.sector-error button {
+  margin-top: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sector-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sector-col-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+
+.sector-col-title.up {
+  color: var(--news-up, #e03131);
+}
+
+.sector-col-title.down {
+  color: var(--news-down, #2f9e44);
+}
+
+.sector-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sector-row:active {
+  background: var(--news-soft, rgba(127, 127, 127, 0.12));
+}
+
+.sector-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sector-leader {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sector-percent {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sector-percent.up {
+  color: var(--news-up, #e03131);
+}
+
+.sector-percent.down {
+  color: var(--news-down, #2f9e44);
+}
+
+.sector-percent.flat,
+.market-change.flat {
+  color: var(--color-text-secondary);
+}
+
+.sector-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
 @keyframes news-spin {
   to { transform: rotate(360deg); }
 }
@@ -833,7 +1390,7 @@
 
 @media (max-width: 1180px) {
   .news-layout {
-    grid-template-rows: 158px minmax(0, 1fr);
+    grid-template-rows: 138px minmax(0, 1fr);
     grid-template-columns: minmax(310px, 360px) minmax(0, 1fr);
   }
 
@@ -861,8 +1418,8 @@
 
   .market-pulse {
     display: grid;
-    height: 157px;
-    grid-template-rows: 34px 56px 56px;
+    height: 136px;
+    grid-template-rows: 34px 28px 56px;
     gap: 3px;
     overflow: hidden;
     padding: 5px 16px 7px;
@@ -919,6 +1476,11 @@
   .market-sparkline,
   .market-watch-head,
   .market-disclaimer {
+    display: none;
+  }
+
+  /* 桌面窄布局下行情条是紧凑横条，板块动向收起（宽屏与手机端可见） */
+  .sector-panel {
     display: none;
   }
 
