@@ -121,6 +121,27 @@ beforeEach(() => {
         source: '东方财富行情',
       });
     }
+    if (url.startsWith('/news/quote/list')) {
+      return success({
+        items: [
+          { code: 'sh600519', name: '贵州茅台', price: 1485.75, previousClose: 1460.21, change: 25.54, changePercent: 1.75, updatedAt: Date.parse('2026-11-20T10:16:03+08:00') },
+          { code: 'sz000858', name: '五粮液', price: 128.4, previousClose: 127.9, change: 0.5, changePercent: 0.39, updatedAt: Date.parse('2026-11-20T10:16:03+08:00') },
+        ],
+        pn: 1,
+        hasMore: false,
+      });
+    }
+    if (url.startsWith('/news/quote?code=')) {
+      return success({
+        quote: { code: 'sh600519', name: '贵州茅台', price: 1485.75, previousClose: 1460.21, change: 25.54, changePercent: 1.75, updatedAt: Date.parse('2026-11-20T10:16:03+08:00') },
+        kline: [
+          { date: '2026-11-19', open: 1450, close: 1460.21, high: 1470, low: 1445, volume: 1000 },
+          { date: '2026-11-20', open: 1460.21, close: 1485.75, high: 1490, low: 1455, volume: 1200 },
+        ],
+        fetchedAt: Date.now(),
+        source: '东方财富行情',
+      });
+    }
     return { error: 'not found' };
   });
 });
@@ -364,5 +385,88 @@ describe('资讯中心', () => {
       expect(host.querySelector('.news-lead-cover')).toBeTruthy();
       expect(host.querySelector('.news-reader')?.textContent).toContain(topItems[1].title);
     });
+  });
+
+  // ── 移动端行情弹层逐级返回（2026-11-21 用户实报「返回跳级直接回资讯首页」）：
+  //    列表 → K 线 → 列表 → 关闭，按钮 / popstate / 原生返回三条链路都不得跳级。
+  function backStub(): ReturnType<typeof vi.spyOn> {
+    // jsdom 的 history.back() 不派发 popstate：桩成「回退即派发」，模拟真实浏览器
+    return vi.spyOn(window.history, 'back').mockImplementation(() => {
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+  }
+
+  async function openQuoteChartFromList(): Promise<void> {
+    document.querySelector<HTMLButtonElement>('.market-open-list')?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-quote-overlay')).toBeTruthy();
+      expect(document.querySelector('.news-quote-stocklist')?.textContent).toContain('贵州茅台');
+    });
+    document.querySelector<HTMLButtonElement>('.news-quote-overlay .market-quote-row')?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-quote-overlay .news-quote-back')?.getAttribute('aria-label')).toBe('返回列表');
+    });
+  }
+
+  it('弹层内返回按钮逐级回列表，不再整层跳回资讯首页', async () => {
+    const stub = backStub();
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('上证指数'));
+
+    await openQuoteChartFromList();
+
+    // 弹层返回按钮：K 线 → 列表（弹层仍开着）
+    document.querySelector<HTMLButtonElement>('.news-quote-overlay .news-quote-back')?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-quote-overlay')).toBeTruthy();
+      expect(document.querySelector('.news-quote-stocklist')?.textContent).toContain('贵州茅台');
+      expect(document.querySelector('.news-quote-overlay .news-quote-back')?.getAttribute('aria-label')).toBe('关闭');
+    });
+
+    // 列表层再按返回 → 整层关闭，回到资讯页
+    document.querySelector<HTMLButtonElement>('.news-quote-overlay .news-quote-back')?.click();
+    await vi.waitFor(() => expect(document.querySelector('.news-quote-overlay')).toBeFalsy());
+    stub.mockRestore();
+  });
+
+  it('系统返回（popstate）逐级：K线→列表→关闭，最后一级才出弹层', async () => {
+    backStub();
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('上证指数'));
+
+    await openQuoteChartFromList();
+
+    // 第一次系统返回：K 线 → 列表
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-quote-overlay')).toBeTruthy();
+      expect(document.querySelector('.news-quote-stocklist')?.textContent).toContain('贵州茅台');
+    });
+
+    // 第二次系统返回：关闭弹层
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await vi.waitFor(() => expect(document.querySelector('.news-quote-overlay')).toBeFalsy());
+  });
+
+  it('Android 原生返回键（yz:mobile-back）同样逐级，不与手势双触发', async () => {
+    backStub();
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('上证指数'));
+
+    await openQuoteChartFromList();
+
+    // 原生返回：K 线 → 列表
+    const back1 = new CustomEvent('yz:mobile-back', { cancelable: true });
+    expect(document.dispatchEvent(back1)).toBe(false);
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-quote-overlay')).toBeTruthy();
+      expect(document.querySelector('.news-quote-stocklist')?.textContent).toContain('贵州茅台');
+    });
+
+    // 原生返回：列表 → 关闭
+    const back2 = new CustomEvent('yz:mobile-back', { cancelable: true });
+    expect(document.dispatchEvent(back2)).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector('.news-quote-overlay')).toBeFalsy());
+    expect(host.hasAttribute('inert')).toBe(false);
   });
 });

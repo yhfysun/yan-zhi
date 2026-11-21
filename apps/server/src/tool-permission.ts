@@ -33,6 +33,9 @@ const WRITE_TOOLS = new Set([
   'browser_fill_form', 'browser_submit_form', 'browser_select_option',
   'browser_check', 'browser_uncheck', 'browser_drag', 'browser_scroll_into_view',
   'browser_upload', 'browser_download', 'browser_login_saved',
+  // —— 真机调试家族：device_eval 在真机 WebView 页面里执行任意 JS（改页面状态）——
+  // 读类 device_webview_list / device_console_read 不进本清单（只读应放行）
+  'device_eval',
   // —— 桌面语义/坐标输入：会改变本机前台应用状态 ——
   'computer_click_element', 'computer_set_value', 'computer_mouse_click',
   'computer_mouse_move', 'computer_mouse_drag', 'computer_scroll',

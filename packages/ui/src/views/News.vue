@@ -46,8 +46,24 @@
         />
       </div>
 
+      <!-- 桌面宽屏：行情工作台内嵌中间栏（替代文章面板），不再用弹窗 -->
       <section v-if="isWideLayout" class="news-detail-panel" aria-label="资讯正文">
+        <NewsQuoteDetail
+          v-if="activeQuote"
+          class="news-quote-embedded"
+          :initial-view="quoteInitialView"
+          :quote-code="activeQuote.code"
+          :quote-name="activeQuote.name"
+          :detail="quoteDetail"
+          :loading="quoteLoading"
+          :error="quoteError"
+          :wide="true"
+          @close="dismissMobileQuote"
+          @retry="openQuote(activeQuote.code, activeQuote.name)"
+          @open-chart="openQuote"
+        />
         <NewsArticleReader
+          v-else
           :item="selectedItem"
           :article="article"
           :loading="articleLoading"
@@ -95,9 +111,9 @@
         />
       </section>
 
-      <!-- 行情详情（K 线）：移动端全屏弹层，桌面端居中弹窗 -->
+      <!-- 行情详情（K 线）：移动端全屏弹层（≤900px）；桌面端已改为内嵌中间栏，不走弹层 -->
       <section
-        v-if="activeQuote"
+        v-if="activeQuote && !isWideLayout"
         class="news-quote-overlay"
         role="dialog"
         aria-modal="true"
@@ -110,6 +126,7 @@
           :detail="quoteDetail"
           :loading="quoteLoading"
           :error="quoteError"
+          :wide="isWideLayout"
           @close="dismissMobileQuote"
           @retry="openQuote(activeQuote.code, activeQuote.name)"
           @open-chart="openQuote"
@@ -186,7 +203,10 @@ const isWideLayout = ref(media?.matches ?? true);
 const mobileReaderRoot = ref<HTMLElement | null>(null);
 let readerHistoryPushed = false;
 let quoteRequestId = 0;
-let quoteHistoryPushed = false;
+/** 行情弹层压入的历史层级：0=无，1=列表/直达K线，2=列表→K线（移动端逐级返回用） */
+let quoteHistoryDepth = 0;
+/** 原生返回链路手动 back() 消费 K 线层条目时，跳过随之而来的那次 popstate */
+let quoteIgnoreNextPop = false;
 let shellLock: {
   element: HTMLElement;
   ariaHidden: string | null;
@@ -317,6 +337,8 @@ function coverLead(items: NewsItem[]): NewsItem | null {
 
 function selectArticle(item: NewsItem): void {
   userSelectedArticle.value = true;
+  // 桌面宽屏时行情工作台占据中间栏：选了新文章就把行情视图收回去
+  if (activeQuote.value) dismissMobileQuote();
   void openArticle(item);
 }
 
@@ -378,16 +400,21 @@ function clearReaderHistoryMarker(): void {
 }
 
 function pushQuoteHistory(): void {
-  if (quoteHistoryPushed || typeof window === 'undefined') return;
+  // 移动端逐级返回：列表一级、K 线一级。已在两级顶时（列表→K线→按钮返回→列表→再点
+  // 另一只股票）不再新增条目，用 replaceState 复用当前条目顶掉旧标记，避免死层级堆积。
+  if (quoteHistoryDepth >= 2) {
+    window.history.replaceState({ ...readerHistoryState(), yzNewsQuote: true }, '', window.location.href);
+    return;
+  }
   window.history.pushState({ ...readerHistoryState(), yzNewsQuote: true }, '', window.location.href);
-  quoteHistoryPushed = true;
+  quoteHistoryDepth += 1;
 }
 
 function clearQuoteHistoryMarker(): void {
-  if (!quoteHistoryPushed || typeof window === 'undefined') return;
+  if (quoteHistoryDepth <= 0 || typeof window === 'undefined') return;
   const { yzNewsQuote: _quote, ...state } = readerHistoryState();
   window.history.replaceState(state, '', window.location.href);
-  quoteHistoryPushed = false;
+  quoteHistoryDepth = 0;
 }
 
 /**
@@ -405,8 +432,20 @@ function dismissMobileReader(): void {
 }
 
 function onPopState(): void {
-  if (quoteHistoryPushed && activeQuote.value) {
-    quoteHistoryPushed = false;
+  // 原生返回链路手动 back() 消费层级时，伴随的这次 popstate 直接忽略
+  if (quoteIgnoreNextPop) {
+    quoteIgnoreNextPop = false;
+    return;
+  }
+  // 行情弹层逐级返回：K 线 → 列表 → 关闭（移动端）。popstate 触发时浏览器
+  // 已经回退一级，这里只做视图/状态收尾，绝不再 history.back()。
+  if (quoteHistoryDepth > 0 && activeQuote.value) {
+    if (quoteHistoryDepth >= 2 && quoteInitialView.value === 'chart') {
+      quoteHistoryDepth = 1;
+      quoteInitialView.value = 'list'; // NewsQuoteDetail 的 watch 会把视图切回列表
+      return;
+    }
+    quoteHistoryDepth = 0;
     closeQuote();
     return;
   }
@@ -420,10 +459,15 @@ async function openQuote(code: string, name: string): Promise<void> {
   quoteRequestId += 1;
   const requestId = quoteRequestId;
   const alreadyOpen = !!activeQuote.value;
+  const cameFromList = quoteInitialView.value === 'list';
   activeQuote.value = { code, name };
   quoteInitialView.value = 'chart';
-  // 同一弹层内切换品种时不重复压历史条目
-  if (!alreadyOpen) pushQuoteHistory();
+  if (!alreadyOpen) {
+    pushQuoteHistory(); // 直达 K 线：一级（返回直接关）
+  } else if (!isWideLayout.value && cameFromList) {
+    // 移动端列表 → K 线：多压一级历史，系统返回逐级走（K线→列表→首页）
+    pushQuoteHistory();
+  }
   quoteDetail.value = null;
   quoteError.value = '';
   quoteLoading.value = true;
@@ -459,15 +503,13 @@ function closeQuote(): void {
   quoteLoading.value = false;
 }
 
-/** 行情详情的移动端返回：先收起弹层，再消费掉为它压入的历史条目（与资讯正文同套路）。 */
+/** 行情详情的移动端返回：先收起弹层，再按层级消费掉为它压入的历史条目（与资讯正文同套路）。 */
 function dismissMobileQuote(): void {
   if (!activeQuote.value) return;
-  const consumeHistory = quoteHistoryPushed;
+  const consumeHistory = quoteHistoryDepth;
   closeQuote();
-  if (consumeHistory) {
-    quoteHistoryPushed = false;
-    window.history.back();
-  }
+  quoteHistoryDepth = 0;
+  for (let i = 0; i < consumeHistory; i += 1) window.history.back();
 }
 
 async function refreshAll(): Promise<void> {
@@ -519,10 +561,29 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+/** 行情弹层逐级返回：K 线层先降回列表，列表层才整层关闭。popstate 与 Android 原生返回共用。 */
+function backOutOfQuoteLevel(): void {
+  if (quoteHistoryDepth >= 2 && quoteInitialView.value === 'chart') {
+    quoteHistoryDepth = 1;
+    quoteInitialView.value = 'list'; // NewsQuoteDetail 的 watch 会把视图切回列表
+    return;
+  }
+  dismissMobileQuote();
+}
+
 /** Android 手势/返回键先询问页面是否有页内层级；行情详情、资讯正文都在这里关闭弹层。 */
 function onMobileBack(event: Event): void {
   if (activeQuote.value) {
     event.preventDefault();
+    // 与系统返回（popstate）同口径：K 线 → 列表 → 首页，不再整层跳级。
+    // 原生返回链路浏览器指针未动：降级后手动 back() 消费掉 K 线层条目。
+    if (quoteHistoryDepth >= 2 && quoteInitialView.value === 'chart') {
+      quoteHistoryDepth = 1;
+      quoteInitialView.value = 'list';
+      quoteIgnoreNextPop = true;
+      window.history.back();
+      return;
+    }
     dismissMobileQuote();
     return;
   }
@@ -557,11 +618,12 @@ function unlockApplicationShell(): void {
 
 watch([selectedItem, activeQuote, isWideLayout], async ([item, quote, wide]) => {
   if (wide) clearReaderHistoryMarker();
-  if ((item && !wide) || quote) {
+  // shell 锁定只针对移动端全屏弹层（读者/行情）；桌面端行情是内嵌面板，锁了会压坏布局
+  if ((item && !wide) || (quote && !wide)) {
     lockApplicationShell();
     await nextTick();
-    if (quote) {
-      document.querySelector<HTMLButtonElement>('.news-quote-back')?.focus();
+    if (quote && !wide) {
+      document.querySelector<HTMLButtonElement>('.news-quote-overlay .news-quote-back')?.focus();
     } else {
       mobileReaderRoot.value?.querySelector<HTMLButtonElement>('.news-reader-back')?.focus();
     }

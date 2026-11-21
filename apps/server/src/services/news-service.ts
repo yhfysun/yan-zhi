@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
+import iconv from 'iconv-lite';
 import type {
   KlineBar,
   MarketGroupId,
@@ -348,10 +349,26 @@ async function fetchText(
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`资讯源返回 HTTP ${response.status}`);
-    const buffer = await response.arrayBuffer();
-    return new TextDecoder(encoding).decode(buffer);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return decodeBytes(bytes, encoding);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * 2026-11-21 真机实报：nodejs-mobile 的 libnode 不带 full-icu，
+ * `new TextDecoder('gbk')` 直接 RangeError（桌面 Node 是 full-icu 所以正常），
+ * 腾讯行情源 qt.gtimg.cn 是 GBK 编码 → 手机上行情整体 500。
+ * 先走系统 TextDecoder（桌面零变化），构造失败时回退 iconv-lite（纯 JS，无原生依赖）。
+ */
+function decodeBytes(bytes: Uint8Array, encoding: string): string {
+  try {
+    return new TextDecoder(encoding).decode(bytes);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    if (!iconv.encodingExists(encoding)) throw error;
+    return iconv.decode(Buffer.from(bytes), encoding);
   }
 }
 
@@ -638,6 +655,13 @@ export async function getNewsMarket(force = false): Promise<NewsMarketResult> {
   for (const provider of [getEastmoneyMarket, getTencentMarket]) {
     try {
       const result = await provider();
+      // 虚拟币组：Gate.io 源失败不拖累股市行情（各自独立降级）
+      try {
+        const crypto = await fetchCryptoTickers(force);
+        result.groups.push({ id: 'crypto', label: '虚拟币', quotes: crypto.slice(0, 8) });
+      } catch {
+        /* 币圈源不可用时仅少一个分组 */
+      }
       marketCache.set('cn-hk-equities', { value: result, expiresAt: Date.now() + MARKET_TTL_MS });
       return result;
     } catch (error) {
@@ -683,6 +707,10 @@ async function fetchKlineBars(code: string): Promise<KlineBar[]> {
 /** 个股/指数详情：实时快照 + 近 60 根日 K，供行情详情页与 K 线图渲染。 */
 export async function getNewsQuoteDetail(rawCode: string, force = false): Promise<QuoteDetail> {
   const code = normalizeText(rawCode).toLowerCase();
+  // 虚拟币（c 前缀）走 Gate.io 独立链路，与股市代码体系隔离
+  if (isCryptoCode(code)) {
+    return getCryptoQuoteDetail(cryptoSymbolFromCode(code), code, force);
+  }
   if (!isValidMarketCode(code)) throw new Error('不支持的商品代码');
   const cached = quoteCache.get(code);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
@@ -737,7 +765,16 @@ export async function searchQuotes(rawQuery: string): Promise<QuoteSearchResult[
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const payload = await fetchText(`${SEARCH_ENDPOINT}&input=${encodeURIComponent(query)}`, 'utf-8', 6_000);
-  let results: QuoteSearchResult[] = [];
+  const results: QuoteSearchResult[] = [];
+
+  // 虚拟币匹配（币种符号/中文名模糊）：东财挂不挂都保证能搜到币
+  for (const coin of CRYPTO_COINS) {
+    if (coin.symbol.toLowerCase().includes(key) || coin.name.includes(query)) {
+      results.push({ code: `c${coin.symbol}`, name: coin.name, market: '虚拟币' });
+      if (results.length >= 4) break;
+    }
+  }
+
   try {
     const parsed = JSON.parse(payload) as {
       QuotationCodeTable?: { Data?: Array<Record<string, unknown>> };
@@ -763,7 +800,7 @@ export async function searchQuotes(rawQuery: string): Promise<QuoteSearchResult[
       if (results.length >= 8) break;
     }
   } catch {
-    return [];
+    // 东财 suggest 失败时虚拟币匹配结果仍然返回
   }
   setBoundedCache(searchCache, key, { value: results, expiresAt: Date.now() + SEARCH_TTL_MS }, 60);
   return results;
@@ -831,13 +868,16 @@ const QUOTE_LIST_FS: Record<'cn' | 'hk' | 'us', string> = {
   cn: 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',
   hk: 'm:116',
   us: 'm:105,m:106,m:107',
-};
-
-/**
+};/**
  * 全市场股票分页列表（行情详情「列表页」数据源），按涨跌幅降序。
  * 返回统一口径代码，前端点选后走 /news/quote 渲染 K 线。
+ * market=crypto 时走 Gate.io 虚拟币清单（单页全量）。
  */
-export async function getQuoteListPage(market: 'cn' | 'hk' | 'us', pn: number): Promise<QuoteListPage> {
+export async function getQuoteListPage(market: 'cn' | 'hk' | 'us' | 'crypto', pn: number): Promise<QuoteListPage> {
+  if (market === 'crypto') {
+    const quotes = await fetchCryptoTickers();
+    return { items: quotes, pn: 1, hasMore: false };
+  }
   const fs = QUOTE_LIST_FS[market];
   if (!fs) throw new Error('不支持的市场');
   const page = Number.isFinite(pn) && pn >= 1 ? Math.floor(pn) : 1;
@@ -855,4 +895,111 @@ export async function getQuoteListPage(market: 'cn' | 'hk' | 'us', pn: number): 
     pn: page,
     hasMore: page * QUOTE_LIST_PAGE_SIZE < total,
   };
+}
+
+// ── 虚拟币行情（Gate.io 公共接口，国内直连可达；东财/腾讯无币圈数据）。
+//    代码口径：`c` + 大写币种符号（cBTC / cSUI …），计价一律 USDT。
+//    K 线 candlesticks 数组字段序（实测校验，跨日收盘/开盘连续性吻合）：
+//    [time(秒), quoteVolume, close, high, low, open, baseVolume, confirmed]，升序。
+const CRYPTO_SOURCE = 'Gate.io 行情';
+const GATE_BASE = 'https://api.gateio.ws/api/v4';
+const CRYPTO_TTL_MS = 30_000;
+const cryptoTickerCache = new Map<string, CacheEntry<MarketQuote[]>>();
+
+const CRYPTO_COINS = [
+  { symbol: 'BTC', name: '比特币' },
+  { symbol: 'ETH', name: '以太坊' },
+  { symbol: 'SOL', name: 'Solana' },
+  { symbol: 'BNB', name: '币安币' },
+  { symbol: 'XRP', name: '瑞波币' },
+  { symbol: 'DOGE', name: '狗狗币' },
+  { symbol: 'ADA', name: '艾达币' },
+  { symbol: 'SUI', name: 'Sui' },
+  { symbol: 'LTC', name: '莱特币' },
+  { symbol: 'LINK', name: 'Chainlink' },
+] as const;
+
+function cryptoSymbolFromCode(code: string): string {
+  return code.slice(1).toUpperCase();
+}
+
+function isCryptoCode(code: string): boolean {
+  if (!/^c[a-z0-9]{2,10}$/.test(code)) return false;
+  const symbol = cryptoSymbolFromCode(code);
+  return CRYPTO_COINS.some((coin) => coin.symbol === symbol);
+}
+
+async function fetchCryptoTickers(force = false): Promise<MarketQuote[]> {
+  const cached = cryptoTickerCache.get('all');
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  // 单币对失败（下架/停牌等）只跳过该币，不拖垮整组
+  const settled = await Promise.allSettled(
+    CRYPTO_COINS.map(async (coin) => {
+      const payload = await fetchText(`${GATE_BASE}/spot/tickers?currency_pair=${coin.symbol}_USDT`, 'utf-8', 8_000);
+      const rows = JSON.parse(payload) as Array<Record<string, unknown>>;
+      const row = rows[0];
+      if (!row) throw new Error(`${coin.name}行情缺失`);
+      const price = Number(row.last);
+      const changePercent = Number(row.change_percentage);
+      // Gate 不直接给昨收：由 24h 涨跌幅反推（与股市口径统一，供涨跌额/颜色计算）
+      const previousClose = Number.isFinite(price) && Number.isFinite(changePercent) && changePercent !== -100
+        ? price / (1 + changePercent / 100)
+        : price;
+      return {
+        code: `c${coin.symbol}`,
+        name: coin.name,
+        price,
+        previousClose,
+        change: price - previousClose,
+        changePercent,
+        updatedAt: Date.now(),
+      } satisfies MarketQuote;
+    }),
+  );
+  const quotes = settled
+    .filter((entry) => entry.status === 'fulfilled')
+    .map((entry) => entry.value as MarketQuote);
+  if (!quotes.length) throw new Error('虚拟币行情源不可用');
+  cryptoTickerCache.set('all', { value: quotes, expiresAt: Date.now() + CRYPTO_TTL_MS });
+  return quotes;
+}
+
+async function fetchCryptoKline(symbol: string): Promise<KlineBar[]> {
+  const payload = await fetchText(
+    `${GATE_BASE}/spot/candlesticks?currency_pair=${symbol}_USDT&interval=1d&limit=${KLINE_BARS}`,
+    'utf-8',
+    8_000,
+  );
+  const rows = JSON.parse(payload) as string[][];
+  const bars: KlineBar[] = [];
+  for (const row of rows) {
+    const ts = Number(row[0]) * 1000;
+    const close = Number(row[2]);
+    const high = Number(row[3]);
+    const low = Number(row[4]);
+    const open = Number(row[5]);
+    const volume = Number(row[6]);
+    const day = new Date(ts);
+    const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    if (![open, close, high, low].every(Number.isFinite)) continue;
+    bars.push({ date, open, close, high, low, volume: Number.isFinite(volume) ? volume : 0 });
+  }
+  return bars;
+}
+
+/** 虚拟币详情：Gate.io 实时 ticker + 近 60 根日 K。 */
+async function getCryptoQuoteDetail(symbol: string, code: string, force: boolean): Promise<QuoteDetail> {
+  const cacheKey = code.toLowerCase();
+  const cached = quoteCache.get(cacheKey);
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const tickers = await fetchCryptoTickers(force);
+  const quote = tickers.find((item) => item.code === `c${symbol}`);
+  if (!quote) throw new Error('未找到该虚拟币的实时行情');
+  const kline = await fetchCryptoKline(symbol);
+  const detail: QuoteDetail = { quote, kline, fetchedAt: Date.now(), source: CRYPTO_SOURCE };
+  setBoundedCache(quoteCache, cacheKey, { value: detail, expiresAt: Date.now() + CRYPTO_TTL_MS }, 40);
+  return detail;
 }

@@ -44,7 +44,11 @@
           </button>
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
         </header>
-        <header v-else-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
+        <!-- 2026-11-21 用户要求：笔记/学习/资讯页顶栏整行不渲染（「本」/「更多」按钮删除后
+             只剩标题占一行空高度）。这几页没有顶栏级操作，内容区直接从状态栏下开始
+             （.no-shell-topbar 让位规则只保留 safe-area）。聊天页有自己的 chat-topbar，
+             模式页（工作等）顶栏仍保留模式切换与身份位。 -->
+        <header v-else-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage && !hidesMobileWorkspaceControls" class="mobile-topbar">
           <MobileModeSwitch v-if="!hidesMobileWorkspaceControls" />
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
@@ -52,14 +56,13 @@
             <span v-if="authStore.isLoggedIn" class="mobile-user-avatar">
               {{ authStore.user?.username?.slice(0, 1) || 'U' }}
             </span>
-            <span v-else-if="isLocalClient" class="mobile-user-avatar is-local" title="本机">本</span>
-            <button v-else class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">登</button>
-            <button class="mobile-icon-btn" type="button" aria-label="打开更多功能" @click="openMobileNavDrawer">
-              <el-icon :size="19"><MoreFilled /></el-icon>
-            </button>
+            <button v-else-if="!isLocalClient" class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">登</button>
+            <!-- 2026-11-21 用户要求：本地模式身份位「本」与「更多」按钮删除 —— 底部 TabBar 的
+                 「我的」直达 /settings（含设置），抽屉里的入口全部可以从「我的」到达，
+                 这两个常驻按钮只占空间没有独立价值（聊天页 ChatTopbar 的「更多」保留）。 -->
           </div>
         </header>
-        <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage, 'is-office-ai-shell': officeAiShellActive }">
+        <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage || hidesMobileWorkspaceControls, 'is-office-ai-shell': officeAiShellActive }">
           <router-view v-slot="{ Component }">
             <!-- ★★ 2026-10-16 页面切换**不再用 `<transition>`**（用户实报「切模式黑屏、无任何报错」
                  ＋「切换有点慢」）。原因：`mode="out-in"` 把"旧视图可以退场了"这件事交给 Vue 的
@@ -161,7 +164,7 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, MoreFilled } from '@element-plus/icons-vue';
+import { ArrowLeft } from '@element-plus/icons-vue';
 import AppStatusBar from './components/AppStatusBar.vue';
 import { activeMode } from './stores/mode';
 import { officeAiSidebarCollapsed } from './stores/officeWorkbench';
@@ -187,7 +190,7 @@ import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
 import { useResizable } from './composables/useResizable';
-import { mobileNavDrawerOpen, openMobileNavDrawer } from './composables/useMobileNavDrawer';
+import { mobileNavDrawerOpen } from './composables/useMobileNavDrawer';
 import WorkspaceModeSwitch from './components/workbench/WorkspaceModeSwitch.vue';
 import { syncPluginWindowHotkeys } from './composables/pluginWindowHotkeys';
 import { installSelectAllScope } from './utils/selectAllScope';

@@ -1,5 +1,6 @@
 import { LEARNING_V2_RAW_CATALOG } from './v2-catalog.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
+import { SUBJECT_EXPERT_NOTES } from './v2-curated/expert-notes.js';
 import { ALGORITHM_SUBJECT } from './algorithms.js';
 import { MEDICINE_SUBJECT } from './medicine.js';
 import { PROGRAMMING_SUBJECT } from './v2-curated/programming/catalog.js';
@@ -23,6 +24,7 @@ export {
   PROGRAMMING_COURSE_PACKAGES,
   getProgrammingCoursePackage,
 } from './v2-curated/programming/programs.js';
+export { SUBJECT_EXPERT_NOTES } from './v2-curated/expert-notes.js';
 export type {
   ProgrammingCurriculumCourseRef,
   ProgrammingCurriculumPhase,
@@ -437,6 +439,7 @@ export function getLearningV2CoursePlan(subjectKey: string, courseName: string):
     ],
     qualityStatus: curated !== undefined ? 'curated' : 'generated',
     steps: selectedSteps,
+    expertNotes: curated?.expertNotes ?? SUBJECT_EXPERT_NOTES[subjectKey] ?? [],
   };
 }
 

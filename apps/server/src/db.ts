@@ -1875,6 +1875,9 @@ const CODE_AGENT_BUILTIN_TOOLS = [
   'git_worktree',
   // 验收：编译 / 测试 / 脚本
   'cmd_exec', 'js_exec', 'python_exec',
+  // 真机调试（2026-11-21）：CDP 直连真机 WebView —— 开发移动端应用时看真机报错 / 取页面状态。
+  // device_eval 属写操作（readonly 会话被 tool-permission 拦截），本清单只管挂载可见性。
+  'device_webview_list', 'device_console_read', 'device_eval',
   // 委派：4 个专属子智能体 + pageAgent 查官方文档
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 任务拆解与用户交互

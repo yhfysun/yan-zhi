@@ -187,6 +187,59 @@ curl http://127.0.0.1:9222/json/list
 ## 七、版本与产物
 
 - APK 路径：`dist-release/android/<版本>/app-debug.apk`
-- 完整包体积参考：约 378 MB，其中 `libnode.so` 三个 ABI 约占 151 MB，另有 Sherpa、内嵌后端依赖与三份 `libc++_shared.so`。
-  想减体积：只保留 `arm64-v8a`（现代手机基本都支持），能降到 ~90 MB。
+- **体积口径（2026-11-21 实测两条线）**：
+  - `package:android`（标准发布口径：5 模式 office/ops/sec/shop/learning，双 ABI arm64-v8a + armeabi-v7a）≈ **279 MB**，构成：双 ABI 原生库 129 MB（libnode.so ×2 = 92 MB）+ 内嵌后端 133 MB + 五模式前端 62 MB。
+  - 全 9 模式 + 三 ABI（含 x86_64，`libnode.so` ×3 = 151 MB）≈ 378 MB —— 模拟器/旧机器要装 x86_64 包时才需要。
+  - **看到"才两百多 M"不是缺件**：按上面构成核对（关键件 = 两个 ABI 的 `libnode.so`、内嵌后端入口、2245 个前端 JS），`verify-package-artifacts.cjs` 结论 PASS 即可。想省体积只砍 x86_64，别砍 arm64。
 - 全新安装的平台列表本来就是空的（内置的是「厂商目录 preset」，不是已配置平台），需要用户自己选一个厂商或填 Key。
+
+---
+
+## 八、⚠️ server/dist 复用陷阱：日志出现「新鲜，可复用（跳过编译）」= 包里可能是旧代码（2026-11-21 血泪）
+
+**铁律**（见 AGENTS.md/项目记忆）：每次 APK 打包必须**从零重建 apps/server**，禁止复用上一次 dist。
+
+**事故经过**：改完服务端（虚拟币行情）和前端（行情返回逐级）后连打两次包，第二次日志出现
+`[OK] apps/server/dist 新鲜，可复用（跳过编译）`——打包链按 mtime 判定 dist "新鲜"就跳过了 server 重编译。
+真机装上后启动动画/行为还是旧版（用户实报「启动动画又变成数据库初始化」「这是旧包啊，打包没有清理？」）。
+前端 vite 是全新构建的，但**内嵌后端 dist 是旧的** → 新接口（如虚拟币）在真机上 404/不存在，且新旧混杂极难排查。
+
+**为什么危险**：mtime 判据只看"dist 比源码新"，**改完源码先打过一次包、之后又改源码再打包**时，如果链路对"源码"的判定有遗漏（比如改动在 workspace 软链包里），就会带着旧 server 出包——校验脚本只验结构完整性，验不出"内容是不是最新"。
+
+**修（打包前强制执行）**：
+
+```powershell
+# 打包前无脑全清（宁可多等一分钟编译，不赌 mtime 判据）
+$root = 'c:\Users\Administrator\Desktop\github\yan-zhi-master'
+@(
+  "$root\apps\server\dist",
+  "$root\apps\mobile\dist",
+  "$root\apps\mobile\nodejs\dist",
+  "$root\apps\mobile\android\app\src\main\assets\public",
+  "$root\apps\mobile\android\app\build",
+  "$root\dist-release\android\0.1.1"
+) | ForEach-Object { if (Test-Path $_) { Remove-Item $_ -Recurse -Force } }
+```
+
+删完再跑 `pnpm package:android`，日志必须出现「**真编译 server（安卓前置）**」且**没有**「新鲜，可复用（跳过编译）」字样。
+
+**长期修（待办）**：把 `package.cjs` / `build-android-slim.cjs` 里的"新鲜可复用"判断直接删掉，无条件真编译（铁律本来就要求）。
+
+**产物指纹验证（证明包里是最新前端）**：ZIP 内条目时间戳被构建工具归一成 1981（不可用作新鲜度证据），改用**特征串**——在 `apps/mobile/dist/assets/News-*.js` 里 grep 一个"只有最新代码才有"的字符串：
+
+```powershell
+# 例：2026-11-21 的特征串（10 色对比配色 / 虚拟币页签 / 逐级返回）
+Select-String -Path apps\mobile\dist\assets\News-*.js -Pattern '#1098ad','虚拟币','返回列表' -SimpleMatch
+```
+
+三个全命中 = 前端是最新构建（`apps/mobile/dist` 与 APK 内 `assets/public` 由 cap sync 原样拷贝，同源可互证）。每次大改后挑一个**当次新加、且会进产物**的字符串当指纹（类名/文案/常量都行，注意模板变量编译后会拆散，别拿带 `${}` 的整句）。
+
+**服务端指纹同理**：`apps/mobile/nodejs/dist/apps/server/src/services/news-service.js` 里 grep 当次新增的服务端特征（如 `GATE_BASE` / `api.gateio.ws`）。
+
+---
+
+## 九、5 模式发布口径与构建脚本名的关系（别被日志骗）
+
+- `pnpm package:android` 内部跑的是 `build-android-slim.cjs`——**脚本名叫 slim，但按 2026-11-20 拍板的发布口径它选的就是 5 个模式**（office/ops/sec/shop/learning，`select-modes 排除 dev, wf, rpa, clip`），构建完成后 `--restore` 还原全量模式表供日常 dev 用。
+- 日志里出现「精简包」字样 ≠ 模式被裁：判据看 `build/build-manifest.json` 的 `modes`/`excludedModes`——发布包必须 `excludedModes` 只含 dev/wf/rpa/clip（或为空），**office/ops/sec/shop/learning 五个绝不能出现在排除列表**。
+- `pnpm package:android` 完成后如果日志显示 `已选择 5 个模式: office, ops, sec, shop, learning` + `verify PASS`，即符合发布要求。

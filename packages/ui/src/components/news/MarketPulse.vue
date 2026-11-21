@@ -22,8 +22,8 @@
     </div>
 
     <template v-else-if="market && market.groups.length">
-      <!-- 分组切换：A股指数 / 热门A股 / 港股 -->
-      <div class="market-group-tabs" role="tablist" aria-label="行情分组">
+      <!-- 分组切换：A股指数 / 热门A股 / 港股 / 贵金属…（面板窄，可横向滚动，桌面支持拖拽） -->
+      <div ref="groupTabsEl" class="market-group-tabs" role="tablist" aria-label="行情分组">
         <button
           v-for="group in market.groups"
           :key="group.id"
@@ -38,7 +38,7 @@
         </button>
       </div>
 
-      <div class="market-watch-list">
+      <div ref="watchListEl" class="market-watch-list">
         <button
           v-for="quote in activeGroup?.quotes || []"
           :key="quote.code"
@@ -48,7 +48,7 @@
         >
           <div class="market-watch-name">
             <strong>{{ quote.name }}</strong>
-            <small>{{ quote.code.replace(/^(sh|sz|hk)/, '') }}</small>
+            <small>{{ quote.code.replace(/^(sh|sz|hk|c)/, '') }}</small>
           </div>
           <div class="market-watch-price">
             <strong>{{ formatPrice(quote.price) }}</strong>
@@ -65,6 +65,7 @@
 import { computed, ref, watch } from 'vue';
 import { WifiOff } from 'lucide-vue-next';
 import type { NewsMarketResult } from '@yan-zhi/shared';
+import { useDragScroll } from '../../composables/useDragScroll';
 
 const props = defineProps<{
   market: NewsMarketResult | null;
@@ -79,6 +80,12 @@ const emit = defineEmits<{
 }>();
 
 const activeGroupId = ref<string>('');
+
+// 分组页签与品种横条在窄面板里会溢出横向滚动：补齐桌面端鼠标拖拽（触摸原生可滑）
+const groupTabsEl = ref<HTMLElement | null>(null);
+const watchListEl = ref<HTMLElement | null>(null);
+useDragScroll(groupTabsEl);
+useDragScroll(watchListEl);
 
 // 默认选中第一个分组；行情数据更新后若当前分组消失则回退到第一个
 watch(() => props.market, (market) => {

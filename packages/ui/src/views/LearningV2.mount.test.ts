@@ -232,15 +232,57 @@ describe('LearningV2', () => {
     expect(host.textContent).not.toContain('返回旧版学习');
   });
 
-  it('keeps original text visible and exposes source and note actions', async () => {
+  it('keeps original text visible with layered notes and no template note inserts', async () => {
     const host = await mountPage();
     (host.querySelector('[data-page="books"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-original')?.textContent).toContain('会议集中');
     expect(host.querySelector('.lv2-source')?.textContent).toContain('来源');
-    expect(host.querySelector('[data-exemplary-annotation]')?.textContent).toContain('五层阅读卡');
-    expect(host.querySelector('[data-exemplary-annotation]')?.textContent).toContain('字词注释');
-    expect(host.textContent).toContain('套用优秀读书笔记');
+    expect(host.querySelector('[data-exemplary-annotation]')).toBeNull();
+    expect(host.textContent).not.toContain('套用优秀读书笔记');
+  });
+
+  it('shows sourced classical commentary on the books page for covered subjects', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="culture"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="books"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const section = host.querySelector('[data-expert-notes]');
+    expect(section?.textContent).toContain('名家注解');
+    expect(section?.textContent).toContain('习，鸟数飞也');
+    expect(section?.textContent).toContain('朱熹《四书章句集注');
+    expect(section?.textContent).toContain('抄进我的笔记');
+  });
+
+  it('shows sourced expert notes on the default subject books page too', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="books"]') as HTMLButtonElement).click();
+    await nextTick();
+    const section = host.querySelector('[data-expert-notes]');
+    expect(section?.textContent).toContain('名家注解');
+    expect(section?.textContent).toContain('共产党宣言');
+    expect(section?.textContent).toContain('出处：');
+  });
+
+  it('shows sourced study notes on the last math lesson step only', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="math"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('[data-expert-notes]')).toBeNull();
+
+    const stepButtons = host.querySelectorAll('.lv2-lesson > nav button');
+    (stepButtons[stepButtons.length - 1] as HTMLButtonElement).click();
+    await nextTick();
+
+    const section = host.querySelector('[data-expert-notes]');
+    expect(section?.textContent).toContain('倒序相加');
+    expect(section?.textContent).toContain('出处：');
+    expect(section?.textContent).toContain('抄进我的笔记');
   });
 
   it('switches to the selected course practice and keeps subject-specific tools', async () => {
@@ -380,29 +422,16 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2-step-lab')?.textContent).toContain('跟做与记录');
     expect(host.querySelector('.lv2-step-check')?.textContent).toContain('合上提示再回答');
     expect(host.querySelector('.lv2-errors')?.textContent).toContain('常见错误');
-    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('优秀笔记示范');
-    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('套用示范');
-    expect(host.querySelector('[data-exemplary-note]')?.textContent).toContain('完成产出');
+    expect(host.querySelector('[data-exemplary-note]')).toBeNull();
+    expect(host.querySelector('[data-action="open-scholar-note"]')).toBeNull();
   });
 
-  it('opens step-level scholar notes with traps, recall and chapter index', async () => {
+  it('does not offer template scholar-note panels over lesson content', async () => {
     const host = await mountPage();
     (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
     await nextTick();
 
-    (host.querySelector('[data-action="open-scholar-note"]') as HTMLButtonElement).click();
-    await nextTick();
-
-    const panel = document.body.querySelector('[data-scholar-note-panel]');
-    expect(panel?.textContent).toContain('一句话结论');
-    expect(panel?.textContent).toContain('解题与操作模板');
-    expect(panel?.textContent).toContain('高频坑');
-    expect(panel?.textContent).toContain('闭卷自测');
-    expect(panel?.textContent).toContain('整章索引');
-    expect(panel?.querySelectorAll('.lv2-scholar-chapter li').length).toBeGreaterThanOrEqual(4);
-
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await nextTick();
+    expect(host.querySelector('[data-action="open-scholar-note"]')).toBeNull();
     expect(document.body.querySelector('[data-scholar-note-panel]')).toBeNull();
     expect(host.querySelector('.lv2-lesson')).toBeTruthy();
   });
@@ -733,7 +762,7 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('.lv2-specialized-study')).toBeTruthy();
     expect(host.querySelector('.lp-path')).toBeTruthy();
-    expect(host.querySelector('[data-action="open-scholar-note"]')).toBeTruthy();
+    expect(host.querySelector('[data-action="open-scholar-note"]')).toBeNull();
     expect(host.querySelector('.lv2-lesson')).toBeNull();
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));

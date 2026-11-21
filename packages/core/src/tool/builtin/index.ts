@@ -114,6 +114,7 @@ import { CodeDiagnosticsTool } from './code-diagnostics';
 import { CodeVerifyTool } from './code-verify';
 import { GitWorktreeTool } from './git-worktree';
 import { JsExecTool } from './js-exec';
+import { DeviceDebugToolClasses } from './device-debug';
 import { PortScanTool } from './port-scan';
 import { LanScanTool } from './net-scan';
 import { HttpRequestTool } from './http-request';
@@ -199,6 +200,12 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   // registry.register(new DnsLookupTool());
   registry.register(new CmdExecTool());
   registry.register(new PythonExecTool());
+  // 真机调试家族（2026-11-21）：device_webview_list / device_console_read / device_eval
+  // ★ 独立家族不挂 browser_ 前缀 —— browser_* 被 pageAgent 专属过滤，真机调试要给
+  //   编码/测试助手等任意智能体挂载（走 /api/device-debug：adb forward + CDP 直连真机 WebView）。
+  for (const ToolClass of DeviceDebugToolClasses) {
+    registry.register(new ToolClass());
+  }
   // 后台作业状态轮询（与 python_exec background=true 配套；只读作业目录）
   registry.register(new JobStatusTool());
   registry.register(new JobControlTool());

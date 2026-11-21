@@ -119,6 +119,15 @@ export type LearningV2CourseRef = LearningV2Course & {
   readonly trackName: string;
 };
 
+export type LearningV2ExpertNote = {
+  /** 条目性质：'公版古注'（逐字原文）或 '整理笔记'（依公开资料整理，非逐字引文）。 */
+  readonly label: string;
+  /** 真实出处：书名 + 篇目（古注），或公开资料名称/链接（整理笔记）。 */
+  readonly source: string;
+  /** 笔记正文：古注为逐字摘录，整理笔记为可执行的记法/方法。 */
+  readonly quote: string;
+};
+
 export type LearningV2CoursePlan = {
   readonly subjectKey: string;
   readonly courseName: string;
@@ -132,6 +141,7 @@ export type LearningV2CoursePlan = {
   readonly sourceRefs: readonly string[];
   readonly qualityStatus: 'curated' | 'generated' | 'draft';
   readonly steps: LearningV2Lesson['steps'];
+  readonly expertNotes: readonly LearningV2ExpertNote[];
 };
 
 export type LearningV2CuratedCoursePlan = Pick<
@@ -143,7 +153,10 @@ export type LearningV2CuratedCoursePlan = Pick<
   | 'commonErrors'
   | 'sourceRefs'
   | 'steps'
->;
+> & {
+  /** 课程级真实注解/笔记；不填则回退到科目池（v2-curated/expert-notes.ts）。 */
+  readonly expertNotes?: readonly LearningV2ExpertNote[];
+};
 
 export type LearningV2SubjectView = LearningV2Subject & {
   readonly courses: readonly LearningV2CourseRef[];

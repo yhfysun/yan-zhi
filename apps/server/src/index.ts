@@ -104,6 +104,7 @@ import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
 import localConsoleRoutes from './routes/local-console.js';
+import deviceDebugRoutes from './routes/device-debug.js';
 import envRoutes from './routes/env.js';
 // 系统信息（当前数据目录等）——「关于」页展示「跑在哪套数据上」
 // ★ 不受 MOBILE_MODE 限制：移动端同样需要知道数据落在哪
@@ -396,6 +397,9 @@ app.use('/api/sql-console', sqlConsoleRoutes);
 if (!process.env.MOBILE_MODE) {
   app.use('/api/local-console', localConsoleRoutes);
 }
+// 真机调试桥（device_* 工具家族，2026-11-21）：CDP 直连真机 WebView。
+// 移动端无 adb 但路由照常注册 —— 服务端返回"仅桌面端支持"的明确错误，比 404 可解释。
+app.use('/api/device-debug', deviceDebugRoutes);
 app.use('/api/query-contract', queryContractRoutes);
 app.use('/api/dashboards', dashboardRoutes);
 app.use('/api/document-types', documentTypeRoutes);

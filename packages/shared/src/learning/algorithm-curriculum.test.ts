@@ -17,7 +17,7 @@ describe('algorithm and data structures subject', () => {
     const algorithms = getLearningV2Subject('algorithms');
     const programming = getLearningV2Subject('programming');
 
-    expect(subjects).toHaveLength(21);
+    expect(subjects).toHaveLength(22);
     expect(algorithms).toBeTruthy();
     expect(programming).toBeTruthy();
     expect(algorithms!.key).toBe('algorithms');

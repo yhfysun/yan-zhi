@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LEARNING_V2_PAGES,
+  SUBJECT_EXPERT_NOTES,
   getCoursePracticeTask,
   getLearningV2CoursePlan,
   getLearningV2Catalog,
@@ -10,6 +11,33 @@ import {
   isLearningV2CourseReady,
 } from './v2.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
+
+describe('Learning V2 expert notes (名家注解 · 真实笔记)', () => {
+  it('every public-domain commentary entry is a verbatim quote with a book-level source', () => {
+    for (const [subjectKey, notes] of Object.entries(SUBJECT_EXPERT_NOTES)) {
+      expect(notes.length, subjectKey).toBeGreaterThan(0);
+      for (const note of notes) {
+        expect(note.quote.trim(), `${subjectKey}:${note.label}`).not.toBe('');
+        expect(note.source.trim(), subjectKey).not.toBe('');
+        if (note.label === '公版古注') {
+          expect(note.source, subjectKey).toContain('《');
+        }
+        if (note.label === '整理笔记') {
+          expect(note.source, subjectKey).not.toMatch(/^朱熹|王弼/);
+        }
+      }
+    }
+  });
+
+  it('every registered subject has at least one sourced expert note', () => {
+    const subjectKeys = getLearningV2Subjects().map((subject) => subject.key);
+    for (const key of subjectKeys) {
+      expect(SUBJECT_EXPERT_NOTES[key]?.length ?? 0, key).toBeGreaterThan(0);
+    }
+    expect(getLearningV2CoursePlan('party', '建党与初心').expertNotes.length).toBeGreaterThan(0);
+    expect(getLearningV2CoursePlan('security', getLearningV2Subject('security')!.current.course).expertNotes.length).toBeGreaterThan(0);
+  });
+});
 
 describe('Learning V2 catalog', () => {
   it('covers all 22 subjects and every registered course', () => {

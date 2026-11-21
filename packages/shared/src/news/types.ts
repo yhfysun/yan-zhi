@@ -47,7 +47,7 @@ export interface NewsArticle {
  * 行情代码统一口径：`sh`/`sz` + 6 位数字（A股），`hk` + 5 位数字（港股个股），
  * `hk` + 字母（港股指数，如 hkHSI / hkHSCEI），`us` + 字母代码（美股，如 usNVDA / usDJI）。
  */
-export type MarketGroupId = 'cn-index' | 'cn-hot' | 'hk' | 'us' | 'metal';
+export type MarketGroupId = 'cn-index' | 'cn-hot' | 'hk' | 'us' | 'metal' | 'crypto';
 
 export interface MarketQuote {
   code: string;

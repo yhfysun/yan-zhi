@@ -69,7 +69,8 @@ router.get('/sector', async (req: Request, res: Response) => {
 });
 
 router.get('/quote/list', async (req: Request, res: Response) => {
-  const market = req.query.market === 'hk' || req.query.market === 'us' ? req.query.market : 'cn';
+  const raw = typeof req.query.market === 'string' ? req.query.market : 'cn';
+  const market = raw === 'hk' || raw === 'us' || raw === 'crypto' ? raw : 'cn';
   const pn = Number(req.query.pn);
   try {
     res.json({ data: await getQuoteListPage(market, pn) });

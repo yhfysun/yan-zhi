@@ -23,7 +23,10 @@ describe('移动端统一导航与返回路径', () => {
     expect(mobileTopbar).toContain('@click="openMobileNavDrawer"');
     expect(mobileTopbar).not.toContain('<el-dropdown');
     expect(APP).toContain('mobileNavDrawerOpen');
-    expect(APP).toContain('openMobileNavDrawer');
+    // 2026-11-21 顶栏「更多」按钮已按用户要求移除（TabBar「我的」直达设置），
+    // 抽屉仍由 App 挂载、聊天页 ChatTopbar 保留入口 —— 断言组件挂载与联动状态仍在。
+    expect(APP).toContain('<MobileNavDrawer');
+    expect(APP).toContain('mobileNavDrawerOpen');
   });
 
   it('模式选择抽屉停在 TabBar 上方，第五个模式也完整可点', () => {

@@ -21,6 +21,8 @@ import {
   isLearningV2CourseReady,
   PROGRAMMING_COURSE_PACKAGES,
   PROGRAMMING_PROJECTS,
+  SUBJECT_EXPERT_NOTES,
+  type LearningV2ExpertNote,
   type LearningV2LibraryEntry,
   type LearningV2PageKey,
   type LearningV2ReaderBook,
@@ -80,7 +82,6 @@ const mobileSubjectSheet = ref<HTMLElement | null>(null);
 const lessonRoot = ref<HTMLElement | null>(null);
 const specializedStudyRoot = ref<HTMLElement | null>(null);
 const studioRoot = ref<HTMLElement | null>(null);
-const scholarNoteOpen = ref(false);
 const noteVisible = ref(false);
 const noteTitle = ref('');
 const noteContent = ref('');
@@ -167,118 +168,16 @@ const coursePlan = computed(() =>
   getLearningV2CoursePlan(selectedSubjectKey.value, selectedCourse.value?.name || ''),
 );
 const lessonSteps = computed(() => coursePlan.value.steps || []);
-const exemplaryNoteMarkdown = computed(() => {
-  const outline = lessonSteps.value
-    .map((step, index) => `${index + 1}. **${step.title}**：${step.note}`)
-    .join('\n');
-  const errors = coursePlan.value.commonErrors.map((error) => `- ${error}`).join('\n');
-  const sources = coursePlan.value.sourceRefs.map((source) => `- ${source}`).join('\n');
-  return [
-    `# ${coursePlan.value.title} · 优秀笔记示范`,
-    '',
-    '## 一句话概括',
-    coursePlan.value.plainLanguageGoal,
-    '',
-    '## 学习结构',
-    outline,
-    '',
-    '## 跟做任务',
-    coursePlan.value.guidedPractice,
-    '',
-    '## 独立产出',
-    coursePlan.value.independentPractice,
-    '',
-    '## 易错点',
-    errors,
-    '',
-    '## 可追溯来源',
-    sources,
-  ].join('\n');
-});
-const exemplaryBookNoteMarkdown = computed(() =>
-  [
-    `# ${subject.value.book.title} · 优秀读书笔记`,
-    '',
-    '## 原文',
-    `> ${subject.value.book.original}`,
-    '',
-    '## 字词注释',
-    ...subject.value.book.notes.map((note) => `- **${note.term}**：${note.text}`),
-    '',
-    '## 注解',
-    subject.value.book.annotation,
-    '',
-    '## 白话转述',
-    subject.value.book.translation,
-    '',
-    '## 来源',
-    subject.value.book.source,
-  ].join('\n'),
-);
-const exemplaryBookAnnotations = computed(() => [
-  {
-    label: '原文层',
-    text: subject.value.book.original,
-  },
-  {
-    label: '字词注释',
-    text: subject.value.book.notes.map((note) => `${note.term}：${note.text}`).join('；'),
-  },
-  {
-    label: '章旨注解',
-    text: subject.value.book.annotation,
-  },
-  {
-    label: '白话转述',
-    text: subject.value.book.translation,
-  },
-  {
-    label: '来源与边界',
-    text: subject.value.book.source,
-  },
-]);
 const currentLessonStep = computed(() => lessonSteps.value[lessonStep.value] || lessonSteps.value[0]);
-const currentScholarNoteRows = computed(() => {
-  const step = currentLessonStep.value;
-  if (!step) return [];
+const subjectExpertNotes = computed(() => SUBJECT_EXPERT_NOTES[selectedSubjectKey.value] ?? []);
+const lessonExpertNotes = computed(() => coursePlan.value.expertNotes ?? []);
+function expertNotesMarkdown(title: string, notes: readonly LearningV2ExpertNote[]): string {
   return [
-    {
-      label: '一句话结论',
-      text: step.objective || step.note,
-    },
-    {
-      label: '核心知识',
-      text: step.body,
-    },
-    {
-      label: '解题与操作模板',
-      text: step.practice || coursePlan.value.guidedPractice,
-    },
-    {
-      label: '高频坑',
-      text: coursePlan.value.commonErrors[lessonStep.value % Math.max(1, coursePlan.value.commonErrors.length)]
-        || '只记结论，不说明条件和证据。',
-    },
-    {
-      label: '闭卷自测',
-      text: step.checkpoint || `合上资料，用三句话解释“${step.note}”。`,
-    },
-  ];
-});
-const currentScholarNoteMarkdown = computed(() => {
-  const step = currentLessonStep.value;
-  const lines = [
-    `# ${coursePlan.value.title} · ${step?.title || '学霸笔记'}`,
+    `# ${title} · 名家注解摘录`,
     '',
-    ...currentScholarNoteRows.value.flatMap((row) => [`## ${row.label}`, row.text, '']),
-    '## 整章索引',
-    ...lessonSteps.value.map((item, index) => `${index + 1}. **${item.title}**：${item.note}`),
-    '',
-    '## 来源',
-    ...coursePlan.value.sourceRefs.map((source) => `- ${source}`),
-  ];
-  return lines.join('\n');
-});
+    ...notes.flatMap((note) => [`## ${note.label}｜${note.source}`, `> ${note.quote}`, '']),
+  ].join('\n');
+}
 const currentPageLabel = computed(() =>
   LEARNING_V2_PAGES.find((page) => page.key === activePage.value)?.label || '学习',
 );
@@ -629,11 +528,6 @@ function openNote(title: string, content: string) {
   noteVisible.value = true;
 }
 
-function applyScholarNote() {
-  openNote(`${coursePlan.value.title} · ${currentLessonStep.value?.title || '学霸笔记'}`, currentScholarNoteMarkdown.value);
-  scholarNoteOpen.value = false;
-}
-
 function openLibraryBook(entry: LearningV2LibraryEntry) {
   if (!entry?.readable) return;
   switchLearningLead('human');
@@ -746,10 +640,6 @@ function onKeydown(event: KeyboardEvent) {
   }
   if (libraryOpen.value && event.key === 'Escape') {
     closeLibrary();
-    return;
-  }
-  if (scholarNoteOpen.value && event.key === 'Escape') {
-    scholarNoteOpen.value = false;
     return;
   }
   if (activePage.value === 'lesson' && event.key === 'Escape') {
@@ -1206,12 +1096,8 @@ onBeforeUnmount(() => {
               </el-select>
             </label>
 
-            <button class="lv2-mobile-library-entry" type="button" @click="libraryOpen = true">
-              <span><Library :size="18" /></span>
-              <b>图书馆</b>
-              <small>小说、名著、漫画与书架</small>
-              <ChevronRight :size="16" />
-            </button>
+            <!-- 2026-11-21 用户要求：移动端首页不再放独占一行的图书馆入口卡片（顶栏已有
+                 「图书馆」按钮，卡片整行占竖向空间，重复入口只浪费空间）。 -->
 
             <button class="lv2-mobile-continue" type="button" @click="selectPage('lesson')">
               <span>继续学习 · {{ selectedCourse?.trackName }}<em>第 {{ selectedCourseOrder }} / {{ courses.length }} 课</em></span>
@@ -1355,17 +1241,18 @@ onBeforeUnmount(() => {
                 <template v-else-if="bookLayer === 'source'"><span class="lv2-source">来源：</span>{{ subject.book.source }}</template>
                 <dl v-else><div v-for="note in subject.book.notes" :key="note.term"><dt>{{ note.term }}</dt><dd>{{ note.text }}</dd></div></dl>
               </div>
-              <section class="lv2-exemplary-annotation" data-exemplary-annotation>
-                <header><span>优秀注解示范</span><h3>五层阅读卡</h3></header>
-                <div>
-                  <article v-for="layer in exemplaryBookAnnotations" :key="layer.label">
-                    <b>{{ layer.label }}</b>
-                    <p>{{ layer.text }}</p>
-                  </article>
-                </div>
+              <section v-if="subjectExpertNotes.length" class="lv2-expert-notes" data-expert-notes>
+                <header><span>名家注解 · 真实笔记</span><h3>注明出处的原文摘录与记法，可直接抄进你的笔记</h3></header>
+                <article v-for="note in subjectExpertNotes" :key="note.quote.slice(0, 12)">
+                  <b>{{ note.label }}</b>
+                  <blockquote>{{ note.quote }}</blockquote>
+                  <small>出处：{{ note.source }}</small>
+                </article>
+                <button type="button" @click="openNote(`${subject.book.title} · 名家注解摘录`, expertNotesMarkdown(subject.book.title, subjectExpertNotes))">
+                  <NotebookPen :size="14" />抄进我的笔记
+                </button>
               </section>
               <p class="lv2-source">来源：{{ subject.book.source }}</p>
-              <button class="lv2-note-button" type="button" @click="openNote(`${subject.book.title} · 优秀读书笔记`, exemplaryBookNoteMarkdown)"><NotebookPen :size="14" />套用优秀读书笔记</button>
             </article>
           </div>
         </template>
@@ -1384,9 +1271,6 @@ onBeforeUnmount(() => {
               </button>
               <b>{{ subject.name }} · 完整课程内容</b>
               <span>{{ selectedCourseName }}</span>
-              <button data-action="open-scholar-note" type="button" @click="scholarNoteOpen = true">
-                <NotebookPen :size="15" />学霸笔记
-              </button>
               <button type="button" aria-label="关闭课程" @click="exitLesson"><X :size="16" /></button>
             </header>
             <div class="lv2-specialized-study-surface">
@@ -1485,31 +1369,26 @@ onBeforeUnmount(() => {
                   </li>
                 </ul>
               </section>
-              <section class="lv2-exemplary-note" data-exemplary-note>
-                <header>
-                  <div><span>优秀笔记示范</span><h2>按“结论—结构—任务—易错点”整理</h2></div>
-                  <button type="button" @click="openNote(`${coursePlan.title} · 优秀笔记示范`, exemplaryNoteMarkdown)">
-                    <NotebookPen :size="14" />套用示范
-                  </button>
-                </header>
-                <p class="lv2-exemplary-summary">{{ coursePlan.plainLanguageGoal }}</p>
-                <ol>
-                  <li v-for="(step, index) in lessonSteps" :key="`note-${step.title}`">
-                    <span>{{ String(index + 1).padStart(2, '0') }}</span>
-                    <div><b>{{ step.title }}</b><small>{{ step.note }}</small></div>
-                  </li>
-                </ol>
-                <div class="lv2-exemplary-bottom">
-                  <p><b>完成产出</b>{{ coursePlan.independentPractice }}</p>
-                  <p><b>重点避免</b>{{ coursePlan.commonErrors[0] }}</p>
-                </div>
+              <section
+                v-if="lessonStep === lessonSteps.length - 1 && lessonExpertNotes.length"
+                class="lv2-expert-notes"
+                data-expert-notes
+              >
+                <header><span>名家注解 · 真实笔记</span><h3>注明出处的原文摘录与记法，可直接抄进你的笔记</h3></header>
+                <article v-for="note in lessonExpertNotes" :key="note.quote.slice(0, 12)">
+                  <b>{{ note.label }}</b>
+                  <blockquote>{{ note.quote }}</blockquote>
+                  <small>出处：{{ note.source }}</small>
+                </article>
+                <button type="button" @click="openNote(`${coursePlan.title} · 名家注解摘录`, expertNotesMarkdown(coursePlan.title, lessonExpertNotes))">
+                  <NotebookPen :size="14" />抄进我的笔记
+                </button>
               </section>
               <div class="lv2-lesson-actions">
                 <LearningSpeechButton
                   :text="`${currentLessonStep?.title || ''}。${currentLessonStep?.body || ''}。${currentLessonStep?.practice || ''}。${currentLessonStep?.checkpoint || ''}。${currentLessonStep?.note || ''}`"
                   label="朗读本步"
                 />
-                <button data-action="open-scholar-note" type="button" @click="scholarNoteOpen = true"><NotebookPen :size="14" />学霸笔记</button>
                 <button type="button" @click="openNote(coursePlan.title, currentLessonStep?.body || '')"><NotebookPen :size="14" />自由笔记</button>
               </div>
             </article>
@@ -1688,43 +1567,6 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </section>
-      </div>
-    </Teleport>
-
-    <Teleport to="body">
-      <div
-        v-if="scholarNoteOpen"
-        class="lv2-scholar-mask"
-        :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
-        @click.self="scholarNoteOpen = false"
-      >
-        <aside class="lv2-scholar-panel" data-scholar-note-panel role="dialog" aria-modal="true" aria-labelledby="lv2-scholar-title">
-          <header>
-            <div>
-              <span>{{ coursePlan.title }} · 第 {{ lessonStep + 1 }} / {{ lessonSteps.length }} 步</span>
-              <h2 id="lv2-scholar-title">{{ currentLessonStep?.title }}</h2>
-            </div>
-            <button type="button" aria-label="关闭学霸笔记" @click="scholarNoteOpen = false"><X :size="17" /></button>
-          </header>
-          <div class="lv2-scholar-body">
-            <article v-for="row in currentScholarNoteRows" :key="row.label">
-              <b>{{ row.label }}</b>
-              <p>{{ row.text }}</p>
-            </article>
-            <section class="lv2-scholar-chapter">
-              <b>整章索引</b>
-              <ol>
-                <li v-for="(item, index) in lessonSteps" :key="`scholar-${item.title}`">
-                  <span>{{ String(index + 1).padStart(2, '0') }}</span>
-                  <div><b>{{ item.title }}</b><small>{{ item.note }}</small></div>
-                </li>
-              </ol>
-            </section>
-          </div>
-          <footer>
-            <button type="button" @click="applyScholarNote"><NotebookPen :size="14" />套用到我的笔记</button>
-          </footer>
-        </aside>
       </div>
     </Teleport>
 

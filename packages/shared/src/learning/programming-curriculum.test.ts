@@ -17,7 +17,7 @@ describe('Learning V2 programming curriculum', () => {
     const subjects = getLearningV2Subjects();
     const programming = getLearningV2Subject('programming');
 
-    expect(subjects).toHaveLength(21);
+    expect(subjects).toHaveLength(22);
     expect(programming).toBeTruthy();
     expect(programming!.tracks).toHaveLength(16);
     expect(programming!.courses.length).toBeGreaterThanOrEqual(50);
