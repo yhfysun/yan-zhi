@@ -1628,13 +1628,27 @@ onBeforeUnmount(() => {
               side="right"
               label="笔记抽屉"
               storage-key="yz.learning.v2.lesson-notes.v1"
-              :default-width="190"
+              :default-width="260"
               :min-width="34"
-              :max-width="360"
+              :max-width="420"
             >
               <div class="lv2-lesson-notes">
-                <header><b>笔记抽屉</b><small>{{ coursePlan.title }}</small></header>
-                <button type="button" @click="openNote(coursePlan.title, currentLessonStep?.body || '')">自由笔记</button>
+                <header><b>笔记与来源</b><small>{{ coursePlan.title }}</small></header>
+                <section class="ln-block">
+                  <h4>本步要点</h4>
+                  <p>{{ currentLessonStep?.objective || coursePlan.plainLanguageGoal }}</p>
+                </section>
+                <section v-if="lessonExpertNotes.length" class="ln-block">
+                  <h4>来源摘录</h4>
+                  <blockquote v-for="note in lessonExpertNotes.slice(0, 2)" :key="note.quote.slice(0, 12)">
+                    {{ note.quote }}<small>出处：{{ note.source }}</small>
+                  </blockquote>
+                </section>
+                <section class="ln-block">
+                  <h4>我的笔记</h4>
+                  <button type="button" class="ln-write" @click="openNote(coursePlan.title, currentLessonStep?.body || '')">写一条笔记</button>
+                  <p class="ln-hint">在本页就地编辑，不会弹出窗口。</p>
+                </section>
                 <!-- 页内面板：就地展开笔记编辑器，不再弹全屏 modal -->
                 <NoteQuickCreateDialog
                   v-model:visible="noteVisible"
