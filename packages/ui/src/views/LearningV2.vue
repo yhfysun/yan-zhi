@@ -1454,7 +1454,12 @@ onBeforeUnmount(() => {
               :max-width="340"
             >
               <div class="lv2-lesson-toc">
-                <header><b>章节目录</b><small>快速定位</small></header>
+                <header class="ltoc-header">
+                  <div>
+                    <b>章节目录</b>
+                    <small>共 {{ subject.tracks.length }} 阶段 · {{ readyCourses.length }} 节</small>
+                  </div>
+                </header>
                 <section v-for="track in subject.tracks" :key="track.name">
                   <b>阶段 {{ trackOrderLabel(track.name) }} · {{ track.name }}</b>
                   <button
