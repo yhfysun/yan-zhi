@@ -119,6 +119,8 @@ describe('LearningV2', () => {
     // 学习态（尤其移动端）隐藏滚动条，保留滚动能力但不显示亮色轨道
     expect(css).toMatch(/html\.yz-learning-study \.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
     expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
+    // 深色皮肤下实践/练习页必须整组覆盖组件令牌，避免灰底灰字
+    expect(css).toMatch(/html\[data-skin="on"\] \.lv2\.study-full:not\(\.study-lesson\)[\s\S]*?--lv2-note-ink: #30433a/);
   });
 
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {

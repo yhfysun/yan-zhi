@@ -1625,3 +1625,20 @@ html.yz-learning-study::-webkit-scrollbar, html.yz-learning-study body::-webkit-
 .ltoc-header small { color: #8fa69a; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lv2-lesson-body > .rpane .rpane-fold { top: 6px; right: 8px; width: 24px; height: 24px; border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #b8c9bf; }
 .lv2-lesson-body > .rpane .rpane-fold:hover { border-color: #9ac9b4; color: #fff; }
+
+/* 深色皮肤下组件卡底/文字令牌仍来自皮肤族；学习态的浅色实践页必须整组覆盖，
+   否则出现灰底灰字（用户实报「字还是看不清楚」）。 */
+html[data-skin="on"] .lv2.study-full:not(.study-lesson),
+html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
+  --lv2-card: #fbfcfb;
+  --lv2-card-soft: #f4f7f4;
+  --lv2-note-ink: #30433a;
+  --lv2-raised: #fbfcfb;
+  --lv2-accent-wash: #e6f1eb;
+  --lv2-accent-wash-strong: #d8e9df;
+  --lv2-panel: #f4f7f4;
+  --lv2-surface: #fbfcfb;
+  --lv2-line: #d3d9d4;
+  --lv2-muted: #5f6a63;
+  color: #17211e;
+}
