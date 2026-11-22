@@ -400,7 +400,11 @@ describe('LearningLibrary', () => {
     const sourceItem = [...host.querySelectorAll('.ll-source-list > button')]
       .find((item) => item.textContent?.includes('规则书源')) as HTMLButtonElement;
     sourceItem.click();
-    await nextTick();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-source-results], .ll-source-results')).toBeTruthy();
+      expect(host.textContent).toContain('斗破苍穹');
+    });
+    expect(host.querySelector('.ll-source-quick')).toBeTruthy();
 
     const sourceSearch = host.querySelector('[data-source-search]') as HTMLInputElement;
     sourceSearch.value = '斗破';

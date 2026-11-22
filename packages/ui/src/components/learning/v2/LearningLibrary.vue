@@ -486,7 +486,10 @@ function selectView(view: LibraryView) {
   if (view === 'shelf' && currentFolderId.value && !folders.value.some((folder) => folder.id === currentFolderId.value)) {
     currentFolderId.value = null;
   }
-  if (view === 'sources') selectedSourceId.value = enabledSources.value[0]?.id || '';
+  if (view === 'sources') {
+    selectedSourceId.value = enabledSources.value[0]?.id || '';
+    if (selectedSource.value && isSourceSearchable(selectedSource.value)) void browseSelectedSource();
+  }
 }
 
 function selectCard(card: LibraryCard) {
@@ -502,6 +505,19 @@ function selectSource(source: LearningV2BookSource) {
   sourceHasMore.value = false;
   sourcePage.value = 1;
   detailOpen.value = true;
+  if (isSourceSearchable(source)) void browseSelectedSource();
+}
+
+/** 书源视图默认带出一批书目，避免用户只看到书源列表、以为「书源里没有书」。 */
+function defaultSourceQuery(source: LearningV2BookSource): string {
+  if (source.provider === 'gutendex') return 'a';
+  if (source.provider === 'mediawiki') return '小说';
+  return '书';
+}
+
+async function browseSelectedSource(): Promise<void> {
+  sourceQuery.value = defaultSourceQuery(selectedSource.value);
+  await searchSelectedSource();
 }
 
 async function searchSelectedSource() {
@@ -1444,6 +1460,16 @@ onMounted(async () => {
               {{ sourceSearching ? '搜索中' : '搜索' }}
             </button>
           </form>
+          <div v-if="isSourceSearchable(selectedSource)" class="ll-source-quick">
+            <span>快捷书目</span>
+            <button
+              v-for="word in ['小说', '历史', '文学', 'a']"
+              :key="word"
+              type="button"
+              :class="{ active: sourceQuery === word }"
+              @click="sourceQuery = word; void searchSelectedSource()"
+            >{{ word }}</button>
+          </div>
           <p v-if="sourceSearchError" class="ll-source-search-error" role="alert">{{ sourceSearchError }}</p>
           <section v-if="sourceResults.length" class="ll-source-results" aria-label="书源搜索结果">
             <article v-for="(card, index) in sourceResults" :key="card.id" class="ll-source-result">

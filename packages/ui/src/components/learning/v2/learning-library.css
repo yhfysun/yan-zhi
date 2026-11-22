@@ -2027,3 +2027,11 @@
 }
 .ll-library * { scrollbar-width: none; -ms-overflow-style: none; }
 .ll-library *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+
+.ll-source-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; }
+.ll-source-quick > span { color: var(--ll-muted); font-size: 10px; }
+.ll-source-quick button {
+  min-height: 26px; padding: 3px 9px; border: 1px solid var(--ll-line); border-radius: 999px;
+  background: var(--ll-surface); color: var(--ll-muted); font-size: 10px; cursor: pointer;
+}
+.ll-source-quick button.active, .ll-source-quick button:hover { border-color: #2f6d54; color: #2f6d54; }
