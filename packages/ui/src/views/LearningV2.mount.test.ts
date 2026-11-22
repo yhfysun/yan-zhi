@@ -121,6 +121,18 @@ describe('LearningV2', () => {
     expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
     // 深色皮肤下实践/练习页必须整组覆盖组件令牌，避免灰底灰字
     expect(css).toMatch(/html\[data-skin="on"\] \.lv2\.study-full:not\(\.study-lesson\)[\s\S]*?--lv2-note-ink: #30433a/);
+    // 2026-11-23 实报：图书馆皮肤补丁曾把背景刷成深色 --skin-surface，但深字 color:#17211e 未配对 → 深字压深底。
+    // 契约：皮肤模式下 .ll-library 子树把 --el-* 钉成浅色纸面，背景与深字配对。
+    const librarySkin = css.match(/html\[data-skin="on"\] \.ll-library \{[\s\S]*?\n\}/)?.[0] || '';
+    expect(librarySkin).toContain('--el-bg-color: #fff');
+    expect(librarySkin).toContain('--el-fill-color-light: #f7f8f7');
+    expect(librarySkin).toContain('background: #f4f7f4');
+    expect(librarySkin).toContain('color: #17211e');
+    expect(librarySkin).not.toMatch(/background:\s*var\(--skin-surface/);
+    // 2026-11-23 实报：11-21 的深色 veil 补丁在 study-full 浅色纸面上造成「深卡+白框+白底红字」混搭，已移除。
+    // 契约：不得再有直接刷 .lv2-quiz 卡片本体的深色 veil/backdrop 规则（选项/清单回落到 study-full 浅令牌）。
+    expect(css).not.toMatch(/\[data-skin="on"\] \.lv2-quiz \{[^}]*--skin-popover-veil/);
+    expect(css).not.toMatch(/\[data-skin="on"\] \.lv2-quiz \{[^}]*backdrop-filter/);
   });
 
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {

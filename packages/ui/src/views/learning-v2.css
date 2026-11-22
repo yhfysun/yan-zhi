@@ -989,52 +989,38 @@ html[data-skin="on"] .lv2-expert-notes { background: var(--lv2-card); }
 html[data-skin="on"] .lv2-expert-notes article { background: var(--lv2-card-soft); }
 html[data-skin="on"] .lv2-steps div { background: var(--lv2-card); }
 html[data-skin="on"] .lv2-coach > div:first-child { background: var(--lv2-card); }
-/* 图书馆（.ll-library）是全屏实页：皮肤模式下 --el-bg-color 是高透玻璃，
-   必须垫皮肤实底，否则整页透出壁纸且浅色卡片全部失效（2026-11-21 全量排查） */
+/* 图书馆（.ll-library）是独立的浅色纸面阅读/管理界面：深色皮肤下绝不能让
+   --el-* / --ll-* 滑进皮肤深色族——否则 learning-library.css 末尾锁定的
+   color:#17211e 深字会压在深色玻璃上完全看不清（2026-11-23 用户实报）。
+   ★ 收口一处：在 .ll-library 子树内把 --el-* / --ll-* 全量钉成浅色，
+   所有散落的 var(--el-bg-color)/var(--ll-surface) 引用一次性回到浅色纸面，
+   与深字配对；这比逐条改几十处引用更可靠（避免漏改）。 */
 html[data-skin="on"] .ll-library {
-  background: var(--skin-surface, var(--el-bg-color, #fff));
-  --ll-surface: var(--skin-surface, #fff);
-  --ll-soft: var(--lv2-card, #f4f7f4);
+  --el-bg-color: #fff;
+  --el-bg-color-overlay: #fff;
+  --el-fill-color: #f4f7f4;
+  --el-fill-color-light: #f7f8f7;
+  --el-fill-color-lighter: #fafbfa;
+  --el-fill-color-blank: #fff;
+  --ll-surface: #fbfcfb;
+  --ll-soft: #eef2ef;
+  background: #f4f7f4;
+  color: #17211e;
 }
 html[data-skin="on"] .ll-book-card.selected,
-html[data-skin="on"] .ll-source-list > button.selected { background: var(--lv2-card, #f7f8f7); }
+html[data-skin="on"] .ll-source-list > button.selected { background: #f7f8f7; }
 /* 原生按钮文字兜底（2026-11-21 复习页实报「空心胶囊」）：
    浏览器 UA 对 <button> 默认不继承文字色（buttontext ≈ 近黑），学习区大量原生按钮
    只声明了背景没声明 color → 皮肤模式深色底上黑字 = 按钮文字看不见。
    ⚠️ :where() 把 .lv2 button 段特异性归零（整条仅 (0,1,1)）：只兜底「未声明 color」的
    按钮；组件里自己声明了 color:#fff 的实心主操作钮（更高特异性）不受影响。 */
 html[data-skin="on"] .lv2 :where(button) { color: inherit; }
-/* ===== 皮肤模式：练习测评卡可读性（2026-11-21，用户截图实报）=====
-   .lv2-quiz 消费的 --lv2-surface 是「--skin-panel-bg-strong(20%) × 82%」≈16% 不透明度，
-   压在壁纸取景图上 → 选项文字与背景糊在一起。且徽标 #f4f6f4、选中 --lv2-tint(#edf3ff)、
-   对错 #eef8f2/#fbf0ee 都是「浅底配深字」的硬编码色；皮肤模式文字走 --skin-text
-   （壁纸偏暗时派生为浅字）→ 浅字压浅底全部不可读。
-   做题卡是文本密集交互面，走弹层 veil 同款策略：卡片垫 --skin-popover-veil 近实底 +
-   文字锁 --skin-text；徽标/选中/对错态改为主色与功能色的半透明叠加（叠在实底上，
-   深浅主题均与 --skin-text 保持对比）。 */
-[data-skin="on"] .lv2-quiz {
-  background: var(--skin-popover-veil, color-mix(in srgb, var(--skin-surface-raised, #1d1d1c) 92%, transparent));
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  color: var(--skin-text, var(--color-text, #17211e));
-}
-[data-skin="on"] .lv2-quiz > button span {
-  background: color-mix(in srgb, var(--lv2-accent) 34%, transparent);
-  color: var(--skin-text, var(--color-text, #17211e));
-}
-[data-skin="on"] .lv2-quiz > button.picked {
-  background: color-mix(in srgb, var(--lv2-accent) 22%, transparent);
-}
-[data-skin="on"] .lv2-quiz > button.correct {
-  background: color-mix(in srgb, #3f8a67 32%, transparent);
-}
-[data-skin="on"] .lv2-quiz > button.wrong {
-  background: color-mix(in srgb, #b6493a 32%, transparent);
-}
-[data-skin="on"] .lv2-quiz-explanation {
-  background: color-mix(in srgb, #3f8a67 24%, transparent);
-  color: var(--skin-text, var(--color-text, #17211e));
-}
+/* 练习测评卡（.lv2-quiz，仅 practice 页）：2026-11-21 曾用 --skin-popover-veil
+   深色 veil + --skin-text 浅字修深色皮肤可读性；但 623b0412 起 practice 属于
+   study-full:not(.study-lesson)，已整组锁为浅色纸面（--lv2-surface:#fbfcfb /
+   color:#17211e）。那套深色 veil 补丁 2026-11-23 实报造成「深卡 + 浅底白框 +
+   白底红字清单」混搭，与浅色纸面冲突，故移除：题目卡/选项/徽标/对错态/解析/
+   自测清单统一回落到 study-full 的浅令牌，深字浅底配对。 */
 .lv2-review { border: 1px solid var(--lv2-line); border-radius: 8px; overflow: hidden; background: var(--lv2-surface); }
 .lv2-review div { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 48px; padding: 8px 12px; border-top: 1px solid var(--lv2-line); }
 .lv2-review div:first-child { border-top: 0; }

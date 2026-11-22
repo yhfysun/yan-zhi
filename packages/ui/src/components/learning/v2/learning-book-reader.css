@@ -521,12 +521,23 @@
   .lbr-head-actions button { flex: 0 0 44px; width: 44px; }
 }
 
-/* 目录/注释真正可收起（此前桌面端 state 变化但 CSS 永远 display:flex） */
+/* 目录/注释真正可收起（此前桌面端 state 变化但 CSS 永远 display:flex）。
+   ★ 关闭面板只把列宽压到 0 + 隐藏内容，绝不能 display:none：
+     display:none 会让面板退出 grid 流，正文 main 自动补进第 1 列（已被压成 0 宽）
+     → 关目录后正文整块消失（2026-11-23 用户实报）。保留面板在流内、列宽归零，
+     main 始终占据 minmax(0,1fr) 的中间列。 */
 .lbr-body.chapters-closed { grid-template-columns: 0 minmax(0, 1fr) 286px; }
 .lbr-body.notes-closed { grid-template-columns: 238px minmax(0, 1fr) 0; }
 .lbr-body.chapters-closed.notes-closed { grid-template-columns: 0 minmax(0, 1fr) 0; }
 .lbr-body.chapters-closed .lbr-chapters,
-.lbr-body.notes-closed .lbr-notes { display: none; }
+.lbr-body.notes-closed .lbr-notes {
+  overflow: hidden;
+  visibility: hidden;
+  min-width: 0;
+  padding-inline: 0;
+  border: 0;
+  pointer-events: none;
+}
 .lbr-chapters header button {
   display: grid; width: 30px; height: 30px; place-items: center;
   border: 1px solid var(--reader-line); border-radius: 6px;

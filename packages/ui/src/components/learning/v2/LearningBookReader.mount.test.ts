@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
 import LearningBookReader from './LearningBookReader.vue';
@@ -172,5 +174,19 @@ describe('LearningBookReader', () => {
     await nextTick();
     expect(body.classList.contains('notes-closed')).toBe(true);
     expect(document.documentElement).toBeTruthy();
+  });
+
+  it('collapses side panels by zeroing grid columns instead of display:none so the body text stays in the 1fr column', () => {
+    // 2026-11-23 实报：关目录用 display:none 会让面板退出 grid 流，正文 main 补进被压成 0 宽的第 1 列 → 正文消失。
+    // 契约：关闭态列宽归零，但面板保留在流内（visibility/overflow 隐藏），正文始终占 minmax(0,1fr) 中间列。
+    const css = readFileSync(resolve(__dirname, 'learning-book-reader.css'), 'utf8');
+    expect(css).toMatch(/\.lbr-body\.chapters-closed \{ grid-template-columns: 0 minmax\(0, 1fr\) 286px; \}/);
+    expect(css).toMatch(/\.lbr-body\.notes-closed \{ grid-template-columns: 238px minmax\(0, 1fr\) 0; \}/);
+    const collapseRule = css.match(/\.lbr-body\.chapters-closed \.lbr-chapters,[\s\S]*?\n\}/)?.[0] || '';
+    expect(collapseRule).toContain('visibility: hidden');
+    expect(collapseRule).toContain('overflow: hidden');
+    expect(collapseRule).not.toMatch(/display:\s*none/);
+    // 2fr 中间列在两种关闭组合下都保留
+    expect(css).toMatch(/\.lbr-body\.chapters-closed\.notes-closed \{ grid-template-columns: 0 minmax\(0, 1fr\) 0; \}/);
   });
 });
