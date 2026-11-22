@@ -1,7 +1,15 @@
 <template>
+  <!-- ★★★ 全屏实况 Teleport（2026-11-22）：skin 开启时 .right-panel 带 backdrop-filter，
+       而 backdrop-filter 与 transform 一样会把 fixed 后代的包含块从窗口变成右栏本身
+       ⇒ shell-expanded 的 fixed inset:0 只铺在右栏里，聊天区/顶栏/状态条全盖不住。
+       展开时把整个 shell 搬到 body 直接子级（含块变回视口）⇒ 真铺满整窗。
+       仅 BrowserView 引擎允许搬：shell 里的视口只是占位 div（native view 由 bounds 驱动），
+       DOM 搬动不影响 guest；webview 引擎搬动 = guest 元素重挂载 = 页面重载，禁止（见下方历史注释）。
+       收起即搬回原位（teleport disabled），恢复面板内常规布局。 -->
+  <Teleport to="body" :disabled="!shellTeleport">
   <div
     class="browser-shell"
-    :class="{ 'shell-expanded': browserExpanded, 'reader-mode': readerMode }"
+    :class="{ 'shell-expanded': browserExpanded, 'shell-teleported': shellTeleport, 'fs-chrome-revealed': fsChromeRevealed, 'reader-mode': readerMode }"
     @keydown="onShellKeydown"
     @click="hideTabCtx"
   >
@@ -11,8 +19,10 @@
       <p class="bu-sub">内置浏览器仅支持桌面端与 Web 端，移动端请在电脑上使用，或用系统浏览器打开链接。</p>
     </div>
     <template v-else>
+    <!-- 全屏实况唤出热区：展开态 chrome 默认滑出屏幕外，鼠标碰到窗口顶缘滑入（Chrome 全屏同款） -->
+    <div class="fs-hover-strip" @mouseenter="fsChromeShow" @mouseleave="fsChromeScheduleHide"></div>
     <!-- 多标签页栏（Chrome 风格） -->
-    <div class="browser-tabbar">
+    <div class="browser-tabbar" @mouseenter="fsChromeShow" @mouseleave="fsChromeScheduleHide">
       <div class="tab-list">
         <div
           v-for="tab in tabs" :key="tab.id"
@@ -54,7 +64,7 @@
     </div>
 
     <!-- 一体化工具栏：导航组 | 外部/引用 | 地址栏(pill) | 缩放 | 收藏/历史/密码 | 交给 AI | 全屏 | 更多 -->
-    <div class="browser-toolbar">
+    <div class="browser-toolbar" @mouseenter="fsChromeShow" @mouseleave="fsChromeScheduleHide">
       <!-- 导航组：主页/后退/前进/刷新 -->
       <div class="nav-group">
         <button class="nav-btn" @click="goHome" title="主页">
@@ -633,6 +643,7 @@
     </el-dialog>
     </template>
   </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
@@ -739,10 +750,19 @@ function isSamePreviewFamily(a?: string, b?: string): boolean {
   if (!a || !b) return false;
   return (a === 'preview' && b.startsWith('preview')) || (b === 'preview' && a.startsWith('preview'));
 }
+// ★ 全屏实况不再只属于 preview（2026-11-22 游戏窗实报）：游戏窗（scope=game）/ 主窗
+//   /browser（scope=page）同样可用 —— 之前绑死 isPreviewScope，游戏窗里点全屏按钮是空操作。
+//   preview 仍走 chatStore（agent 任务自动展开/用户手动收起等既有联动不变），其余 scope 用本地态。
+const localExpanded = ref(false);
 const browserExpanded = computed({
-  get: () => isPreviewScope && chatStore.browserExpanded,
-  set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; },
+  get: () => (isPreviewScope ? chatStore.browserExpanded : localExpanded.value),
+  set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; else localExpanded.value = v; },
 });
+// 全屏实况展开且是 BrowserView 引擎时，把整个 shell 搬到 body 直接子级
+// （skin 的 .right-panel 带 backdrop-filter → fixed 包含块困在右栏，铺不满整窗，见模板顶部注释）
+const shellTeleport = computed(() => browserExpanded.value && isElectron && !isWebviewEngine.value);
+// 搬动后占位 div 矩形突变（右栏 → 整窗）：两端都强同步一次 bounds，不依赖 ResizeObserver 恰好回调
+watch(shellTeleport, () => { nextTick(() => syncBrowserViewBounds(true)); });
 // ★★★ Agent 实况锁定（2026-10-08 二次加固 —— 上一次加固**没修干净**）：
 //   上一版（2026-10-07）把判据从"脆弱标志"改成"运行态推导"，但**兜底分支仍是同一个脆弱标志**
 //   （`chatStore.browserLockInput`），而它由「browserSteps 0→N」watch 置位、又被
@@ -944,14 +964,63 @@ const isConvStreamingNow = computed(() => isPreviewScope && chatStore.streaming)
 const pausedNow = computed(() => isPreviewScope && chatStore.browserPaused);
 function toggleExpanded() {
   if (browserExpanded.value) {
-    // 手动收起 = 本次浏览器任务内不再自动放大
+    // 手动收起 = 本次浏览器任务内不再自动放大（仅 preview 有 agent 联动语义）
     browserExpanded.value = false;
-    chatStore.browserUserDismissed = true;
+    if (isPreviewScope) chatStore.browserUserDismissed = true;
   } else {
     browserExpanded.value = true;
-    chatStore.browserUserDismissed = false;
+    if (isPreviewScope) chatStore.browserUserDismissed = false;
   }
 }
+
+// ── 全屏实况只留画面（2026-11-22）──
+// 展开态把浏览器 chrome（标签栏/工具条/收藏栏）滑出屏幕外，只剩页面画面；
+// ① 鼠标碰到窗口顶缘（fs-hover-strip）或悬停 chrome 上 → 滑入（Chrome 全屏同款）；
+// ② 展开时窗口一并置为 OS 全屏（隐藏任务栏），收起还原 —— guest 持有键盘焦点时
+//    Esc 由主进程转发（onHostEsc），页面自身全屏由 onHtmlFullscreen 联动进出；
+// ③ html 根挂 yz-browser-fs 类：非预览 scope（游戏窗//browser 页）shell 仍留在常规流里
+//    （不覆盖底部游戏执行条），靠全局规则隐藏应用标题栏让页面再抬一格。
+const fsChromeRevealed = ref(false);
+let fsChromeHideTimer: ReturnType<typeof setTimeout> | null = null;
+let htmlFsAuto = false; // 本轮展开是页面 HTML 全屏自动带入的（退出时随之收起、不算用户手动展开）
+function fsChromeShow() {
+  if (!browserExpanded.value) return;
+  if (fsChromeHideTimer) { clearTimeout(fsChromeHideTimer); fsChromeHideTimer = null; }
+  fsChromeRevealed.value = true;
+}
+function fsChromeScheduleHide() {
+  if (!browserExpanded.value) return;
+  if (fsChromeHideTimer) clearTimeout(fsChromeHideTimer);
+  // 小延迟：从顶缘热区移入 chrome 的间隙（两个 mouseleave/enter 之间）不至于闪隐
+  fsChromeHideTimer = setTimeout(() => { fsChromeHideTimer = null; fsChromeRevealed.value = false; }, 150);
+}
+/** 页面 HTML 全屏联动：BrowserView 广播与 webview DOM 事件共用这一份（唯一实现） */
+function onGuestHtmlFullscreen(on: boolean) {
+  if (on) {
+    if (!browserExpanded.value) {
+      htmlFsAuto = true;
+      browserExpanded.value = true;
+    }
+  } else if (htmlFsAuto) {
+    htmlFsAuto = false;
+    browserExpanded.value = false;
+    if (isPreviewScope) chatStore.browserUserDismissed = false; // 页面自动带入的收起不算"用户手动收起"
+  }
+}
+watch(browserExpanded, (v) => {
+  if (fsChromeHideTimer) { clearTimeout(fsChromeHideTimer); fsChromeHideTimer = null; }
+  fsChromeRevealed.value = false;
+  // 非预览 scope：html 根挂类 → 全局规则隐藏 .title-bar（游戏窗页面上抬占满；收起还原）
+  try { document.documentElement.classList.toggle('yz-browser-fs', !!v); } catch { /* ignore */ }
+  if (!isElectron) return;
+  try { (window as any).electronAPI?.setFullScreen?.(!!v); } catch { /* ignore */ }
+});
+// 唤出/收起 chrome → 视口矩形要让位/复原：BrowserView bounds 必须强同步一次
+// （BrowserView 是原生图层，DOM chrome 只在 bounds 让位后才可见、可点）
+watch(fsChromeRevealed, () => {
+  if (!isElectron || isWebviewEngine.value) return;
+  syncBrowserViewBounds(true);
+});
 // Esc 收起全屏（展开态才拦截，避免影响页面内 Esc 语义）
 function onShellKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && browserExpanded.value) {
@@ -1848,13 +1917,27 @@ function runBoundsSync() {
     const rect = el.getBoundingClientRect();
     // 面板可见但尺寸仍为 0（CSS 过渡中）：跳过本次，等尾部补的那一次同步对齐
     if (rect.width < 1 || rect.height < 1) return;
+    // ★ 全屏实况唤出 chrome 时给视口矩形让位（2026-11-22）：BrowserView 是原生图层，
+    //   恒在窗口 DOM 之上 —— 不让位的话，滑入的标签栏/工具条会被网页盖住、点不到。
+    let viewTop = rect.top;
+    let viewH = rect.height;
+    if (browserExpanded.value && fsChromeRevealed.value) {
+      const shell = el.closest('.browser-shell');
+      const tabbar = shell?.querySelector('.browser-tabbar') as HTMLElement | null;
+      const toolbar = shell?.querySelector('.browser-toolbar') as HTMLElement | null;
+      const chromeH = (tabbar?.offsetHeight || 0) + (toolbar?.offsetHeight || 0);
+      if (chromeH > 0 && chromeH < viewH) {
+        viewTop += chromeH;
+        viewH -= chromeH;
+      }
+    }
     // Electron 33 的 setBounds 使用 CSS 像素（逻辑像素），不需要乘以 DPR
     (window as any).electronAPI.browserView.resize(
       activeTabId.value,
       Math.round(rect.left),
-      Math.round(rect.top),
+      Math.round(viewTop),
       Math.round(rect.width),
-      Math.round(rect.height),
+      Math.round(viewH),
     );
   });
 }
@@ -2812,6 +2895,13 @@ function onWebviewReady(tabId: string) {
     console.warn(`[BrowserPanel] onWebviewReady 但无元素: tabId=${tabId}`);
     return;
   }
+  // ★ 页面 HTML 全屏联动（webview 引擎）：guest 触发全屏 → 自动进入「全屏实况」；
+  //   退出 → 自动带入的随之收起。元素事件随元素生命周期，重建后重新绑（dataset 防重）。
+  if (!el.dataset.yzFsBound) {
+    el.dataset.yzFsBound = '1';
+    el.addEventListener('enter-html-full-screen', () => onGuestHtmlFullscreen(true));
+    el.addEventListener('leave-html-full-screen', () => onGuestHtmlFullscreen(false));
+  }
   try {
     const id = typeof el.getWebContentsId === 'function' ? el.getWebContentsId() : null;
     const key = `${tabId}:${id}`;
@@ -3295,6 +3385,21 @@ onMounted(async () => {
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
     // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
     trackIpc(api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url))));
+    // ★ 页面 HTML 全屏联动（H5 游戏/视频自带「全屏」按钮）：guest 触发全屏时自动进入
+    //   「全屏实况」（隐藏 chrome + OS 全屏），页面退出全屏时若本轮是自动带入的则随之收起。
+    //   用户手动展开（htmlFsAuto=false）时页面退出全屏不动全屏实况。webview 引擎走
+    //   onWebviewReady 里的元素事件，共用 onGuestHtmlFullscreen 这一份实现。
+    if (api.browserView.onHtmlFullscreen) {
+      trackIpc(api.browserView.onHtmlFullscreen(aliveGuard((_tid: string, on: boolean) => {
+        onGuestHtmlFullscreen(on);
+      })));
+    }
+    // guest 持有键盘焦点时渲染层收不到按键：主进程转发的 Esc 在展开态收起全屏实况
+    if (api.browserView.onHostEsc) {
+      trackIpc(api.browserView.onHostEsc(aliveGuard(() => {
+        if (browserExpanded.value) toggleExpanded();
+      })));
+    }
     // 网页 window.open / target=_blank：主进程在 partition 上拦截后转成此事件，
     // 统一在应用内新标签页打开，弹窗不会逃逸成系统窗口
     trackIpc((window as any).electronAPI?.onOpenTab?.(aliveGuard((url: string, scope?: string) => {
@@ -3650,20 +3755,54 @@ onUnmounted(() => {
 
 /* ── 全屏实况（原地放大）：纯样式切换，DOM 节点不动。
    ⚠️ 禁用 Teleport：<webview>（iframe 同理）DOM 被搬动 → guest 重挂载 → 页面重载、
-   agent 操作到一半的表单/滚动状态全丢。fixed 定位让面板铺满窗口，背后加遮罩盖住聊天区。 */
-.browser-shell.shell-expanded {
+   agent 操作到一半的表单/滚动状态全丢。fixed 定位让面板铺满窗口，背后加遮罩盖住聊天区。
+   ★ fixed 铺满只对 shell-teleported（preview + BrowserView 引擎）生效：
+   游戏窗 / /browser 页（webview 引擎）shell 本就占满路由区，展开走常规流 +
+   html.yz-browser-fs 隐藏标题栏（见下），不覆盖底部游戏执行条。 */
+.browser-shell.shell-teleported.shell-expanded {
   position: fixed;
   inset: 0;
   z-index: 2000;
 }
 /* 展开态背后遮罩：盖住聊天区（webview 不透明，正常看不到；作为页面加载白屏期的视觉过渡） */
-.browser-shell.shell-expanded::before {
+.browser-shell.shell-teleported.shell-expanded::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: -1;
   background: var(--el-mask-color, rgba(0, 0, 0, 0.5));
 }
+/* 非预览 scope 展开时隐藏应用标题栏（游戏窗/浏览器页只剩页面 + 底部执行条）；
+   OS 全屏（window-set-fullscreen）由 watch(browserExpanded) 同步负责 */
+:global(html.yz-browser-fs .title-bar) { display: none !important; }
+
+/* ── 全屏实况只留画面（2026-11-22）：展开态把 chrome（标签栏/工具条）改为顶部悬浮层
+   并默认滑出屏幕外，鼠标碰到窗口顶缘（fs-hover-strip）滑入，Chrome 全屏同款。
+   tab/toolbar 是纯 DOM（无 webview），改定位不会触发 guest 重挂载；收藏栏直接隐藏
+   （退出全屏即恢复）。agent 接管条保持常规流，任务运行中暂停/停止始终可见。 */
+.browser-shell .fs-hover-strip { display: none; }
+.browser-shell.shell-expanded .fs-hover-strip {
+  display: block;
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 12px;
+  z-index: 31; /* 高于 chrome(30)：热区在 chrome 滑入后仍在其上方，移回顶缘可再次唤出 */
+}
+.browser-shell.shell-expanded .browser-tabbar,
+.browser-shell.shell-expanded .browser-toolbar {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  z-index: 30;
+  /* 两条都锚 top:0、各自 translateY(-110%) 滑出：位移 ≥ 自身高度 ⇒ 任何内容高度
+    （工具条 padding+按钮 ≈52px、窄面板换行更高）都必然完全滑出，不残留。
+    旧写法 toolbar 锚 top:36px + -110% 只滑 1.1×自身高 ≈ -57px < -(36+52) ⇒ 上沿残留。 */
+  transform: translateY(-110%);
+  transition: transform 0.18s ease;
+}
+.browser-shell.shell-expanded.fs-chrome-revealed .browser-tabbar { transform: translateY(0); }
+/* 唤出时工具条落在固定 36px 高的标签栏正下方 */
+.browser-shell.shell-expanded.fs-chrome-revealed .browser-toolbar { transform: translateY(36px); }
+.browser-shell.shell-expanded .bookmarks-bar { display: none; }
 
 /* ── Agent 实况锁定 shield：透明覆盖层，挡视口区的一切人为输入。
    capture 阶段拦截；工具条在视口区之外，不受影响（暂停/停止/收起始终可点）。 */

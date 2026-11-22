@@ -99,6 +99,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+  // 浏览器「全屏实况」：渲染层展开为纯画面时把窗口置为 OS 全屏（隐藏任务栏），收起还原
+  setFullScreen: (fs) => ipcRenderer.invoke('window-set-fullscreen', !!fs),
   // 界面刷新（顶栏刷新按钮）：由主进程执行 reloadIgnoringCache，界面卡住时的自救出口
   reload: () => ipcRenderer.send('window-reload'),
   // 远程控制隐私屏（remote-control 插件）：true=所有显示器铺全黑点击穿透窗，false=撤掉
@@ -632,6 +634,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const h = (_e, tabId, url) => callback(tabId, url);
       ipcRenderer.on('browserView:navigated', h);
       return () => ipcRenderer.removeListener('browserView:navigated', h);
+    },
+    // 页面 HTML 全屏广播（如 H5 游戏自带「全屏」按钮）：渲染层据此自动进入/退出「全屏实况」
+    onHtmlFullscreen: (callback) => {
+      const h = (_e, tabId, on) => callback(tabId, on);
+      ipcRenderer.on('browserView:htmlFullscreen', h);
+      return () => ipcRenderer.removeListener('browserView:htmlFullscreen', h);
+    },
+    // guest 持有键盘焦点时渲染层收不到按键：主进程把 Esc 原样转发，供全屏实况收起判断
+    onHostEsc: (callback) => {
+      const h = (_e, tabId) => callback(tabId);
+      ipcRenderer.on('browserView:hostEsc', h);
+      return () => ipcRenderer.removeListener('browserView:hostEsc', h);
     },
     onLoaded: (callback) => {
       const h = (_e, tabId, url) => callback(tabId, url);

@@ -2089,6 +2089,9 @@ function createWindow() {
   let saveWinTimer = null;
   const scheduleSaveWinState = () => {
     clearTimeout(saveWinTimer);
+    // ★ 全屏态不落盘（浏览器「全屏实况」会把窗口临时撑满屏幕）：落盘会导致重启后
+    //   窗口按全屏尺寸打开。退出全屏时 resize 会再触发一次，届时正常落盘。
+    try { if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) return; } catch { /* ignore */ }
     saveWinTimer = setTimeout(() => saveWindowState(mainWindow), 400);
   };
   mainWindow.on('resize', scheduleSaveWinState);
@@ -2503,6 +2506,21 @@ function createBrowserViewFor(tabId, entry) {
     }
   });
 
+  // ★ 页面 HTML 全屏（H5 游戏/视频自带「全屏」按钮）：Chromium 只会把全屏元素铺满
+  //   BrowserView 自己的 bounds，应用层的标签栏/工具条/状态条全都还在 —— 用户看到的
+  //   就是"全屏了但四周一圈壳"。转发给渲染层，由 BrowserPanel 自动进入/退出「全屏实况」
+  //   （隐藏 chrome + 窗口 OS 全屏），页面才真正铺满整屏。
+  wc.on('enter-html-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:htmlFullscreen', tabId, true);
+    }
+  });
+  wc.on('leave-html-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:htmlFullscreen', tabId, false);
+    }
+  });
+
   // ★ 自定义协议闸门（2026-10-09 初版 / 2026-10-12 收口）：BrowserView 引擎的 guest 此前只挂了
   //   setWindowOpenHandler（拦 window.open/target=_blank），没拦页面自身的导航 ——
   //   pageAgent 点击 bitbrowser:// / tel: / mailto: 等未知协议链接时，Electron 把
@@ -2553,6 +2571,14 @@ function createBrowserViewFor(tabId, entry) {
     if (input.alt && key === 'arrowright') {
       event.preventDefault();
       if (wc.navigationHistory?.canGoForward?.() || wc.canGoForward?.()) wc.goForward();
+    }
+    // Esc：guest 持有键盘焦点时主窗口渲染层收不到按键（BrowserView 是独立视图），
+    // 原样转发给渲染层 —— 「全屏实况」展开态靠它收起（页面自己用了 Esc 则由
+    // leave-html-full-screen 路径收起，渲染层对转发幂等处理）。不 preventDefault。
+    if (key === 'escape') {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browserView:hostEsc', tabId);
+      }
     }
   });
 
@@ -3080,6 +3106,13 @@ ipcMain.on('window-close', (event) => {
   else mainWindow?.close();
 });
 ipcMain.handle('window-is-maximized', (event) => winOf(event)?.isMaximized() || false);
+// 浏览器「全屏实况」：渲染层展开为纯画面时把窗口一并置为 OS 全屏（隐藏任务栏/窗口框），收起还原。
+// frame:false 不影响 setFullScreen（fullscreenable 只约束用户操作入口）。
+ipcMain.handle('window-set-fullscreen', (event, fs) => {
+  const w = winOf(event);
+  if (!w || w.isDestroyed()) return;
+  try { w.setFullScreen(!!fs); } catch { /* ignore */ }
+});
 // splash 状态回拉：splash 渲染层加载完成后立即取一次最新推送，避免错过已发状态
 ipcMain.handle('splash:get-last-update', () => splashLastUpdate);
 // 界面刷新（顶栏刷新按钮）：走 webContents.reloadIgnoringCache 而非渲染层 location.reload()，
