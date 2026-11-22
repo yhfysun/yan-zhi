@@ -1555,3 +1555,20 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
   .lv2.study-full .lv2-specialized-study.inline,
   .lv2.study-full .lv2-studio-immersive.inline { min-height: 100%; }
 }
+
+/* 学习态内的实践/练习/陪练沿用浅色阅读表面，不能被深色课程台的配色吞掉文字 */
+.lv2.study-full:not(.study-lesson) {
+  --lv2-line: #d3d9d4;
+  --lv2-muted: #5f6a63;
+  --lv2-surface: #fbfcfb;
+  --lv2-panel: #f4f7f4;
+  --lv2-tint: #e6f1eb;
+  --lv2-accent: #2f6d54;
+  background: #eef2ef;
+  color: #17211e;
+}
+.lv2.study-full:not(.study-lesson) .lv2-workspace.is-study-surface { background: transparent; }
+.lv2.study-full:not(.study-lesson) .lv2-studio-immersive.inline { background: #eef2ef; color: #17211e; }
+.lv2.study-full:not(.study-lesson) .lv2-studio-immersive-bar { background: #18231f; }
+.lv2.study-full:not(.study-lesson) .lv2-content { padding: 18px 24px 40px; }
+.lv2-subview-bar .lv2-subview-exit { border-color: var(--lv2-accent); color: var(--lv2-accent); }

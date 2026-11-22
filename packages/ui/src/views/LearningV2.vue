@@ -115,7 +115,9 @@ const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 const chat = useChat();
 const agentStore = useAgentStore();
 const courses = computed(() => subject.value?.courses || []);
-const isStudySurface = computed(() => activePage.value === 'lesson' || activePage.value === 'studio');
+const isStudyPage = (page: LearningV2PageKey): boolean =>
+  page === 'lesson' || page === 'studio' || page === 'practice' || page === 'coach';
+const isStudySurface = computed(() => isStudyPage(activePage.value));
 const showTextbookToc = computed(() =>
   !isCompactLayout.value && !isStudySurface.value && activePage.value === 'overview',
 );
@@ -833,8 +835,11 @@ watch(libraryOpen, async (open) => {
 // 2026-11-22 评审：学习面板改为页内视图切换，不再 Teleport 到 body / 锁 body / 给应用层加 inert。
 // 总览层与学习层是同一视图树里的二选一，不会同时渲染，因此不需要遮罩式隔离。
 watch(activePage, async (page, previous) => {
-  if (page !== previous && workspaceRoot.value) workspaceRoot.value.scrollTop = 0;
-  if ((page === 'lesson' || page === 'studio') && mineOpen.value) mineOpen.value = false;
+  // 学习态内互跳（课程/实践/练习/陪练）不重置滚动，避免页面「跳来跳去」
+  if (page !== previous && !(isStudyPage(page) && isStudyPage(previous)) && workspaceRoot.value) {
+    workspaceRoot.value.scrollTop = 0;
+  }
+  if (isStudyPage(page) && mineOpen.value) mineOpen.value = false;
   await nextTick();
   if (page === 'lesson') (specializedStudyRoot.value || lessonRoot.value)?.focus();
   if (page === 'studio') studioRoot.value?.focus();
@@ -884,7 +889,7 @@ onBeforeUnmount(() => {
   <div
     v-if="subject"
     class="lv2"
-    :class="{ 'study-full': isStudySurface, 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
+    :class="{ 'study-full': isStudySurface, 'study-lesson': activePage === 'lesson', 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
     :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
     :data-yz-annotate-id="activePage === 'lesson' ? 'learning-v2-lesson' : `learning-v2-${activePage}`"
     data-yz-annotate-label="学习"
@@ -1203,6 +1208,7 @@ onBeforeUnmount(() => {
           <b>{{ currentPageLabel }}</b>
         </div>
         <nav v-if="activePage === 'practice' || activePage === 'coach'" class="lv2-subview-bar" aria-label="学习工具">
+          <button type="button" class="lv2-subview-exit" @click="selectPage('overview')">返回教材</button>
           <button type="button" @click="selectPage('lesson')">课程</button>
           <button type="button" @click="selectPage('studio')">实践</button>
           <button type="button" :class="{ active: activePage === 'practice' }" @click="selectPage('practice')">练习</button>
@@ -1770,7 +1776,7 @@ onBeforeUnmount(() => {
         </template>
       </section>
       <aside
-        v-if="!isCompactLayout && activePage !== 'lesson' && activePage !== 'studio'"
+        v-if="!isCompactLayout && !isStudySurface"
         class="lv2-study-rail"
         :class="{ collapsed: studyRailCollapsed }"
         aria-label="今日学习概览"

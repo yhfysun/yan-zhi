@@ -816,7 +816,8 @@ describe('LearningV2', () => {
 
     (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
     await nextTick();
-    (host.querySelector('[data-page="overview"]') as HTMLButtonElement).click();
+    // 练习页已是整窗学习态，返回教材走页内「返回教材」而不是隐藏的 legacy 导航
+    (host.querySelector('.lv2-subview-exit') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-continue')).toBeTruthy();
   });
@@ -1026,6 +1027,23 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('.lv2-quiz')).toBeTruthy();
     expect(host.querySelector('.lv2-subview-bar')).toBeTruthy();
+  });
+
+  it('keeps the full-window learning shell while moving between lesson, practice and studio', async () => {
+    const host = await mountPage();
+    const practiceChip = [...host.querySelectorAll('.lv2-topbar-actions .lv2-tool-chip')]
+      .find((button) => button.textContent?.trim() === '练习') as HTMLButtonElement;
+    practiceChip.click();
+    await nextTick();
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
+    expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
+    expect(host.querySelector('.lv2-subjects')).toBeNull();
+    expect(host.querySelector('.lv2-subview-bar .lv2-subview-exit')).toBeTruthy();
+
+    (host.querySelector('.lv2-subview-bar button:nth-child(2)') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-lesson.inline')).toBeTruthy();
+    expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
   });
 
   it('renders a textbook TOC on the overview and quick-navigation panes inside the lesson', async () => {
