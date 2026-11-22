@@ -112,7 +112,7 @@ describe('ProgrammingCourseHub', () => {
     (host.querySelector('[data-learning-layer="projects"]') as HTMLButtonElement).click();
     await nextTick();
 
-    expect(host.textContent).toContain('综合训练 · 企业项目工坊');
+    expect(host.textContent).toContain('综合训练');
     expect(host.querySelectorAll('[data-programming-project]')).toHaveLength(PROGRAMMING_PROJECTS.length);
     expect(host.textContent).toContain('前端项目');
     expect(host.textContent).toContain('多模块单体');

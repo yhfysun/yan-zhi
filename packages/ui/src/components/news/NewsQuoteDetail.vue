@@ -137,6 +137,9 @@
             <button type="button" class="news-cmp-clear" @click="clearCompare">清空</button>
           </div>
           <p v-if="compareNotice" class="news-quote-empty">{{ compareNotice }}</p>
+          <p v-if="!compareItems.length" class="news-quote-empty news-quote-main-empty">
+            {{ wide ? '在左侧列表点选品种加入对比。' : '按「返回列表」点选品种加入对比。' }}
+          </p>
           <NewsCompareChart :series="compareItems" />
         </template>
 
@@ -353,6 +356,13 @@ async function toggleCompare(code: string, name: string): Promise<void> {
   }
   const color = COMPARE_COLORS[compareItems.value.length % COMPARE_COLORS.length];
   compareItems.value = [...compareItems.value, { code, name, color, bars: [], loading: true }];
+  // ★ 移动端：加入品种后自动切到图表视图 —— 图表栏是 `v-show="wide || view==='chart'"`，
+  //   停在列表视图时选完对比什么都看不到（2026-11-21 用户实报「多选后看不了图」）。
+  //   chartFromList 置位保证返回键先回列表继续加/移除品种。
+  if (!props.wide && view.value === 'list') {
+    chartFromList = true;
+    view.value = 'chart';
+  }
   const seq = ++compareReqSeq;
   try {
     const result = await api.get<QuoteDetail>(`/news/quote?code=${encodeURIComponent(code)}`);

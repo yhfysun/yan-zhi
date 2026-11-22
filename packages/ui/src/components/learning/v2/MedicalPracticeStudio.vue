@@ -358,7 +358,7 @@ function toggleObservation(item: string) {
 
 .medical-case-switcher button.active {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
 }
 
 .medical-case-switcher span,
@@ -383,7 +383,7 @@ function toggleObservation(item: string) {
   padding: 15px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 8px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
 }
 
 .medical-case-brief h3 {
@@ -516,7 +516,7 @@ function toggleObservation(item: string) {
   padding: 12px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 7px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
 }
 
 .medical-compare article b {

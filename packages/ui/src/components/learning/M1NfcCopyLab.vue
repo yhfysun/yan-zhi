@@ -637,7 +637,10 @@ function shortBlock(data: string | null): string {
   color: var(--m1-muted); font-size: 11px; cursor: pointer; }
 .m1-check input { width: 16px; height: 16px; accent-color: var(--m1-teal); }
 
-.m1-rail { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.m1-rail { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--m1-muted, #748078) 60%, transparent) transparent; }
+.m1-rail::-webkit-scrollbar { height: 6px; }
+.m1-rail::-webkit-scrollbar-track { background: transparent; }
+.m1-rail::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--m1-muted, #748078) 55%, transparent); }
 .m1-rail-item { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 12px;
   border: 1px solid var(--m1-line); border-radius: 6px; background: var(--m1-paper); color: var(--m1-muted);
   cursor: pointer; font-size: 11px; }

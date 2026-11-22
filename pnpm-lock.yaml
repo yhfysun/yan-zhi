@@ -475,6 +475,9 @@ importers:
       exceljs:
         specifier: ^4.4.0
         version: 4.4.0
+      hanzi-writer:
+        specifier: ^3.7.3
+        version: 3.7.3
       highlight.js:
         specifier: ^11.10.0
         version: 11.12.0
@@ -3391,6 +3394,9 @@ packages:
 
   hachure-fill@0.5.2:
     resolution: {integrity: sha512-3GKBOn+m2LX9iq+JC1064cSFprJY4jL1jCXTcpnfER5HYE2l/4EfWSGzkPa/ZDBmYI0ZOEj5VHV/eKnPGkHuOg==}
+
+  hanzi-writer@3.7.3:
+    resolution: {integrity: sha512-fdOFrb1cXWL/pV/oplJkcdziCvjJzhhf+qoIBm5IpVGxPBZEu4eLB6ZG5RJDbKXyNbNlyx8oIpa3XrcUBcSXpg==}
 
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
@@ -8442,6 +8448,8 @@ snapshots:
       lodash: 4.18.1
 
   hachure-fill@0.5.2: {}
+
+  hanzi-writer@3.7.3: {}
 
   has-flag@4.0.0: {}
 

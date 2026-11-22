@@ -8,6 +8,18 @@
   background: transparent;
   color: var(--color-text, #17211e);
   transition: grid-template-columns .18s ease;
+  /* ===== v2 学习组件共用表面/文字令牌（2026-11-21 全量排查）=====
+     组件 CSS 原本硬编码近白卡底（#fbfcfb/#fafbfa/#fafcfa/#f4f8f5）、深色提示字
+     （#8a5c3b/#405047）与 --lv2-tint 选中底，均为「浅色主题假设」；皮肤模式下
+     文字走 --skin-text（深色壁纸派生为浅字）→ 浅字压浅底不可读。
+     各使用点改为消费令牌（var 回落保留原值），皮肤模式在下方 html [data-skin] 块
+     统一切换为皮肤表面族，未开皮肤时观感不变。 */
+  --lv2-card: #fbfcfb;
+  --lv2-card-soft: #f4f8f5;
+  --lv2-note-ink: #8a5c3b;
+  --lv2-accent-wash: var(--lv2-tint, #edf7f2);
+  --lv2-accent-wash-strong: color-mix(in srgb, var(--lv2-accent, #3e6656) 8%, #fff);
+  --lv2-raised: rgba(255, 255, 255, .96);
 }
 .lv2.subjects-collapsed {
   grid-template-columns: 76px minmax(0, 1fr);
@@ -496,7 +508,12 @@
   background-clip: padding-box;
 }
 .lv2-subject { display: grid; grid-template-columns: 27px minmax(0, 1fr); gap: 8px; align-items: center; min-height: 42px; padding: 5px 7px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.lv2-subject:hover, .lv2-subject.active { background: #f2f4f2; }
+/* 中性高亮（不带科目 tint，避免选课区被主题色淹没），但必须跟随皮肤明暗：
+   旧值 #f2f4f2 在深色/玻璃皮肤下是盖住壁纸的突兀白块。用 skin-surface-raised
+   做半透明底，浅色皮肤仍是浅灰、深色皮肤是深灰，两种皮肤都透出壁纸。 */
+.lv2-subject:hover, .lv2-subject.active {
+  background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 26%, transparent);
+}
 .lv2-subject.active { box-shadow: inset 3px 0 var(--lv2-accent); }
 .lv2-subject i { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid color-mix(in srgb, var(--dot) 30%, transparent); border-radius: 7px; color: var(--dot); font-style: normal; font-size: 11px; font-weight: 700; }
 .lv2-subject b, .lv2-subject small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -581,16 +598,8 @@
 .lv2-rail-collapsed-label { display: flex; align-items: center; flex-direction: column; gap: 10px; padding: 18px 0; color: var(--lv2-muted); }
 .lv2-rail-collapsed-label span { font-size: 9px; letter-spacing: .12em; writing-mode: vertical-rl; }
 .lv2-rail-collapsed-label b { color: var(--lv2-accent); font-size: 9px; }
-.lv2-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
-.lv2-page-head span { color: var(--lv2-accent); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
-.lv2-page-head h1 { margin: 4px 0 6px; font-family: Georgia, "Songti SC", serif; font-size: 32px; line-height: 1.2; }
-.lv2-page-head p { margin: 0; color: var(--lv2-muted); font-size: 12px; }
-.lv2-page-head > small { color: var(--lv2-muted); font-size: 10px; }
-.lv2-page-back {
-  display: inline-flex; min-height: 38px; flex: 0 0 auto; align-items: center; gap: 4px;
-  padding: 7px 10px; border: 1px solid var(--lv2-line); border-radius: 7px;
-  background: var(--lv2-surface); color: var(--lv2-muted); font-size: 9px; cursor: pointer;
-}
+/* 页头与返回按钮已废除（2026-11-22）：页签即标题，桌面端返回走页签；
+   移动端紧凑布局保留 lv2-mobile-pagebar 的返回按钮 */
 .lv2-continue {
   display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 14px;
   padding: 18px 20px; border: 1px solid var(--lv2-line); border-left: 4px solid var(--lv2-accent);
@@ -682,7 +691,11 @@
 .lv2-book-layout article > header small { height: fit-content; padding: 3px 7px; border: 1px solid var(--lv2-line); border-radius: 999px; color: var(--lv2-muted); font-size: 8px; }
 .lv2-book-layers { display: flex; gap: 5px; margin: 14px 0 10px; }
 .lv2-book-layers button { min-height: 34px; padding: 6px 10px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 9px; cursor: pointer; }
-.lv2-book-layers button.active { border-color: var(--lv2-accent); background: #f2f4f2; color: var(--lv2-text, #17211e); }
+.lv2-book-layers button.active {
+  border-color: var(--lv2-accent);
+  background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 26%, transparent);
+  color: var(--lv2-accent);
+}
 .lv2-original, .lv2-book-layer { padding: 16px; border: 1px solid var(--lv2-line); background: var(--lv2-surface); }
 .lv2-original { border-radius: 8px 8px 0 0; }
 .lv2-book-layer { border-top: 0; border-radius: 0 0 8px 8px; color: var(--lv2-muted); font-size: 11px; line-height: 1.8; }
@@ -777,6 +790,42 @@
 .lv2-lesson > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid rgba(255,255,255,.1); }
 .lv2-lesson > footer button { min-height: 38px; padding: 7px 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: transparent; color: #edf3ef; }
 .lv2-lesson > footer button:last-child { background: #edf3ef; color: #18231f; }
+/* 完成本课后的就地选择：做练习 / 下一课 / 留在复习（不自动跳练习页） */
+.lv2-lesson > .lv2-lesson-done { display: grid; gap: 8px; justify-items: start; padding: 14px; border-top: 1px solid rgba(255,255,255,.1); }
+.lv2-lesson > .lv2-lesson-done b { font-size: 13px; color: #edf3ef; }
+.lv2-lesson > .lv2-lesson-done p { color: rgba(237,243,239,.72); font-size: 11px; }
+.lv2-lesson-done-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.lv2-lesson-done-actions button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 7px 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: transparent; color: #edf3ef; font-size: 11px; font-weight: 600; cursor: pointer; }
+.lv2-lesson-done-actions button:first-child { background: #edf3ef; color: #18231f; }
+.lv2-lesson-done-actions button:disabled { opacity: .55; cursor: default; }
+.lv2-lesson-done-actions .lv2-lesson-done-stay { border-color: transparent; color: rgba(237,243,239,.66); }
+/* ===== 课程内练习（2026-11-22）：内联卡片展开在正文下方，页脚「下一课」始终可见 =====
+   课程页自带固定配色（#18231f 底 / #edf3ef 字），练习卡沿用正文卡的纸底深字配对 */
+.lv2-lesson-quiz {
+  margin: 16px 0 0;
+  padding: 18px;
+  border: 1px solid var(--lv2-line);
+  border-radius: 10px;
+  background: #fbfcf8;
+  color: #24302a;
+}
+.lv2-lesson-quiz-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.lv2-lesson-quiz-bar b { font-size: 12px; }
+.lv2-lesson-quiz-close { display: inline-flex; min-height: 30px; align-items: center; padding: 4px 12px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 999px; background: transparent; color: #405047; font-size: 10px; cursor: pointer; }
+.lv2-lesson-quiz-close:hover { border-color: rgba(36, 48, 42, .34); background: rgba(36, 48, 42, .06); }
+.lv2-lesson-quiz h2 { margin: 0 0 14px; font-size: 17px; line-height: 1.5; }
+.lv2-lesson-quiz .lv2-quiz-meta > span { color: var(--lv2-accent); }
+.lv2-lesson-quiz .lv2-quiz-meta small { color: #5f7268; }
+.lv2-lesson-quiz .lv2-quiz-nav { background: transparent; border-color: rgba(36, 48, 42, .18); color: #405047; }
+.lv2-lesson-quiz-score { border-left-color: #3f8a67; background: #eef8f2; color: #24302a; }
+/* 步骤自测模式（无选择题库的课程）：题目 = 每步完成确认，参考要点可展开 */
+.lv2-lesson-quiz-reveal { display: inline-flex; min-height: 34px; align-items: center; padding: 6px 14px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 999px; background: transparent; color: #405047; font-size: 11px; cursor: pointer; }
+.lv2-lesson-quiz-answer { width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 8px; background: #fff; color: #24302a; font-size: 12px; line-height: 1.6; font-family: inherit; resize: vertical; }
+.lv2-lesson-quiz-answer:focus { outline: none; border-color: var(--lv2-accent, #3f8a67); }
+.lv2-lesson-quiz-reveal:hover { border-color: rgba(36, 48, 42, .34); background: rgba(36, 48, 42, .06); }
+.lv2-lesson-quiz-reference { margin-top: 10px; padding: 10px 12px; border-left: 3px solid var(--lv2-accent); background: rgba(36, 48, 42, .05); }
+.lv2-lesson-quiz-reference b { display: block; margin-bottom: 4px; color: var(--lv2-accent); font-size: 10px; }
+.lv2-lesson-quiz-reference p { margin: 0; font-size: 11px; line-height: 1.8; }
 .lv2-specialized-study {
   position: fixed; z-index: 5000; inset: 0;
   display: grid; width: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr);
@@ -844,25 +893,154 @@
 .lv2-steps b { margin-top: 4px; font-size: 9px; }
 .lv2-studio footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .lv2-studio footer small { color: var(--lv2-muted); font-size: 9px; }
-.lv2-studio footer button, .lv2-quiz > button:last-child, .lv2-coach > button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 7px; background: var(--lv2-accent); color: #fff; font-size: 10px; font-weight: 700; }
+.lv2-studio footer button, .lv2-coach > button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 7px; background: var(--lv2-accent); color: #fff; font-size: 10px; font-weight: 700; }
 .lv2-studio > aside { padding-left: 18px; border-left: 1px solid var(--lv2-line); }
 .lv2-studio > aside span { color: var(--lv2-accent); font-size: 9px; font-weight: 700; }
 .lv2-studio > aside p { margin: 8px 0 14px; padding: 10px 11px; border: 1px solid #e7d8c4; border-radius: 7px; background: #fbf7ef; color: #725d3c; font-size: 10px; line-height: 1.7; }
 .lv2-studio > aside button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--lv2-line); border-radius: 7px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 9px; }
 .lv2-quiz { max-width: 760px; padding: 20px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
 .lv2-quiz h2 { margin: 0 0 15px; font-size: 18px; line-height: 1.5; }
-.lv2-quiz > button { display: grid; width: 100%; min-height: 46px; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 9px; align-items: center; margin-top: 7px; padding: 8px 10px; border: 1px solid var(--lv2-line); border-radius: 7px; background: var(--lv2-surface); color: inherit; text-align: left; font-size: 11px; }
-.lv2-quiz > button span { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 6px; background: #f4f6f4; font-size: 9px; }
-.lv2-quiz > button.picked { border-color: var(--lv2-accent); background: var(--lv2-tint); }
-.lv2-quiz > button.correct { border-color: #3f8a67; background: #eef8f2; }
-.lv2-quiz > button.wrong { border-color: #b6493a; background: #fbf0ee; }
-.lv2-quiz > p { padding: 9px 11px; border-left: 3px solid #3f8a67; background: #eef8f2; font-size: 10px; line-height: 1.7; }
+/* 选项按钮：网格三列布局只作用于选项（:not(:last-child)）——
+   提交按钮是裸文本按钮，套上 28px 字母列会把"提交判断"挤成竖排（2026-11-21 用户截图实报）。
+   课程内练习卡（.lv2-lesson-quiz）的选项按钮复用同一套样式；
+   「先自己作答」揭示按钮同样是裸文本（2026-11-22 用户截图实报：一字一行竖排），
+   网格规则必须把它一并排除——收口用 :not 排除裸文本按钮，别靠位置（:last-child）枚举 */
+.lv2-quiz > button:not(:last-child),
+.lv2-lesson-quiz > button:not(.lv2-lesson-quiz-reveal) { display: grid; width: 100%; min-height: 44px; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 9px; align-items: center; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); color: inherit; text-align: left; font-size: 12px; line-height: 1.5; cursor: pointer; transition: border-color .15s ease, background-color .15s ease; }
+.lv2-quiz > button:not(:last-child):hover:not(:disabled),
+.lv2-lesson-quiz > button:not(.lv2-lesson-quiz-reveal):hover:not(:disabled) { border-color: color-mix(in srgb, var(--lv2-accent) 55%, var(--lv2-line)); }
+.lv2-quiz > button:disabled,
+.lv2-lesson-quiz > button:not(.lv2-lesson-quiz-reveal):disabled { cursor: not-allowed; }
+.lv2-quiz > button span,
+.lv2-lesson-quiz > button span { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 6px; background: #f4f6f4; font-size: 10px; }
+.lv2-quiz > button.picked,
+.lv2-lesson-quiz > button.picked { border-color: var(--lv2-accent); background: var(--lv2-tint); }
+.lv2-quiz > button.correct,
+.lv2-lesson-quiz > button.correct { border-color: #3f8a67; background: #eef8f2; }
+.lv2-quiz > button.wrong,
+.lv2-lesson-quiz > button.wrong { border-color: #b6493a; background: #fbf0ee; }
+.lv2-quiz-explanation { padding: 9px 11px; border-left: 3px solid #3f8a67; background: #eef8f2; font-size: 11px; line-height: 1.7; }
+/* 课程内练习卡的选项按钮固定浅色底：课程页是自洽浅色卡（#fbfcf8/#24302a），
+   不吃皮肤 token（皮肤模式深色 veil 会在这里变成深钮压浅卡） */
+.lv2-lesson-quiz > button:not(.lv2-lesson-quiz-reveal) { background: rgba(36, 48, 42, .05); border-color: rgba(36, 48, 42, .14); }
+.lv2-lesson-quiz > button.picked { border-color: var(--lv2-accent); background: color-mix(in srgb, var(--lv2-accent) 10%, #fbfcf8); }
+/* 章节题库练习（2026-11-21）：课程选择器 + 逐题作答 + 自测清单 */
+.lv2-quiz-picker { max-width: 760px; margin-bottom: 12px; }
+.lv2-quiz-picker .el-select { width: 100%; }
+.lv2-quiz-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.lv2-quiz-meta > span { color: var(--lv2-accent); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.lv2-quiz-meta small { color: var(--lv2-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.lv2-quiz-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.lv2-quiz-nav { min-height: 34px; padding: 7px 12px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer; }
+.lv2-quiz-nav:disabled { opacity: .45; cursor: not-allowed; }
+.lv2-quiz-submit { min-height: 34px; padding: 8px 20px; border: 0; border-radius: 999px; background: var(--lv2-accent); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .04em; cursor: pointer; transition: filter .15s ease, opacity .15s ease; }
+.lv2-quiz-submit:hover:not(:disabled) { filter: brightness(1.1); }
+.lv2-quiz-submit:disabled { opacity: .45; cursor: not-allowed; }
+.lv2-quiz-score { margin: 12px 0 0; padding: 9px 11px; border-left: 3px solid var(--lv2-accent); background: var(--lv2-accent-wash, transparent); font-size: 10px; line-height: 1.6; }
+.lv2-quiz-fallback { margin: 10px 0 0; color: var(--lv2-muted); font-size: 9px; line-height: 1.6; }
+.lv2-quiz-checkpoints { max-width: 760px; margin-top: 16px; padding: 14px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
+.lv2-quiz-checkpoints header b { font-size: 12px; }
+.lv2-quiz-checkpoints header small { display: block; margin-top: 3px; color: var(--lv2-muted); font-size: 9px; line-height: 1.5; }
+.lv2-quiz-checkpoints ol { display: grid; gap: 9px; margin: 10px 0 0; padding-left: 18px; }
+.lv2-quiz-checkpoints li { font-size: 11px; line-height: 1.7; }
+.lv2-quiz-checkpoints li b { display: block; margin-bottom: 2px; color: var(--lv2-accent); font-size: 10px; }
+/* ===== 皮肤模式：学习工作区整体可读性（2026-11-21，用户截图实报）=====
+   复习巩固/科目总览/课程地图/书架研读/实践 与练习测评是同一类问题：
+   · 内容卡片普遍写的是 color-mix(... var(--skin-panel-bg-strong) 54~78%, transparent)，
+     而 --skin-panel-bg-strong 在皮肤模式本身只有 18~20% 不透明度 →
+     叠完只剩约 12~16%，压在壁纸取景图上等于透明；
+   · .lv2-stats 统计条完全没有底色，数字直接压在壁纸上；
+   · 书架/实践/教练面板还有一批「浅底配深字」硬编码（--lv2-tint 实底、#fbfcfb、#fafbfa、
+     color-mix(..., #fff)、--lv2-text 回落深色），皮肤文字走 --skin-text
+     （壁纸偏暗时为浅字）→ 浅字压浅底不可读。
+   系统性修法：在 .lv2 子树内把 --skin-panel-bg-strong 提到近实底（弹层 veil 级别，
+   与文字色 --skin-text 同一套配对），所有按百分比消费它的玻璃面一次性变成可读面板；
+   --lv2-panel/--lv2-surface 直接指向它；硬编码浅底逐条换成半透明主色叠加。
+   ⚠️ html 前缀抬特异性到 (0,2,1)：稳定压过 skin.css 里
+   [data-theme="dark"][data-skin="on"] (0,2,0) 的同名变量定义，
+   避免注入顺序不确定时深色模式覆盖丢失。 */
+html[data-skin="on"] .lv2 {
+  --skin-panel-bg-strong: color-mix(in srgb, var(--skin-surface-raised, var(--skin-surface, var(--skin-glass-tint, #1d1d1c))) 94%, transparent);
+  --lv2-panel: var(--skin-panel-bg-strong);
+  --lv2-surface: var(--skin-panel-bg-strong);
+  /* 组件表面令牌 → 皮肤表面族（与 --skin-text 同一套配对）：
+     卡底必须取深色皮肤族而不是 --lv2-tint 浅色雾 —— 浅色雾叠在深壁纸上
+     会让浅字对比度崩掉（2026-11-21 AI 陪练页实报）。 */
+  --lv2-card: color-mix(in srgb, var(--skin-surface-raised, var(--skin-surface, #1d1d1c)) 55%, transparent);
+  --lv2-card-soft: color-mix(in srgb, var(--skin-surface-raised, var(--skin-surface, #1d1d1c)) 38%, transparent);
+  --lv2-note-ink: color-mix(in srgb, var(--skin-text, #f2f0ea) 76%, var(--color-primary, #f2f0ea));
+  --lv2-accent-wash: color-mix(in srgb, var(--lv2-accent, var(--color-primary)) 24%, transparent);
+  --lv2-accent-wash-strong: color-mix(in srgb, var(--lv2-accent, var(--color-primary)) 18%, transparent);
+  --lv2-raised: var(--skin-popover-veil, color-mix(in srgb, var(--skin-surface-raised, #1d1d1c) 94%, transparent));
+}
+/* 统计条：原本只有上下边框、没有底色，数字直接压在壁纸上 */
+html[data-skin="on"] .lv2-stats {
+  border: 1px solid var(--lv2-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--skin-panel-bg-strong) 78%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+/* 硬编码浅底/深字回落清理：换成令牌（皮肤值见上方 html [data-skin] 块） */
+html[data-skin="on"] .lv2-continue span em { color: var(--skin-text, var(--color-text, #17211e)); }
+html[data-skin="on"] .lv2-book-layout > aside > div.active { background: var(--lv2-accent-wash); }
+html[data-skin="on"] .lv2-book-layer dt { color: var(--skin-text, var(--color-text, #17211e)); }
+html[data-skin="on"] .lv2-expert-notes { background: var(--lv2-card); }
+html[data-skin="on"] .lv2-expert-notes article { background: var(--lv2-card-soft); }
+html[data-skin="on"] .lv2-steps div { background: var(--lv2-card); }
+html[data-skin="on"] .lv2-coach > div:first-child { background: var(--lv2-card); }
+/* 图书馆（.ll-library）是全屏实页：皮肤模式下 --el-bg-color 是高透玻璃，
+   必须垫皮肤实底，否则整页透出壁纸且浅色卡片全部失效（2026-11-21 全量排查） */
+html[data-skin="on"] .ll-library {
+  background: var(--skin-surface, var(--el-bg-color, #fff));
+  --ll-surface: var(--skin-surface, #fff);
+  --ll-soft: var(--lv2-card, #f4f7f4);
+}
+html[data-skin="on"] .ll-book-card.selected,
+html[data-skin="on"] .ll-source-list > button.selected { background: var(--lv2-card, #f7f8f7); }
+/* 原生按钮文字兜底（2026-11-21 复习页实报「空心胶囊」）：
+   浏览器 UA 对 <button> 默认不继承文字色（buttontext ≈ 近黑），学习区大量原生按钮
+   只声明了背景没声明 color → 皮肤模式深色底上黑字 = 按钮文字看不见。
+   ⚠️ :where() 把 .lv2 button 段特异性归零（整条仅 (0,1,1)）：只兜底「未声明 color」的
+   按钮；组件里自己声明了 color:#fff 的实心主操作钮（更高特异性）不受影响。 */
+html[data-skin="on"] .lv2 :where(button) { color: inherit; }
+/* ===== 皮肤模式：练习测评卡可读性（2026-11-21，用户截图实报）=====
+   .lv2-quiz 消费的 --lv2-surface 是「--skin-panel-bg-strong(20%) × 82%」≈16% 不透明度，
+   压在壁纸取景图上 → 选项文字与背景糊在一起。且徽标 #f4f6f4、选中 --lv2-tint(#edf3ff)、
+   对错 #eef8f2/#fbf0ee 都是「浅底配深字」的硬编码色；皮肤模式文字走 --skin-text
+   （壁纸偏暗时派生为浅字）→ 浅字压浅底全部不可读。
+   做题卡是文本密集交互面，走弹层 veil 同款策略：卡片垫 --skin-popover-veil 近实底 +
+   文字锁 --skin-text；徽标/选中/对错态改为主色与功能色的半透明叠加（叠在实底上，
+   深浅主题均与 --skin-text 保持对比）。 */
+[data-skin="on"] .lv2-quiz {
+  background: var(--skin-popover-veil, color-mix(in srgb, var(--skin-surface-raised, #1d1d1c) 92%, transparent));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--skin-text, var(--color-text, #17211e));
+}
+[data-skin="on"] .lv2-quiz > button span {
+  background: color-mix(in srgb, var(--lv2-accent) 34%, transparent);
+  color: var(--skin-text, var(--color-text, #17211e));
+}
+[data-skin="on"] .lv2-quiz > button.picked {
+  background: color-mix(in srgb, var(--lv2-accent) 22%, transparent);
+}
+[data-skin="on"] .lv2-quiz > button.correct {
+  background: color-mix(in srgb, #3f8a67 32%, transparent);
+}
+[data-skin="on"] .lv2-quiz > button.wrong {
+  background: color-mix(in srgb, #b6493a 32%, transparent);
+}
+[data-skin="on"] .lv2-quiz-explanation {
+  background: color-mix(in srgb, #3f8a67 24%, transparent);
+  color: var(--skin-text, var(--color-text, #17211e));
+}
 .lv2-review { border: 1px solid var(--lv2-line); border-radius: 8px; overflow: hidden; background: var(--lv2-surface); }
 .lv2-review div { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 48px; padding: 8px 12px; border-top: 1px solid var(--lv2-line); }
 .lv2-review div:first-child { border-top: 0; }
 .lv2-review i { color: var(--lv2-accent); font-size: 8px; font-style: normal; }
 .lv2-review b { font-size: 10px; }
-.lv2-review button { border: 1px solid var(--lv2-line); border-radius: 6px; background: var(--lv2-surface); font-size: 9px; }
+.lv2-review button { min-height: 28px; padding: 5px 12px; border: 1px solid var(--lv2-line); border-radius: 6px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer; }
 .lv2-coach { display: flex; max-width: 760px; flex-direction: column; gap: 12px; padding: 18px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
 .lv2-coach > div:first-child { display: flex; gap: 9px; padding: 11px; border: 1px solid var(--lv2-line); border-radius: 7px; background: #fafbfa; }
 .lv2-coach p { margin: 0; font-size: 11px; line-height: 1.8; }
@@ -974,7 +1152,11 @@
   gap: 5px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface);
   color: var(--lv2-muted); font-size: 9px;
 }
-.lv2-mobile-tools button.active { border-color: var(--lv2-accent); background: #f2f4f2; color: var(--lv2-accent); }
+.lv2-mobile-tools button.active {
+  border-color: var(--lv2-accent);
+  background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 30%, transparent);
+  color: var(--lv2-accent);
+}
 .lv2-mobile-course-strip { min-width: 0; }
 .lv2-mobile-course-strip > header, .lv2-mobile-review-preview > header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px;
@@ -995,7 +1177,10 @@
 .lv2-mobile-course-strip .lv2-course-order {
   position: absolute; top: 9px; right: 9px; min-width: 54px; height: 20px;
 }
-.lv2-mobile-course-strip > div button.active { border-color: var(--lv2-accent); background: #f2f4f2; }
+.lv2-mobile-course-strip > div button.active {
+  border-color: var(--lv2-accent);
+  background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 30%, transparent);
+}
 .lv2-mobile-course-strip > div span, .lv2-mobile-course-strip > div small { color: var(--lv2-muted); font-size: 8px; }
 .lv2-mobile-course-strip > div b { font-size: 11px; line-height: 1.45; }
 .lv2-mobile-review-preview > header span { color: var(--lv2-muted); font-size: 9px; }
@@ -1028,7 +1213,10 @@
   gap: 10px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px;
   background: transparent; color: inherit; text-align: left;
 }
-.lv2-mobile-subject-sheet > div button.active { background: #f2f4f2; box-shadow: inset 3px 0 var(--lv2-accent); }
+.lv2-mobile-subject-sheet > div button.active {
+  background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 30%, transparent);
+  box-shadow: inset 3px 0 var(--lv2-accent);
+}
 .lv2-mobile-subject-sheet i {
   display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid color-mix(in srgb, var(--dot) 34%, transparent);
   border-radius: 7px; color: var(--dot); font-size: 10px; font-style: normal; font-weight: 700;
@@ -1163,10 +1351,6 @@
   .lv2-workspace { display: block; }
   .lv2-pages { display: none; }
   .lv2-content { padding: 14px 12px 28px; }
-  .lv2-page-head { align-items: flex-start; gap: 10px; }
-  .lv2-page-head h1 { font-size: 26px; }
-  .lv2-page-head p { font-size: 11px; line-height: 1.65; }
-  .lv2-page-back { min-height: 44px; }
   .lv2-mobile-continue > span, .lv2-mobile-continue > small { font-size: 10px; }
   .lv2-mobile-tools button { font-size: 10px; }
   .lv2-library-button { min-height: 44px; padding: 0 10px; font-size: 10px; }

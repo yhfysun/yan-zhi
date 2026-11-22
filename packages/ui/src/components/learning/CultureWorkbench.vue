@@ -957,7 +957,10 @@ onBeforeUnmount(() => {
     --learning-select-ink: var(--cul-ink, #33302a);
     --learning-select-accent: var(--color-primary);
   }
-  .cul-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .cul-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--color-text-tertiary, #748078) 60%, transparent) transparent; }
+  .cul-lesson-strip::-webkit-scrollbar { height: 6px; }
+  .cul-lesson-strip::-webkit-scrollbar-track { background: transparent; }
+  .cul-lesson-strip::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--color-text-tertiary, #748078) 55%, transparent); }
   .cul-lesson-strip .cul-lesson-btn { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }
   .cul-lesson-strip .cul-lesson-btn p { display: none; }
   .cul-lesson-strip .cul-lesson-btn b { font-size: 12px; }

@@ -18,7 +18,7 @@
 .lv2-security-lab { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .lv2-security-deep-practice {
   min-width: 0; grid-column: 1 / -1; overflow: hidden; border: 1px solid var(--lv2-line, #dbe3df);
-  border-radius: 8px; background: #fbfcfb;
+  border-radius: 8px; background: var(--lv2-card, #fbfcfb);
 }
 .lv2-security-deep-practice > header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -58,13 +58,13 @@
 .lv2-rule-lab { padding: 14px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px; background: var(--lv2-surface, #fff); }
 .lv2-rule-lab > nav { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 10px; }
 .lv2-rule-lab > nav button { white-space: nowrap; }
-.lv2-rule-lab > nav button.active { border-color: var(--lv2-accent, #3e6656); background: var(--lv2-tint, #e9f0ed); font-weight: 700; }
-.lv2-rule-lab > section { min-height: 130px; padding: 16px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: #fbfcfb; }
+.lv2-rule-lab > nav button.active { border-color: var(--lv2-accent, #3e6656); background: var(--lv2-accent-wash, var(--lv2-tint, #e9f0ed)); font-weight: 700; }
+.lv2-rule-lab > section { min-height: 130px; padding: 16px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: var(--lv2-card, #fbfcfb); }
 .lv2-rule-lab > section b { font-size: 13px; }
 .lv2-rule-lab > section p { color: var(--lv2-muted, #748078); font-size: 10px; line-height: 1.8; }
 .lv2-rule-lab > section label { display: flex; align-items: center; gap: 8px; color: var(--lv2-muted, #748078); font-size: 9px; }
 .lv2-rule-lab > section button { margin-top: 10px; }
-.lv2-rule-lab > small { display: block; margin-top: 10px; color: #8a5c3b; font-size: 9px; }
+.lv2-rule-lab > small { display: block; margin-top: 10px; color: var(--lv2-note-ink, #8a5c3b); font-size: 9px; }
 .lv2-calligraphy-lab { padding: 14px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px; background: var(--lv2-surface, #fff); }
 .lv2-calligraphy-lab > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .lv2-calligraphy-lab > header b { font-size: 13px; }
@@ -73,7 +73,7 @@
 .lv2-calligraphy-settings select { min-height: 36px; padding: 5px 7px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 6px; background: var(--lv2-surface, #fff); }
 .lv2-calligraphy-meta {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 9px 10px;
-  border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: #fbfcfb;
+  border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: var(--lv2-card, #fbfcfb);
   color: var(--lv2-muted, #748078); font-size: 9px;
 }
 .lv2-calligraphy-meta a { color: var(--lv2-accent, #3e6656); text-decoration: none; }
@@ -81,51 +81,105 @@
 .lv2-calligraphy-meta input[type="range"] { width: 128px; accent-color: var(--lv2-accent, #3e6656); }
 .lv2-calligraphy-meta output { min-width: 42px; color: var(--color-text, #17211e); font-variant-numeric: tabular-nums; }
 .lv2-calligraphy-workbench {
-  display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
-  gap: 12px; margin-top: 12px;
+  display: grid; grid-template-columns: minmax(96px, 132px) minmax(0, 1fr);
+  gap: 12px; margin-top: 12px; align-items: start;
 }
-.lv2-calligraphy-original, .lv2-calligraphy-focus-panel {
+.lv2-calligraphy-column {
+  display: flex; flex-direction: column; gap: 7px; max-height: min(66vh, 620px);
+  overflow-y: auto; overscroll-behavior: contain; padding: 9px;
+  border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px; background: var(--lv2-card, #fbfcfb);
+}
+.lv2-calligraphy-column button {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 8px 6px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px;
+  background: var(--lv2-surface, #fff); cursor: pointer;
+}
+.lv2-calligraphy-column button.active {
+  border-color: var(--lv2-accent, #3e6656);
+  background: var(--lv2-accent-wash-strong, color-mix(in srgb, var(--lv2-accent, #3e6656) 8%, #fff));
+}
+.lv2-calligraphy-column button small { color: var(--lv2-muted, #748078); font-size: 8px; }
+.lv2-calligraphy-column b {
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Songti SC", serif;
+  font-size: 30px; line-height: 1; color: var(--color-text, #17211e);
+}
+.lv2-calligraphy-column button.active b { color: var(--lv2-accent, #3e6656); }
+.lv2-calligraphy-meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.lv2-calligraphy-view-origin {
+  display: inline-flex; min-height: 36px; align-items: center; gap: 6px;
+  padding: 6px 11px; border: 1px solid var(--lv2-accent, #3e6656); border-radius: 6px;
+  background: var(--lv2-accent-wash-strong, color-mix(in srgb, var(--lv2-accent, #3e6656) 8%, #fff));
+  color: var(--lv2-accent, #3e6656); font-size: 10px; font-weight: 700; cursor: pointer;
+}
+.lv2-calligraphy-view-origin:hover { background: var(--lv2-accent-wash-strong, color-mix(in srgb, var(--lv2-accent, #3e6656) 15%, #fff)); }
+.lv2-calligraphy-grid-panel {
   min-width: 0; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df);
-  border-radius: 8px; background: #fbfcfb;
+  border-radius: 8px; background: var(--lv2-card, #fbfcfb);
 }
-.lv2-calligraphy-original > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
-.lv2-calligraphy-original > header b, .lv2-calligraphy-original > header span { display: block; }
-.lv2-calligraphy-original > header b { font-size: 11px; }
-.lv2-calligraphy-original > header span { margin-top: 2px; color: var(--lv2-muted, #748078); font-size: 8px; }
-.lv2-calligraphy-zoom { display: flex; gap: 5px; }
-.lv2-calligraphy-zoom button {
-  display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--lv2-line, #dbe3df);
-  border-radius: 6px; background: var(--lv2-surface, #fff); color: inherit;
+.lv2-calligraphy-grid-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lv2-calligraphy-grid-panel > header > span { font-size: 10px; font-weight: 700; }
+.lv2-calligraphy-grid-actions { display: flex; gap: 6px; }
+.lv2-calligraphy-grid-actions button {
+  display: inline-flex; min-height: 34px; align-items: center; gap: 5px; padding: 6px 9px;
+  border: 1px solid var(--lv2-line, #dbe3df); border-radius: 6px;
+  background: var(--lv2-surface, #fff); font-size: 9px;
 }
-.lv2-calligraphy-original-stage {
-  height: min(62vh, 640px); min-height: 360px; overflow: auto; overscroll-behavior: contain;
-  border: 1px solid #cfc6b8; background: #e8e3d9; cursor: grab; touch-action: none; user-select: none;
+.lv2-calligraphy-grid {
+  --cell-line: #e6bcb2;
+  position: relative; width: min(336px, 100%); aspect-ratio: 1; margin: 10px auto 0;
+  border: 2px solid #c24b3f; background:
+    linear-gradient(to right, transparent calc(50% - .5px), var(--cell-line) calc(50% - .5px), var(--cell-line) calc(50% + .5px), transparent calc(50% + .5px)),
+    linear-gradient(to bottom, transparent calc(50% - .5px), var(--cell-line) calc(50% - .5px), var(--cell-line) calc(50% + .5px), transparent calc(50% + .5px)),
+    linear-gradient(to top right, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px)),
+    linear-gradient(to bottom right, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px)),
+    #fffdf9;
 }
-.lv2-calligraphy-original-stage.dragging { cursor: grabbing; }
-.lv2-calligraphy-original-stage img {
-  display: block; width: 100%; min-width: 100%; max-width: none; height: auto; margin: 0 auto;
+.lv2-calligraphy-writer { position: absolute; inset: 0; display: grid; place-items: center; }
+.lv2-calligraphy-tracing {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Songti SC", serif;
+  font-size: 200px; line-height: 1;
+  color: rgba(194, 75, 63, .2); -webkit-text-stroke: 1px rgba(143, 49, 38, .55);
   pointer-events: none;
 }
-.lv2-calligraphy-original > p { margin: 8px 0 0; color: var(--lv2-muted, #748078); font-size: 8px; line-height: 1.65; }
-.lv2-calligraphy-focus-panel { display: flex; flex-direction: column; }
-.lv2-calligraphy-focus-panel > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.lv2-calligraphy-focus-panel > header span { color: var(--lv2-muted, #748078); font-size: 9px; }
-.lv2-calligraphy-focus-panel > header b { color: var(--lv2-accent, #3e6656); font-family: "Songti SC", serif; font-size: 22px; }
-.lv2-calligraphy-focus {
-  width: 100%; margin-top: 8px; aspect-ratio: 1; border: 1px solid #cfc6b8;
-  background-color: #e8e3d9; background-repeat: no-repeat;
+.lv2-calligraphy-grid-panel > p { margin: 9px 0 0; color: var(--lv2-muted, #748078); font-size: 9px; line-height: 1.65; }
+.lv2-calligraphy-print-sheet {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 10px;
 }
-.lv2-calligraphy-focus-panel ol { display: grid; gap: 7px; margin: 11px 0 0; padding: 0; list-style: none; }
-.lv2-calligraphy-focus-panel li { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; align-items: baseline; }
-.lv2-calligraphy-focus-panel li b { font-size: 9px; }
-.lv2-calligraphy-focus-panel li span { color: var(--lv2-muted, #748078); font-size: 8px; line-height: 1.6; }
+.lv2-calligraphy-cell {
+  --cell-line: #e6bcb2;
+  position: relative; aspect-ratio: 1; border: 1.5px solid #c24b3f;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Songti SC", serif;
+  color: rgba(194, 75, 63, .28); -webkit-text-stroke: .6px rgba(143, 49, 38, .5);
+  font-size: 44px; line-height: 1;
+}
+.lv2-calligraphy-cell::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    linear-gradient(to right, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px)),
+    linear-gradient(to bottom, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px)),
+    linear-gradient(to top right, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px)),
+    linear-gradient(to bottom right, transparent calc(50% - .4px), var(--cell-line) calc(50% - .4px), var(--cell-line) calc(50% + .4px), transparent calc(50% + .4px));
+}
+.lv2-calligraphy-grid-footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-top: 4px; }
+.lv2-calligraphy-grid-footer p { margin: 0; color: var(--lv2-muted, #748078); font-size: 8px; line-height: 1.65; }
+.lv2-calligraphy-grid-footer button {
+  display: inline-flex; flex: 0 0 auto; min-height: 34px; align-items: center; gap: 5px; padding: 6px 9px;
+  border: 1px solid var(--lv2-line, #dbe3df); border-radius: 6px; background: var(--lv2-surface, #fff); font-size: 9px;
+}
+@media print {
+  body * { visibility: hidden !important; }
+  .lv2-calligraphy-print-sheet, .lv2-calligraphy-print-sheet * { visibility: visible !important; }
+  .lv2-calligraphy-print-sheet { position: fixed; top: 24px; left: 24px; right: 24px; width: auto; }
+}
 .lv2-calligraphy-actions { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
 .lv2-calligraphy-actions button { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 6px; background: var(--lv2-surface, #fff); font-size: 9px; }
 .lv2-calligraphy-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .lv2-calligraphy-actions span { margin-left: auto; color: var(--lv2-muted, #748078); font-size: 8px; }
 .lv2-calligraphy-review { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(220px, .65fr); gap: 10px; margin-top: 12px; }
 .lv2-calligraphy-review > section {
-  min-width: 0; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: #fbfcfb;
+  min-width: 0; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: var(--lv2-card, #fbfcfb);
 }
 .lv2-calligraphy-review b { display: block; font-size: 11px; }
 .lv2-calligraphy-review p { margin: 4px 0 9px; color: var(--lv2-muted, #748078); font-size: 9px; line-height: 1.65; }
@@ -139,7 +193,7 @@
 .lv2-calligraphy-review strong { display: block; margin-top: 8px; color: var(--lv2-accent, #3e6656); font-size: 10px; }
 .lv2-calligraphy-review small { display: block; margin-top: 8px; color: var(--lv2-muted, #748078); font-size: 8px; line-height: 1.6; }
 .lv2-calligraphy-attempts, .lv2-calligraphy-overlay {
-  margin-top: 12px; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: #fbfcfb;
+  margin-top: 12px; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 7px; background: var(--lv2-card, #fbfcfb);
 }
 .lv2-calligraphy-attempts > header, .lv2-calligraphy-overlay > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .lv2-calligraphy-attempts > header b, .lv2-calligraphy-overlay > header b { font-size: 11px; }
@@ -156,7 +210,7 @@
 .lv2-calligraphy-attempt > header small, .lv2-calligraphy-attempt > span, .lv2-calligraphy-attempt > small { color: var(--lv2-muted, #748078); font-size: 8px; }
 .lv2-calligraphy-attempt > span { display: block; margin-top: 3px; }
 .lv2-calligraphy-attempt dl { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 8px 0; }
-.lv2-calligraphy-attempt dl div { padding: 5px 3px; border-radius: 5px; background: #f3f5f3; text-align: center; }
+.lv2-calligraphy-attempt dl div { padding: 5px 3px; border-radius: 5px; background: var(--lv2-card-soft, #f3f5f3); text-align: center; }
 .lv2-calligraphy-attempt dt { color: var(--lv2-muted, #748078); font-size: 7px; }
 .lv2-calligraphy-attempt dd { margin: 2px 0 0; font-size: 10px; font-weight: 700; }
 .lv2-calligraphy-overlay > header button {
@@ -183,7 +237,7 @@
 }
 .lv2-music-sequence span {
   display: grid; width: 48px; height: 42px; place-items: center; border: 1px solid var(--lv2-line, #dbe3df);
-  border-radius: 7px; background: #fbfcfb; font-size: 13px;
+  border-radius: 7px; background: var(--lv2-card, #fbfcfb); font-size: 13px;
 }
 .lv2-music-actions button {
   display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 6px 9px;
@@ -191,7 +245,7 @@
 }
 .lv2-generic-studio { display: flex; flex-direction: column; gap: 10px; }
 .lv2-generic-current {
-  padding: 15px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px; background: #fbfcfb;
+  padding: 15px; border: 1px solid var(--lv2-line, #dbe3df); border-radius: 8px; background: var(--lv2-card, #fbfcfb);
 }
 .lv2-generic-current > header { display: flex; align-items: center; gap: 10px; }
 .lv2-generic-current > header span {
@@ -211,7 +265,7 @@
 .lv2-generic-capture { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .lv2-generic-capture label {
   display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--lv2-line, #dbe3df);
-  border-radius: 8px; background: #fbfcfb; color: var(--lv2-muted, #748078); font-size: 9px;
+  border-radius: 8px; background: var(--lv2-card, #fbfcfb); color: var(--lv2-muted, #748078); font-size: 9px;
 }
 .lv2-generic-capture textarea {
   width: 100%; min-height: 94px; resize: vertical; padding: 9px 10px;
@@ -245,6 +299,8 @@
   .lv2-calligraphy-settings { width: 100%; flex-direction: column; }
   .lv2-calligraphy-settings select { min-height: 44px; }
   .lv2-calligraphy-meta { align-items: stretch; flex-direction: column; gap: 8px; }
+  .lv2-calligraphy-meta-row { flex-direction: column; align-items: stretch; }
+  .lv2-calligraphy-view-origin { min-height: 44px; justify-content: center; }
   .lv2-calligraphy-meta label { min-height: 40px; }
   .lv2-calligraphy-meta input[type="range"] { flex: 1; width: auto; }
   .lv2-calligraphy-actions { flex-wrap: wrap; }
@@ -254,7 +310,17 @@
   .lv2-calligraphy-review label { grid-template-columns: 44px minmax(120px, 1fr) 48px; min-height: 44px; }
   .lv2-calligraphy-review select { min-height: 44px; }
   .lv2-calligraphy-workbench { grid-template-columns: 1fr; }
-  .lv2-calligraphy-original-stage { height: 52vh; min-height: 300px; }
+  .lv2-calligraphy-column {
+    flex-direction: row; overflow-x: auto; overflow-y: hidden; max-height: none;
+  }
+  .lv2-calligraphy-column button { flex: 0 0 auto; flex-direction: row; padding: 6px 8px; }
+  .lv2-calligraphy-column b { font-size: 24px; }
+  .lv2-calligraphy-grid { width: min(300px, 100%); }
+  .lv2-calligraphy-tracing { font-size: 170px; }
+  .lv2-calligraphy-grid-actions button { min-height: 44px; }
+  .lv2-calligraphy-grid-footer { flex-direction: column; }
+  .lv2-calligraphy-grid-footer button { min-height: 44px; justify-content: center; }
+  .lv2-calligraphy-print-sheet { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .lv2-calligraphy-attempts > div { grid-template-columns: 1fr; }
   .lv2-calligraphy-attempt { width: auto; }
   .lv2-calligraphy-overlay > div { grid-template-columns: 1fr; }
@@ -262,7 +328,7 @@
   .lv2-calligraphy-mobile-actions {
     position: fixed; right: 12px; bottom: max(12px, env(safe-area-inset-bottom, 0px)); left: 12px;
     z-index: 40; display: grid; grid-template-columns: .9fr 1fr 1fr; gap: 7px; padding: 8px;
-    border: 1px solid rgba(41, 58, 50, .16); border-radius: 12px; background: rgba(255, 255, 255, .96);
+    border: 1px solid rgba(41, 58, 50, .16); border-radius: 12px; background: var(--lv2-raised, rgba(255, 255, 255, .96));
     box-shadow: 0 10px 30px rgba(27, 42, 35, .18); backdrop-filter: blur(12px);
   }
   .lv2-calligraphy-mobile-actions button {

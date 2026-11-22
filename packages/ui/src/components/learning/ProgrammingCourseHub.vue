@@ -54,9 +54,6 @@ const activeLayer = ref<'courses' | 'projects'>(
 const selectedCourse = computed(() =>
   props.courses.find((course) => course.id === selectedCourseId.value) || null,
 );
-const readyLessonCount = computed(() =>
-  props.courses.reduce((sum, course) => sum + course.readyLessons, 0),
-);
 const courseGroups = computed(() => {
   let order = 0;
   return PROGRAMMING_CURRICULUM_PHASES.map((phase) => ({
@@ -148,7 +145,7 @@ function scrollToPhase(phaseId: string): void {
 <template>
   <section
     class="programming-hub"
-    :aria-labelledby="activeLayer === 'projects' ? 'programming-project-title' : 'programming-hub-title'"
+    aria-label="编程课程地图"
   >
     <nav class="programming-layer-tabs" aria-label="编程学习内容">
       <button
@@ -181,19 +178,6 @@ function scrollToPhase(phaseId: string): void {
 
     <template v-else>
     <template v-if="!selectedCourse">
-      <header class="programming-hub-head">
-        <div>
-          <span>编程科目 · 推荐学习路线</span>
-          <h1 id="programming-hub-title">先懂程序怎么跑，再按前端、后端、数据一路学深</h1>
-          <p>编程通识里先学简单算法和数据结构；完整算法体系已独立为“算法与数据结构”学科。这里按先修关系排好 8 个阶段，不再把 Java 和 HTML 混在一起。</p>
-        </div>
-        <div class="programming-hub-summary">
-          <b>{{ courseGroups.length }}</b>
-          <span>推荐阶段</span>
-          <small>{{ courses.length }} 门课 · {{ readyLessonCount }} 课时</small>
-        </div>
-      </header>
-
       <nav class="programming-route-strip" aria-label="编程推荐学习顺序">
         <button
           v-for="group in courseGroups"
@@ -266,7 +250,6 @@ function scrollToPhase(phaseId: string): void {
           <span v-if="selectedCoursePosition">{{ selectedCoursePosition.phase.title }} · 第 {{ selectedCoursePosition.course.order }} 门 · 完整课程</span>
           <span v-else>{{ categoryLabel(selectedCourse.category) }} · {{ selectedCourse.status === 'ready' ? '完整课程' : '课程大纲' }}</span>
           <h1>{{ selectedCourse.title }}</h1>
-          <p>{{ selectedCourse.summary }}</p>
         </div>
         <dl>
           <div><dt>前置</dt><dd>{{ selectedCourse.prerequisite }}</dd></div>
@@ -407,57 +390,28 @@ function scrollToPhase(phaseId: string): void {
   background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
   color: var(--color-primary);
 }
-.programming-hub-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 24px;
-  align-items: end;
-  padding: 2px 0 20px;
-  border-bottom: 1px solid var(--color-border);
-}
-.programming-hub-head > div:first-child > span,
 .programming-course-head > div > span {
   color: var(--color-primary);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .06em;
 }
-.programming-hub-head h1,
 .programming-course-head h1 {
-  margin: 5px 0 7px;
+  margin: 0;
   font-family: Georgia, "Songti SC", serif;
   line-height: 1.3;
+  font-size: 20px;
 }
-.programming-hub-head h1 { max-width: 780px; font-size: 31px; }
-.programming-hub-head p,
-.programming-course-head p {
-  max-width: 760px;
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 1.75;
-}
-.programming-hub-summary {
-  display: grid;
-  min-width: 132px;
-  padding-left: 20px;
-  border-left: 1px solid var(--color-border);
-}
-.programming-hub-summary b {
-  color: var(--color-primary);
-  font-size: 30px;
-  line-height: 1;
-}
-.programming-hub-summary span { margin-top: 5px; font-size: 12px; font-weight: 650; }
-.programming-hub-summary small { margin-top: 6px; color: var(--color-text-tertiary); font-size: 9px; }
 .programming-route-strip {
   display: flex;
   gap: 6px;
   margin-top: 12px;
   padding: 4px 0 8px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  /* 2026-11-21 用户要求：路线横滑条不显示滚动条（保留滚动能力） */
+  scrollbar-width: none;
 }
+.programming-route-strip::-webkit-scrollbar { display: none; }
 .programming-route-strip button {
   display: grid;
   min-width: 158px;
@@ -626,7 +580,7 @@ function scrollToPhase(phaseId: string): void {
   border-bottom: 1px solid var(--color-border);
 }
 .programming-course-head > .programming-back { grid-column: 1 / -1; }
-.programming-course-head h1 { font-size: 28px; }
+.programming-course-head h1 { font-size: 20px; }
 .programming-course-head dl {
   display: grid;
   gap: 8px;
@@ -813,19 +767,7 @@ function scrollToPhase(phaseId: string): void {
     flex: 1;
     justify-content: center;
   }
-  .programming-hub-head { grid-template-columns: 1fr; gap: 12px; padding-bottom: 14px; }
-  .programming-hub-head h1 { font-size: 25px; }
-  .programming-hub-summary {
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: baseline;
-    gap: 6px;
-    padding: 9px 0 0;
-    border-top: 1px solid var(--color-border);
-    border-left: 0;
-  }
-  .programming-hub-summary b { font-size: 22px; }
-  .programming-hub-summary span { margin: 0; }
-  .programming-hub-summary small { margin: 0; text-align: right; }
+  .programming-route-strip { margin-top: 8px; }
   .programming-route-strip button { min-height: 56px; }
   .programming-path-stage > header {
     grid-template-columns: 42px minmax(0, 1fr);
@@ -839,7 +781,7 @@ function scrollToPhase(phaseId: string): void {
   .programming-course-grid { grid-template-columns: 1fr; }
   .programming-course-card { min-height: 126px; padding: 12px; }
   .programming-course-head { grid-template-columns: 1fr; }
-  .programming-course-head h1 { font-size: 23px; }
+  .programming-course-head h1 { font-size: 18px; }
   .programming-course-head dl { padding: 10px 0 0; border-top: 1px solid var(--color-border); border-left: 0; }
   .programming-course-sources { grid-template-columns: 1fr; margin-top: 10px; }
   .programming-stage-toggle { grid-template-columns: 30px minmax(0, 1fr); }
@@ -850,9 +792,6 @@ function scrollToPhase(phaseId: string): void {
   .programming-back { min-height: 44px; }
 }
 @media (max-width: 520px) {
-  .programming-hub-head h1 { font-size: 21px; }
-  .programming-hub-head p,
-  .programming-course-head p { font-size: 11px; }
   .programming-course-card { grid-template-columns: 32px minmax(0, 1fr); }
   .programming-course-icon { width: 30px; height: 30px; }
   .programming-course-side {

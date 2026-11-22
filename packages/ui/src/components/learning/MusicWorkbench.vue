@@ -897,7 +897,10 @@ onBeforeUnmount(() => {
     --learning-select-ink: var(--mw-ink, #33302a);
     --learning-select-accent: var(--color-primary);
   }
-  .mw-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .mw-lesson-strip { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--color-text-tertiary, #748078) 60%, transparent) transparent; }
+  .mw-lesson-strip::-webkit-scrollbar { height: 6px; }
+  .mw-lesson-strip::-webkit-scrollbar-track { background: transparent; }
+  .mw-lesson-strip::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--color-text-tertiary, #748078) 55%, transparent); }
   .mw-lesson-strip .mw-lesson { flex: 0 0 150px; width: 150px; min-width: 150px; min-height: 48px; padding: 7px 9px; }
   .mw-lesson-strip .mw-lesson b { font-size: 12px; }
   .mw-lesson-strip .mw-lesson small { white-space: normal; font-size: 9px; }

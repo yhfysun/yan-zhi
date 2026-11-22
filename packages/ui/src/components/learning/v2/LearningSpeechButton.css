@@ -5,7 +5,7 @@
   background: var(--lv2-surface, #fff); color: inherit; font-size: 9px; cursor: pointer;
 }
 .lv2-speech-button.compact { width: 38px; padding: 0; }
-.lv2-speech-button.active { border-color: var(--lv2-accent, #3e6656); background: var(--lv2-tint, #e9f0ed); }
+.lv2-speech-button.active { border-color: var(--lv2-accent, #3e6656); background: var(--lv2-accent-wash, var(--lv2-tint, #e9f0ed)); }
 .lv2-speech-error {
   position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: min(280px, 78vw);
   margin: 0; padding: 8px 10px; border: 1px solid #dfb4aa; border-radius: 7px;

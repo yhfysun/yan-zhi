@@ -1930,7 +1930,10 @@ onBeforeUnmount(() => {
   .sec-overview-title-row { gap: 16px; }
   /* ★★ v1.1 模块卡=横向滑动单行（评审定稿 §6-4）：全量模块进一条横轨，单卡 170px；
      次要文案隐藏；桌面网格逐字不变。 */
-  .sec-module-list { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; }
+  .sec-module-list { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 4px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--color-text-tertiary, #748078) 60%, transparent) transparent; }
+  .sec-module-list::-webkit-scrollbar { height: 6px; }
+  .sec-module-list::-webkit-scrollbar-track { background: transparent; }
+  .sec-module-list::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--color-text-tertiary, #748078) 55%, transparent); }
   .sec-module-card { flex: 0 0 170px; width: 170px; }
   .sec-module-card p,
   .sec-module-card .sec-module-topics { display: none; }

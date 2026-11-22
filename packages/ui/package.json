@@ -44,6 +44,7 @@
     "echarts": "^6.1.0",
     "element-plus": "^2.8.0",
     "exceljs": "^4.4.0",
+    "hanzi-writer": "^3.7.3",
     "highlight.js": "^11.10.0",
     "jsqr": "^1.4.0",
     "jszip": "^3.10.1",

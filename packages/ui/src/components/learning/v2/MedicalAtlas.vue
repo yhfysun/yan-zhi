@@ -372,7 +372,7 @@ const figureTitleId = computed(() => `medical-atlas-${activeLayer.value}-title`)
 
 .medical-atlas-tabs button.active {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
   font-weight: 700;
 }
 
@@ -391,7 +391,7 @@ const figureTitleId = computed(() => `medical-atlas-${activeLayer.value}-title`)
   padding: 12px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 8px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
 }
 
 .medical-atlas-figure {
@@ -422,7 +422,7 @@ const figureTitleId = computed(() => `medical-atlas-${activeLayer.value}-title`)
   min-height: 390px;
   flex: 1;
   border-radius: 7px;
-  background: #f4f8f5;
+  background: var(--lv2-card-soft, #f4f8f5);
 }
 
 .medical-body-outline > * {

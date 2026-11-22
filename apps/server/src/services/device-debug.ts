@@ -126,7 +126,7 @@ function execAdb(args: string[], timeoutMs = 10000): Promise<string> {
   if (!adb) {
     return Promise.reject(new Error('未找到 adb（真机调试需要 Android SDK platform-tools 或内置 scrcpy 自带的 adb，仅桌面端支持）'));
   }
-  return new Promise((resolve, reject) => {
+  const run = () => new Promise<string>((resolve, reject) => {
     execFile(adb, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const msg = String((err as Error).message || '') + (stderr ? ` | ${String(stderr).trim()}` : '');
@@ -136,7 +136,24 @@ function execAdb(args: string[], timeoutMs = 10000): Promise<string> {
       resolve(String(stdout || ''));
     });
   });
+  return run().catch(async (err: Error) => {
+    // ★ 无线调试自动重连（真机实测教训，2026-11-21）：adb server 重启后会丢所有
+    //   `adb connect` 状态（配对关系仍在），后续命令报 "device '<serial>' not found"。
+    //   serial 形如 IP:port 的无线设备自动重连一次再重试，否则每次 server 重启都断链。
+    const m = err.message.match(/device '([^']+)' not found/);
+    if (!m || !/^[\d.]+:\d+$/.test(m[1])) throw err;
+    const serial = m[1];
+    const out = await new Promise<string>((resolve) => {
+      execFile(adb, ['connect', serial], { timeout: 10000, windowsHide: true }, (e, stdout) => resolve(e ? '' : String(stdout || '')));
+    });
+    if (!/connected|already/i.test(out)) throw err;
+    logger.info(`[device-debug] 无线设备掉线，已自动重连: ${serial}`);
+    return run();
+  });
 }
+
+/** 最近成功在线过的无线序列号（IP:port）—— adb server 重启丢 connect 状态后按它恢复 */
+const knownWirelessSerials = new Set<string>();
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -371,7 +388,31 @@ export async function listDeviceWebviews(): Promise<{ devices: DeviceWebviewInfo
     throw new Error('未找到 adb：真机调试需要 Android SDK platform-tools（或内置 scrcpy 自带的 adb），仅桌面端支持');
   }
   const raw = await execAdb(['devices'], 10000);
-  const devices = parseAdbDevices(raw).filter((d) => d.state === 'device');
+  let devices = parseAdbDevices(raw).filter((d) => d.state === 'device');
+  // ★ 无线设备列表级恢复：adb server 重启后 `adb devices` 只是不报错地变空，
+  //   execAdb 的 "device not found" 重连兜底根本没机会触发 —— 这里对最近在线过的
+  //   无线序列号主动 adb connect 再重新枚举一次（配对关系持久，connect 即可恢复）。
+  const onlineSerials = new Set(devices.map((d) => d.serial));
+  const missing = [...knownWirelessSerials].filter((s) => !onlineSerials.has(s));
+  if (missing.length) {
+    for (const serial of missing) {
+      try {
+        const out = await execAdb(['connect', serial], 10000);
+        if (/connected|already/i.test(out)) {
+          logger.info(`[device-debug] 无线设备掉线，已自动重连: ${serial}`);
+          knownWirelessSerials.add(serial);
+        } else {
+          knownWirelessSerials.delete(serial); // 手机端无线调试已关/换端口 → 不再反复试
+        }
+      } catch { knownWirelessSerials.delete(serial); }
+    }
+    if (missing.length) {
+      devices = parseAdbDevices(await execAdb(['devices'], 10000)).filter((d) => d.state === 'device');
+    }
+  }
+  for (const dev of devices) {
+    if (/^[\d.]+:\d+$/.test(dev.serial)) knownWirelessSerials.add(dev.serial);
+  }
   const result: DeviceWebviewInfo[] = [];
   for (const dev of devices) {
     let model = '';
@@ -444,8 +485,12 @@ export async function evalInDeviceWebview(
   const session = await ensureSession(targetKey);
   session.lastUsed = Date.now();
   const t = Math.min(Math.max(Number(timeoutMs) || 10000, 1000), 60000);
+  // ★ Runtime.evaluate 按表达式求值，顶层 return 非法 —— 包一层 async IIFE：
+  //   工具描述承诺"用 return 包裹结果 + async/await 直接可用"，包装后两种写法都成立，
+  //   awaitPromise 拿到 Promise 解析值，returnByValue 按值回传。
+  const wrapped = `(async () => {\n${expression}\n})()`;
   const result = await cdpSend(session, 'Runtime.evaluate', {
-    expression: String(expression),
+    expression: wrapped,
     returnByValue: true,
     awaitPromise: true,
   }, t);

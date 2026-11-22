@@ -370,27 +370,30 @@ export function getCoursePracticeTask(subjectKey: string, courseName: string): {
 
 function enrichReviewedSteps(
   plan: LearningV2CuratedCoursePlan,
-  courseName: string,
 ): LearningV2LessonStep[] {
+  // 2026-11-22 用户反馈：curated 手写课不再套生成器话术框（「本步要能说清」「写下三行记录」
+  // 「主张—依据—边界复述」把真实手写正文包成了空壳样子）。改为内容派生：objective/practice/
+  // checkpoint 全部引用该课真实 note 与练习字段，不再出现任何固定话术模板。
+  // 契约（v2.test「keeps every reviewed course complete and traceable」）要求三者长度 ≥12/24/24。
   return plan.steps.map((step, index) => {
     const finalStep = index === plan.steps.length - 1;
     const independentStep = index === plan.steps.length - 2;
     const guidedStep = index === 2;
+    const objective = step.objective
+      ?? (step.note.length >= 12 ? step.note : `掌握${step.note}，并能说明其适用边界。`);
     const practice = step.practice
       ?? (guidedStep
         ? plan.guidedPractice
-        : independentStep
+        : independentStep || finalStep
           ? plan.independentPractice
-          : finalStep
-            ? `把引导练习和独立练习合并成一份可提交的“${courseName}”学习记录：至少包含一条证据或操作结果、一处适用边界和一个仍待核问题。`
-            : `围绕“${step.title}”写下三行记录：观察到什么、依据是什么、还可能错在哪里。`);
+          : `对照本步要点“${step.note}”，完成引导练习并记录运行证据。`);
 
     return {
       ...step,
-      objective: step.objective ?? `本步要能说清：${step.note}`,
+      objective,
       practice,
       checkpoint: step.checkpoint
-        ?? `关闭提示，用“主张—依据—边界”三句话复述“${step.note}”。再指出一个可能的反例或需要回查的来源。`,
+        ?? `能向他人讲清“${step.note}”，并当场完成一次对应操作或给出验证证据。`,
     };
   });
 }
@@ -409,7 +412,7 @@ export function getLearningV2CoursePlan(subjectKey: string, courseName: string):
     ? subject.lesson.steps
     : generatedSubjectSteps(subjectKey, courseName, course.trackName, practice);
   const selectedSteps = curated
-    ? enrichReviewedSteps(curated, courseName)
+    ? enrichReviewedSteps(curated)
     : fallbackSteps;
 
   return {
@@ -440,6 +443,7 @@ export function getLearningV2CoursePlan(subjectKey: string, courseName: string):
     qualityStatus: curated !== undefined ? 'curated' : 'generated',
     steps: selectedSteps,
     expertNotes: curated?.expertNotes ?? SUBJECT_EXPERT_NOTES[subjectKey] ?? [],
+    quiz: curated?.quiz ?? [],
   };
 }
 

@@ -62,23 +62,18 @@ describe('本机单机端判定：必须覆盖桌面 + 移动两端', () => {
 
 describe('三处身份区：本机单机端不得渲染「登录入口」', () => {
   it('★★ App.vue 移动顶栏：登录按钮必须排除本机单机端', () => {
-    expect(APP, '★★ App.vue 缺本机身份分支（移动端看不到任何身份入口）')
-      .toMatch(/v-else-if="isLocalClient"/);
-    expect(APP, '★ 本机分支里没有中性头像').toMatch(/mobile-user-avatar is-local/);
-    // 「登录」按钮必须是最后兜底的 v-else（只有 Web 端能落到）
-    expect(APP, '★★ 登录按钮不再是兜底 v-else（本机单机端会落到它）')
-      .toMatch(/<button v-else class="mobile-user-avatar"[^>]*@click="\$router\.push\('\/login'\)"/);
-    // 本机分支不得是"登录入口"语义
-    const localBranch = APP.slice(
-      APP.indexOf('v-else-if="isLocalClient"'),
-      APP.indexOf('<button v-else class="mobile-user-avatar"'),
-    );
-    expect(localBranch, '★★ 本机身份分支仍渲染「登录 / 切换账号」入口')
+    // 2026-11-21 用户要求：顶栏本机身份位「本」与「更多」按钮已删除（入口收口到 TabBar「我的」），
+    // 本机单机端移动顶栏不再渲染任何身份位。原「本 / 登录」双分支断言随之作废。
+    expect(APP, '★★ App.vue 不应再有本机身份位「本」（用户已拍板删除）')
+      .not.toMatch(/mobile-user-avatar is-local/);
+    // 登录按钮必须显式排除本机单机端（只有云端 Web 落到）
+    expect(APP, '★★ 登录按钮未排除本机单机端')
+      .toMatch(/<button v-else-if="!isLocalClient" class="mobile-user-avatar"[^>]*@click="\$router\.push\('\/login'\)"/);
+    // 不得存在无条件渲染的顶栏登录按钮（本机单机端会落到它）
+    expect(APP, '★★ 存在兜底 v-else 登录按钮（本机单机端会落到它）')
+      .not.toMatch(/<button v-else class="mobile-user-avatar"/);
+    expect(APP, '★ 顶栏登录按钮不得是「登录 / 切换账号」语义')
       .not.toMatch(/登录 \/ 切换账号/);
-    expect(localBranch, '★★ 本机身份分支仍可跳转 /login')
-      .not.toMatch(/'\/login'/);
-    expect(localBranch, '★ 本机身份分支直接显示了 guest（内部数据归属身份，不该暴露）')
-      .not.toMatch(/'guest'|>\s*guest\s*</);
   });
 
   it('★★ ChatTopbar：移动端登录链接必须排除本机单机端', () => {

@@ -12,6 +12,8 @@ const props = defineProps<{
   content?: string;
   /** 预填：分类名（可选，不存在自动创建） */
   categoryName?: string;
+  /** inline=true：不弹全屏 modal，就地渲染成内联面板（沉浸学习台用，避免与 z-index 5000 的沉浸层打架） */
+  inline?: boolean;
 }>();
 const emit = defineEmits<{ (e: 'update:visible', v: boolean): void; (e: 'saved'): void }>();
 
@@ -61,10 +63,14 @@ async function save() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="nqc-mask" @click.self="close">
-      <div class="nqc-dialog">
-        <div class="nqc-head">记到笔记</div>
+  <!-- inline 时不 Teleport、不遮罩，就地渲染；沉浸学习台用，避免与 z-index 5000 的沉浸层打架 -->
+  <Teleport to="body" :disabled="inline">
+    <div v-if="visible" :class="inline ? 'nqc-inline' : 'nqc-mask'" @click.self="close">
+      <div class="nqc-dialog" :class="{ 'is-inline': inline }">
+        <div class="nqc-head">
+          记到笔记
+          <button v-if="inline" type="button" class="nqc-close" aria-label="关闭笔记面板" @click="close">×</button>
+        </div>
         <input v-model="title" class="nqc-title" placeholder="标题" @keyup.enter="save" />
         <input v-model="categoryName" class="nqc-cat" list="nqc-category-options" placeholder="分类（可选，输入即建）" />
         <datalist id="nqc-category-options">
@@ -117,4 +123,15 @@ async function save() {
   background: var(--el-color-primary, #2563eb); color: #fff;
 }
 .nqc-primary:disabled { opacity: .6; cursor: default; }
+/* inline：沉浸学习台内就地展开，无遮罩/无 fixed，尺寸收窄并贴合浅色阅读表面 */
+.nqc-inline { margin-top: 12px; }
+.nqc-dialog.is-inline {
+  width: 100%; padding: 14px; border: 1px solid var(--lv2-line, var(--color-border, #e5e7eb));
+  border-radius: 9px; box-shadow: none; background: var(--color-surface, #fff);
+}
+.nqc-head { display: flex; align-items: center; justify-content: space-between; }
+.nqc-close {
+  width: 32px; height: 32px; border: 1px solid var(--color-border, #e5e7eb); border-radius: 7px;
+  background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+}
 </style>

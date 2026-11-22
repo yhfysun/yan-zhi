@@ -68,9 +68,6 @@ const filteredProjects = computed(() =>
     ? props.projects
     : props.projects.filter((project) => project.kind === activeFilter.value),
 );
-const phaseCount = computed(() =>
-  props.projects.reduce((sum, project) => sum + project.phases.length, 0),
-);
 
 function saveState(): void {
   try {
@@ -117,21 +114,8 @@ function startProject(project: ProgrammingProject): void {
 </script>
 
 <template>
-  <section ref="root" class="programming-project-hub" aria-labelledby="programming-project-title">
+  <section ref="root" class="programming-project-hub" aria-label="编程综合训练">
     <template v-if="!selectedProject">
-      <header class="programming-project-head">
-        <div>
-          <span>综合训练 · 企业项目工坊</span>
-          <h1 id="programming-project-title">从一句需求开始，做完一条真实工程链</h1>
-          <p>项目按需求、契约、数据、前后端、质量、部署和运维推进。每个阶段都是独立课时，退出后回到项目主线。</p>
-        </div>
-        <div class="programming-project-summary">
-          <b>{{ projects.length }}</b>
-          <span>项目主线</span>
-          <small>{{ phaseCount }} 个训练阶段</small>
-        </div>
-      </header>
-
       <div class="programming-project-loop" aria-label="项目交付闭环">
         <span><Target :size="15" />需求与验收</span>
         <ArrowRight :size="14" />
@@ -299,29 +283,17 @@ function startProject(project: ProgrammingProject): void {
 .programming-project-hub {
   color: var(--color-text, #17211e);
 }
-.programming-project-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 24px;
-  align-items: end;
-  padding: 2px 0 18px;
-  border-bottom: 1px solid var(--color-border);
-}
-.programming-project-head > div:first-child > span,
 .programming-project-detail-title > span {
   color: var(--color-primary);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .06em;
 }
-.programming-project-head h1,
 .programming-project-detail-head h1 {
-  margin: 5px 0 7px;
+  margin: 0;
   font-family: Georgia, "Songti SC", serif;
   line-height: 1.3;
 }
-.programming-project-head h1 { max-width: 780px; font-size: 31px; }
-.programming-project-head p,
 .programming-project-detail-title p {
   max-width: 780px;
   margin: 0;
@@ -329,15 +301,6 @@ function startProject(project: ProgrammingProject): void {
   font-size: 12px;
   line-height: 1.75;
 }
-.programming-project-summary {
-  display: grid;
-  min-width: 138px;
-  padding-left: 20px;
-  border-left: 1px solid var(--color-border);
-}
-.programming-project-summary b { color: var(--color-primary); font-size: 30px; line-height: 1; }
-.programming-project-summary span { margin-top: 5px; font-size: 12px; font-weight: 650; }
-.programming-project-summary small { margin-top: 6px; color: var(--color-text-tertiary); font-size: 9px; }
 .programming-project-loop {
   display: flex;
   flex-wrap: wrap;
@@ -580,7 +543,12 @@ function startProject(project: ProgrammingProject): void {
   padding: 0;
   list-style: none;
   overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-tertiary, #748078) 60%, transparent) transparent;
 }
+.programming-project-pipeline::-webkit-scrollbar { height: 6px; }
+.programming-project-pipeline::-webkit-scrollbar-track { background: transparent; }
+.programming-project-pipeline::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--color-text-tertiary, #748078) 55%, transparent); }
 .programming-project-pipeline li {
   display: inline-flex;
   min-width: fit-content;
@@ -714,19 +682,6 @@ function startProject(project: ProgrammingProject): void {
   outline-offset: 2px;
 }
 @media (max-width: 900px) {
-  .programming-project-head { grid-template-columns: 1fr; gap: 12px; padding-bottom: 14px; }
-  .programming-project-head h1 { font-size: 25px; }
-  .programming-project-summary {
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: baseline;
-    gap: 6px;
-    padding: 9px 0 0;
-    border-top: 1px solid var(--color-border);
-    border-left: 0;
-  }
-  .programming-project-summary b { font-size: 22px; }
-  .programming-project-summary span { margin: 0; }
-  .programming-project-summary small { margin: 0; text-align: right; }
   .programming-project-loop {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -752,8 +707,6 @@ function startProject(project: ProgrammingProject): void {
   .programming-project-phase-list button { min-height: 108px; padding: 11px; }
 }
 @media (max-width: 520px) {
-  .programming-project-head h1 { font-size: 21px; }
-  .programming-project-head p,
   .programming-project-detail-title p { font-size: 11px; }
   .programming-project-card { grid-template-columns: 32px minmax(0, 1fr); }
   .programming-project-icon { width: 30px; height: 30px; }

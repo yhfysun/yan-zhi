@@ -142,6 +142,8 @@ export type LearningV2CoursePlan = {
   readonly qualityStatus: 'curated' | 'generated' | 'draft';
   readonly steps: LearningV2Lesson['steps'];
   readonly expertNotes: readonly LearningV2ExpertNote[];
+  /** 本课章节题库（选择题）；未配置时练习页回退科目综合题 + 步骤自测清单。 */
+  readonly quiz: readonly LearningV2Practice[];
 };
 
 export type LearningV2CuratedCoursePlan = Pick<
@@ -156,6 +158,8 @@ export type LearningV2CuratedCoursePlan = Pick<
 > & {
   /** 课程级真实注解/笔记；不填则回退到科目池（v2-curated/expert-notes.ts）。 */
   readonly expertNotes?: readonly LearningV2ExpertNote[];
+  /** 本课章节题库；不填则练习页回退科目综合题 + 步骤自测清单。 */
+  readonly quiz?: readonly LearningV2Practice[];
 };
 
 export type LearningV2SubjectView = LearningV2Subject & {

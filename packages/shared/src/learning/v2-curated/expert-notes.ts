@@ -11,13 +11,27 @@ import type { LearningV2ExpertNote } from '../v2-types.js';
  *   《伤寒论》第 16 条、《毛诗序》（昭明文选/古诗文网）、王逸《离骚经序》（识典古籍）、
  *   《周髀算经》商高（百科/中科院引文）、《孙子兵法·虚实篇》、《管子·牧民》
  *   （求是网辨正：原文用「则」，史记引作「而」）、《荀子·劝学》、《孟子·滕文公下》、
- *   《左传·庄公十年》（古诗文网）、《战国策·赵策一》（人民网/教育部引例核对）。
+ *   《孟子·告子下》、《论语·雍也》、《论语·学而》、蔡邕《九势》（汉典古籍）、
+ *   《伤寒论·自序》（西安市中医院引文）、《礼记·曲礼上》（识典古籍）、
+ *   《左传·庄公十年》（古诗文网）、《战国策·赵策一》（人民网/教育部引例核对）、
+ *   《文心雕龙·知音》（识典古籍）。
  *   其余条目均为传世名句；新增条目必须先核对原文再写入。
  * - 「整理笔记」条目不冒充引文：正文是可执行记法，出处写真实公开资料（含链接）。
  * - 现代商业出版物（市售状元笔记、商业书摘、在版权内的现代译本）一律不逐字复制；
  *   优先引公版（古代典籍、NIST 政府出版物、马克思恩格斯原著）或开放许可内容
  *   （OpenStax CC BY、OI Wiki CC BY-SA、Pro Git CC BY-NC-SA）。
  * - 没有可靠条目的科目留空数组，页面就不展示该区，不拿模板凑数。
+ *
+ * 继续扩展流程（下次照做）：
+ * 1. 选定科目/典籍 → 联网核对原文（ctext.org / wikisource / 汉典古籍 / 古诗文网 / 识典古籍，
+ *    现代资料优先官方页：OWASP、MDN、NIST、OpenStax、OI Wiki、BBC、Cornell、NHK、JLPT）。
+ * 2. 核对通过后在本文件对应科目池追加条目；「公版古注」逐字摘录标篇目并把书名登记进本注释核对清单。
+ * 3. 更新头部核对清单 → 跑 packages/shared `npx vitest run src/learning`（35 个测试含契约守卫）
+ *    和 packages/ui `npx vitest run src/views/LearningV2.mount.test.ts`（42 个）→ shared build。
+ * 4. 尚可扩展的方向：王弼《周易注》逐卦注、朱熹《论语集注》逐章注、程颐《伊川易传》、
+ *    《礼记》其余各篇、《诗经》毛传郑笺具体注文、OWASP 剩余手册（CSRF/错误处理/数据篡改防护）、
+ *    MDN CSS 与表单专题、书法科笔画练习整理（配合书法实践重构任务，见
+ *    docs/Learning-V2问题与修复任务-2026-11-17.md 待处理区）。
  */
 export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2ExpertNote[]>> = {
   zhouyi: [
@@ -25,6 +39,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       label: '公版古注',
       source: '《周易·乾卦·大象传》，公版通行本；电子对照 https://ctext.org/book-of-changes',
       quote: '天行健，君子以自强不息。',
+    },
+    {
+      label: '公版古注',
+      source: '《周易·坤卦·大象传》，公版通行本；电子对照 https://ctext.org/book-of-changes',
+      quote: '地势坤，君子以厚德载物。',
     },
     {
       label: '公版古注',
@@ -130,6 +149,21 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       source: '《孟子·滕文公下》，公版通行本；电子对照 https://ctext.org/mengzi',
       quote: '富贵不能淫，贫贱不能移，威武不能屈。此之谓大丈夫。',
     },
+    {
+      label: '公版古注',
+      source: '《论语·学而》，公版通行本；电子对照 https://ctext.org/analects',
+      quote: '吾日三省吾身：为人谋而不忠乎？与朋友交而不信乎？传不习乎？',
+    },
+    {
+      label: '公版古注',
+      source: '《论语·雍也》，公版通行本；电子对照 https://ctext.org/analects',
+      quote: '知之者不如好之者，好之者不如乐之者。',
+    },
+    {
+      label: '公版古注',
+      source: '《孟子·告子下》，公版通行本；电子对照 https://ctext.org/mengzi',
+      quote: '人恒过，然后能改……然后知生于忧患而死于安乐也。',
+    },
   ],
   schools: [
     {
@@ -151,6 +185,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       label: '公版古注',
       source: '《老子·第三十三章》，公版通行本；电子对照 https://ctext.org/dao-de-jing',
       quote: '知人者智，自知者明。',
+    },
+    {
+      label: '公版古注',
+      source: '《老子·第六十四章》，公版通行本；电子对照 https://ctext.org/dao-de-jing',
+      quote: '合抱之木，生于毫末；九层之台，起于累土；千里之行，始于足下。',
     },
     {
       label: '公版古注',
@@ -210,6 +249,21 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       label: '整理笔记',
       source: '永字八法口诀整理（唐代张怀瓘《玉堂禁经》等历代书论有载，公版）',
       quote: '永字八法把楷书笔画拆成八种运笔：侧、勒、努、趯、策、掠、啄、磔。练字顺序：先中锋行笔，再谈间架结构，临帖先读帖再落笔。',
+    },
+    {
+      label: '公版古注',
+      source: '蔡邕《九势》，东汉公版；汉典古籍电子对照 https://gj.zdic.net/zibu/210/',
+      quote: '藏头护尾，力在字中，下笔用力，肌肤之丽。故曰：势来不可止，势去不可遏，惟笔软则奇怪生焉。',
+    },
+    {
+      label: '公版古注',
+      source: '蔡邕《九势》，东汉公版；汉典古籍电子对照 https://gj.zdic.net/zibu/210/',
+      quote: '藏头，圆笔属纸，令笔心常在点画中行。护尾，画点势尽，力收之。',
+    },
+    {
+      label: '整理笔记',
+      source: '教育部《中小学书法教育指导纲要》（2013）临摹要求整理',
+      quote: '临帖三步：读帖（看清笔顺、结构、轻重）→摹写（描红或透纸）→对临（合上帖写一遍再对照找差异）。每天一个字写三遍，不如三个字各写一遍再对照。',
     },
   ],
   music: [
@@ -350,6 +404,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       source: '五问法（5 Whys）公开条目（丰田生产方式）https://en.wikipedia.org/wiki/5_Whys',
       quote: '追问根因连问五个「为什么」：现象→为什么→为什么→……问到位才停，答案落在流程或机制上，而不是落在「某个人不小心」上。',
     },
+    {
+      label: '公版古注',
+      source: '刘勰《文心雕龙·知音第四十八》，公版；电子对照 https://ctext.org/wenxin-diaolong',
+      quote: '凡操千曲而后晓声，观千剑而后识器。故圆照之象，务先博观。',
+    },
   ],
   math: [
     {
@@ -489,6 +548,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
     },
     {
       label: '整理笔记',
+      source: 'MDN Web Docs「无障碍（Accessibility）」学习专区 https://developer.mozilla.org/zh-CN/docs/Learn/Accessibility',
+      quote: '可访问性自查四件套：每个交互元素用原生标签或补 role、图片有 alt、表单控件绑 label、颜色对比度达标（正文至少 4.5:1）；键盘 Tab 能走完整个流程才算及格。',
+    },
+    {
+      label: '整理笔记',
       source: '课程通用工程整理（调试三板斧）',
       quote: '调试三板斧：先读报错第一行和堆栈最顶帧；再写最小复现步骤；最后二分定位——注释掉一半代码或按提交二分，找出是哪次改动引入的。',
     },
@@ -541,6 +605,21 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
     },
     {
       label: '整理笔记',
+      source: 'OWASP Cryptographic Storage Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html',
+      quote: '加密存储分工明确：机密数据用对称加密（AES-GCM）且密钥独立管理；哈希只用于校验和口令（口令另用慢哈希）；绝不自创加密算法或 ECB 模式。',
+    },
+    {
+      label: '整理笔记',
+      source: 'OWASP Deserialization Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html',
+      quote: '反序列化不可信数据等于远程执行：优先用 JSON 这类纯数据格式，绝不反序列化来自用户或网络的完整对象；必须用时校验签名 + 白名单类 + 隔离环境三选一以上。',
+    },
+    {
+      label: '整理笔记',
+      source: 'OWASP Logging Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html',
+      quote: '安全日志记「事件」不记「秘密」：登录成败、权限变更、关键操作都要记（谁/何时/从哪来），但口令、令牌、身份证号绝不进日志；日志集中存放并做防篡改保护。',
+    },
+    {
+      label: '整理笔记',
       source: 'MITRE CWE Top 25 年度弱点清单 https://cwe.mitre.org/top25/',
       quote: '最常见的 25 类软件弱点先排期修：跨站脚本、越权、SQL 注入常年霸榜。自查时按「输入从哪来、输出到哪去」逐条追踪用户可控数据。',
     },
@@ -566,6 +645,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       source: '《黄帝内经·素问·刺法论》，公版通行本；电子对照 https://ctext.org/huangdi-neijing',
       quote: '正气存内，邪不可干。',
     },
+    {
+      label: '公版古注',
+      source: '张仲景《伤寒论·自序》，公版通行本；电子对照 https://ctext.org/shang-han-lun',
+      quote: '乃勤求古训，博采众方，撰用《素问》《九卷》《八十一难》《阴阳大论》，并平脉辨证，为《伤寒杂病论》。',
+    },
   ],
   soft: [
     {
@@ -577,6 +661,11 @@ export const SUBJECT_EXPERT_NOTES: Readonly<Record<string, readonly LearningV2Ex
       label: '整理笔记',
       source: '非暴力沟通（NVC）方法整理 https://www.cnvc.org/',
       quote: '提意见四步：只说观察到的事实（不贴标签）→说自己的感受→说出背后的需要→提一个具体可执行的请求；不用「你总是」「你从来」开头。',
+    },
+    {
+      label: '公版古注',
+      source: '《礼记·曲礼上第一》，东汉郑玄注本公版；电子对照 https://ctext.org/liji/qu-li-i',
+      quote: '礼尚往来。往而不来，非礼也；来而不往，亦非礼也。夫礼者，自卑而尊人。',
     },
     {
       label: '整理笔记',

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import {
-  Download, FlaskConical, Layers3, Play, RotateCcw, Save, Trash2, ZoomIn, ZoomOut,
+  Download, FlaskConical, Layers3, Play, Printer, RotateCcw, Save, Trash2, ZoomIn,
 } from 'lucide-vue-next';
+import HanziWriter from 'hanzi-writer';
+import CalligraphyImageViewer from './CalligraphyImageViewer.vue';
 import jiuChengGongPage2 from '../../../assets/calligraphy/jiu-cheng-gong-2.jpg';
 import duobaoPagoda from '../../../assets/calligraphy/duobao-pagoda.jpg';
 import xuanmiPagoda from '../../../assets/calligraphy/xuanmi-pagoda.jpg';
@@ -147,11 +149,12 @@ const divinationWorkspace = ref<'stars' | 'tarot' | 'crystal' | 'dice'>('tarot')
 const practiceSeed = ref('20261116');
 const generatedRule = ref('');
 const drawnCards = ref<string[]>([]);
-const calligraphyOriginalStage = ref<HTMLElement | null>(null);
+const calligraphyWriterTarget = ref<HTMLElement | null>(null);
+const calligraphyWriterStatus = ref<'idle' | 'loading' | 'ready' | 'fallback'>('idle');
+const calligraphyWriterHint = ref('');
 const calligraphyMode = ref<'硬笔' | '毛笔'>('硬笔');
 const copybook = ref<(typeof CALLIGRAPHY_BOOKS)[number]['name']>(CALLIGRAPHY_BOOKS[0].name);
 const calligraphyCharacter = ref<string>(CALLIGRAPHY_BOOKS[0].characters[0].glyph);
-const originalZoom = ref(100);
 const calligraphyRatings = ref<Record<CalligraphyRatingKey, number>>({
   起笔: 3,
   结构: 3,
@@ -163,6 +166,17 @@ const nextTarget = ref<CalligraphyRatingKey>('起笔');
 const calligraphyAttempts = ref<CalligraphyAttempt[]>([]);
 const compareAttemptsOpen = ref(false);
 const calligraphySaveHint = ref('');
+// 真迹查看器：打开时整图呈现，可自由缩放/平移；focus 用于点范字时定位（相对坐标容错）
+const calligraphyViewerOpen = ref(false);
+const calligraphyViewerFocus = ref<{ x: number; y: number; width: number; height: number } | null>(null);
+function openCalligraphyViewer(focus?: { x: number; y: number; width: number; height: number }): void {
+  calligraphyViewerFocus.value = focus ?? null;
+  calligraphyViewerOpen.value = true;
+}
+function closeCalligraphyViewer(): void {
+  calligraphyViewerOpen.value = false;
+  calligraphyViewerFocus.value = null;
+}
 const genericStepIndex = ref(0);
 const genericOutput = ref('');
 const genericReflection = ref('');
@@ -171,13 +185,9 @@ const genericSaveHint = ref('');
 const musicSequence = ref<string[]>([]);
 const musicStatus = ref('点音级块组成四拍，再试听节奏。');
 const MUSIC_NOTES: Record<string, number> = { 宫: 261.63, 商: 293.66, 角: 329.63, 徵: 392, 羽: 440 };
-let calligraphyPan: {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  scrollLeft: number;
-  scrollTop: number;
-} | null = null;
+type HanziWriterInstance = ReturnType<typeof HanziWriter.create>;
+let hanziWriterInstance: HanziWriterInstance | null = null;
+let hanziWriterGlyph = '';
 
 const permissionRows = [
   { role: '当前用户', own: '允许', other: '拒绝', admin: '拒绝' },
@@ -202,15 +212,6 @@ const selectedCharacter = computed<CalligraphyCharacter>(() =>
   selectedCopybook.value.characters.find((character) => character.glyph === calligraphyCharacter.value)
   || selectedCopybook.value.characters[0],
 );
-const calligraphyFocusStyle = computed(() => {
-  const focus = selectedCharacter.value.focus;
-  const scale = 10000 / focus.width;
-  return {
-    backgroundImage: `url("${selectedCopybook.value.image}")`,
-    backgroundSize: `${scale}% auto`,
-    backgroundPosition: `${(focus.x / (100 - focus.width)) * 100}% ${(focus.y / (100 - focus.height)) * 100}%`,
-  };
-});
 const canCompareAttempts = computed(() => calligraphyAttempts.value.length >= 2);
 const genericRecordKey = computed(() => `${props.subjectKey}::${props.courseName}`);
 const genericCurrentStep = computed(() =>
@@ -279,40 +280,94 @@ function drawCards() {
 
 function selectCopybook() {
   if (!selectedCopybook.value.characters.some((character) => character.glyph === calligraphyCharacter.value)) {
-    calligraphyCharacter.value = selectedCopybook.value.characters[0].glyph;
+    selectCalligraphyCharacter(selectedCopybook.value.characters[0].glyph);
   }
 }
 
-function changeOriginalZoom(delta: number) {
-  originalZoom.value = Math.max(100, Math.min(240, originalZoom.value + delta));
+function resetCalligraphyWriter() {
+  hanziWriterInstance = null;
+  hanziWriterGlyph = '';
+  calligraphyWriterStatus.value = 'idle';
+  calligraphyWriterHint.value = '';
+  // 旧实例的指针监听器挂在内部容器上，整体替换容器即可连同丢弃。
+  calligraphyWriterTarget.value?.replaceChildren();
 }
 
-function startOriginalPan(event: PointerEvent) {
-  const stage = calligraphyOriginalStage.value;
-  if (!stage || event.button !== 0) return;
-  calligraphyPan = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    scrollLeft: stage.scrollLeft,
-    scrollTop: stage.scrollTop,
-  };
-  stage.setPointerCapture?.(event.pointerId);
-  stage.classList.add('dragging');
+function isWriterReady(): boolean {
+  return calligraphyWriterStatus.value === 'ready';
 }
 
-function moveOriginalPan(event: PointerEvent) {
-  const stage = calligraphyOriginalStage.value;
-  if (!stage || !calligraphyPan || calligraphyPan.pointerId !== event.pointerId) return;
-  stage.scrollLeft = calligraphyPan.scrollLeft - (event.clientX - calligraphyPan.startX);
-  stage.scrollTop = calligraphyPan.scrollTop - (event.clientY - calligraphyPan.startY);
+function selectCalligraphyCharacter(glyph: string) {
+  if (calligraphyCharacter.value === glyph) return;
+  calligraphyCharacter.value = glyph;
+  resetCalligraphyWriter();
 }
 
-function endOriginalPan(event: PointerEvent) {
-  const stage = calligraphyOriginalStage.value;
-  if (stage?.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId);
-  stage?.classList.remove('dragging');
-  calligraphyPan = null;
+/** 点范字：选中该字并在真迹查看器里定位（focus 是原碑帖相对坐标，仅作定位参考） */
+function focusCharacterInViewer(character: CalligraphyCharacter): void {
+  selectCalligraphyCharacter(character.glyph);
+  openCalligraphyViewer(character.focus);
+}
+
+/** 按需创建 hanzi-writer 实例：只在点「看笔顺/屏上跟写」时联网加载笔顺数据，失败回退静态描红。 */
+async function ensureCalligraphyWriter(): Promise<boolean> {
+  const target = calligraphyWriterTarget.value;
+  if (!target) return false;
+  const glyph = calligraphyCharacter.value;
+  if (hanziWriterInstance && hanziWriterGlyph === glyph) {
+    return isWriterReady();
+  }
+  resetCalligraphyWriter();
+  hanziWriterGlyph = glyph;
+  calligraphyWriterStatus.value = 'loading';
+  await new Promise<void>((resolve) => {
+    const inner = document.createElement('div');
+    target.replaceChildren(inner);
+    hanziWriterInstance = HanziWriter.create(inner, glyph, {
+      width: 224,
+      height: 224,
+      padding: 8,
+      strokeColor: '#8f3126',
+      radicalColor: '#b04a37',
+      delayBetweenStrokes: 320,
+      showOutline: true,
+      onLoadCharDataSuccess: () => {
+        calligraphyWriterStatus.value = 'ready';
+        resolve();
+      },
+      onLoadCharDataError: () => {
+        calligraphyWriterStatus.value = 'fallback';
+        resolve();
+      },
+    });
+  });
+  return isWriterReady();
+}
+
+async function playStrokeAnimation() {
+  calligraphyWriterHint.value = '正在逐笔演示——看一笔记一笔，再到纸上写。';
+  const ready = await ensureCalligraphyWriter();
+  if (!ready) return;
+  calligraphyWriterHint.value = '按笔顺逐笔演示——看一笔记一笔，再到纸上写。';
+  hanziWriterInstance?.animateCharacter();
+}
+
+async function startStrokeQuiz() {
+  calligraphyWriterHint.value = '屏上跟写：用鼠标或手指在格子里按笔顺描写。';
+  const ready = await ensureCalligraphyWriter();
+  if (!ready) return;
+  hanziWriterInstance?.quiz({
+    onMistake: ({ strokeNum }) => {
+      calligraphyWriterHint.value = `第 ${strokeNum + 1} 笔没对上，回到这一笔起点重新描。`;
+    },
+    onComplete: () => {
+      calligraphyWriterHint.value = '屏上跟写完成——现在照右侧格子在纸上写一遍。';
+    },
+  });
+}
+
+function printPracticeSheet() {
+  window.print();
 }
 
 function resetCalligraphyReview() {
@@ -472,7 +527,6 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
     <template v-else>
     <header class="lv2-studio-intro">
       <div>
-        <span>{{ practice.studio.type }} · {{ courseName }}</span>
         <h2>{{ practice.studio.title }}</h2>
         <p>{{ practice.task }}</p>
         <div class="lv2-studio-capabilities">
@@ -597,8 +651,8 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
     <div v-else-if="isCalligraphy" class="lv2-calligraphy-lab">
       <header>
         <div>
-          <b>看原帖 · 本子临写 · 回看自评</b>
-          <p>看屏幕里的公版碑帖，在本子上写。应用不再用电脑字体冒充范字，也不要求你在屏幕上手写。</p>
+          <b>左范字 · 右米字格 · 对照着写</b>
+          <p>左边一竖排范字（碑帖原字 + 楷体对照），右边米字格描红；点「看笔顺」逐笔演示，写完记一遍自评。</p>
         </div>
         <div class="lv2-calligraphy-settings">
           <select v-model="calligraphyMode" aria-label="书写工具">
@@ -613,63 +667,74 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
         </div>
       </header>
       <div class="lv2-calligraphy-meta">
-        <a
-          class="lv2-calligraphy-source"
-          :href="selectedCopybook.url"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          原帖出处：{{ selectedCopybook.source }} · {{ selectedCopybook.name }}
-        </a>
-        <label>
-          原帖放大
-          <input v-model.number="originalZoom" type="range" min="100" max="240" step="10" aria-label="原帖放大倍数" />
-          <output>{{ originalZoom }}%</output>
-        </label>
+        <div class="lv2-calligraphy-meta-row">
+          <button
+            type="button"
+            class="lv2-calligraphy-view-origin"
+            data-action="view-original"
+            @click="openCalligraphyViewer()"
+          ><ZoomIn :size="14" />查看高清真迹（可放大拖动）</button>
+          <a
+            class="lv2-calligraphy-source"
+            :href="selectedCopybook.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            原帖出处：{{ selectedCopybook.source }} · {{ selectedCopybook.name }}
+          </a>
+        </div>
+        <span>范字 {{ selectedCopybook.characters.length }} 个 · 当前「{{ selectedCharacter.glyph }}」· {{ selectedCopybook.pageLabel }} · 点左侧范字可在真迹中定位</span>
       </div>
 
       <div class="lv2-calligraphy-workbench">
-        <section class="lv2-calligraphy-original">
+        <aside class="lv2-calligraphy-column" data-calligraphy-column aria-label="竖排范字栏">
+          <button
+            v-for="character in selectedCopybook.characters"
+            :key="character.glyph"
+            type="button"
+            :class="{ active: character.glyph === calligraphyCharacter }"
+            :aria-label="`选择范字${character.glyph}`"
+            @click="focusCharacterInViewer(character)"
+          >
+            <b data-calligraphy-focus>{{ character.glyph }}</b>
+            <small>点看真迹</small>
+          </button>
+        </aside>
+
+        <section class="lv2-calligraphy-grid-panel">
           <header>
-            <div><b>{{ selectedCopybook.pageLabel }}</b><span>原碑帖扫描 · 可滚动查看</span></div>
-            <div class="lv2-calligraphy-zoom">
-              <button type="button" aria-label="缩小原帖" @click="changeOriginalZoom(-20)"><ZoomOut :size="15" /></button>
-              <button type="button" aria-label="放大原帖" @click="changeOriginalZoom(20)"><ZoomIn :size="15" /></button>
+            <span>米字格 · {{ calligraphyMode }} · {{ selectedCharacter.glyph }}</span>
+            <div class="lv2-calligraphy-grid-actions">
+              <button type="button" data-action="animate-strokes" @click="playStrokeAnimation">
+                <Play :size="14" />看笔顺
+              </button>
+              <button type="button" data-action="quiz-strokes" @click="startStrokeQuiz">
+                <RotateCcw :size="14" />屏上跟写
+              </button>
             </div>
           </header>
-          <div
-            ref="calligraphyOriginalStage"
-            class="lv2-calligraphy-original-stage"
-            @pointerdown="startOriginalPan"
-            @pointermove="moveOriginalPan"
-            @pointerup="endOriginalPan"
-            @pointercancel="endOriginalPan"
-            @pointerleave="endOriginalPan"
-          >
-            <img
-              data-calligraphy-original
-              :src="selectedCopybook.image"
-              :alt="`${selectedCopybook.name}原碑帖扫描`"
-              :style="{ width: `${originalZoom}%` }"
-            />
+          <div class="lv2-calligraphy-grid" data-calligraphy-grid aria-label="米字格练习区">
+            <div ref="calligraphyWriterTarget" data-calligraphy-writer class="lv2-calligraphy-writer"></div>
+            <div
+              v-if="calligraphyWriterStatus !== 'ready'"
+              class="lv2-calligraphy-tracing"
+              aria-hidden="true"
+            >{{ selectedCharacter.glyph }}</div>
           </div>
-          <p>拖动滚动条查看整页；先看原帖的整体重心、行列关系和墨色，再放大到选中的范字。</p>
-        </section>
-
-        <section class="lv2-calligraphy-focus-panel">
-          <header><span>本页自动聚焦</span><b>{{ selectedCharacter.glyph }}</b></header>
-          <div
-            data-calligraphy-focus
-            class="lv2-calligraphy-focus"
-            :style="calligraphyFocusStyle"
-            :aria-label="`${selectedCharacter.glyph}字原帖局部放大`"
-            role="img"
-          ></div>
-          <ol>
-            <li><b>看轮廓</b><span>起笔位置、主笔方向和重心。</span></li>
-            <li><b>在纸上写</b><span>{{ calligraphyMode === '毛笔' ? '毛笔' : '硬笔' }}写一遍，不截屏、不描屏幕。</span></li>
-            <li><b>回看一处</b><span>本轮只选一个动作修正，下一遍再改。</span></li>
-          </ol>
+          <p v-if="calligraphyWriterStatus === 'fallback'" data-calligraphy-fallback>
+            笔顺数据没加载出来（可能离线）——已回退为红色描红，直接照格在纸上写。
+          </p>
+          <p v-else-if="calligraphyWriterHint">{{ calligraphyWriterHint }}</p>
+          <p v-else-if="calligraphyWriterStatus === 'loading'">正在加载「{{ selectedCharacter.glyph }}」的笔顺数据……</p>
+          <p v-else>「看笔顺」逐笔演示；「屏上跟写」用鼠标或手指按笔顺描写，写错会提示。之后照下排格子在纸上写。</p>
+          <div class="lv2-calligraphy-print-sheet" data-calligraphy-print-sheet aria-label="对照练习格">
+            <span class="lv2-calligraphy-cell is-tracing">{{ selectedCharacter.glyph }}</span>
+            <span v-for="cell in 5" :key="cell" class="lv2-calligraphy-cell" aria-hidden="true"></span>
+          </div>
+          <div class="lv2-calligraphy-grid-footer">
+            <p>第一格描红、后五格空白：照屏幕格子在纸上画格写，或直接拿本子对照左侧范字写。</p>
+            <button type="button" @click="printPracticeSheet"><Printer :size="14" />打印练习格</button>
+          </div>
         </section>
       </div>
 
@@ -761,6 +826,15 @@ watch(genericRecordKey, restoreGenericPractice, { immediate: true });
         </button>
       </div>
       <p><b>本轮只改一个变量：</b>先检查{{ nextTarget }}，在纸上写完并记录后再开始下一遍。</p>
+
+      <CalligraphyImageViewer
+        v-if="calligraphyViewerOpen"
+        :image="selectedCopybook.image"
+        :title="selectedCopybook.name"
+        :source="selectedCopybook.pageLabel"
+        :focus="calligraphyViewerFocus"
+        @close="closeCalligraphyViewer"
+      />
     </div>
 
     <div v-else-if="isMusic" class="lv2-music-lab">

@@ -2,6 +2,8 @@ import type {
   LearningV2CuratedCoursePlan,
   LearningV2Subject,
 } from './v2-types.js';
+import { ALGORITHM_HANDWRITTEN_TOPIC_PLANS } from './algorithm-handwritten/index.js';
+import { ALGORITHM_HANDWRITTEN_QUIZ } from './algorithm-quiz/index.js';
 
 export type AlgorithmTrack = {
   readonly id: string;
@@ -287,11 +289,27 @@ function algorithmPlan(track: AlgorithmTrack, lesson: AlgorithmLesson): Learning
   };
 }
 
-export const ALGORITHM_CURATED_PLANS: Readonly<Record<string, LearningV2CuratedCoursePlan>> =
+// 手写教案覆盖模板：键为课程主题（lesson.title），与 algorithm-handwritten/*.ts 的键一致。
+// 任何主题缺手写条目时回退模板 —— algorithm-handwritten.test.ts 强制 64 门全覆盖。
+const templatePlans: Readonly<Record<string, LearningV2CuratedCoursePlan>> =
   Object.fromEntries(ALGORITHM_LESSONS.map((lesson) => {
     const track = ALGORITHM_TRACKS.find((item) => item.id === lesson.trackId)!;
     return [`algorithms:${lesson.courseName}`, algorithmPlan(track, lesson)];
   }));
+
+const handwrittenPlans: Record<string, LearningV2CuratedCoursePlan> = {};
+for (const lesson of ALGORITHM_LESSONS) {
+  const plan = ALGORITHM_HANDWRITTEN_TOPIC_PLANS[lesson.title];
+  if (plan) {
+    const quiz = ALGORITHM_HANDWRITTEN_QUIZ[lesson.title];
+    handwrittenPlans[`algorithms:${lesson.courseName}`] = quiz ? { ...plan, quiz } : plan;
+  }
+}
+
+export const ALGORITHM_CURATED_PLANS: Readonly<Record<string, LearningV2CuratedCoursePlan>> = {
+  ...templatePlans,
+  ...handwrittenPlans,
+};
 
 const firstCourse = ALGORITHM_LESSONS[0];
 const firstPlan = ALGORITHM_CURATED_PLANS[`algorithms:${firstCourse.courseName}`];

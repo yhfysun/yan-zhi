@@ -9,6 +9,28 @@ import LearningPracticeStudio from './LearningPracticeStudio.vue';
 const CALLIGRAPHY_STORE_KEY = 'yz.learning.v2.calligraphy.attempts.v1';
 const GENERIC_STORE_KEY = 'yz.learning.v2.generic-practice.v1';
 
+// hanzi-writer 打桩：笔顺数据加载成败由 loadState.fail 控制，避免测试触网。
+const loadState = vi.hoisted(() => ({ fail: false }));
+vi.mock('hanzi-writer', () => ({
+  default: {
+    create: (_target: HTMLElement, _glyph: string, options: {
+      onLoadCharDataSuccess?: () => void;
+      onLoadCharDataError?: () => void;
+    }) => {
+      queueMicrotask(() => {
+        if (loadState.fail) options.onLoadCharDataError?.();
+        else options.onLoadCharDataSuccess?.();
+      });
+      return {
+        animateCharacter: vi.fn(),
+        quiz: vi.fn(),
+        cleanup: vi.fn(),
+      };
+    },
+    loadCharacterData: vi.fn(),
+  },
+}));
+
 let app: App | null = null;
 
 const practice = {
@@ -53,31 +75,6 @@ async function mountStudio(
   return host;
 }
 
-function changeValue(
-  control: HTMLInputElement | HTMLSelectElement,
-  value: string,
-): void {
-  control.value = value;
-  control.dispatchEvent(new Event('input'));
-  control.dispatchEvent(new Event('change'));
-}
-
-function pointerEvent(
-  type: string,
-  clientX: number,
-  clientY: number,
-): MouseEvent {
-  const event = new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    clientX,
-    clientY,
-    button: 0,
-  });
-  Object.defineProperty(event, 'pointerId', { value: 1 });
-  return event;
-}
-
 beforeEach(() => {
   localStorage.clear();
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
@@ -102,52 +99,64 @@ afterEach(() => {
 });
 
 describe('LearningPracticeStudio calligraphy', () => {
-  it('shows a real copybook page and a focused original glyph with source provenance', async () => {
+  it('shows a vertical model column, rice-grid practice area and source provenance', async () => {
     const host = await mountStudio();
 
     expect((host.querySelector('[aria-label="字帖选择"]') as HTMLSelectElement).value)
       .toContain('九成宫');
-    expect(host.querySelector('[aria-label="范字选择"]')).toBeNull();
-    expect(host.textContent).toContain('本页自动聚焦');
-    expect(host.querySelector('img[data-calligraphy-original]')).toBeTruthy();
-    expect((host.querySelector('[data-calligraphy-focus]') as HTMLElement).style.backgroundImage)
-      .toContain('jiu-cheng-gong');
-    expect(host.querySelector('[aria-label="书法临写画板"]')).toBeNull();
-    expect(host.textContent).toContain('看屏幕');
-    expect(host.textContent).toContain('在本子上写');
+    const column = host.querySelector('[data-calligraphy-column]');
+    expect(column?.querySelectorAll('button')).toHaveLength(6);
+    expect(column?.querySelector('b')?.textContent).toBe('九');
+    expect(column?.querySelector('[data-calligraphy-focus]')).toBeTruthy();
+    const grid = host.querySelector('[data-calligraphy-grid]');
+    expect(grid?.querySelector('.lv2-calligraphy-tracing')?.textContent).toContain('九');
+    expect(host.querySelector('[data-calligraphy-print-sheet]')).toBeTruthy();
+    expect(host.querySelectorAll('[data-calligraphy-print-sheet] .lv2-calligraphy-cell')).toHaveLength(6);
+    expect(host.querySelector('[data-action="animate-strokes"]')).toBeTruthy();
+    expect(host.querySelector('[data-action="quiz-strokes"]')).toBeTruthy();
+    expect(host.textContent).toContain('看笔顺');
     expect(host.querySelector('.lv2-calligraphy-source')?.textContent).toContain('九成宫醴泉铭');
     expect(host.querySelector('.lv2-calligraphy-source')?.getAttribute('href')).toMatch(/^https:\/\//);
   });
 
-  it('lets the learner zoom the original rubbing without replacing it with a computer font', async () => {
+  it('switches the model character in the rice grid from the vertical column', async () => {
     const host = await mountStudio();
-    const zoom = host.querySelector('[aria-label="原帖放大倍数"]') as HTMLInputElement;
-    const original = host.querySelector('img[data-calligraphy-original]') as HTMLImageElement;
 
-    changeValue(zoom, '160');
+    (host.querySelector('[aria-label="选择范字成"]') as HTMLButtonElement).click();
     await nextTick();
 
-    expect(original.style.width).toBe('160%');
-    expect(host.querySelector('[aria-label="参照字体"]')).toBeNull();
-    expect(host.querySelector('.lv2-tracing-reference')).toBeNull();
+    expect(host.querySelector('[aria-label="选择范字成"]')?.classList.contains('active')).toBe(true);
+    expect(host.querySelector('.lv2-calligraphy-tracing')?.textContent).toContain('成');
+    expect(host.querySelector('.lv2-calligraphy-grid-panel > header')?.textContent).toContain('成');
+    expect(host.querySelector('.lv2-calligraphy-print-sheet .lv2-calligraphy-cell')?.textContent).toContain('成');
   });
 
-  it('supports drag-to-pan on the enlarged copybook image', async () => {
+  it('plays stroke animation via hanzi-writer and falls back to tracing when data fails', async () => {
     const host = await mountStudio();
-    const stage = host.querySelector('.lv2-calligraphy-original-stage') as HTMLElement;
-    stage.scrollLeft = 120;
-    stage.scrollTop = 80;
 
-    stage.dispatchEvent(pointerEvent('pointerdown', 240, 220));
-    stage.dispatchEvent(pointerEvent('pointermove', 180, 170));
+    (host.querySelector('[data-action="animate-strokes"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await nextTick();
 
-    expect(stage.scrollLeft).toBe(180);
-    expect(stage.scrollTop).toBe(130);
-    expect(stage.classList.contains('dragging')).toBe(true);
+    expect(host.querySelector('[data-calligraphy-fallback]')).toBeNull();
+    expect(host.querySelector('.lv2-calligraphy-tracing')).toBeNull();
+    expect(host.querySelector('[data-calligraphy-writer]')).toBeTruthy();
+    expect(host.textContent).toContain('按笔顺逐笔演示');
 
-    stage.dispatchEvent(pointerEvent('pointerup', 180, 170));
-    expect(stage.classList.contains('dragging')).toBe(false);
+    (host.querySelector('[data-action="quiz-strokes"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await nextTick();
+    expect(host.textContent).not.toContain('正在加载');
+
+    loadState.fail = true;
+    const otherHost = await mountStudio();
+    (otherHost.querySelector('[data-action="animate-strokes"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await nextTick();
+
+    expect(otherHost.querySelector('[data-calligraphy-fallback]')?.textContent).toContain('回退为红色描红');
+    expect(otherHost.querySelector('.lv2-calligraphy-tracing')).toBeTruthy();
+    loadState.fail = false;
   });
 
   it('records paper-practice attempts and exposes a comparison of the self-review records', async () => {
@@ -195,11 +204,54 @@ describe('LearningPracticeStudio calligraphy', () => {
     expect(saved[0].nextTarget).toBe('起笔');
   });
 
-  it('keeps an app-style mobile practice toolbar and bottom actions in CSS', async () => {
+  it('opens the free-zoom original-image viewer and closes it', async () => {
+    const host = await mountStudio();
+
+    expect(host.querySelector('[data-viewer="viewport"]')).toBeNull();
+    (host.querySelector('[data-action="view-original"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const viewport = host.querySelector('[data-viewer="viewport"]');
+    expect(viewport).toBeTruthy();
+    expect(host.querySelector('[data-viewer="image"]')?.getAttribute('alt')).toContain('真迹');
+    expect(host.querySelector('[data-viewer="zoom-level"]')?.textContent).toBe('100%');
+
+    // 放大按钮：比例上升
+    (host.querySelector('[data-viewer="zoom-in"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-viewer="zoom-level"]')?.textContent).not.toBe('100%');
+
+    // 复位：回到 100%
+    (host.querySelector('[data-viewer="reset"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-viewer="zoom-level"]')?.textContent).toBe('100%');
+
+    (host.querySelector('[data-viewer="close"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-viewer="viewport"]')).toBeNull();
+  });
+
+  it('focuses a model character in the original viewer when clicking it', async () => {
+    const host = await mountStudio();
+
+    (host.querySelector('[aria-label="选择范字成"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('[aria-label="选择范字成"]')?.classList.contains('active')).toBe(true);
+    expect(host.querySelector('[data-viewer="viewport"]')).toBeTruthy();
+    // 聚焦后缩放比例不为 100%（自动放大到该字区域）
+    expect(host.querySelector('[data-viewer="zoom-level"]')?.textContent).not.toBe('100%');
+  });
+
+  it('keeps an app-style mobile practice toolbar and responsive workbench in CSS', async () => {
     const css = readFileSync(resolve(__dirname, 'LearningPracticeStudio.css'), 'utf8');
 
     expect(css).toMatch(/\.lv2-calligraphy-mobile-actions/);
     expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*\.lv2-calligraphy-mobile-actions/);
+    expect(css).toMatch(/@media \(max-width: 900px\)[\s\S]*\.lv2-calligraphy-column \{[\s\S]*?flex-direction: row/);
+    expect(css).toMatch(/@media print[\s\S]*\.lv2-calligraphy-print-sheet/);
+    expect(css).toMatch(/\.lv2-calligraphy-column b \{[\s\S]*?KaiTi/);
+    expect(css).toMatch(/\.lv2-calligraphy-grid \{[\s\S]*?aspect-ratio: 1/);
   });
 });
 

@@ -843,7 +843,7 @@ function resetAcupoints() {
   padding: 13px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 8px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
 }
 
 .medical-assembly-board h3,
@@ -862,7 +862,7 @@ function resetAcupoints() {
   overflow: hidden;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 7px;
-  background: #f4f8f5;
+  background: var(--lv2-card-soft, #f4f8f5);
 }
 
 .medical-assembly-stage > svg {
@@ -950,7 +950,7 @@ function resetAcupoints() {
 
 .medical-piece-tray > div > button.selected {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
 }
 
 .medical-piece-tray svg {
@@ -1017,7 +1017,7 @@ function resetAcupoints() {
 
 .medical-animal-cards button.selected {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
 }
 
 .medical-animal-cards button.matched {
@@ -1096,7 +1096,7 @@ function resetAcupoints() {
   overflow: hidden;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 7px;
-  background: #f4f8f5;
+  background: var(--lv2-card-soft, #f4f8f5);
 }
 
 .medical-point-canvas {
@@ -1150,7 +1150,7 @@ function resetAcupoints() {
   padding: 13px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 7px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
 }
 
 .medical-point-targets > span {
@@ -1197,7 +1197,7 @@ function resetAcupoints() {
 
 .medical-point-targets button.current {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
   font-weight: 700;
 }
 
@@ -1297,7 +1297,7 @@ function resetAcupoints() {
 
 .medical-term-cards button.selected {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
   font-weight: 700;
 }
 
@@ -1318,7 +1318,7 @@ function resetAcupoints() {
   padding: 9px 11px;
   border: 1px solid var(--lv2-line, #dbe3df);
   border-radius: 7px;
-  background: #fafcfa;
+  background: var(--lv2-card, #fafcfa);
   color: inherit;
   font-size: 10px;
   line-height: 1.65;
@@ -1328,7 +1328,7 @@ function resetAcupoints() {
 
 .medical-evidence-cards button.selected {
   border-color: var(--lv2-accent, #1f6f5c);
-  background: var(--lv2-tint, #edf7f2);
+  background: var(--lv2-accent-wash, var(--lv2-tint, #edf7f2));
 }
 
 .medical-evidence-cards button i {

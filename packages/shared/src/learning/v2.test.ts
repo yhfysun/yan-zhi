@@ -11,6 +11,37 @@ import {
   isLearningV2CourseReady,
 } from './v2.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
+import { PROGRAMMING_COURSE_QUIZ } from './v2-curated/programming/quiz.js';
+
+describe('Learning V2 course quiz banks (章节题库)', () => {
+  it('only banks questions for courses that exist in the curated plans', () => {
+    for (const courseName of Object.keys(PROGRAMMING_COURSE_QUIZ)) {
+      expect(LEARNING_V2_CURATED_PLANS[`programming:${courseName}`], courseName).toBeTruthy();
+    }
+  });
+
+  it('keeps every banked question answerable and explained', () => {
+    for (const [courseName, items] of Object.entries(PROGRAMMING_COURSE_QUIZ)) {
+      expect(items.length, courseName).toBeGreaterThanOrEqual(3);
+      for (const item of items) {
+        expect(item.prompt.trim().length, courseName).toBeGreaterThan(8);
+        expect(item.options.length, courseName).toBeGreaterThanOrEqual(2);
+        expect(item.answer, courseName).toBeGreaterThanOrEqual(0);
+        expect(item.answer, courseName).toBeLessThan(item.options.length);
+        expect(item.explanation.trim().length, courseName).toBeGreaterThan(12);
+        expect(new Set(item.options).size, courseName).toBe(item.options.length);
+      }
+    }
+  });
+
+  it('exposes the quiz through the merged course plan', () => {
+    const plan = getLearningV2CoursePlan('programming', 'Java 零基础：JDK、IDE 与第一个程序');
+    expect(plan.quiz.length).toBeGreaterThan(0);
+    const partySubject = getLearningV2Subjects().find((subject) => subject.key === 'party');
+    const partyPlan = getLearningV2CoursePlan('party', partySubject!.current.course);
+    expect(partyPlan.quiz).toHaveLength(0);
+  });
+});
 
 describe('Learning V2 expert notes (名家注解 · 真实笔记)', () => {
   it('every public-domain commentary entry is a verbatim quote with a book-level source', () => {
@@ -50,8 +81,9 @@ describe('Learning V2 catalog', () => {
       'memory', 'thinking', 'math', 'physics', 'schools', 'english', 'japanese',
       'soft', 'security', 'culture', 'music', 'zhouyi', 'divination', 'programming', 'algorithms', 'medicine',
     ]);
-    expect(catalog.courses).toHaveLength(1351);
-    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(1351);
+    // 课程总数随手写教案包（programming/handwritten）扩展而增长；新增课程包后同步更新：
+    expect(catalog.courses).toHaveLength(1387);
+    expect(new Set(catalog.courses.map((course) => course.id)).size).toBe(1387);
   });
 
   it('ships eight learning surfaces in both desktop and mobile', () => {

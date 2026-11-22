@@ -83,9 +83,11 @@ describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页�
     expect(icons).toEqual(['HomeFilled', 'Notebook', 'Reading', 'Tickets', 'User']);
   });
 
-  it('App.vue 移动顶栏使用更多按钮，不再叠加账户人形图标', () => {
+  it('App.vue 移动顶栏不再放「更多」按钮（入口收口到 TabBar「我的」），也不叠加账户人形图标', () => {
+    // 2026-11-21 用户要求：顶栏「本」与 MoreFilled「更多」按钮删除 —— 原断言要求含
+    // MoreFilled 已作废；仍保持「顶栏不得用人形 User 图标」的防撞脸约束。
     const icons = [...inlineIconsOf(APP), ...importedIconsOf(APP)];
-    expect(icons).toContain('MoreFilled');
+    expect(icons, '顶栏「更多」按钮应已删除（TabBar「我的」直达设置）').not.toContain('MoreFilled');
     expect(icons, 'App.vue 不应再导入/使用线框 User 作为头像位图标').not.toContain('User');
   });
 
