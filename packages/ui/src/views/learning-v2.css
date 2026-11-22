@@ -1608,3 +1608,12 @@ html.yz-learning-study::-webkit-scrollbar, html.yz-learning-study body::-webkit-
 .ln-write { display: inline-flex; min-height: 30px; align-items: center; padding: 5px 12px; border: 0; border-radius: 999px; background: #2f6d54; color: #fff; font-size: 10px; cursor: pointer; }
 .ln-write:hover { background: #245841; }
 .ln-hint { margin-top: 6px !important; color: #8a948e !important; font-size: 9px !important; }
+
+/* 文章包进三栏容器后必须自带纸面，否则按钮像悬在深色底上 */
+.lv2-lesson-body > article { background: #fbfcf8; color: #24302a; padding-bottom: 22px; }
+.lv2-lesson-body > article .lv2-lesson-actions { justify-content: flex-end; align-items: center; }
+.lv2-lesson-body > article .lv2-lesson-actions button {
+  border-color: rgba(36, 48, 42, .2); border-radius: 8px;
+  background: var(--lv2-surface, #fbfcfb); color: #405047; font-size: 10px;
+}
+.lv2-lesson-body > article .lv2-lesson-actions button:hover { border-color: #2f6d54; color: #2f6d54; }
