@@ -75,6 +75,20 @@ describe('LearningLibrary', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  it('opens a book directly when clicking a discovery card', async () => {
+    const onReadBook = vi.fn();
+    const host = await mountLibrary(onReadBook);
+    const card = [...host.querySelectorAll('.ll-rank-grid button')]
+      .find((item) => item.textContent?.includes('三国演义')) as HTMLButtonElement;
+    expect(card).toBeTruthy();
+    card.click();
+    await nextTick();
+    expect(onReadBook).toHaveBeenCalledWith(expect.objectContaining({
+      title: '三国演义',
+      readingMode: 'builtin',
+    }));
+  });
+
   it('uses the native source reader for readable Gutenberg and MediaWiki catalog entries', async () => {
     const onReadBook = vi.fn();
     const host = await mountLibrary(onReadBook);

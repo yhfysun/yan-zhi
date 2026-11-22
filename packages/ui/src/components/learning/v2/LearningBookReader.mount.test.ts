@@ -140,4 +140,37 @@ describe('LearningBookReader', () => {
     });
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/source/content'))).toHaveLength(2);
   });
+
+  it('collapses the chapter and annotation panels from their close buttons', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    app = createApp(LearningBookReader, {
+      book: {
+        id: 'collapse-check',
+        title: '折叠测试',
+        author: '测试',
+        language: 'zh-Hans',
+        readingMode: 'builtin',
+        assetKey: 'three-kingdoms',
+        sourceName: '内置公版全文',
+        license: '公版',
+        annotations: [{ term: '荆州', gloss: '古代九州之一。' }],
+      },
+    });
+    app.mount(host);
+    await vi.waitFor(() => expect(host.querySelector('[data-reader-content]')).toBeTruthy());
+
+    const body = host.querySelector('.lbr-body') as HTMLElement;
+    expect(body.classList.contains('chapters-closed')).toBe(false);
+    expect(body.classList.contains('notes-closed')).toBe(false);
+
+    (host.querySelector('.lbr-chapters header [aria-label="关闭目录"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(body.classList.contains('chapters-closed')).toBe(true);
+
+    (host.querySelector('.lbr-notes header [aria-label="关闭注释"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(body.classList.contains('notes-closed')).toBe(true);
+    expect(document.documentElement).toBeTruthy();
+  });
 });

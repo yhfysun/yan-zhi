@@ -1153,7 +1153,7 @@ onMounted(async () => {
                   v-for="(card, index) in visibleCards.slice(0, 6)"
                   :key="`continue-${card.id}`"
                   type="button"
-                  @click="selectCard(card)"
+                  @click="openBook(card)"
                 >
                   <span class="ll-feature-cover" :data-category="card.category" :data-tone="coverTone(index)">
                     <strong>{{ card.title }}</strong>
@@ -1175,7 +1175,7 @@ onMounted(async () => {
                 v-for="(card, index) in visibleCards.slice(0, 8)"
                 :key="`rank-${card.id}`"
                 type="button"
-                @click="selectCard(card)"
+                @click="openBook(card)"
               >
                 <em>{{ index + 1 }}</em>
                 <span class="ll-rank-cover" :data-category="card.category" :data-tone="coverTone(index)">

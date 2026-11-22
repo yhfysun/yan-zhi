@@ -35,8 +35,8 @@ const letterSpacing = ref(0);
 const pageWidth = ref<ReaderPageWidth>('standard');
 const comicZoom = ref(100);
 const settingsOpen = ref(false);
-const chaptersOpen = ref(false);
-const notesOpen = ref(false);
+const chaptersOpen = ref(true);
+const notesOpen = ref(true);
 const translationOpen = ref(false);
 const translationLoading = ref(false);
 const translatedParagraphs = ref<string[]>([]);
@@ -497,11 +497,12 @@ onBeforeUnmount(() => {
       </footer>
     </div>
 
-    <div v-else class="lbr-body">
+    <div v-else class="lbr-body" :class="{ 'chapters-closed': !chaptersOpen, 'notes-closed': !notesOpen }">
       <aside class="lbr-chapters" :class="{ open: chaptersOpen }" data-reader-chapters>
         <header>
           <span>目录</span>
           <b>{{ chapters.length }} 章</b>
+          <button type="button" aria-label="关闭目录" @click="chaptersOpen = false"><X :size="16" /></button>
         </header>
         <nav aria-label="章节目录">
           <button

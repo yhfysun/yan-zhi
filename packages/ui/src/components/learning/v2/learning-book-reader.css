@@ -520,3 +520,21 @@
   .lbr-head-actions { min-width: 0; justify-content: flex-end; overflow-x: auto; }
   .lbr-head-actions button { flex: 0 0 44px; width: 44px; }
 }
+
+/* 目录/注释真正可收起（此前桌面端 state 变化但 CSS 永远 display:flex） */
+.lbr-body.chapters-closed { grid-template-columns: 0 minmax(0, 1fr) 286px; }
+.lbr-body.notes-closed { grid-template-columns: 238px minmax(0, 1fr) 0; }
+.lbr-body.chapters-closed.notes-closed { grid-template-columns: 0 minmax(0, 1fr) 0; }
+.lbr-body.chapters-closed .lbr-chapters,
+.lbr-body.notes-closed .lbr-notes { display: none; }
+.lbr-chapters header button {
+  display: grid; width: 30px; height: 30px; place-items: center;
+  border: 1px solid var(--reader-line); border-radius: 6px;
+  background: transparent; color: var(--reader-muted); cursor: pointer;
+}
+.lbr-chapters header button:hover { border-color: var(--reader-accent); color: var(--reader-accent); }
+@media (min-width: 901px) {
+  .lbr-head-actions button { width: auto; min-width: 40px; padding: 0 10px; }
+  .lbr-head-actions button span { white-space: nowrap; font-size: 11px; }
+  .lbr-head-actions button:last-child { width: 40px; padding: 0; }
+}

@@ -2015,3 +2015,15 @@
     font-size: 12px;
   }
 }
+
+/* 图书馆弹层使用独立浅色纸面，避免跟随深色皮肤变灰底灰字 */
+.ll-library {
+  --ll-line: #d3d9d4;
+  --ll-muted: #5f6a63;
+  --ll-surface: #fbfcfb;
+  --ll-soft: #eef2ef;
+  background: #f4f7f4;
+  color: #17211e;
+}
+.ll-library * { scrollbar-width: none; -ms-overflow-style: none; }
+.ll-library *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
