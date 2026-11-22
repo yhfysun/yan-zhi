@@ -753,7 +753,7 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('继续学习');
   });
 
-  it('makes the overview inert and keeps keyboard focus inside the immersive lesson', async () => {
+  it('keeps the top bar usable when the lesson expands inside the page', async () => {
     document.body.innerHTML = '<div id="app"></div>';
     const root = document.getElementById('app') as HTMLElement;
     app = createApp(LearningV2);
@@ -764,21 +764,19 @@ describe('LearningV2', () => {
     (root.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
     await nextTick();
 
-    const lesson = document.querySelector('.lv2-lesson') as HTMLElement;
+    const lesson = document.querySelector('.lv2-lesson.inline') as HTMLElement;
     expect(lesson).toBeTruthy();
-    expect(root.hasAttribute('inert')).toBe(true);
-    expect(root.getAttribute('aria-hidden')).toBe('true');
+    expect(root.hasAttribute('inert')).toBe(false);
+    expect(root.hasAttribute('aria-hidden')).toBe(false);
+    expect(root.querySelector('.lv2-pages [data-nav="textbook"]')).toBeTruthy();
 
     const last = lesson.querySelector('footer button:last-child') as HTMLButtonElement;
     last.focus();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-    expect((document.activeElement as HTMLElement | null)?.closest('.lv2-lesson')).toBe(lesson);
+    expect(document.activeElement).toBe(last);
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await nextTick();
     expect(document.querySelector('.lv2-lesson')).toBeNull();
-    expect(root.hasAttribute('inert')).toBe(false);
-    expect(root.hasAttribute('aria-hidden')).toBe(false);
   });
 
   it('exits the immersive lesson from both header controls', async () => {
@@ -846,7 +844,7 @@ describe('LearningV2', () => {
   it('collapses and resizes the desktop study rail while remembering the choice', async () => {
     const host = await mountPage();
     const workspace = host.querySelector('.lv2-workspace') as HTMLElement;
-    const resizeHandle = host.querySelector('[role="separator"]') as HTMLElement;
+    const resizeHandle = host.querySelector('[aria-label="调整今日学习侧栏宽度"]') as HTMLElement;
 
     expect(workspace.style.getPropertyValue('--lv2-study-rail-width')).toBe('216px');
     resizeHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
@@ -908,18 +906,18 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('民俗文化体验 · 教学演示');
   });
 
-  it('opens practice in a full-screen immersive workspace with its own scroll and Escape exit', async () => {
+  it('opens practice in an in-page workspace with its own scroll and Escape exit', async () => {
     const host = await mountPage();
     (host.querySelector('[data-page="studio"]') as HTMLButtonElement).click();
     await nextTick();
     await nextTick();
 
-    const shell = host.querySelector('.lv2-studio-immersive') as HTMLElement;
+    const shell = host.querySelector('.lv2-studio-immersive.inline') as HTMLElement;
     const body = host.querySelector('.lv2-studio-immersive-body') as HTMLElement;
     expect(shell).toBeTruthy();
     expect(body).toBeTruthy();
     expect(host.querySelector('.lv2-study-rail')).toBeNull();
-    expect(document.body.style.overflow).toBe('hidden');
+    expect(document.body.style.overflow).not.toBe('hidden');
 
     body.scrollTop = 320;
     expect(body.scrollTop).toBe(320);
@@ -982,5 +980,33 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('[data-medical-anatomy-game]')).toBeTruthy();
     expect(host.textContent).toContain('动物结构配对');
+  });
+
+  it('shows three primary entries instead of eight learning tabs', async () => {
+    const host = await mountPage();
+    const labels = [...host.querySelectorAll('.lv2-pages > button[data-nav]')]
+      .map((button) => button.textContent?.trim());
+    expect(labels).toEqual(['教材', '今日复习', '我的']);
+    expect(host.querySelectorAll('.lv2-pages [data-page]')).toHaveLength(8);
+    expect(host.querySelector('.lv2-legacy-nav')?.getAttribute('aria-hidden')).toBe('true');
+
+    (host.querySelector('[data-nav="mine"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-mine-panel')).toBeTruthy();
+    expect(host.textContent).toContain('我的学习');
+  });
+
+  it('renders a textbook TOC on the overview and quick-navigation panes inside the lesson', async () => {
+    const host = await mountPage();
+    expect(host.querySelector('.lv2-textbook-toc')).toBeTruthy();
+
+    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson-body .lv2-lesson-toc')).toBeTruthy();
+    expect(host.querySelector('.lv2-lesson-body .lv2-lesson-notes')).toBeTruthy();
+    expect(host.querySelectorAll('.lv2-lesson-body .rpane')).toHaveLength(2);
+    const tocCourse = host.querySelector('.lv2-lesson-toc section button') as HTMLButtonElement;
+    expect(tocCourse).toBeTruthy();
   });
 });

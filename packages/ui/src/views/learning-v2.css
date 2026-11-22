@@ -820,7 +820,7 @@
 .lv2-lesson-quiz-score { border-left-color: #3f8a67; background: #eef8f2; color: #24302a; }
 /* 步骤自测模式（无选择题库的课程）：题目 = 每步完成确认，参考要点可展开 */
 .lv2-lesson-quiz-reveal { display: inline-flex; min-height: 34px; align-items: center; padding: 6px 14px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 999px; background: transparent; color: #405047; font-size: 11px; cursor: pointer; }
-.lv2-lesson-quiz-answer { width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 8px; background: #fff; color: #24302a; font-size: 12px; line-height: 1.6; font-family: inherit; resize: vertical; }
+.lv2-lesson-quiz-answer { width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid rgba(36, 48, 42, .18); border-radius: 8px; background: var(--lv2-surface, #fff); color: #24302a; font-size: 12px; line-height: 1.6; font-family: inherit; resize: vertical; }
 .lv2-lesson-quiz-answer:focus { outline: none; border-color: var(--lv2-accent, #3f8a67); }
 .lv2-lesson-quiz-reveal:hover { border-color: rgba(36, 48, 42, .34); background: rgba(36, 48, 42, .06); }
 .lv2-lesson-quiz-reference { margin-top: 10px; padding: 10px 12px; border-left: 3px solid var(--lv2-accent); background: rgba(36, 48, 42, .05); }
@@ -1463,4 +1463,61 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-ai-select-popper .el-select-dropdown__item.is-disabled {
   color: var(--lv2-muted);
   opacity: .55;
+}
+
+/* ===== 2026-11-22 教科书化重构：页内放大学习面板 + 可拖拽目录/笔记 ===== */
+.lv2-pages .lv2-legacy-nav { display: none; }
+.lv2-workspace { position: relative; }
+.lv2-workspace.has-textbook-toc { grid-template-columns: auto minmax(0, 1fr) var(--lv2-study-rail-width, 216px); }
+.lv2-workspace.is-study-surface { display: block; padding: 12px 18px 20px; }
+.lv2-mine-panel {
+  position: absolute; inset: 0; z-index: 20; overflow-y: auto; padding: 24px 28px 56px;
+  background: var(--skin-panel-bg-strong, var(--color-bg, #f4f7f4));
+}
+.lv2-mine-panel > header { display: flex; align-items: center; justify-content: space-between; }
+.lv2-mine-panel h2 { margin: 0; font-size: 17px; }
+.lv2-mine-panel > header button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer; }
+.lv2-mine-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.lv2-mine-stats div { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
+.lv2-mine-stats b { font-size: 18px; }
+.lv2-mine-stats span { color: var(--lv2-muted); font-size: 10px; }
+.lv2-mine-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.lv2-mine-actions button { min-height: 36px; padding: 7px 13px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer; }
+.lv2-mine-actions button:hover { border-color: var(--lv2-accent); color: var(--lv2-accent); }
+.lv2-textbook-toc, .lv2-lesson-toc, .lv2-lesson-notes { min-width: 0; overflow: hidden; padding: 9px 6px; }
+.lv2-textbook-toc header, .lv2-lesson-toc header, .lv2-lesson-notes header { display: flex; justify-content: space-between; gap: 6px; padding: 0 8px 7px; border-bottom: 1px solid var(--lv2-line); }
+.lv2-textbook-toc header b, .lv2-lesson-toc header b, .lv2-lesson-notes header b { font-size: 10px; }
+.lv2-textbook-toc header small, .lv2-lesson-toc header small, .lv2-lesson-notes header small { color: var(--lv2-muted); font-size: 8px; }
+.lv2-textbook-toc section, .lv2-lesson-toc section { margin-top: 9px; }
+.lv2-textbook-toc section > b, .lv2-lesson-toc section > b { display: block; padding: 4px 8px; color: var(--lv2-accent); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv2-textbook-toc section > button, .lv2-lesson-toc section > button {
+  display: flex; width: 100%; min-height: 28px; align-items: center; gap: 5px; padding: 4px 7px;
+  border: 0; border-radius: 5px; background: transparent; color: var(--lv2-muted); text-align: left; font-size: 9px; cursor: pointer;
+}
+.lv2-textbook-toc section > button i, .lv2-lesson-toc section > button i { flex: 0 0 auto; font-style: normal; opacity: .6; }
+.lv2-textbook-toc section > button span, .lv2-lesson-toc section > button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv2-textbook-toc section > button.active, .lv2-lesson-toc section > button.active { background: var(--lv2-tint); color: var(--lv2-accent); font-weight: 600; }
+.lv2-lesson-notes > button { min-height: 30px; margin: 10px 8px 0; padding: 5px 10px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 9px; cursor: pointer; }
+.lv2-lesson.inline, .lv2-specialized-study.inline, .lv2-studio-immersive.inline {
+  position: relative; inset: auto; z-index: auto; width: 100%; height: auto; min-height: calc(100vh - 210px);
+  margin-top: 10px; border: 1px solid var(--lv2-line); border-radius: 10px;
+}
+.lv2-lesson.inline { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.lv2-lesson-body { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; }
+.lv2-lesson-body > article { width: 100%; max-width: none; min-height: 0; margin: 0; overflow-y: auto; border-radius: 0; padding: 24px 26px 36px; }
+.lv2-lesson-body > .rpane { background: #1d2b25; border-color: rgba(255,255,255,.1); }
+.lv2-lesson-body > .rpane .lv2-lesson-toc { color: #edf3ef; }
+.lv2-lesson-body > .rpane .lv2-lesson-toc header, .lv2-lesson-body > .rpane .lv2-lesson-notes header { border-color: rgba(255,255,255,.12); }
+.lv2-lesson-body > .rpane .lv2-lesson-toc section > button { color: #b8c9bf; }
+.lv2-lesson-body > .rpane .lv2-lesson-toc section > button.active { background: rgba(255,255,255,.1); color: #edf3ef; }
+.lv2-lesson-body > .rpane-right { background: var(--lv2-surface, #fbfcf8); border-color: var(--lv2-line); }
+@media (max-width: 900px) {
+  .lv2-workspace.has-textbook-toc { grid-template-columns: minmax(0, 1fr) var(--lv2-study-rail-width, 216px); }
+  .lv2-workspace.is-study-surface { padding: 8px 10px 16px; }
+  .lv2-lesson.inline, .lv2-specialized-study.inline, .lv2-studio-immersive.inline { min-height: calc(100vh - 158px); margin-top: 8px; }
+  .lv2-lesson-body { display: block; }
+  .lv2-lesson-body > .rpane { width: 100% !important; max-height: 190px; border: 0; border-bottom: 1px solid var(--lv2-line); }
+  .lv2-lesson-body > .rpane .rpane-handle { display: none; }
+  .lv2-lesson-body > .rpane .rpane-content { max-height: 190px; overflow-y: auto; }
+  .lv2-lesson-body > article { padding: 18px 16px 28px; }
 }

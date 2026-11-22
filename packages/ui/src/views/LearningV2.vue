@@ -35,6 +35,7 @@ import LearningCoachPanel from '../components/learning/v2/LearningCoachPanel.vue
 import LearningLibrary from '../components/learning/v2/LearningLibrary.vue';
 import LearningBookReader from '../components/learning/v2/LearningBookReader.vue';
 import LearningPracticeStudio from '../components/learning/v2/LearningPracticeStudio.vue';
+import ResizablePane from '../components/learning/v2/ResizablePane.vue';
 import LearningSpeechButton from '../components/learning/v2/LearningSpeechButton.vue';
 import ProgrammingCourseHub from '../components/learning/ProgrammingCourseHub.vue';
 import EnglishPathWorkbench from '../components/learning/EnglishPathWorkbench.vue';
@@ -105,11 +106,7 @@ const usesSpecializedLessonWorkbench = computed(() =>
 let progressRequestId = 0;
 let compactMediaQuery: MediaQueryList | null = null;
 let compactMediaListener: ((event: MediaQueryListEvent) => void) | null = null;
-let lessonBodyOverflow = '';
-let studioBodyOverflow = '';
 let mobileSheetBodyOverflow = '';
-let immersiveReturnFocus: HTMLElement | null = null;
-let appInertSnapshot: { hadInert: boolean; ariaHidden: string | null } | null = null;
 let railResizeStartX = 0;
 let railResizeStartWidth = STUDY_RAIL_DEFAULT_WIDTH;
 
@@ -118,6 +115,11 @@ const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 const chat = useChat();
 const agentStore = useAgentStore();
 const courses = computed(() => subject.value?.courses || []);
+const isStudySurface = computed(() => activePage.value === 'lesson' || activePage.value === 'studio');
+const showTextbookToc = computed(() =>
+  !isCompactLayout.value && !isStudySurface.value && activePage.value === 'overview',
+);
+const mineOpen = ref(false);
 const currentTrackName = computed(() =>
   courses.value.find((course) => course.name === selectedCourseName.value)?.trackName
   || subject.value?.tracks[0]?.name
@@ -191,7 +193,7 @@ const quizPlan = computed(() => {
 });
 const quizItems = computed<LearningV2Practice[]>(() => {
   const banked = quizPlan.value?.quiz ?? [];
-  return banked.length ? banked : [subject.value.practice];
+  return banked.length ? [...banked] : [subject.value.practice];
 });
 const quizTotal = computed(() => quizItems.value.length);
 const quizStepIndex = computed(() => Math.min(quizIndex.value, quizTotal.value - 1));
@@ -484,6 +486,11 @@ function selectPage(page: LearningV2PageKey) {
   activePage.value = page;
 }
 
+function goPrimary(page: 'overview' | 'review'): void {
+  mineOpen.value = false;
+  selectPage(page);
+}
+
 function switchLearningLead(next: LeadMode): void {
   setLead(activeMode.value, next);
   ensureLearningAgent();
@@ -523,12 +530,10 @@ async function newLearningConversation(): Promise<void> {
 function exitLesson() {
   lessonQuizOpen.value = false;
   selectPage('overview');
-  if (!libraryOpen.value) document.body.style.overflow = lessonBodyOverflow;
 }
 
 function exitStudio() {
   selectPage('overview');
-  if (!libraryOpen.value) document.body.style.overflow = studioBodyOverflow;
 }
 
 function progressSubjectName(subjectKey: string, displayName: string): string {
@@ -751,60 +756,6 @@ function closeLibrary() {
   libraryOpen.value = false;
 }
 
-function setApplicationLayerInert(active: boolean): void {
-  if (typeof document === 'undefined') return;
-  const appRoot = document.getElementById('app');
-  if (!appRoot) return;
-  if (active) {
-    if (!appInertSnapshot) {
-      appInertSnapshot = {
-        hadInert: appRoot.hasAttribute('inert'),
-        ariaHidden: appRoot.getAttribute('aria-hidden'),
-      };
-    }
-    appRoot.setAttribute('inert', '');
-    appRoot.setAttribute('aria-hidden', 'true');
-    return;
-  }
-  if (!appInertSnapshot) return;
-  if (!appInertSnapshot.hadInert) appRoot.removeAttribute('inert');
-  if (appInertSnapshot.ariaHidden === null) appRoot.removeAttribute('aria-hidden');
-  else appRoot.setAttribute('aria-hidden', appInertSnapshot.ariaHidden);
-  appInertSnapshot = null;
-}
-
-function restoreImmersiveFocus(): void {
-  const target = immersiveReturnFocus;
-  immersiveReturnFocus = null;
-  if (!target?.isConnected) return;
-  window.requestAnimationFrame(() => target.focus());
-}
-
-function trapLessonFocus(event: KeyboardEvent): void {
-  const root = specializedStudyRoot.value || lessonRoot.value;
-  if (!root) return;
-  const focusable = [...root.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-  )].filter((element) => element.offsetParent !== null);
-  if (!focusable.length) {
-    event.preventDefault();
-    root.focus();
-    return;
-  }
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (!root.contains(document.activeElement)) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus();
-  } else if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
-
 function onKeydown(event: KeyboardEvent) {
   if (mobileSubjectsOpen.value && event.key === 'Escape') {
     mobileSubjectsOpen.value = false;
@@ -852,25 +803,7 @@ function onKeydown(event: KeyboardEvent) {
       first.focus();
     }
   }
-  if (activePage.value === 'studio' && event.key === 'Tab') {
-    const focusable = [...(studioRoot.value?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]',
-    ) || [])].filter((element) => element.offsetParent !== null);
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-  if (activePage.value === 'lesson' && event.key === 'Tab') {
-    trapLessonFocus(event);
-    return;
-  }
+  // 页内学习面板不劫持 Tab：顶栏、目录、笔记抽屉都在同一视图树里，应可正常切换焦点。
   if (activePage.value !== 'lesson') return;
   if (event.key === 'ArrowLeft') lessonStep.value = Math.max(0, lessonStep.value - 1);
   if (event.key === 'ArrowRight') lessonStep.value = Math.min(lessonSteps.value.length - 1, lessonStep.value + 1);
@@ -892,33 +825,11 @@ watch(libraryOpen, async (open) => {
     libraryPage.value?.querySelector<HTMLElement>('[data-library-search], button')?.focus();
   }
 });
+// 2026-11-22 评审：学习面板改为页内视图切换，不再 Teleport 到 body / 锁 body / 给应用层加 inert。
+// 总览层与学习层是同一视图树里的二选一，不会同时渲染，因此不需要遮罩式隔离。
 watch(activePage, async (page, previous) => {
-  const enteredImmersive = page === 'lesson' || page === 'studio';
-  const leftImmersive = (previous === 'lesson' || previous === 'studio')
-    && page !== 'lesson'
-    && page !== 'studio';
-  if (enteredImmersive && previous !== 'lesson' && previous !== 'studio') {
-    immersiveReturnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    setApplicationLayerInert(true);
-  } else if (leftImmersive) {
-    setApplicationLayerInert(false);
-    restoreImmersiveFocus();
-  }
-  if (page === 'lesson') {
-    lessonBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-  } else if (previous === 'lesson' && !libraryOpen.value) {
-    document.body.style.overflow = lessonBodyOverflow;
-  }
-  if (page === 'studio') {
-    studioBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-  } else if (previous === 'studio' && !libraryOpen.value) {
-    document.body.style.overflow = studioBodyOverflow;
-  }
   if (page !== previous && workspaceRoot.value) workspaceRoot.value.scrollTop = 0;
+  if ((page === 'lesson' || page === 'studio') && mineOpen.value) mineOpen.value = false;
   await nextTick();
   if (page === 'lesson') (specializedStudyRoot.value || lessonRoot.value)?.focus();
   if (page === 'studio') studioRoot.value?.focus();
@@ -959,10 +870,7 @@ onBeforeUnmount(() => {
   compactMediaQuery = null;
   compactMediaListener = null;
   stopStudyRailResize();
-  if (activePage.value === 'lesson') document.body.style.overflow = lessonBodyOverflow;
-  if (activePage.value === 'studio') document.body.style.overflow = studioBodyOverflow;
   if (mobileSubjectsOpen.value) document.body.style.overflow = mobileSheetBodyOverflow;
-  setApplicationLayerInert(false);
 });
 </script>
 
@@ -1182,7 +1090,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="lv2-main">
-      <header v-if="!isCompactLayout && activePage !== 'lesson' && activePage !== 'studio'" class="lv2-topbar">
+      <header v-if="!isCompactLayout" class="lv2-topbar">
         <div class="lv2-subject-trigger">
           <b>{{ subject.name }}</b>
           <span>{{ subject.line }}</span>
@@ -1195,7 +1103,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <header v-else-if="activePage !== 'lesson' && activePage !== 'studio'" class="lv2-mobile-topbar">
+      <header v-else class="lv2-mobile-topbar">
         <button
           type="button"
           class="lv2-mobile-subject"
@@ -1213,21 +1121,69 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <nav v-if="activePage !== 'lesson' && activePage !== 'studio'" class="lv2-pages" :class="{ mobile: isCompactLayout }" aria-label="学习页面">
-        <button
-          v-for="page in LEARNING_V2_PAGES"
-          :key="page.key"
-          type="button"
-          :class="{ active: activePage === page.key }"
-          :data-page="page.key"
-          @click="selectPage(page.key)"
-        >
-          {{ page.label }}
-        </button>
+      <!-- 2026-11-22 评审：8 个一级 tab → 教材 / 今日复习 / 我的 三个入口；图书馆走顶栏独立入口。 -->
+      <nav class="lv2-pages" :class="{ mobile: isCompactLayout }" aria-label="学习页面">
+        <button type="button" data-nav="textbook" :class="{ active: activePage === 'overview' && !mineOpen }" @click="goPrimary('overview')">教材</button>
+        <button type="button" data-nav="review" :class="{ active: activePage === 'review' && !mineOpen }" @click="goPrimary('review')">今日复习</button>
+        <button type="button" data-nav="mine" :class="{ active: mineOpen }" @click="mineOpen = !mineOpen">我的</button>
+        <div v-if="!isStudySurface" v-show="false" class="lv2-legacy-nav" aria-hidden="true">
+          <button
+            v-for="page in LEARNING_V2_PAGES"
+            :key="page.key"
+            type="button"
+            :data-page="page.key"
+            @click="selectPage(page.key)"
+          >{{ page.label }}</button>
+        </div>
       </nav>
 
-      <div ref="workspaceRoot" class="lv2-workspace" :style="{ '--lv2-study-rail-width': studyRailWidthCss }">
-      <section class="lv2-content">
+      <div
+        ref="workspaceRoot"
+        class="lv2-workspace"
+        :class="{ 'has-textbook-toc': showTextbookToc, 'is-study-surface': isStudySurface }"
+        :style="{ '--lv2-study-rail-width': studyRailWidthCss }"
+      >
+      <ResizablePane
+        v-if="showTextbookToc"
+        label="教材目录"
+        storage-key="yz.learning.v2.textbook-toc.v1"
+        :default-width="210"
+        :min-width="34"
+        :max-width="340"
+      >
+        <div class="lv2-textbook-toc">
+          <header><b>教材目录</b><small>{{ subject.name }}</small></header>
+          <section v-for="track in subject.tracks" :key="track.name">
+            <b>阶段 {{ trackOrderLabel(track.name) }} · {{ track.name }}</b>
+            <button
+              v-for="course in track.courses"
+              :key="course.name"
+              type="button"
+              :class="{ active: course.name === selectedCourseName }"
+              :title="course.name"
+              :disabled="!courseReady(course.name)"
+              @click="openCourse(course.name)"
+            >
+              <i>{{ courseOrderLabel(course.name) }}</i><span>{{ course.name }}</span>
+            </button>
+          </section>
+        </div>
+      </ResizablePane>
+      <section v-if="mineOpen && !isStudySurface" class="lv2-mine-panel" aria-label="我的学习">
+        <header><h2>我的学习</h2><button type="button" @click="mineOpen = false">关闭</button></header>
+        <div class="lv2-mine-stats">
+          <div><b>{{ completedCourseCount }}</b><span>已完成课时</span></div>
+          <div><b>{{ courseProgressPercent }}%</b><span>当前科目进度</span></div>
+          <div><b>{{ subject.review.due }}</b><span>今日待复习</span></div>
+        </div>
+        <div class="lv2-mine-actions">
+          <button type="button" @click="openNote(selectedCourseName, currentLessonStep?.body || '')">写笔记</button>
+          <button type="button" @click="goPrimary('review')">去复习</button>
+          <button type="button" @click="mineOpen = false; selectPage('practice')">做练习</button>
+          <button type="button" @click="mineOpen = false; selectPage('roadmap')">完整课程地图</button>
+        </div>
+      </section>
+      <section class="lv2-content" v-show="!mineOpen || isStudySurface">
         <div v-if="isCompactLayout && activePage !== 'overview' && activePage !== 'studio'" class="lv2-mobile-pagebar">
           <button data-action="back-to-subject" type="button" @click="selectPage('overview')">
             <ChevronLeft :size="14" />返回学科
@@ -1407,11 +1363,10 @@ onBeforeUnmount(() => {
         </template>
 
         <template v-else-if="activePage === 'lesson'">
-          <Teleport to="body">
             <div
               v-if="usesSpecializedLessonWorkbench"
               ref="specializedStudyRoot"
-              class="lv2-specialized-study"
+              class="lv2-specialized-study inline"
               tabindex="-1"
               :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
             >
@@ -1445,7 +1400,7 @@ onBeforeUnmount(() => {
             <div
               v-else
               ref="lessonRoot"
-              class="lv2-lesson"
+              class="lv2-lesson inline"
               tabindex="-1"
               :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
               data-yz-annotate-id="learning-v2-lesson"
@@ -1458,6 +1413,32 @@ onBeforeUnmount(() => {
               <button class="lv2-lesson-close" type="button" aria-label="关闭课程" @click="exitLesson"><X :size="16" /></button>
             </header>
             <nav><button v-for="(step, index) in lessonSteps" :key="step.title" type="button" :class="{ active: lessonStep === index, done: index < lessonStep }" @click="lessonStep = index">{{ step.title }}</button></nav>
+            <div class="lv2-lesson-body">
+            <ResizablePane
+              label="章节目录"
+              storage-key="yz.learning.v2.lesson-toc.v1"
+              :default-width="190"
+              :min-width="34"
+              :max-width="340"
+            >
+              <div class="lv2-lesson-toc">
+                <header><b>章节目录</b><small>快速定位</small></header>
+                <section v-for="track in subject.tracks" :key="track.name">
+                  <b>阶段 {{ trackOrderLabel(track.name) }} · {{ track.name }}</b>
+                  <button
+                    v-for="course in track.courses"
+                    :key="course.name"
+                    type="button"
+                    :class="{ active: course.name === selectedCourseName }"
+                    :title="course.name"
+                    :disabled="!courseReady(course.name)"
+                    @click="openCourse(course.name)"
+                  >
+                    <i>{{ courseOrderLabel(course.name) }}</i><span>{{ course.name }}</span>
+                  </button>
+                </section>
+              </div>
+            </ResizablePane>
             <article>
               <span>{{ coursePlan.trackName }} · {{ subject.lesson.labels[lessonStep] }}</span>
               <em class="lv2-quality">
@@ -1610,15 +1591,29 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
               </section>
-              <!-- 沉浸台内就地展开笔记面板：不再弹全屏 modal（那会被 z-index 5000 的沉浸层压住） -->
-              <NoteQuickCreateDialog
-                v-model:visible="noteVisible"
-                :title="noteTitle"
-                :content="noteContent"
-                category-name="学习"
-                inline
-              />
             </article>
+            <ResizablePane
+              side="right"
+              label="笔记抽屉"
+              storage-key="yz.learning.v2.lesson-notes.v1"
+              :default-width="190"
+              :min-width="34"
+              :max-width="360"
+            >
+              <div class="lv2-lesson-notes">
+                <header><b>笔记抽屉</b><small>{{ coursePlan.title }}</small></header>
+                <button type="button" @click="openNote(coursePlan.title, currentLessonStep?.body || '')">自由笔记</button>
+                <!-- 页内面板：就地展开笔记编辑器，不再弹全屏 modal -->
+                <NoteQuickCreateDialog
+                  v-model:visible="noteVisible"
+                  :title="noteTitle"
+                  :content="noteContent"
+                  category-name="学习"
+                  inline
+                />
+              </div>
+            </ResizablePane>
+            </div>
               <div v-if="lessonFinished" class="lv2-lesson-done" role="status">
                 <b>本课已完成</b>
                 <p>接下来去哪里？</p>
@@ -1631,12 +1626,10 @@ onBeforeUnmount(() => {
               </div>
               <footer v-else><button type="button" :disabled="lessonStep === 0" @click="lessonStep--">上一步</button><button type="button" @click="lessonStep < lessonSteps.length - 1 ? lessonStep++ : finishLesson()">{{ lessonStep < lessonSteps.length - 1 ? '下一步' : '完成本课' }}</button></footer>
             </div>
-          </Teleport>
         </template>
 
         <template v-else-if="activePage === 'studio'">
-          <Teleport to="body">
-            <div ref="studioRoot" class="lv2-studio-immersive" tabindex="-1" :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }">
+            <div ref="studioRoot" class="lv2-studio-immersive inline" tabindex="-1" :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }">
               <header class="lv2-studio-immersive-bar">
                 <button data-action="exit-studio" type="button" @click="exitStudio">
                   <ChevronLeft :size="16" />返回学习
@@ -1659,7 +1652,6 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-          </Teleport>
         </template>
 
         <template v-else-if="activePage === 'practice'">
