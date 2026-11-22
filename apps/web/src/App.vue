@@ -44,4 +44,8 @@ const mobileShell = useMobileShell();
   min-height: 0;
   overflow: hidden;
 }
+
+/* 学习态整窗化：学习面板打开时由 LearningV2 在 html 上打标，
+   全局顶栏让位，整窗只显示学习内容（退出学习自动恢复）。 */
+html.yz-learning-study .title-bar { display: none !important; }
 </style>

@@ -1521,3 +1521,37 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
   .lv2-lesson-body > .rpane .rpane-content { max-height: 190px; overflow-y: auto; }
   .lv2-lesson-body > article { padding: 18px 16px 28px; }
 }
+
+/* ===== 学习态整窗化：整个应用只留学习面板 ===== */
+.lv2.study-full { grid-template-columns: minmax(0, 1fr); background: #18231f; }
+.lv2.study-full .lv2-main { width: 100%; }
+.lv2.study-full .lv2-workspace.is-study-surface { padding: 0; height: 100%; }
+.lv2.study-full .lv2-lesson.inline,
+.lv2.study-full .lv2-specialized-study.inline,
+.lv2.study-full .lv2-studio-immersive.inline {
+  min-height: 100%; height: 100%; margin: 0; border: 0; border-radius: 0;
+}
+.lv2-tool-chip {
+  display: inline-flex; min-height: 30px; align-items: center; padding: 4px 11px;
+  border: 1px solid var(--lv2-line); border-radius: 999px;
+  background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer;
+}
+.lv2-tool-chip:hover { border-color: var(--lv2-accent); color: var(--lv2-accent); }
+.lv2-lesson-head-tools { display: inline-flex; align-items: center; gap: 7px; }
+.lv2-lesson-head-tools i { font-style: normal; color: #9db0a6; }
+.lv2-lesson.inline .lv2-tool-chip { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.05); color: #d8e4dd; }
+.lv2-lesson.inline .lv2-tool-chip:hover { border-color: #9ac9b4; color: #fff; }
+.lv2-specialized-study-bar .lv2-tool-chip,
+.lv2-studio-immersive-bar .lv2-tool-chip { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.05); color: #d8e4dd; }
+.lv2-subview-bar { display: flex; gap: 7px; margin-bottom: 12px; }
+.lv2-subview-bar button {
+  min-height: 32px; padding: 5px 12px; border: 1px solid var(--lv2-line); border-radius: 999px;
+  background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer;
+}
+.lv2-subview-bar button.active { border-color: var(--lv2-accent); color: var(--lv2-accent); }
+@media (max-width: 900px) {
+  .lv2.study-full .lv2-workspace.is-study-surface { padding: 0; }
+  .lv2.study-full .lv2-lesson.inline,
+  .lv2.study-full .lv2-specialized-study.inline,
+  .lv2.study-full .lv2-studio-immersive.inline { min-height: 100%; }
+}

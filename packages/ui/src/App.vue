@@ -898,6 +898,9 @@ body {
 .app-shell { --app-statusbar-h: 0px; display: flex; flex-direction: column; height: 100%; position: relative; overflow: hidden; }
 .app-shell.has-statusbar { --app-statusbar-h: 26px; }
 .app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+/* 学习态整窗化：隐藏全局状态栏，并取消 Web 顶栏占位 */
+html.yz-learning-study .app-statusbar { display: none !important; }
+html.yz-learning-study .platform-web .main-content { padding-top: 0 !important; }
 
 /* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
 /* web/mobile 因 html,body,#app{height:100%} 仍正确铺满；高度从 100vh/dvh 改为 100% 以兼容桌面端被 flex 父容器包裹 */

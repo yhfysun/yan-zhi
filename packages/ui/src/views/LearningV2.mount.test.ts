@@ -753,7 +753,7 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('继续学习');
   });
 
-  it('keeps the top bar usable when the lesson expands inside the page', async () => {
+  it('takes over the whole app while studying and keeps practice tools reachable', async () => {
     document.body.innerHTML = '<div id="app"></div>';
     const root = document.getElementById('app') as HTMLElement;
     app = createApp(LearningV2);
@@ -768,7 +768,14 @@ describe('LearningV2', () => {
     expect(lesson).toBeTruthy();
     expect(root.hasAttribute('inert')).toBe(false);
     expect(root.hasAttribute('aria-hidden')).toBe(false);
-    expect(root.querySelector('.lv2-pages [data-nav="textbook"]')).toBeTruthy();
+    expect(root.querySelector('.lv2.study-full')).toBeTruthy();
+    expect(root.querySelector('.lv2-subjects')).toBeNull();
+    expect(root.querySelector('.lv2-pages')).toBeNull();
+    expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
+    const tools = [...lesson.querySelectorAll('.lv2-lesson-head-tools .lv2-tool-chip')]
+      .map((button) => button.textContent?.trim());
+    expect(tools).toContain('实践');
+    expect(tools).toContain('练习');
 
     const last = lesson.querySelector('footer button:last-child') as HTMLButtonElement;
     last.focus();
@@ -777,6 +784,7 @@ describe('LearningV2', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await nextTick();
     expect(document.querySelector('.lv2-lesson')).toBeNull();
+    expect(document.documentElement.classList.contains('yz-learning-study')).toBe(false);
   });
 
   it('exits the immersive lesson from both header controls', async () => {
@@ -898,7 +906,12 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('权限矩阵');
     expect(host.textContent).toContain('修复与回归');
 
+    (host.querySelector('[data-action="exit-studio"]') as HTMLButtonElement).click();
+    await nextTick();
     (host.querySelector('[data-subject="zhouyi"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('.lv2-topbar-actions .lv2-tool-chip') as HTMLButtonElement).click();
+    await nextTick();
     await nextTick();
     expect(host.querySelector('.dv-root')).toBeTruthy();
     expect(host.textContent).toContain('梅花易数');
@@ -994,6 +1007,25 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('.lv2-mine-panel')).toBeTruthy();
     expect(host.textContent).toContain('我的学习');
+  });
+
+  it('keeps practice, studio and coach one click away from the overview', async () => {
+    const host = await mountPage();
+    const chips = [...host.querySelectorAll('.lv2-topbar-actions .lv2-tool-chip')]
+      .map((button) => button.textContent?.trim());
+    expect(chips).toEqual(['实践', '练习', '陪练']);
+
+    (host.querySelector('.lv2-topbar-actions .lv2-tool-chip') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.lv2-studio-immersive')).toBeTruthy();
+
+    const practiceChip = [...host.querySelectorAll('.lv2-studio-immersive-bar .lv2-tool-chip')]
+      .find((button) => button.textContent?.trim() === '练习') as HTMLButtonElement;
+    practiceChip.click();
+    await nextTick();
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
+    expect(host.querySelector('.lv2-subview-bar')).toBeTruthy();
   });
 
   it('renders a textbook TOC on the overview and quick-navigation panes inside the lesson', async () => {

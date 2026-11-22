@@ -809,6 +809,11 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'ArrowRight') lessonStep.value = Math.min(lessonSteps.value.length - 1, lessonStep.value + 1);
 }
 
+// 学习态让整个应用让位给学习面板：隐藏 Web 顶栏与底部状态栏，学习区占满整个视口。
+watch(isStudySurface, (active) => {
+  if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle('yz-learning-study', active);
+}, { immediate: true });
 watch([selectedSubjectKey, selectedCourseName, activePage, lessonStep], saveSession);
 watch(selectedSubjectKey, () => void loadProgress());
 watch(lead, (next, previous) => {
@@ -862,6 +867,7 @@ onMounted(() => {
   }
 });
 onBeforeUnmount(() => {
+  document.documentElement.classList.remove('yz-learning-study');
   window.removeEventListener('keydown', onKeydown);
   if (compactMediaQuery && compactMediaListener) {
     compactMediaQuery.removeEventListener?.('change', compactMediaListener);
@@ -878,7 +884,7 @@ onBeforeUnmount(() => {
   <div
     v-if="subject"
     class="lv2"
-    :class="{ 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
+    :class="{ 'study-full': isStudySurface, 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
     :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
     :data-yz-annotate-id="activePage === 'lesson' ? 'learning-v2-lesson' : `learning-v2-${activePage}`"
     data-yz-annotate-label="学习"
@@ -1053,7 +1059,7 @@ onBeforeUnmount(() => {
 
     <template v-else>
     <aside
-      v-if="!isCompactLayout"
+      v-if="!isCompactLayout && !isStudySurface"
       class="lv2-subjects"
       :class="{ collapsed: subjectsCollapsed }"
       aria-label="学习科目"
@@ -1090,20 +1096,23 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="lv2-main">
-      <header v-if="!isCompactLayout" class="lv2-topbar">
+      <header v-if="!isCompactLayout && !isStudySurface" class="lv2-topbar">
         <div class="lv2-subject-trigger">
           <b>{{ subject.name }}</b>
           <span>{{ subject.line }}</span>
         </div>
         <div class="lv2-topbar-actions">
           <LearningSpeechButton :text="narrationText" :compact="true" />
+          <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
+          <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+          <button class="lv2-tool-chip" type="button" @click="selectPage('coach')">陪练</button>
           <button class="lv2-library-button" type="button" aria-label="打开公共图书馆" @click="libraryOpen = true">
             <Library :size="17" /><span>图书馆</span>
           </button>
         </div>
       </header>
 
-      <header v-else class="lv2-mobile-topbar">
+      <header v-else-if="!isStudySurface" class="lv2-mobile-topbar">
         <button
           type="button"
           class="lv2-mobile-subject"
@@ -1115,6 +1124,9 @@ onBeforeUnmount(() => {
         </button>
         <div class="lv2-topbar-actions">
           <LearningSpeechButton :text="narrationText" :compact="true" />
+          <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
+          <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+          <button class="lv2-tool-chip" type="button" @click="selectPage('coach')">陪练</button>
           <button class="lv2-library-button" type="button" aria-label="打开公共图书馆" @click="libraryOpen = true">
             <Library :size="17" /><span>图书馆</span>
           </button>
@@ -1122,7 +1134,7 @@ onBeforeUnmount(() => {
       </header>
 
       <!-- 2026-11-22 评审：8 个一级 tab → 教材 / 今日复习 / 我的 三个入口；图书馆走顶栏独立入口。 -->
-      <nav class="lv2-pages" :class="{ mobile: isCompactLayout }" aria-label="学习页面">
+      <nav v-if="!isStudySurface" class="lv2-pages" :class="{ mobile: isCompactLayout }" aria-label="学习页面">
         <button type="button" data-nav="textbook" :class="{ active: activePage === 'overview' && !mineOpen }" @click="goPrimary('overview')">教材</button>
         <button type="button" data-nav="review" :class="{ active: activePage === 'review' && !mineOpen }" @click="goPrimary('review')">今日复习</button>
         <button type="button" data-nav="mine" :class="{ active: mineOpen }" @click="mineOpen = !mineOpen">我的</button>
@@ -1190,6 +1202,12 @@ onBeforeUnmount(() => {
           </button>
           <b>{{ currentPageLabel }}</b>
         </div>
+        <nav v-if="activePage === 'practice' || activePage === 'coach'" class="lv2-subview-bar" aria-label="学习工具">
+          <button type="button" @click="selectPage('lesson')">课程</button>
+          <button type="button" @click="selectPage('studio')">实践</button>
+          <button type="button" :class="{ active: activePage === 'practice' }" @click="selectPage('practice')">练习</button>
+          <button type="button" :class="{ active: activePage === 'coach' }" @click="selectPage('coach')">陪练</button>
+        </nav>
         <template v-if="activePage === 'overview'">
           <!-- 2026-11-21：编程/算法科目此前在总览与课程地图渲染同一个 Hub，两个页签内容完全重复。
                2026-11-22：Hub 只留在「课程地图」，通用总览（继续学习 + 统计 + 接下来）对所有科目生效——
@@ -1376,6 +1394,8 @@ onBeforeUnmount(() => {
               </button>
               <b>{{ subject.name }} · 完整课程内容</b>
               <span>{{ selectedCourseName }}</span>
+              <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
+              <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
               <button type="button" aria-label="关闭课程" @click="exitLesson"><X :size="16" /></button>
             </header>
             <div class="lv2-specialized-study-surface">
@@ -1409,7 +1429,11 @@ onBeforeUnmount(() => {
             <header>
               <button class="lv2-lesson-back" data-action="exit-lesson" type="button" @click="exitLesson"><ChevronLeft :size="16" />返回路线</button>
               <b>{{ coursePlan.title }}</b>
-              <span>{{ lessonStep + 1 }}/{{ lessonSteps.length }}</span>
+              <span class="lv2-lesson-head-tools">
+                <i>{{ lessonStep + 1 }}/{{ lessonSteps.length }}</i>
+                <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
+                <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+              </span>
               <button class="lv2-lesson-close" type="button" aria-label="关闭课程" @click="exitLesson"><X :size="16" /></button>
             </header>
             <nav><button v-for="(step, index) in lessonSteps" :key="step.title" type="button" :class="{ active: lessonStep === index, done: index < lessonStep }" @click="lessonStep = index">{{ step.title }}</button></nav>
@@ -1636,6 +1660,8 @@ onBeforeUnmount(() => {
                 </button>
                 <b>{{ selectedCourseName }}</b>
                 <span>实践 · {{ studios.studio.type }}</span>
+                <button class="lv2-tool-chip" type="button" @click="selectPage('lesson')">课程</button>
+                <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
                 <button class="lv2-studio-immersive-close" type="button" aria-label="关闭实践" @click="exitStudio">
                   <X :size="16" />
                 </button>
