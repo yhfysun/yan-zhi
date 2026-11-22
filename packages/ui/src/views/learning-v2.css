@@ -861,7 +861,7 @@
   -webkit-backdrop-filter: blur(18px) saturate(112%);
 }
 .lv2-studio-immersive-bar {
-  display: grid; grid-template-columns: minmax(104px, auto) minmax(0, 1fr) auto 38px;
+  display: grid; grid-template-columns: minmax(104px, auto) minmax(0, 1fr) auto auto 38px;
   gap: 10px; align-items: center; padding: 10px 14px;
   border-bottom: 1px solid rgba(255,255,255,.1); background: #18231f; color: #edf3ef;
 }
@@ -1572,3 +1572,9 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2.study-full:not(.study-lesson) .lv2-studio-immersive-bar { background: #18231f; }
 .lv2.study-full:not(.study-lesson) .lv2-content { padding: 18px 24px 40px; }
 .lv2-subview-bar .lv2-subview-exit { border-color: var(--lv2-accent); color: var(--lv2-accent); }
+.lv2-head-tools { display: inline-flex; min-width: 0; align-items: center; justify-self: end; gap: 7px; }
+@media (max-width: 900px) {
+  .lv2-specialized-study-bar, .lv2-studio-immersive-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .lv2-specialized-study-bar > b, .lv2-studio-immersive-bar > b { flex: 1 1 auto; min-width: 0; }
+  .lv2-head-tools { justify-self: auto; margin: 0; }
+}

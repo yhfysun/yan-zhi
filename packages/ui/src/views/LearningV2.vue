@@ -1400,8 +1400,10 @@ onBeforeUnmount(() => {
               </button>
               <b>{{ subject.name }} · 完整课程内容</b>
               <span>{{ selectedCourseName }}</span>
-              <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
-              <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+              <span class="lv2-head-tools">
+                <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
+                <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+              </span>
               <button type="button" aria-label="关闭课程" @click="exitLesson"><X :size="16" /></button>
             </header>
             <div class="lv2-specialized-study-surface">
@@ -1666,8 +1668,10 @@ onBeforeUnmount(() => {
                 </button>
                 <b>{{ selectedCourseName }}</b>
                 <span>实践 · {{ studios.studio.type }}</span>
-                <button class="lv2-tool-chip" type="button" @click="selectPage('lesson')">课程</button>
-                <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+                <span class="lv2-head-tools">
+                  <button class="lv2-tool-chip" type="button" @click="selectPage('lesson')">课程</button>
+                  <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
+                </span>
                 <button class="lv2-studio-immersive-close" type="button" aria-label="关闭实践" @click="exitStudio">
                   <X :size="16" />
                 </button>
