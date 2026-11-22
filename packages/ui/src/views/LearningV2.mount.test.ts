@@ -116,6 +116,9 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2-subject-list::-webkit-scrollbar \{[^}]*width: 8px;/);
     expect(css).toMatch(/\.lv2-library-shell \{[^}]*width: 100%;[^}]*align-items: stretch;/);
     expect(libraryCss).toMatch(/\.ll-library \{[^}]*width: 100%;[^}]*height: 100%;/);
+    // 学习态（尤其移动端）隐藏滚动条，保留滚动能力但不显示亮色轨道
+    expect(css).toMatch(/html\.yz-learning-study \.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
+    expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
   });
 
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
