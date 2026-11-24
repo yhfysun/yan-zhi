@@ -1031,11 +1031,142 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X1_COURSES: readonly ProgrammingCourseS
     commonErrors: ['以为引用可以像指针一样重新指向别的对象，实际引用初始化后所有操作都作用于原对象，改绑写法只是给原对象赋值。', '把 const 引用绑定临时对象的生命周期延长规则套用到通过函数返回的引用或临时对象成员上，结果引用提前悬空。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['值语义与拷贝成本', 'C++ 默认采用值语义：传参按值、初始化与赋值都执行逐成员拷贝，函数返回局部对象同样按值返回。实验方法是用一个含 std::string 成员的结构体，在拷贝构造函数里打印标记，再调用一次按值传参的函数，观察标记恰好出现一次，说明副本被整体复制。拷贝代价随成员体积线性增长，体积大的对象传参应改用 const 引用，只读且避免复制。', '逐成员拷贝成副本'],
-      ['引用是别名', '引用在定义时必须绑定一个已存在的左值，之后无法改绑，对它的读写都作用于被绑对象。用 int a = 10; int& r = a; r = 20; 后打印 a 得到 20，再比较 &r == &a 输出 true，验证二者地址相同。引用没有空引用的合法写法，也不存在重新指向的语法，这些边界使接口签名能表达必传且不可空的约束。', '绑定后不可改绑'],
-      ['const 引用延长临时生命周期', '非常量左值引用不能绑定右值，const 左值引用可以，并把临时对象的生命周期延长到该引用所在作用域结束。写 const std::string& s = std::string("ab") + "cd"; 打印 s 内容完整可读，程序结束前对象一直存活。边界是延长只对直接绑定的那一层生效，若经函数返回引用或取临时对象成员再绑定，临时在完整表达式末尾照常销毁，引用随即悬空。', '临时生命周期延长'],
-      ['const 成员函数与 mutable', '成员函数参数列表后加 const 承诺不修改对象状态，编译器把函数内的 this 当成 const 指针，给成员赋值直接编译报错；const 对象只能调用 const 成员函数。缓存、计数这类不影响逻辑状态的成员可标 mutable，允许在 const 函数内修改。可验证动作：在 const 函数里对普通成员自增得到编译错误，加 mutable 后通过，说明修改被限定在非逻辑状态上。', '拒绝修改对象状态'],
-      ['顶层与底层 const', '底层 const 修饰指向物：const int* p 允许改指向但不许通过 p 改值；顶层 const 修饰指针自身：int* const q 初始化后不能改指向。把 const int* 传入接受 int* 的函数会编译失败，非常量到常量的隐式转换则始终允许。读声明从右往左：const char* const s 表示指向常字符的常指针，指向与内容两层都不可变，按此规则可解析任意复杂声明。', '从右往左读声明'],
+      ['值语义与拷贝成本', 'C++ 默认采用值语义：传参按值、初始化与赋值都执行逐成员拷贝，函数返回局部对象同样按值返回。实验方法是用一个含 std::string 成员的结构体，在拷贝构造函数里打印标记，再调用一次按值传参的函数，观察标记恰好出现一次，说明副本被整体复制。拷贝代价随成员体积线性增长，体积大的对象传参应改用 const 引用，只读且避免复制。', '逐成员拷贝成副本', {
+        title: 'C++：统计按值传参的拷贝次数',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <string>
+struct Order {
+    std::string id;
+    Order(std::string value) : id(std::move(value)) {}
+    Order(const Order& other) : id(other.id) { std::cout << "copy\\n"; }
+};
+void by_value(Order) {}
+void by_const_ref(const Order&) {}
+int main() {
+    Order order("A-1001");
+    std::cout << "value:";
+    by_value(order);
+    std::cout << "const-ref:";
+    by_const_ref(order);
+}
+'@ | Set-Content copy-cost.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror copy-cost.cpp -o copy-cost
+./copy-cost`,
+        output: `value:copy
+const-ref:
+
+order 仍是原对象；by_value 为形参复制出一个完整 Order。
+const 引用只绑定原对象，不触发拷贝，适合只读的大对象参数。`,
+      }],
+      ['引用是别名', '引用在定义时必须绑定一个已存在的左值，之后无法改绑，对它的读写都作用于被绑对象。用 int a = 10; int& r = a; r = 20; 后打印 a 得到 20，再比较 &r == &a 输出 true，验证二者地址相同。引用没有空引用的合法写法，也不存在重新指向的语法，这些边界使接口签名能表达必传且不可空的约束。', '绑定后不可改绑', {
+        title: 'C++：引用赋值不是改绑',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+    int a = 10, b = 30;
+    int& r = a;
+    r = b;
+    std::cout << "a=" << a << " b=" << b << " r=" << r << '\\n';
+    std::cout << "same=" << (&r == &a) << " different=" << (&r == &b) << '\\n';
+}
+'@ | Set-Content reference.cpp
+g++ -std=c++20 -Wall -Wextra -Werror reference.cpp -o reference
+./reference`,
+        output: `a=30 b=30 r=30
+same=1 different=0
+
+r 始终是 a 的别名，r=b 把 b 的值赋给 a，而不是把 r 改绑到 b。
+&r 与 &a 相等，说明引用没有独立的存储对象身份。`,
+      }],
+      ['const 引用延长临时生命周期', '非常量左值引用不能绑定右值，const 左值引用可以，并把临时对象的生命周期延长到该引用所在作用域结束。写 const std::string& s = std::string("ab") + "cd"; 打印 s 内容完整可读，程序结束前对象一直存活。边界是延长只对直接绑定的那一层生效，若经函数返回引用或取临时对象成员再绑定，临时在完整表达式末尾照常销毁，引用随即悬空。', '临时生命周期延长', {
+        title: 'C++：临时对象生命周期与悬空陷阱',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <string>
+struct Name { std::string value; };
+const std::string& member_of_temporary() {
+    return Name{"orders"}.value;
+}
+int main() {
+    const std::string& safe = std::string("ab") + "cd";
+    std::cout << "safe=" << safe << '\\n';
+    const std::string& dangling = member_of_temporary();
+    std::cout << "dangling-size=" << dangling.size() << '\\n';
+}
+'@ | Set-Content lifetime.cpp
+g++ -std=c++20 -O1 -g -fsanitize=address,undefined lifetime.cpp -o lifetime
+./lifetime`,
+        output: `safe=abcd
+ERROR: AddressSanitizer: stack-use-after-return
+READ of size 8
+
+直接绑定临时 string 的 safe 被延长到作用域结束。
+函数返回 Name 临时对象的成员引用，Name 已在 return 后销毁，引用悬空。`,
+      }],
+      ['const 成员函数与 mutable', '成员函数参数列表后加 const 承诺不修改对象状态，编译器把函数内的 this 当成 const 指针，给成员赋值直接编译报错；const 对象只能调用 const 成员函数。缓存、计数这类不影响逻辑状态的成员可标 mutable，允许在 const 函数内修改。可验证动作：在 const 函数里对普通成员自增得到编译错误，加 mutable 后通过，说明修改被限定在非逻辑状态上。', '拒绝修改对象状态', {
+        title: 'C++：const 成员函数与 mutable 缓存',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <string>
+class Report {
+    std::string title_ = "daily";
+    mutable int reads_ = 0;
+public:
+    const std::string& title() const {
+        ++reads_;
+        return title_;
+    }
+    int reads() const { return reads_; }
+};
+int main() {
+    const Report report;
+    std::cout << report.title() << " reads=" << report.reads() << '\\n';
+}
+'@ | Set-Content const-member.cpp
+g++ -std=c++20 -Wall -Wextra -Werror const-member.cpp -o const-member
+./const-member
+(Get-Content const-member.cpp) -replace 'mutable int reads_', 'int reads_' |
+  Set-Content const-member-bad.cpp
+g++ -std=c++20 -c const-member-bad.cpp -o const-member-bad.o`,
+        output: `daily reads=1
+error: increment of member 'reads_' in read-only object
+
+const 对象只能调用 const 成员函数。
+mutable 只允许缓存/计数变化，title_ 仍受 const 保护。`,
+      }],
+      ['顶层与底层 const', '底层 const 修饰指向物：const int* p 允许改指向但不许通过 p 改值；顶层 const 修饰指针自身：int* const q 初始化后不能改指向。把 const int* 传入接受 int* 的函数会编译失败，非常量到常量的隐式转换则始终允许。读声明从右往左：const char* const s 表示指向常字符的常指针，指向与内容两层都不可变，按此规则可解析任意复杂声明。', '从右往左读声明', {
+        title: 'C++：const int* 与 int* const 的权限差异',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+void read_only(const int* value) { std::cout << *value << '\\n'; }
+void mutate(int* value) { *value = 9; }
+int main() {
+    int a = 1, b = 2;
+    const int* pointer_to_const = &a;
+    int* const const_pointer = &a;
+    pointer_to_const = &b;
+    *const_pointer = 3;
+    read_only(pointer_to_const);
+    mutate(const_pointer);
+}
+'@ | Set-Content const-layers.cpp
+g++ -std=c++20 -Wall -Wextra -Werror const-layers.cpp -o const-layers
+./const-layers
+(Get-Content const-layers.cpp) -replace '\\*const_pointer = 3;', '*pointer_to_const = 3;' |
+  Set-Content const-layers-bad.cpp
+g++ -std=c++20 -c const-layers-bad.cpp -o const-layers-bad.o`,
+        output: `2
+error: assignment of read-only location '* pointer_to_const'
+
+pointer_to_const 可改指向，但不能通过它写值。
+const_pointer 不能改指向，但指向的 int 本身可写，也能传给 int*。`,
+      }],
     ],
   },
   {
@@ -1049,11 +1180,125 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X1_COURSES: readonly ProgrammingCourseS
     commonErrors: ['以为成员按初始化列表的书写顺序构造，实际顺序由声明顺序决定，写错时用未初始化成员初始化后面的成员。', '给类定义了析构函数却不处理拷贝，编译器不再自动生成移动构造，默认拷贝对指针成员浅拷贝导致二次释放。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['初始化列表与声明顺序', '成员初始化列表让成员在进入构造函数体之前完成构造，比函数体内先默认构造再赋值少一道工序，const 成员与引用成员只能在这里初始化。关键边界是初始化顺序严格等于成员的声明顺序，与列表书写顺序无关。用 -Wreorder 编译可以让编译器对顺序不一致发出警告，实验：声明顺序为 a 在前 b 在后，列表却写 b(a), a(1)，警告指出的正是 b 用了未初始化的 a。', '顺序随声明不随列表'],
-      ['explicit 拦截隐式转换', '单参数构造函数默认允许隐式转换，任何需要一个该类对象的位置都能把参数悄悄构造成临时对象。给构造函数加 explicit 后该路径被禁止，必须写 Distance(3) 或 Distance{3} 这类显式形式。可验证动作：写 void f(Distance); 不加 explicit 时 f(3) 能编译通过，加上后报 no matching function，类从此只保留显式构造入口，避免 3 和 Distance(3) 在重载决议中产生歧义。', '显式构造拦隐转'],
-      ['析构逆序与成员析构', '析构顺序与构造严格相反：先执行析构函数体，再按成员声明顺序的逆序逐个析构成员，最后析构基类。触发时机包括局部对象离开作用域、对象被 delete、异常展开栈途经该作用域。可验证动作：写两个成员各在析构里打印自己的名字，声明顺序 a 后 b，运行观察输出先 b 后 a；再在成员构造函数里也打印，对照构造顺序完整相反，确认成员析构按声明逆序执行。', '先体后成员逆序'],
-      ['Rule of Zero', '类不直接持有裸资源、只用 vector、string、智能指针这些自带清理能力的成员时，不写析构、拷贝构造、拷贝赋值、移动构造、移动赋值五个特殊函数，编译器生成的默认版本自动做逐成员拷贝与析构，正确性由成员自身的拷贝控制兜底。可验证动作：对仅含 string 与 vector 成员的类直接赋值与按值传递，结果正确且无泄漏；代码量最小、出错面最小，这是默认首选写法。', '默认成员自动正确'],
-      ['Rule of Five 触发条件', '一旦类需要自定义析构函数管理裸资源，五个特殊成员函数就要一齐表态。声明了析构后编译器不再自动生成移动构造与移动赋值，拷贝仍会生成但对指针成员只做浅拷贝，两个对象析构时对同一块内存 delete 两次。可验证动作：写含裸指针并自定义析构的类，按值赋值后运行得到二次释放崩溃；把拷贝与移动全部 =default 或对不需要的 =delete，五种行为显式声明后崩溃消失。', '五函数需一齐表态'],
+      ['初始化列表与声明顺序', '成员初始化列表让成员在进入构造函数体之前完成构造，比函数体内先默认构造再赋值少一道工序，const 成员与引用成员只能在这里初始化。关键边界是初始化顺序严格等于成员的声明顺序，与列表书写顺序无关。用 -Wreorder 编译可以让编译器对顺序不一致发出警告，实验：声明顺序为 a 在前 b 在后，列表却写 b(a), a(1)，警告指出的正是 b 用了未初始化的 a。', '顺序随声明不随列表', {
+        title: 'g++ -Wreorder：初始化列表顺序陷阱',
+        language: 'PowerShell',
+        code: `@'
+struct Pair {
+    int a;
+    int b;
+    Pair() : b(a + 1), a(1) {}
+};
+int main() { Pair pair; return pair.a + pair.b; }
+'@ | Set-Content reorder.cpp
+g++ -std=c++20 -Wall -Wextra -c reorder.cpp -o reorder.o
+g++ -std=c++20 -Wall -Wextra -Werror -Wreorder -c reorder.cpp -o reordered.o`,
+        output: `warning: 'Pair::b' will be initialized after
+warning:   'int Pair::a'
+error: member 'Pair::b' is used uninitialized [-Werror=uninitialized]
+
+实际先构造 a，再构造 b，与列表中 b 在前无关。
+a 尚未初始化时 b(a+1) 读取了未定义值。`,
+      }],
+      ['explicit 拦截隐式转换', '单参数构造函数默认允许隐式转换，任何需要一个该类对象的位置都能把参数悄悄构造成临时对象。给构造函数加 explicit 后该路径被禁止，必须写 Distance(3) 或 Distance{3} 这类显式形式。可验证动作：写 void f(Distance); 不加 explicit 时 f(3) 能编译通过，加上后报 no matching function，类从此只保留显式构造入口，避免 3 和 Distance(3) 在重载决议中产生歧义。', '显式构造拦隐转', {
+        title: 'explicit：禁止 int 静默变成 Meter',
+        language: 'PowerShell',
+        code: `@'
+struct Meter { int value; explicit Meter(int v) : value(v) {} };
+void print(Meter meter) { (void)meter; }
+int main() { print(3); }
+'@ | Set-Content explicit.cpp
+g++ -std=c++20 -c explicit.cpp -o explicit.o
+(Get-Content explicit.cpp) -replace 'explicit ', '' | Set-Content implicit.cpp
+g++ -std=c++20 -c implicit.cpp -o implicit.o`,
+        output: `error: could not convert '3' from 'int' to 'Meter'
+3 不能隐式构造 Meter，必须写 print(Meter{3})。
+去掉 explicit 后同一行编译通过，隐式转换被允许。`,
+      }],
+      ['析构逆序与成员析构', '析构顺序与构造严格相反：先执行析构函数体，再按成员声明顺序的逆序逐个析构成员，最后析构基类。触发时机包括局部对象离开作用域、对象被 delete、异常展开栈途经该作用域。可验证动作：写两个成员各在析构里打印自己的名字，声明顺序 a 后 b，运行观察输出先 b 后 a；再在成员构造函数里也打印，对照构造顺序完整相反，确认成员析构按声明逆序执行。', '先体后成员逆序', {
+        title: 'C++：构造顺序与析构顺序严格相反',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+struct Part {
+    const char* name;
+    Part(const char* value) : name(value) { std::cout << "ctor " << name << '\\n'; }
+    ~Part() { std::cout << "dtor " << name << '\\n'; }
+};
+struct Machine {
+    Part first{"first"};
+    Part second{"second"};
+    ~Machine() { std::cout << "Machine body\\n"; }
+};
+int main() { Machine machine; }
+'@ | Set-Content order.cpp
+g++ -std=c++20 -Wall -Wextra -Werror order.cpp -o order
+./order`,
+        output: `ctor first
+ctor second
+Machine body
+dtor second
+dtor first
+
+成员按声明顺序构造，Machine 析构体先执行。
+析构体结束后成员按声明逆序销毁，最后基类再析构。`,
+      }],
+      ['Rule of Zero', '类不直接持有裸资源、只用 vector、string、智能指针这些自带清理能力的成员时，不写析构、拷贝构造、拷贝赋值、移动构造、移动赋值五个特殊函数，编译器生成的默认版本自动做逐成员拷贝与析构，正确性由成员自身的拷贝控制兜底。可验证动作：对仅含 string 与 vector 成员的类直接赋值与按值传递，结果正确且无泄漏；代码量最小、出错面最小，这是默认首选写法。', '默认成员自动正确', {
+        title: 'Rule of Zero：只组合标准容器',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <string>
+#include <vector>
+struct Inventory {
+    std::string owner;
+    std::vector<int> quantities;
+};
+int main() {
+    Inventory original{"shop", {1, 2, 3}};
+    Inventory copy = original;
+    copy.quantities.push_back(4);
+    std::cout << original.quantities.size() << ' ' << copy.quantities.size() << '\\n';
+}
+'@ | Set-Content zero.cpp
+g++ -std=c++20 -Wall -Wextra -Werror zero.cpp -o zero
+./zero
+nm -C zero | Select-String 'Inventory::~Inventory|Inventory::Inventory*\\(' | Select-Object -First 5`,
+        output: `3 4
+
+Inventory 没有写任何五个特殊成员函数。
+默认拷贝逐成员复制 string 与 vector，vector 深拷贝元素，原对象保持不变。`,
+      }],
+      ['Rule of Five 触发条件', '一旦类需要自定义析构函数管理裸资源，五个特殊成员函数就要一齐表态。声明了析构后编译器不再自动生成移动构造与移动赋值，拷贝仍会生成但对指针成员只做浅拷贝，两个对象析构时对同一块内存 delete 两次。可验证动作：写含裸指针并自定义析构的类，按值赋值后运行得到二次释放崩溃；把拷贝与移动全部 =default 或对不需要的 =delete，五种行为显式声明后崩溃消失。', '五函数需一齐表态', {
+        title: 'ASan：浅拷贝裸指针导致 double-free',
+        language: 'PowerShell',
+        code: `@'
+struct Buffer {
+    int* data = new int[4]{};
+    ~Buffer() { delete[] data; }
+};
+int main() {
+    Buffer first;
+    Buffer second = first;
+    return second.data[0];
+}
+'@ | Set-Content double-free.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address double-free.cpp -o double-free
+./double-free
+(Get-Content double-free.cpp -Raw) -replace 'Buffer second = first;', 'Buffer second{};' |
+  Set-Content fixed.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address fixed.cpp -o fixed
+./fixed`,
+        output: `ERROR: AddressSanitizer: attempting double-free
+previously allocated by thread T0 here:
+    #0 operator new[]
+    #1 Buffer::Buffer()
+#0 operator delete[]
+    #1 Buffer::~Buffer()
+
+默认拷贝只复制 data 指针，两个 Buffer 指向同一块内存。
+应删除拷贝，或实现深拷贝与 noexcept 移动；不能用修复示例掩盖所有权。`,
+      }],
     ],
   },
   {
@@ -1067,11 +1312,161 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X1_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把 fstream 当成需要手动 close 才安全的资源，在多条 return 路径上都写 close，漏写一条就泄漏句柄，实际析构已自动完成。', '在需要中途解锁的临界区坚持用 lock_guard，它没有解锁接口，绕过去手动调互斥量 unlock 会在作用域结束时造成未定义行为。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['RAII 与栈展开', 'RAII 把资源绑定到对象生命周期：构造函数获取资源，析构函数释放，释放不依赖程序员逐条路径记忆，而由作用域退出保证。异常展开栈时，沿途每个已构造完成的局部对象析构照样执行，这是 C++ 异常安全的地基。可验证动作：写函数在获取锁和文件之后中途 throw，两个对象的析构函数都打印释放信息，输出证明异常路径下释放必然发生，不需要 catch 里补清理代码。', '析构即释放'],
-      ['fstream 析构自动关闭', 'std::ifstream 与 std::ofstream 析构时自动调用 close 并冲洗缓冲，离开作用域即完成，提前 return 或抛异常都不会漏。打开后先检查 is_open 判断成败，读写后检查 failbit 与 badbit 区分格式错误与严重 IO 错误。可验证动作：函数内打开文件不调用 close 直接返回，随后再次以写模式打开同一文件成功，说明句柄已在析构时释放；手动 close 只在需要提前释放或 flush 确认落盘时才必要。', '离开作用域即关'],
-      ['lock_guard 与 unique_lock', 'std::lock_guard 构造时加锁、析构时解锁，零额外开销，适用于整段作用域持锁；std::unique_lock 额外支持延迟加锁、中途 unlock、记录是否持有，条件变量的 wait 必须用它，因为挂起前要解锁、唤醒后要重新加锁。可验证动作：临界区需要在持锁状态下先落盘再解锁时，lock_guard 提供不了中途解锁接口，换 unique_lock 调 unlock 即可；对比两种写法在作用域退出时都由析构解锁，不会漏。', '构造锁析构解'],
-      ['网络资源包装', '标准库不提供套接字封装，文件描述符与 socket 需要自写 RAII 类：构造中调用 socket 或 open 拿到句柄，失败抛异常或置无效态；析构中调用 close；禁用拷贝或实现移动语义，防止同一句柄被双重关闭。Windows 与 POSIX 的接口不同，封装层把 close 动作统一收敛在一处。可验证动作：构造成功后打印句柄值，作用域结束后析构打印关闭信息，再在构造失败分支抛异常，确认无效句柄不会被误关。', '句柄随对象消亡'],
-      ['释放顺序与依赖', '析构逆序意味着后申请的资源先释放，这正好匹配大多数依赖关系：先开文件后加锁，退出时先解锁后关文件。若存在依赖，例如日志缓冲还引用着文件对象，就要让缓冲声明在文件之后，保证缓冲先析构、文件后析构。可验证动作：写两个互相引用对方输出的对象，调换二者声明顺序，观察析构打印顺序随之翻转，确认依赖方向与析构顺序始终一致，悬空访问不再出现。', '后申请的先释放'],
+      ['RAII 与栈展开', 'RAII 把资源绑定到对象生命周期：构造函数获取资源，析构函数释放，释放不依赖程序员逐条路径记忆，而由作用域退出保证。异常展开栈时，沿途每个已构造完成的局部对象析构照样执行，这是 C++ 异常安全的地基。可验证动作：写函数在获取锁和文件之后中途 throw，两个对象的析构函数都打印释放信息，输出证明异常路径下释放必然发生，不需要 catch 里补清理代码。', '析构即释放', {
+        title: 'C++：throw 穿过作用域仍执行析构',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <stdexcept>
+struct Guard {
+    const char* name;
+    explicit Guard(const char* value) : name(value) { std::cout << "acquire " << name << '\\n'; }
+    ~Guard() { std::cout << "release " << name << '\\n'; }
+};
+void work() {
+    Guard file{"file"};
+    Guard lock{"lock"};
+    throw std::runtime_error("boom");
+}
+int main() {
+    try { work(); } catch (const std::exception& e) { std::cout << e.what() << '\\n'; }
+}
+'@ | Set-Content raii.cpp
+g++ -std=c++20 -Wall -Wextra -Werror raii.cpp -o raii
+./raii`,
+        output: `acquire file
+acquire lock
+release lock
+release file
+boom
+
+throw 开始栈展开，lock 与 file 两个已完成构造的对象按逆序析构。
+catch 只处理异常，没有补写任何清理调用。`,
+      }],
+      ['fstream 析构自动关闭', 'std::ifstream 与 std::ofstream 析构时自动调用 close 并冲洗缓冲，离开作用域即完成，提前 return 或抛异常都不会漏。打开后先检查 is_open 判断成败，读写后检查 failbit 与 badbit 区分格式错误与严重 IO 错误。可验证动作：函数内打开文件不调用 close 直接返回，随后再次以写模式打开同一文件成功，说明句柄已在析构时释放；手动 close 只在需要提前释放或 flush 确认落盘时才必要。', '离开作用域即关', {
+        title: 'fstream：提前 return 自动关闭文件',
+        language: 'PowerShell',
+        code: `@'
+#include <fstream>
+#include <iostream>
+#include <string>
+bool save(const std::string& path) {
+    std::ofstream output(path);
+    if (!output.is_open()) return false;
+    output << "orders\\n";
+    return true;
+}
+int main() {
+    bool first = save("orders.txt");
+    std::ofstream second("orders.txt");
+    std::cout << "first=" << first << " reopened=" << second.is_open() << '\\n';
+}
+'@ | Set-Content stream-raii.cpp
+g++ -std=c++20 -Wall -Wextra -Werror stream-raii.cpp -o stream-raii
+./stream-raii
+Get-Content orders.txt`,
+        output: `first=1 reopened=1
+orders
+
+save 在 return 前没有 close，ofstream 析构已 flush 并释放句柄。
+随后以写模式重开成功，证明文件没有被泄漏占用。`,
+      }],
+      ['lock_guard 与 unique_lock', 'std::lock_guard 构造时加锁、析构时解锁，零额外开销，适用于整段作用域持锁；std::unique_lock 额外支持延迟加锁、中途 unlock、记录是否持有，条件变量的 wait 必须用它，因为挂起前要解锁、唤醒后要重新加锁。可验证动作：临界区需要在持锁状态下先落盘再解锁时，lock_guard 提供不了中途解锁接口，换 unique_lock 调 unlock 即可；对比两种写法在作用域退出时都由析构解锁，不会漏。', '构造锁析构解', {
+        title: 'std::unique_lock：中途解锁后继续工作',
+        language: 'PowerShell',
+        code: `@'
+#include <chrono>
+#include <iostream>
+#include <mutex>
+#include <thread>
+std::mutex mutex;
+int shared = 0;
+void worker() {
+    std::unique_lock lock(mutex);
+    ++shared;
+    lock.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::cout << "worker continued\\n";
+}
+int main() {
+    std::thread thread(worker);
+    { std::lock_guard guard(mutex); std::cout << "main holds lock\\n"; }
+    thread.join();
+    std::cout << "shared=" << shared << '\\n';
+}
+'@ | Set-Content unique-lock.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread unique-lock.cpp -o unique-lock
+./unique-lock`,
+        output: `main holds lock
+worker continued
+shared=1
+
+unique_lock 在写 shared 后主动 unlock，主线程随即能拿锁。
+离开作用域时 unique_lock 析构，因已解锁不会二次解锁。`,
+      }],
+      ['网络资源包装', '标准库不提供套接字封装，文件描述符与 socket 需要自写 RAII 类：构造中调用 socket 或 open 拿到句柄，失败抛异常或置无效态；析构中调用 close；禁用拷贝或实现移动语义，防止同一句柄被双重关闭。Windows 与 POSIX 的接口不同，封装层把 close 动作统一收敛在一处。可验证动作：构造成功后打印句柄值，作用域结束后析构打印关闭信息，再在构造失败分支抛异常，确认无效句柄不会被误关。', '句柄随对象消亡', {
+        title: 'C++：禁拷贝的 POSIX socket RAII 包装',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <stdexcept>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <utility>
+class Socket {
+    int fd_ = -1;
+public:
+    explicit Socket(int fd) : fd_(fd) {
+        if (fd_ < 0) throw std::runtime_error("socket failed");
+        std::cout << "open fd=" << fd_ << '\\n';
+    }
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
+    Socket(Socket&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
+    ~Socket() {
+        if (fd_ >= 0) { std::cout << "close fd=" << fd_ << '\\n'; close(fd_); }
+    }
+};
+int main() {
+    Socket first(socket(AF_INET, SOCK_STREAM, 0));
+    Socket second(std::move(first));
+}
+'@ | Set-Content socket-raii.cpp
+g++ -std=c++20 -Wall -Wextra -Werror socket-raii.cpp -o socket-raii
+./socket-raii`,
+        output: `open fd=3
+close fd=3
+
+拷贝被 delete，移动构造把 fd_ 转给 second 并把源端置为 -1。
+析构只关闭一次，源对象的 -1 不会被误关。`,
+      }],
+      ['释放顺序与依赖', '析构逆序意味着后申请的资源先释放，这正好匹配大多数依赖关系：先开文件后加锁，退出时先解锁后关文件。若存在依赖，例如日志缓冲还引用着文件对象，就要让缓冲声明在文件之后，保证缓冲先析构、文件后析构。可验证动作：写两个互相引用对方输出的对象，调换二者声明顺序，观察析构打印顺序随之翻转，确认依赖方向与析构顺序始终一致，悬空访问不再出现。', '后申请的先释放', {
+        title: 'C++：声明顺序决定依赖对象的释放次序',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+struct Sink {
+    ~Sink() { std::cout << "sink closed\\n"; }
+};
+struct Writer {
+    Sink& sink;
+    ~Writer() { std::cout << "writer flushed using sink\\n"; }
+};
+int main() {
+    Sink sink;
+    Writer writer{sink};
+}
+'@ | Set-Content release-order.cpp
+g++ -std=c++20 -Wall -Wextra -Werror release-order.cpp -o release-order
+./release-order
+(Get-Content release-order.cpp -Raw) -replace '    Sink sink;\\r?\\n    Writer writer\\{sink\\};', '    Writer writer{*new Sink};' |
+  Set-Content bad-order.cpp`,
+        output: `writer flushed using sink
+sink closed
+
+writer 声明在 sink 之后，因此先析构，仍能安全访问 sink。
+若依赖对象先声明，先析构的 sink 会让后析构的 writer 持有悬空引用。`,
+      }],
     ],
   },
   {
