@@ -72,6 +72,7 @@ const LEGACY_ENGLISH_AGENT_ID = 'a_builtin_learning_coach';
 const subjects = ref(getLearningV2Subjects());
 const contentManagerOpen = ref(false);
 const registeredContentPacks = ref<LearningSubjectContentPack[]>([]);
+const learningReady = ref(false);
 
 function refreshLearningSubjects(): void {
   subjects.value = getLearningV2Subjects();
@@ -1215,23 +1216,32 @@ watch(mobileSubjectsOpen, async (open) => {
   }
 });
 onMounted(async () => {
-  await initializeLearningContent();
-  if (lead.value === 'ai') {
-    ensureLearningAgent();
-  }
+  // Local UI state and keyboard controls must work before remote content-pack
+  // discovery finishes; otherwise an immediate lesson cannot be exited.
   restoreStudyRailPreferences();
-  restoreSession();
   restoreCodeEvidence();
-  ensureSubjectCategoryOpen(selectedSubjectKey.value);
   subjectsCollapsed.value = localStorage.getItem(SUBJECTS_COLLAPSED_KEY) === '1';
   openTrackNames.value = currentTrackName.value ? [currentTrackName.value] : [];
-  void loadProgress();
   window.addEventListener('keydown', onKeydown);
   compactMediaQuery = window.matchMedia?.('(max-width: 900px)') || null;
   if (compactMediaQuery) {
     compactMediaListener = (event: MediaQueryListEvent) => { isCompactLayout.value = event.matches; };
     compactMediaQuery.addEventListener?.('change', compactMediaListener);
     compactMediaQuery.addListener?.(compactMediaListener);
+  }
+  try {
+    await initializeLearningContent();
+  } finally {
+    // Imported packs can change available subjects, so session restoration
+    // still waits until discovery has completed.
+    restoreSession();
+    ensureSubjectCategoryOpen(selectedSubjectKey.value);
+    openTrackNames.value = currentTrackName.value ? [currentTrackName.value] : [];
+    if (lead.value === 'ai') {
+      ensureLearningAgent();
+    }
+    void loadProgress();
+    learningReady.value = true;
   }
 });
 onBeforeUnmount(() => {
@@ -1257,6 +1267,7 @@ onBeforeUnmount(() => {
     :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
     :data-yz-annotate-id="activePage === 'lesson' ? 'learning-v2-lesson' : `learning-v2-${activePage}`"
     data-yz-annotate-label="学习"
+    :data-learning-ready="learningReady ? 'true' : 'false'"
   >
     <section
       v-if="libraryOpen"

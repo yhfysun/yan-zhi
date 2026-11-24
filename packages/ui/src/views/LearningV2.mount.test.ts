@@ -115,7 +115,15 @@ async function mountPage(): Promise<HTMLElement> {
   app.use(createPinia());
   app.mount(host);
   await nextTick();
+  await waitForLearningReady(host);
   return host;
+}
+
+async function waitForLearningReady(host: ParentNode): Promise<void> {
+  await vi.waitFor(() => {
+    expect(host.querySelector('.lv2')?.getAttribute('data-learning-ready')).toBe('true');
+  });
+  await nextTick();
 }
 
 afterEach(() => {
@@ -1035,14 +1043,25 @@ describe('LearningV2', () => {
 
   it('keeps progress responses scoped when the learner changes subject before loading finishes', async () => {
     let resolveParty!: (value: { data: { lessonIds: string[] } }) => void;
-    apiState.get.mockImplementationOnce(() => new Promise<{ data: { lessonIds: string[] } }>((resolve) => {
-      resolveParty = resolve;
-    }));
+    apiState.get.mockImplementation((url: string) => {
+      const decoded = decodeURIComponent(url);
+      if (url.startsWith('/learning/lesson-progress?') && decoded.includes('subject=党史')) {
+        return new Promise<{ data: { lessonIds: string[] } }>((resolve) => {
+          resolveParty = resolve;
+        });
+      }
+      return Promise.resolve({ data: { lessonIds: [] } });
+    });
     const host = await mountPage();
 
     (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
     await nextTick();
-    await vi.waitFor(() => expect(apiState.get).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      expect(apiState.get.mock.calls.some(([url]) =>
+        url.startsWith('/learning/lesson-progress?')
+        && decodeURIComponent(url).includes('subject=网络安全'),
+      )).toBe(true);
+    });
 
     resolveParty({ data: { lessonIds: ['party:0:1'] } });
     await vi.waitFor(() => {
@@ -1084,6 +1103,7 @@ describe('LearningV2', () => {
     app.use(createPinia());
     app.mount(root);
     await nextTick();
+    await waitForLearningReady(root);
 
     (root.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
     await nextTick();
