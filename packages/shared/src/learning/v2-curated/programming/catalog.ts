@@ -9,6 +9,9 @@ import { PROGRAMMING_JAVA_ADVANCED_COURSES } from './java-advanced.js';
 import { PROGRAMMING_JAVA_FOUNDATION_COURSES } from './java-foundations.js';
 import { PROGRAMMING_OTHER_COURSE_SEEDS } from './programs.js';
 import { PROGRAMMING_PROJECT_COURSE_SEEDS } from './projects.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES } from './handwritten/project-training-batch-01.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_02_COURSES } from './handwritten/project-training-batch-02.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_03_COURSES } from './handwritten/project-training-batch-03.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_04_COURSES } from './handwritten/project-training-batch-04.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_05_COURSES } from './handwritten/project-training-batch-05.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_06_COURSES } from './handwritten/project-training-batch-06.js';
@@ -70,6 +73,9 @@ import {
 } from './handwritten/cpp-performance.js';
 import { C_SYSTEMS_COURSE_QUIZ } from './quiz-c-systems.js';
 import { CPP_PERFORMANCE_COURSE_QUIZ } from './quiz-cpp-performance.js';
+import { PROJECT_TRAINING_BATCH_01_COURSE_QUIZ } from './quiz-project-training-batch-01.js';
+import { PROJECT_TRAINING_BATCH_02_COURSE_QUIZ } from './quiz-project-training-batch-02.js';
+import { PROJECT_TRAINING_BATCH_03_COURSE_QUIZ } from './quiz-project-training-batch-03.js';
 import { PROJECT_TRAINING_BATCHES_04_06_COURSE_QUIZ } from './quiz-project-training-batches-04-06.js';
 import { PROJECT_TRAINING_BATCHES_10_11_COURSE_QUIZ } from './quiz-project-training-batches-10-11.js';
 import { PROGRAMMING_SYSTEMS_COURSES } from './systems.js';
@@ -146,6 +152,9 @@ const HANDWRITTEN_SEEDS: readonly ProgrammingCourseSeed[] = [
   ...HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES,
   ...HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES,
   ...HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_02_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_03_COURSES,
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_04_COURSES,
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_05_COURSES,
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_06_COURSES,
@@ -175,6 +184,9 @@ const ALL_COURSE_QUIZ: Readonly<Record<string, readonly LearningV2Practice[]>> =
   ...PROGRAMMING_COURSE_QUIZ,
   ...C_SYSTEMS_COURSE_QUIZ,
   ...CPP_PERFORMANCE_COURSE_QUIZ,
+  ...PROJECT_TRAINING_BATCH_01_COURSE_QUIZ,
+  ...PROJECT_TRAINING_BATCH_02_COURSE_QUIZ,
+  ...PROJECT_TRAINING_BATCH_03_COURSE_QUIZ,
   ...PROJECT_TRAINING_BATCHES_04_06_COURSE_QUIZ,
   ...PROJECT_TRAINING_BATCHES_10_11_COURSE_QUIZ,
   ...PROJECT_TRAINING_COURSE_QUIZ,
