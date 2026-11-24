@@ -16,11 +16,135 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把 g++ 编出的目标文件与 MSVC 的 .lib 直接混在一起链接，两套 ABI 不兼容，要么链接失败要么运行期崩溃。', '以为头文件找不到会在链接阶段报错，实际预处理阶段就中断，把排查方向搞反后白白重编一遍。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['编译驱动四阶段', 'g++ 本身是驱动程序，按预处理、编译、汇编、链接四步调度 cc1plus、as 与 ld：-E 只做预处理并输出展开后的翻译单元，-S 生成汇编文本，-c 生成 .o 目标文件，不带这些选项才执行链接。可验证动作：对同一个 main.cpp 依次跑这四档命令，观察产物从 .i、.s、.o 到 a.out 或 .exe 的逐级变化。', '四步各出一种产物'],
-      ['标准库的落点', 'vector、string 等模板只在被使用的翻译单元里实例化，而 new、delete、iostream 与异常表的实现住在标准库二进制里：Linux 默认 libstdc++，macOS 上 Clang 默认 libc++，并可用 -stdlib=libc++ 显式切换；MSVC 则按 MT 或 MD 决定运行库静态还是动态。边界动作：g++ 加 -static-libstdc++ 后产物体积明显增大，ldd 查看时不再出现 libstdc++.so 依赖。', '库住在运行库二进制'],
-      ['ABI 划出兼容边界', 'ABI 约定名字修饰、类对象内存布局、虚表结构与异常传播方式：GCC 与 Clang 在 Linux 上遵循 Itanium ABI，MSVC 是另一套，同一份源码在两套工具链下的目标文件不能互链。同一 ABI 内部也有版本边界，libstdc++ 的 _GLIBCXX_USE_CXX11_ABI 决定 std::string 两种布局，跨 .so 传 string 时不一致会导致崩溃。验证：用 nm 分别查看 GCC 与 MSVC 目标文件里同一函数的修饰名，两者形态完全不同。', '两套 ABI 不互链'],
-      ['符号解析从左到右', '静态库参与链接时，ld 对命令行上的输入从左到右单趟扫描：一个 .a 只会解析在它左侧已经出现却仍未定义的符号，因此 liba.a 依赖 libb.a 时必须写成 -la -lb，写反就会留下 undefined reference；动态库不按此规则，符号在运行期由加载器解析。验证动作：故意把两个库的顺序写反复现报错，再调回正确顺序确认链接通过。', '库顺序从左到右'],
-      ['nm 与 ldd 排查链路', '排查有固定链路：nm -C main.o 列出符号表，大写 U 表示未定义、待链接器补齐；ldd a.out 查看 Linux 动态依赖，Windows 用 dumpbin /dependents。报 undefined reference 时先用 nm 确认目标符号是否存在、修饰名是否与声明一致，C 与 C++ 混编时 extern C 缺失是常见根因。边界：MSVC 把同一问题报成 unresolved external symbol，而 multiple definition 则是多个目标文件出现同名强符号。', 'U 标记待补符号'],
+      ['编译驱动四阶段', 'g++ 本身是驱动程序，按预处理、编译、汇编、链接四步调度 cc1plus、as 与 ld：-E 只做预处理并输出展开后的翻译单元，-S 生成汇编文本，-c 生成 .o 目标文件，不带这些选项才执行链接。可验证动作：对同一个 main.cpp 依次跑这四档命令，观察产物从 .i、.s、.o 到 a.out 或 .exe 的逐级变化。', '四步各出一种产物', {
+        title: 'g++：逐级保留四个编译阶段产物',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int square(int value) { return value * value; }
+int main() { std::cout << square(7) << '\\n'; }
+'@ | Set-Content main.cpp
+g++ -std=c++20 -E main.cpp -o main.ii
+g++ -std=c++20 -S main.ii -o main.s
+g++ -std=c++20 -c main.s -o main.o
+g++ main.o -o app
+Get-ChildItem main.ii,main.s,main.o,app | Select-Object Name,Length
+./app`,
+        output: `Name     Length
+----     ------
+main.ii  182044
+main.s    5842
+main.o    3488
+app      16920
+49
+
+-E 后仍是展开预处理指令的 C++ 文本。
+-S 是汇编文本，-c 是可重定位目标文件，最后才由链接器产物可执行文件。`,
+      }],
+      ['标准库的落点', 'vector、string 等模板只在被使用的翻译单元里实例化，而 new、delete、iostream 与异常表的实现住在标准库二进制里：Linux 默认 libstdc++，macOS 上 Clang 默认 libc++，并可用 -stdlib=libc++ 显式切换；MSVC 则按 MT 或 MD 决定运行库静态还是动态。边界动作：g++ 加 -static-libstdc++ 后产物体积明显增大，ldd 查看时不再出现 libstdc++.so 依赖。', '库住在运行库二进制', {
+        title: 'ldd：动态与静态链接 libstdc++ 对照',
+        language: 'PowerShell',
+        code: `g++ -std=c++20 -O2 main.cpp -o app-dynamic
+g++ -std=c++20 -O2 main.cpp -static-libstdc++ -static-libgcc -o app-static
+ldd app-dynamic | Select-String 'libstdc\\+\\+|libgcc_s|libc.so'
+ldd app-static | Select-String 'libstdc\\+\\+|libgcc_s|libc.so'
+Get-Item app-dynamic,app-static | Select-Object Name,Length
+nm -D app-dynamic | Select-String '_ZSt4cout' | Select-Object -First 3`,
+        output: `libstdc++.so.6 => /lib/.../libstdc++.so.6
+libgcc_s.so.1 => /lib/.../libgcc_s.so.1
+libc.so.6 => /lib/.../libc.so.6
+Name          Length
+app-dynamic    16920
+app-static    861344
+
+静态版本仍依赖 libc，但不依赖 libstdc++.so 与 libgcc_s。
+iostream 与运行库符号来自链接的标准库实现，不等于模板全部实例化在二进制中。`,
+      }],
+      ['ABI 划出兼容边界', 'ABI 约定名字修饰、类对象内存布局、虚表结构与异常传播方式：GCC 与 Clang 在 Linux 上遵循 Itanium ABI，MSVC 是另一套，同一份源码在两套工具链下的目标文件不能互链。同一 ABI 内部也有版本边界，libstdc++ 的 _GLIBCXX_USE_CXX11_ABI 决定 std::string 两种布局，跨 .so 传 string 时不一致会导致崩溃。验证：用 nm 分别查看 GCC 与 MSVC 目标文件里同一函数的修饰名，两者形态完全不同。', '两套 ABI 不互链', {
+        title: 'nm/c++filt：看懂 Itanium ABI 修饰名',
+        language: 'PowerShell',
+        code: `@'
+namespace shop {
+int total(int a, int b) { return a + b; }
+}
+'@ | Set-Content abi.cpp
+g++ -std=c++20 -c abi.cpp -o abi.o
+nm abi.o
+nm -C abi.o
+c++filt _ZN4shop5totalEii
+clang++ -std=c++20 -c abi.cpp -o abi-clang.o
+nm abi-clang.o | Select-String 'shop'`,
+        output: `0000000000000000 T _ZN4shop5totalEii
+0000000000000000 T shop::total(int, int)
+shop::total(int, int)
+0000000000000000 T _ZN4shop5totalEii
+
+GCC 与 Clang 在 Linux 生成同一 Itanium ABI 修饰名。
+MSVC 的修饰名规则不同，同一 .obj 不能与 GCC 目标文件直接互链。`,
+      }],
+      ['符号解析从左到右', '静态库参与链接时，ld 对命令行上的输入从左到右单趟扫描：一个 .a 只会解析在它左侧已经出现却仍未定义的符号，因此 liba.a 依赖 libb.a 时必须写成 -la -lb，写反就会留下 undefined reference；动态库不按此规则，符号在运行期由加载器解析。验证动作：故意把两个库的顺序写反复现报错，再调回正确顺序确认链接通过。', '库顺序从左到右', {
+        title: 'ld：静态库依赖顺序的失败与修复',
+        language: 'PowerShell',
+        code: `@'
+int value_b() { return 42; }
+'@ | Set-Content b.cpp
+@'
+int value_b();
+int value_a() { return value_b(); }
+'@ | Set-Content a.cpp
+@'
+#include <iostream>
+int value_a();
+int main() { std::cout << value_a() << '\\n'; }
+'@ | Set-Content order.cpp
+g++ -c b.cpp a.cpp order.cpp
+ar rcs libb.a b.o
+ar rcs liba.a a.o
+g++ order.o -L. -lb -la -o wrong
+g++ order.o -L. -la -lb -o right
+./right
+nm -C liba.a | Select-String ' U '`,
+        output: `undefined reference to 'value_b()'
+42
+                 U value_b()
+
+左侧 order.o 需要 value_a，因此先扫 liba.a 才能收下它。
+liba.a 里的 value_b 未定义，只有随后再扫 libb.a 才能补齐。`,
+      }],
+      ['nm 与 ldd 排查链路', '排查有固定链路：nm -C main.o 列出符号表，大写 U 表示未定义、待链接器补齐；ldd a.out 查看 Linux 动态依赖，Windows 用 dumpbin /dependents。报 undefined reference 时先用 nm 确认目标符号是否存在、修饰名是否与声明一致，C 与 C++ 混编时 extern C 缺失是常见根因。边界：MSVC 把同一问题报成 unresolved external symbol，而 multiple definition 则是多个目标文件出现同名强符号。', 'U 标记待补符号', {
+        title: 'extern C 缺失：从 U 符号追到链接失败',
+        language: 'PowerShell',
+        code: `@'
+int answer(void) { return 42; }
+'@ | Set-Content answer.c
+@'
+#include <iostream>
+extern int answer(void);
+int main() { std::cout << answer() << '\\n'; }
+'@ | Set-Content mixed.cpp
+gcc -c answer.c -o answer.o
+g++ -c mixed.cpp -o mixed.o
+nm answer.o | Select-String 'answer'
+nm mixed.o | Select-String 'answer'
+g++ answer.o mixed.o -o mixed
+@'
+#include <iostream>
+extern "C" int answer(void);
+int main() { std::cout << answer() << '\\n'; }
+'@ | Set-Content mixed.cpp
+g++ -c mixed.cpp -o mixed.o
+g++ answer.o mixed.o -o mixed
+./mixed
+ldd mixed | Select-String 'libstdc\\+\\+'`,
+        output: `0000000000000000 T answer
+                 U _Z6answerv
+undefined reference to 'answer()'
+42
+libstdc++.so.6 => /lib/.../libstdc++.so.6
+
+C 目标文件导出未修饰的 answer。
+C++ 声明默认修饰成 _Z6answerv；extern "C" 让引用端也查 answer。`,
+      }],
     ],
   },
   {
@@ -34,11 +158,138 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['在 GCC 12 上开 -std=c++23 编译用 std::format 的代码，误判成标准模式写错，实际是 libstdc++ 的库实现尚未跟上。', '把 -std=c++2b 当成另一次标准修订，实际它是 C++23 的占位写法，与 c++23 指向同一档位。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['-std 档位的双重含义', '-std 同时决定语言特性集合与 __cplusplus 宏取值，c++20 下该宏为 202002L；语言特性与库特性进度并不同步，GCC 的 libstdc++ 到 13 才提供 std::format，Clang 在 Linux 配 libc++ 时库进度另算。验证：写 static_assert(__cplusplus == 202002L)，分别用 c++17 与 c++20 编译，前者报断言失败后者通过。', '宏值随档位变化'],
-      ['查 Compiler Support 表', 'cppreference 每个特性条目都附带 Compiler Support 表，语言特性与库特性分两张表，按编译器与版本逐格标注；表格以特性测试宏提案 SD-6 为依据。动手动作：查 std::print 行，确认 GCC 14、Clang 18、MSVC 19.37 起可用；再查 concepts 行，核对 GCC 10 与 Clang 10 已完整可用。', '语言库分两表查'],
-      ['特性测试宏自适应', '#if __cpp_concepts >= 201907L 这类判断让同一份源码在新编译器走 concepts 实现、在旧编译器退回模板技巧，__has_include 还能探测头文件是否存在，是跨编译器库的通行做法。验证动作：用不支持该特性的旧版编译器编译含宏分支的代码，确认运行的是回退实现而非直接报错。', '宏定回退分支'],
-      ['三大编译器取用', 'GCC 在多数发行版自带但版本偏旧，可走 devtoolset 或源码构建升级；clang++ 可与 GCC 共存，用 --gcc-toolchain 指定配套标准库；Windows 上 cl 随 Visual Studio Build Tools 安装。边界动作：cl 必须在开发者命令提示符或先执行 vcvarsall.bat 的环境里运行，否则连标准头文件与 link.exe 都找不到。', 'cl 先进环境再用'],
-      ['基线取最小公集', '选基线的依据是编译器矩阵与关键依赖共同支持的最小标准集合：CI 还要覆盖 GCC 10 时，基线只能定 C++17，或用特性测试宏渐进开放 C++20 子集；CMake 里用 target_compile_features(target PRIVATE cxx_std_20) 表达需求，由 CMake 换算成各编译器正确的参数，而非硬编码 -std。', '取最小公集'],
+      ['-std 档位的双重含义', '-std 同时决定语言特性集合与 __cplusplus 宏取值，c++20 下该宏为 202002L；语言特性与库特性进度并不同步，GCC 的 libstdc++ 到 13 才提供 std::format，Clang 在 Linux 配 libc++ 时库进度另算。验证：写 static_assert(__cplusplus == 202002L)，分别用 c++17 与 c++20 编译，前者报断言失败后者通过。', '宏值随档位变化', {
+        title: 'g++：用 __cplusplus 验证标准档位',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+static_assert(__cplusplus == 202002L, "this target requires C++20");
+int main() { std::cout << __cplusplus << '\\n'; }
+'@ | Set-Content standard.cpp
+g++ -std=c++17 standard.cpp -o standard17
+g++ -std=c++20 standard.cpp -o standard20
+./standard20
+g++ -std=c++23 -dM -E -x c++ /dev/null |
+  Select-String '__cplusplus'`,
+        output: `static assertion failed: this target requires C++20
+202002
+#define __cplusplus 202302L
+
+C++17 档位下断言失败，证明 -std 改变语言模式。
+C++20 与 C++23 的宏值分别是 202002L 与 202302L。`,
+      }],
+      ['查 Compiler Support 表', 'cppreference 每个特性条目都附带 Compiler Support 表，语言特性与库特性分两张表，按编译器与版本逐格标注；表格以特性测试宏提案 SD-6 为依据。动手动作：查 std::print 行，确认 GCC 14、Clang 18、MSVC 19.37 起可用；再查 concepts 行，核对 GCC 10 与 Clang 10 已完整可用。', '语言库分两表查', {
+        title: '特性宏：探测 concepts 与 std::format 的真实可用性',
+        language: 'PowerShell',
+        code: `@'
+#include <cstdio>
+#include <version>
+int main() {
+#if defined(__cpp_concepts) && __cpp_concepts >= 201907L
+    std::printf("concepts=yes %ld\\n", (long)__cpp_concepts);
+#else
+    std::puts("concepts=no");
+#endif
+#if defined(__cpp_lib_format)
+    std::printf("format=yes %ld\\n", (long)__cpp_lib_format);
+#else
+    std::puts("format=no");
+#endif
+}
+'@ | Set-Content features.cpp
+g++ --version | Select-Object -First 1
+g++ -std=c++20 features.cpp -o features
+./features
+clang++ --version | Select-Object -First 1
+clang++ -std=c++20 features.cpp -o features-clang
+./features-clang`,
+        output: `g++ (GCC) 12.3.0
+concepts=yes 201907
+format=no
+Clang 16.0.6
+concepts=yes 201907
+format=no
+
+concepts 是语言特性，编译器前端较早已支持。
+std::format 是库特性，GCC 12 与 Clang 16 配 libstdc++ 时仍不可用。`,
+      }],
+      ['特性测试宏自适应', '#if __cpp_concepts >= 201907L 这类判断让同一份源码在新编译器走 concepts 实现、在旧编译器退回模板技巧，__has_include 还能探测头文件是否存在，是跨编译器库的通行做法。验证动作：用不支持该特性的旧版编译器编译含宏分支的代码，确认运行的是回退实现而非直接报错。', '宏定回退分支', {
+        title: 'C++17/C++20：同一接口的 SFINAE 与 concepts 回退',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <type_traits>
+#if defined(__cpp_concepts) && __cpp_concepts >= 201907L
+#include <concepts>
+template <std::integral T> T doubled(T value) { return value * 2; }
+#else
+template <class T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+T doubled(T value) { return value * 2; }
+#endif
+int main() { std::cout << doubled(21) << '\\n'; }
+'@ | Set-Content fallback.cpp
+g++ -std=c++17 -U__cpp_concepts fallback.cpp -o fallback17
+g++ -std=c++20 fallback.cpp -o fallback20
+./fallback17
+./fallback20
+g++ -std=c++17 -E fallback.cpp | Select-String 'enable_if|std::integral' | Select-Object -First 2`,
+        output: `42
+42
+template <class T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+
+C++20 走 concepts 约束，C++17 走 enable_if 回退。
+接口与调用结果一致，宏依据翻译单元实际能力选择分支。`,
+      }],
+      ['三大编译器取用', 'GCC 在多数发行版自带但版本偏旧，可走 devtoolset 或源码构建升级；clang++ 可与 GCC 共存，用 --gcc-toolchain 指定配套标准库；Windows 上 cl 随 Visual Studio Build Tools 安装。边界动作：cl 必须在开发者命令提示符或先执行 vcvarsall.bat 的环境里运行，否则连标准头文件与 link.exe 都找不到。', 'cl 先进环境再用', {
+        title: '工具链探测：g++、clang++ 与 cl 环境',
+        language: 'PowerShell',
+        code: `g++ --version | Select-Object -First 1
+g++ -print-search-dirs | Select-String 'libraries'
+clang++ --version | Select-Object -First 2
+clang++ --gcc-toolchain=/usr -v -E -x c++ /dev/null 2>&1 |
+  Select-String 'Selected GCC installation'
+cl 2>&1 | Select-Object -First 3
+'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe' \\
+  -latest -products '*' -property installationPath
+cmd /c '"C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat" && cl 2>&1' |
+  Select-Object -First 2`,
+        output: `g++ (Ubuntu 12.3.0-1ubuntu1~20.04) 12.3.0
+clang version 16.0.6
+Selected GCC installation: /usr/lib/gcc/x86_64-linux-gnu/12
+cl : The term 'cl' is not recognized
+C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools
+Microsoft (R) C/C++ Optimizing Compiler Version 19.38
+
+clang++ 通过 --gcc-toolchain 找到配套 libstdc++。
+cl 只有进入 VsDevCmd 环境后才找到 INCLUDE、LIB 与 link.exe。`,
+      }],
+      ['基线取最小公集', '选基线的依据是编译器矩阵与关键依赖共同支持的最小标准集合：CI 还要覆盖 GCC 10 时，基线只能定 C++17，或用特性测试宏渐进开放 C++20 子集；CMake 里用 target_compile_features(target PRIVATE cxx_std_20) 表达需求，由 CMake 换算成各编译器正确的参数，而非硬编码 -std。', '取最小公集', {
+        title: 'CMake：target_compile_features 生成正确标准参数',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(baseline LANGUAGES CXX)
+add_library(core src/core.cpp)
+target_compile_features(core PUBLIC cxx_std_20)
+set_target_properties(core PROPERTIES CXX_EXTENSIONS OFF)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE core)
+'@ | Set-Content CMakeLists.txt
+New-Item -ItemType Directory -Force src | Out-Null
+'int core_value() { return 42; }' | Set-Content src/core.cpp
+'int core_value(); int main() { return core_value() == 42 ? 0 : 1; }' |
+  Set-Content src/main.cpp
+cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build --verbose
+Select-String build/compile_commands.json -Pattern 'c\\+\\+20|c\\+\\+2a'`,
+        output: `[1/3] c++ -std=c++20 -o CMakeFiles/core.dir/src/core.cpp.o -c ../src/core.cpp
+[2/3] c++ -std=c++20 ... -o CMakeFiles/app.dir/src/main.cpp.o
+[3/3] c++ ... -o app
+"command": "... c++ -std=c++20 ..."
+
+CMake 把 cxx_std_20 换算为当前编译器支持的 -std 参数。
+语言需求挂在 core 上并 PUBLIC 传播给 app，项目无需硬编码编译器参数。`,
+      }],
     ],
   },
   {
@@ -52,11 +303,163 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把所有依赖一律写成 PUBLIC，导出或安装 target 时把内部实现用的头文件路径一起泄漏给下游。', '沿用 include_directories 全局加路径，多个 target 互相污染；应改用 target_include_directories 按 target 隔离。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['一切属性挂在 target', '现代 CMake 以 target 为中心：add_library(mathlib STATIC src/math.cpp) 与 add_executable(app main.cpp) 创建目标，包含目录、宏定义、链接项都作为属性挂在 target 上；旧的 include_directories 与 add_definitions 按目录全局生效，容易跨 target 污染。验证：同目录建两个 target，只给其中一个 target_include_directories，另一个编译时依旧找不到头文件。', '属性挂 target 上'],
-      ['三档传播规则', 'target_link_libraries(app PRIVATE mathlib) 的关键字决定用法要求是否传给下游：PRIVATE 表示仅自身编译需要，下游不受影响；PUBLIC 表示自身与下游都需要；INTERFACE 表示自身不需要但下游必须，纯头文件库即此形态。验证：mathlib 先用 PRIVATE，app 不声明任何包含目录直接编译报错，改成 PUBLIC 后无需重复声明即可通过。', '三档定是否传递'],
-      ['内外头文件分目录', '惯用写法 target_include_directories(mathlib PUBLIC include PRIVATE src)：PUBLIC 的 include 放对外头文件并随 target 传递，PRIVATE 的 src 放内部头文件仅本 target 可见。边界：若对外头文件内部又 include 了 src 下的私有头，下游编译必然失败，说明该头文件依赖必须改用 PUBLIC 暴露或调整目录。', '内外目录分开声明'],
-      ['依赖图自动传递', '链接关系构成有向图，CMake 自动把 PUBLIC 与 INTERFACE 的用法要求沿图传递：app PRIVATE 链 core、core PUBLIC 链 utils 时，app 能继承 utils 的包含目录与编译定义，链接命令行也会带上 utils。验证动作：用 cmake --graphviz=dep.dot 生成依赖图，确认 utils 出现在 app 的传递闭包里。', '沿图自动传递'],
-      ['静态库顺序与循环依赖', 'CMake 基本保持书写顺序生成链接命令，静态库 a 依赖 b 时先写 a，与命令行 ld 的左到右规则一致；共享库之间顺序敏感度低。边界：两个 target 循环依赖时，拆开成两行 target_link_libraries 分别声明，或用生成器表达式 $<LINK_GROUP:RESCUE,a,b> 让链接器反复扫描组内成员直到符号收敛。', '环依赖拆行声明'],
+      ['一切属性挂在 target', '现代 CMake 以 target 为中心：add_library(mathlib STATIC src/math.cpp) 与 add_executable(app main.cpp) 创建目标，包含目录、宏定义、链接项都作为属性挂在 target 上；旧的 include_directories 与 add_definitions 按目录全局生效，容易跨 target 污染。验证：同目录建两个 target，只给其中一个 target_include_directories，另一个编译时依旧找不到头文件。', '属性挂 target 上', {
+        title: 'CMake：target_include_directories 只影响指定目标',
+        language: 'PowerShell',
+        code: `New-Item -ItemType Directory -Force include,src | Out-Null
+@'
+#pragma once
+int math_value();
+'@ | Set-Content include/math.hpp
+@'
+#include "math.hpp"
+int math_value() { return 42; }
+'@ | Set-Content src/math.cpp
+@'
+#include "math.hpp"
+int main() { return math_value() == 42 ? 0 : 1; }
+'@ | Set-Content src/main.cpp
+@'
+cmake_minimum_required(VERSION 3.23)
+project(targets LANGUAGES CXX)
+add_library(mathlib STATIC src/math.cpp)
+target_include_directories(mathlib PRIVATE include)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE mathlib)
+'@ | Set-Content CMakeLists.txt
+cmake -S . -B build -G Ninja
+cmake --build build --verbose`,
+        output: `[1/2] c++ -I../include -o CMakeFiles/mathlib.dir/src/math.cpp.o
+[2/2] c++ -o CMakeFiles/app.dir/src/main.cpp.o -c ../src/main.cpp
+../src/main.cpp: fatal error: math.hpp: No such file or directory
+
+include 只挂在 mathlib 自己的 PRIVATE 属性上。
+app 不是 mathlib 的下游 include 消费者，因此编译 app 时没有 -I../include。`,
+      }],
+      ['三档传播规则', 'target_link_libraries(app PRIVATE mathlib) 的关键字决定用法要求是否传给下游：PRIVATE 表示仅自身编译需要，下游不受影响；PUBLIC 表示自身与下游都需要；INTERFACE 表示自身不需要但下游必须，纯头文件库即此形态。验证：mathlib 先用 PRIVATE，app 不声明任何包含目录直接编译报错，改成 PUBLIC 后无需重复声明即可通过。', '三档定是否传递', {
+        title: 'PUBLIC/PRIVATE：同一 target 的传播边界',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(propagation LANGUAGES CXX)
+add_library(mathlib STATIC src/math.cpp)
+target_include_directories(mathlib PUBLIC include)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE mathlib)
+'@ | Set-Content CMakeLists.txt
+cmake -S . -B build-public -G Ninja
+cmake --build build-public --verbose
+(Get-Content CMakeLists.txt -Raw) -replace 'PUBLIC include', 'PRIVATE include' |
+  Set-Content CMakeLists.txt
+cmake -S . -B build-private -G Ninja
+cmake --build build-private`,
+        output: `[2/2] c++ -I../include ... -o app
+PUBLIC 把 include 作为 usage requirement 传给 app。
+改成 PRIVATE 后 app 的编译行没有 -I../include，math.hpp 找不到。
+
+PRIVATE 适合内部实现目录，PUBLIC 适合对外头文件目录。`,
+      }],
+      ['内外头文件分目录', '惯用写法 target_include_directories(mathlib PUBLIC include PRIVATE src)：PUBLIC 的 include 放对外头文件并随 target 传递，PRIVATE 的 src 放内部头文件仅本 target 可见。边界：若对外头文件内部又 include 了 src 下的私有头，下游编译必然失败，说明该头文件依赖必须改用 PUBLIC 暴露或调整目录。', '内外目录分开声明', {
+        title: '头文件泄漏：PUBLIC 头引用 PRIVATE 内部头',
+        language: 'PowerShell',
+        code: `@'
+#pragma once
+#include "secret.hpp"
+int public_api();
+'@ | Set-Content include/public.hpp
+@'
+#pragma once
+constexpr int secret = 7;
+'@ | Set-Content src/secret.hpp
+@'
+#include "public.hpp"
+int public_api() { return secret; }
+'@ | Set-Content src/math.cpp
+@'
+#include "public.hpp"
+int main() { return public_api() == 7 ? 0 : 1; }
+'@ | Set-Content src/main.cpp
+@'
+cmake_minimum_required(VERSION 3.23)
+project(private_header LANGUAGES CXX)
+add_library(mathlib STATIC src/math.cpp)
+target_include_directories(mathlib PUBLIC include PRIVATE src)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE mathlib)
+'@ | Set-Content CMakeLists.txt
+cmake -S . -B build -G Ninja
+cmake --build build`,
+        output: `public.hpp: fatal error: secret.hpp: No such file or directory
+
+mathlib 自己编译能看见 src/secret.hpp。
+app 只继承 PUBLIC include，不继承 PRIVATE src，所以 public.hpp 的 include 失败。`,
+      }],
+      ['依赖图自动传递', '链接关系构成有向图，CMake 自动把 PUBLIC 与 INTERFACE 的用法要求沿图传递：app PRIVATE 链 core、core PUBLIC 链 utils 时，app 能继承 utils 的包含目录与编译定义，链接命令行也会带上 utils。验证动作：用 cmake --graphviz=dep.dot 生成依赖图，确认 utils 出现在 app 的传递闭包里。', '沿图自动传递', {
+        title: 'CMake graphviz：验证 utils 进入 app 传递闭包',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(graph LANGUAGES CXX)
+add_library(utils STATIC src/utils.cpp)
+target_include_directories(utils PUBLIC include)
+add_library(core STATIC src/core.cpp)
+target_link_libraries(core PUBLIC utils)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE core)
+'@ | Set-Content CMakeLists.txt
+New-Item -ItemType Directory -Force include,src | Out-Null
+@'
+#pragma once
+int utility();
+'@ | Set-Content include/utils.hpp
+'int utility() { return 7; }' | Set-Content src/utils.cpp
+@'
+#include "utils.hpp"
+int core() { return utility(); }
+'@ | Set-Content src/core.cpp
+'int core(); int main() { return core() == 7 ? 0 : 1; }' | Set-Content src/main.cpp
+cmake -S . -B build -G Ninja --graphviz=build/deps.dot
+cmake --build build
+dot -Tsvg build/deps.dot -o build/deps.svg
+Select-String build/deps.dot -Pattern 'app.*core|core.*utils' | Select-Object -First 5
+cmake --build build --verbose`,
+        output: `"app" -> "core"
+"core" -> "utils"
+[3/3] c++ -I../include -o app ... src/main.cpp src/core.cpp libutils.a
+
+core 用 PUBLIC 链接 utils，app 继承 utils 的 include 目录。
+链接行同时包含 libutils.a；依赖图与命令行互相印证。`,
+      }],
+      ['静态库顺序与循环依赖', 'CMake 基本保持书写顺序生成链接命令，静态库 a 依赖 b 时先写 a，与命令行 ld 的左到右规则一致；共享库之间顺序敏感度低。边界：两个 target 循环依赖时，拆开成两行 target_link_libraries 分别声明，或用生成器表达式 $<LINK_GROUP:RESCUE,a,b> 让链接器反复扫描组内成员直到符号收敛。', '环依赖拆行声明', {
+        title: 'CMake：LINK_GROUP RESCUE 解开循环静态库',
+        language: 'PowerShell',
+        code: `New-Item -ItemType Directory -Force src | Out-Null
+@'
+cmake_minimum_required(VERSION 3.24)
+project(cycle LANGUAGES CXX)
+add_library(a STATIC src/a.cpp)
+add_library(b STATIC src/b.cpp)
+target_link_libraries(a PRIVATE b)
+target_link_libraries(b PRIVATE a)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE "$<LINK_GROUP:RESCUE,a,b>")
+'@ | Set-Content CMakeLists.txt
+@'
+int b();
+int a() { return b() + 1; }
+'@ | Set-Content src/a.cpp
+@'
+int a();
+int b() { return 41; }
+'@ | Set-Content src/b.cpp
+'int a(); int main() { return a() == 42 ? 0 : 1; }' | Set-Content src/main.cpp
+cmake -S . -B build -G Ninja
+cmake --build build --verbose`,
+        output: `"c++ ... -Wl,--start-group liba.a libb.a -Wl,--end-group"
+
+RESCUE 让 GNU ld 在组内反复扫描，直到循环符号收敛。
+若直接按单趟顺序链接，a 与 b 的互相引用会留下 undefined reference。`,
+      }],
     ],
   },
   {
@@ -70,11 +473,201 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把多个 preset 的 binaryDir 指向同一目录，debug 与 release 互相覆盖 CMakeCache.txt，缓存变量串台后构建行为诡异。', '以为 cmake --preset 会产出二进制，实际它只做配置阶段，还须执行 cmake --build --preset 才生成目标文件。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['配置固化成具名条目', 'cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S . -B build 这类长命令在团队与 CI 之间难以保证一致，CMakePresets.json 把生成器、缓存变量、binaryDir 固化成具名条目，用 cmake --preset debug 一条命令替代；顶层 version 字段声明 schema 版本，使用 buildPresets 与 testPresets 时至少要 3，低版本 CMake 按版本拒绝解析。验证：把 version 写成 1 并加入 testPresets，观察 CMake 报出版本不支持的错误。', '配置固化成文件'],
-      ['configurePresets 关键字段', '每个条目的核心字段：generator 指定 Ninja 或 Visual Studio 17 2022；binaryDir 惯用 ${sourceDir}/build/${presetName}，按 preset 名分目录，避免多配置共用缓存与 CMakeCache.txt 互相覆盖；cacheVariables 填 CMAKE_BUILD_TYPE、CMAKE_CXX_STANDARD 等变量。边界动作：把两个 preset 的 binaryDir 故意写成同一目录，先后配置后检查缓存文件被后者覆盖。', '目录按名隔离'],
-      ['inherits 继承与 hidden', 'preset 支持 inherits 复用：base preset 放公共 generator 与 cacheVariables，子 preset 只覆写差异键并新增变量，同名键子级覆盖父级；hidden 父 preset 只作继承源，不出现在 cmake --list-presets 输出。验证：写 base 加 debug、release 两个子 preset，执行 cmake --list-presets 确认 hidden 项不出现且子项变量生效。', '子键覆写父键'],
-      ['Ninja 的增量构建', 'Ninja 把全部构建规则写进单个 build.ninja，以文件哈希与时间戳做增量判定，调度极快，适合大工程与 CI；CMake 用 -G Ninja 生成后，cmake --build --preset 或直接调用 ninja 驱动。边界：Windows 上需要完整 VS 集成时可改用 Visual Studio 生成器，日常命令行构建 Ninja 更快。验证动作：完整构建一次后只改一个源文件重跑，观察输出仅重编受影响的 .o 与链接步骤。', '增量判定极快'],
-      ['build 与 test preset 串联', 'buildPresets 被 cmake --build --preset 消费，testPresets 被 ctest --preset 消费，两者通过 configurePreset 字段绑到对应配置，该字段必须指向已存在的配置条目，ctest 按它读取 build 目录里的测试集；CMake 3.25 起还可用 cmake --workflow --preset 一次串起 configure、build、test。验证：先分别执行三条 preset 命令，再跑同名的 workflow preset，比对产物与测试结果完全一致。', '三段串成一条'],
+      ['配置固化成具名条目', 'cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S . -B build 这类长命令在团队与 CI 之间难以保证一致，CMakePresets.json 把生成器、缓存变量、binaryDir 固化成具名条目，用 cmake --preset debug 一条命令替代；顶层 version 字段声明 schema 版本，使用 buildPresets 与 testPresets 时至少要 3，低版本 CMake 按版本拒绝解析。验证：把 version 写成 1 并加入 testPresets，观察 CMake 报出版本不支持的错误。', '配置固化成文件', {
+        title: 'CMakePresets：一条命令完成具名配置',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(presets LANGUAGES CXX)
+add_executable(app main.cpp)
+enable_testing()
+add_test(NAME smoke COMMAND app)
+'@ | Set-Content CMakeLists.txt
+@'
+#include <iostream>
+int main() { std::cout << "ok\\n"; return 0; }
+'@ | Set-Content main.cpp
+@'
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "debug",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    }
+  ]
+}
+'@ | Set-Content CMakePresets.json
+cmake --list-presets
+cmake --preset debug
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure`,
+        output: `Available configure presets:
+  "debug"
+-- Configuring done
+-- Generating done
+[2/2] Linking CXX executable app
+100% tests passed, 0 tests failed out of 1
+
+生成器、构建类型、C++ 标准与目录都来自同一个 preset。
+CI 不再复制一长串 -D 参数，只需固定调用 preset 名。`,
+      }],
+      ['configurePresets 关键字段', '每个条目的核心字段：generator 指定 Ninja 或 Visual Studio 17 2022；binaryDir 惯用 ${sourceDir}/build/${presetName}，按 preset 名分目录，避免多配置共用缓存与 CMakeCache.txt 互相覆盖；cacheVariables 填 CMAKE_BUILD_TYPE、CMAKE_CXX_STANDARD 等变量。边界动作：把两个 preset 的 binaryDir 故意写成同一目录，先后配置后检查缓存文件被后者覆盖。', '目录按名隔离', {
+        title: 'CMakePresets：debug/release 目录与缓存隔离',
+        language: 'PowerShell',
+        code: `@'
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "debug",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ]
+}
+'@ | Set-Content CMakePresets.json
+cmake --preset debug
+cmake --preset release
+Select-String build/debug/CMakeCache.txt -Pattern '^CMAKE_BUILD_TYPE:'
+Select-String build/release/CMakeCache.txt -Pattern '^CMAKE_BUILD_TYPE:'
+Get-ChildItem build/debug, build/release -Filter CMakeCache.txt |
+  Select-Object FullName,LastWriteTime`,
+        output: `build/debug/CMakeCache.txt:CMAKE_BUILD_TYPE:STRING=Debug
+build/release/CMakeCache.txt:CMAKE_BUILD_TYPE:STRING=Release
+FullName                              LastWriteTime
+build/debug/CMakeCache.txt            15:32:10
+build/release/CMakeCache.txt          15:32:11
+
+两个 preset 各自拥有 binaryDir 与 CMakeCache.txt。
+若把两者指向同一目录，后一次配置会覆盖前者缓存，构建语义就混线。`,
+      }],
+      ['inherits 继承与 hidden', 'preset 支持 inherits 复用：base preset 放公共 generator 与 cacheVariables，子 preset 只覆写差异键并新增变量，同名键子级覆盖父级；hidden 父 preset 只作继承源，不出现在 cmake --list-presets 输出。验证：写 base 加 debug、release 两个子 preset，执行 cmake --list-presets 确认 hidden 项不出现且子项变量生效。', '子键覆写父键', {
+        title: 'CMakePresets：hidden base 与子级覆盖',
+        language: 'PowerShell',
+        code: `@'
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/\${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_CXX_STANDARD": "17"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer"
+      }
+    }
+  ]
+}
+'@ | Set-Content CMakePresets.json
+cmake --list-presets
+cmake --preset asan
+Select-String build/asan/CMakeCache.txt -Pattern 'CMAKE_CXX_STANDARD|CMAKE_CXX_FLAGS|CMAKE_BUILD_TYPE'`,
+        output: `Available configure presets:
+  "debug"
+  "asan"
+CMAKE_BUILD_TYPE:STRING=Debug
+CMAKE_CXX_FLAGS:STRING=-fsanitize=address -fno-omit-frame-pointer
+CMAKE_CXX_STANDARD:UNINITIALIZED=20
+
+hidden base 不出现在列表，但 generator、目录与公共变量被继承。
+asan 覆盖父级 CXX 标准 17，最终缓存值变为 20。`,
+      }],
+      ['Ninja 的增量构建', 'Ninja 把全部构建规则写进单个 build.ninja，以文件哈希与时间戳做增量判定，调度极快，适合大工程与 CI；CMake 用 -G Ninja 生成后，cmake --build --preset 或直接调用 ninja 驱动。边界：Windows 上需要完整 VS 集成时可改用 Visual Studio 生成器，日常命令行构建 Ninja 更快。验证动作：完整构建一次后只改一个源文件重跑，观察输出仅重编受影响的 .o 与链接步骤。', '增量判定极快', {
+        title: 'Ninja：修改一个源文件只重编受影响目标',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(incremental LANGUAGES CXX)
+add_library(core STATIC core.cpp)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE core)
+'@ | Set-Content CMakeLists.txt
+'int core() { return 1; }' | Set-Content core.cpp
+'int core(); int main() { return core(); }' | Set-Content main.cpp
+cmake -S . -B build -G Ninja
+cmake --build build --verbose
+'int core() { return 2; }' | Set-Content core.cpp
+cmake --build build --verbose
+Get-Item build/build.ninja | Select-Object Length,LastWriteTime`,
+        output: `[1/3] c++ ... -c ../core.cpp
+[2/3] c++ ... -c ../main.cpp
+[3/3] c++ ... -o app
+[1/2] c++ ... -c ../core.cpp
+[2/2] c++ ... -o app
+
+第一次构建三个动作；只改 core.cpp 后 main.cpp 未重编。
+Ninja 只执行依赖图判定为过期的边，再重链接 app。`,
+      }],
+      ['build 与 test preset 串联', 'buildPresets 被 cmake --build --preset 消费，testPresets 被 ctest --preset 消费，两者通过 configurePreset 字段绑到对应配置，该字段必须指向已存在的配置条目，ctest 按它读取 build 目录里的测试集；CMake 3.25 起还可用 cmake --workflow --preset 一次串起 configure、build、test。验证：先分别执行三条 preset 命令，再跑同名的 workflow preset，比对产物与测试结果完全一致。', '三段串成一条', {
+        title: 'CMake workflow：configure/build/test 一条命令',
+        language: 'PowerShell',
+        code: `@'
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dev-config",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/dev"
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev-build", "configurePreset": "dev-config" }
+  ],
+  "testPresets": [
+    { "name": "dev-test", "configurePreset": "dev-config", "output": { "outputOnFailure": true } }
+  ],
+  "workflowPresets": [
+    {
+      "name": "dev",
+      "steps": [
+        { "type": "configure", "name": "dev-config" },
+        { "type": "build", "name": "dev-build" },
+        { "type": "test", "name": "dev-test" }
+      ]
+    }
+  ]
+}
+'@ | Set-Content CMakePresets.json
+cmake --workflow --preset dev
+cmake --workflow --preset dev --fresh`,
+        output: `Executing workflow step 1 of 3: configure preset "dev-config"
+Executing workflow step 2 of 3: build preset "dev-build"
+Executing workflow step 3 of 3: test preset "dev-test"
+100% tests passed, 0 tests failed out of 1
+
+同一 workflow 顺序执行配置、构建、测试。
+--fresh 清空配置缓存后仍由 presets 完全重建，不依赖本机残留状态。`,
+      }],
     ],
   },
   {
@@ -88,11 +681,126 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['删除 conan.lock 后重新 install，解析器取到满足约束的更新版本，二进制行为与上次构建悄然不同。', 'vcpkg 清单模式忘了让 CMake 加载 vcpkg.cmake 工具链文件，find_package 找不到已安装的包，误判成包没装上。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['profile 决定包 ID', 'Conan 2 默认从 ConanCenter 远程拉取配方，conan profile detect 生成默认 profile，记录编译器、版本与构建类型等 settings；安装时按 profile 决定二进制变体，同一包在不同 profile 下包 ID 不同。验证：执行 conan profile show 查看当前 settings，再改 settings.build_type 前后各装一次 fmt，观察包 ID 与缓存目录的变化。', '变体随配置走'],
-      ['conanfile.txt 声明依赖', '[requires] 段列出依赖如 fmt/10.2.1，[generators] 选 CMakeDeps 与 CMakeToolchain；CMakeDeps 为每个包生成 config 与 version 文件供 find_package 精确匹配，CMakeToolchain 则把 profile 设置转成工具链变量，conan install . 据此产出 conan_toolchain.cmake，CMake 侧用 find_package(fmt) 加 target_link_libraries(app PRIVATE fmt::fmt) 接上。边界：版本表达支持精确版本、>= 与 < 区间等多种约束，要复现就精确锁死。', '配方产出集成文件'],
-      ['lockfile 冻结依赖图', 'conan install 默认解析约束内最新版本，lockfile 把完整依赖图连同包 ID 一起冻结：携带 --lockfile conan.lock 再次安装时按图直接取用，团队与 CI 得到同一版本集合。验证动作：首次 install 生成 conan.lock 后，手动篡改其中某个版本号再执行 install，观察校验失败报错，理解 lock 文件只由工具生成。', 'lock 冻结全图'],
-      ['vcpkg 清单与 baseline', 'vcpkg.json 清单模式声明 dependencies 与 builtin-baseline，baseline 指向 vcpkg 仓库某个提交，全部包版本由该提交下的版本数据库决定；CMake 通过 CMAKE_TOOLCHAIN_FILE 指向 vcpkg.cmake 接入，find_package 才能命中。边界：vcpkg 没有独立 lockfile 文件，确定性由 baseline 提交保证，需要更细的钉版时用 overrides 指定单个包版本。', 'baseline 定版本'],
-      ['按场景选型', 'Conan 的优势在包 ID 多变体、跨编译器矩阵与显式 lockfile，适合严格可复现的 CI 与多平台矩阵；vcpkg 与微软工具链集成顺滑，清单即 vcpkg.json，C 系依赖覆盖面广。决策动作：同一工程分别用两者接入 fmt 并跑通 find_package，对比集成文件数量、版本钉控粒度与 preset 配合方式，据此写下选型依据。', '按 CI 严度选型'],
+      ['profile 决定包 ID', 'Conan 2 默认从 ConanCenter 远程拉取配方，conan profile detect 生成默认 profile，记录编译器、版本与构建类型等 settings；安装时按 profile 决定二进制变体，同一包在不同 profile 下包 ID 不同。验证：执行 conan profile show 查看当前 settings，再改 settings.build_type 前后各装一次 fmt，观察包 ID 与缓存目录的变化。', '变体随配置走', {
+        title: 'Conan：profile detect 与构建类型变体',
+        language: 'PowerShell',
+        code: `conan profile detect --force
+conan profile list
+conan profile show
+$profile = conan profile path default
+Get-Content $profile
+conan install --requires=fmt/10.2.1 -s build_type=Debug --build=missing
+conan install --requires=fmt/10.2.1 -s build_type=Release --build=missing
+conan list "fmt/10.2.1:*"`,
+        output: `Detected profile:
+[settings]
+arch=x86_64
+build_type=Release
+compiler=gcc
+compiler.version=12
+compiler.cppstd=gnu17
+fmt/10.2.1#...: package_id=9b...
+fmt/10.2.1#...: package_id=54...
+
+Debug 与 Release 生成不同 package_id，二进制变体分开缓存。
+profile 改了编译器版本或 C++ 标准，也会切换包 ID。`,
+      }],
+      ['conanfile.txt 声明依赖', '[requires] 段列出依赖如 fmt/10.2.1，[generators] 选 CMakeDeps 与 CMakeToolchain；CMakeDeps 为每个包生成 config 与 version 文件供 find_package 精确匹配，CMakeToolchain 则把 profile 设置转成工具链变量，conan install . 据此产出 conan_toolchain.cmake，CMake 侧用 find_package(fmt) 加 target_link_libraries(app PRIVATE fmt::fmt) 接上。边界：版本表达支持精确版本、>= 与 < 区间等多种约束，要复现就精确锁死。', '配方产出集成文件', {
+        title: 'Conan + CMake：从 conanfile 到 fmt::fmt',
+        language: 'PowerShell',
+        code: `@'
+[requires]
+fmt/10.2.1
+[generators]
+CMakeDeps
+CMakeToolchain
+'@ | Set-Content conanfile.txt
+conan install . --build=missing -of build/conan
+Get-ChildItem build/conan | Select-Object Name
+@'
+cmake_minimum_required(VERSION 3.23)
+project(conan_app LANGUAGES CXX)
+find_package(fmt CONFIG REQUIRED)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE fmt::fmt)
+'@ | Set-Content CMakeLists.txt
+@'
+#include <fmt/core.h>
+int main() { fmt::print("orders={}\\n", 42); }
+'@ | Set-Content main.cpp
+cmake -S . -B build/app -G Ninja -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake
+cmake --build build/app
+./build/app/app`,
+        output: `conan_toolchain.cmake
+fmt-config.cmake
+fmt-config-version.cmake
+orders=42
+
+CMakeDeps 生成 find_package 所需 config 文件。
+CMakeToolchain 把 Conan profile 映射为编译器与标准变量。`,
+      }],
+      ['lockfile 冻结依赖图', 'conan install 默认解析约束内最新版本，lockfile 把完整依赖图连同包 ID 一起冻结：携带 --lockfile conan.lock 再次安装时按图直接取用，团队与 CI 得到同一版本集合。验证动作：首次 install 生成 conan.lock 后，手动篡改其中某个版本号再执行 install，观察校验失败报错，理解 lock 文件只由工具生成。', 'lock 冻结全图', {
+        title: 'Conan：lockfile 固定完整依赖图',
+        language: 'PowerShell',
+        code: `conan install . --build=missing -of build/locked --lockfile-out=conan.lock
+Get-FileHash conan.lock | Select-Object Algorithm,Hash
+conan install . --build=missing -of build/locked-2 --lockfile=conan.lock
+Get-Content conan.lock -TotalCount 20
+$bad = Get-Content conan.lock -Raw
+$bad = $bad.Replace('fmt/10.2.1', 'fmt/10.2.0')
+$bad | Set-Content conan.bad.lock
+conan install . -of build/bad --lockfile=conan.bad.lock`,
+        output: `Algorithm Hash
+SHA256    6b21...
+Lockfile requires fmt/10.2.1 which does not satisfy ref fmt/10.2.0
+
+第一次 install 生成 conan.lock，第二次按图直接复用。
+手工篡改 lock 后 Conan 校验失败，说明锁文件必须由工具生成。`,
+      }],
+      ['vcpkg 清单与 baseline', 'vcpkg.json 清单模式声明 dependencies 与 builtin-baseline，baseline 指向 vcpkg 仓库某个提交，全部包版本由该提交下的版本数据库决定；CMake 通过 CMAKE_TOOLCHAIN_FILE 指向 vcpkg.cmake 接入，find_package 才能命中。边界：vcpkg 没有独立 lockfile 文件，确定性由 baseline 提交保证，需要更细的钉版时用 overrides 指定单个包版本。', 'baseline 定版本', {
+        title: 'vcpkg：manifest + builtin-baseline 接入 CMake',
+        language: 'PowerShell',
+        code: `$baseline = git -C C:/tools/vcpkg rev-parse HEAD
+@"
+{
+  "name": "orders",
+  "version": "0.1.0",
+  "builtin-baseline": "$baseline",
+  "dependencies": ["fmt"]
+}
+"@ | Set-Content vcpkg.json
+C:/tools/vcpkg/vcpkg.exe install --triplet x64-windows
+cmake -S . -B build/vcpkg -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build build/vcpkg
+./build/vcpkg/app.exe
+C:/tools/vcpkg/vcpkg.exe list | Select-String 'fmt'`,
+        output: `fmt:x64-windows 10.2.1
+orders=42
+
+baseline 提交决定 vcpkg 版本数据库，再固定 fmt 的解析结果。
+CMAKE_TOOLCHAIN_FILE 让 CMake 自动找到 vcpkg 安装的 config 包。`,
+      }],
+      ['按场景选型', 'Conan 的优势在包 ID 多变体、跨编译器矩阵与显式 lockfile，适合严格可复现的 CI 与多平台矩阵；vcpkg 与微软工具链集成顺滑，清单即 vcpkg.json，C 系依赖覆盖面广。决策动作：同一工程分别用两者接入 fmt 并跑通 find_package，对比集成文件数量、版本钉控粒度与 preset 配合方式，据此写下选型依据。', '按 CI 严度选型', {
+        title: '选型对照：Conan lockfile 与 vcpkg baseline',
+        language: 'PowerShell',
+        code: `conan graph info . --format=json *> conan-graph.json
+Get-ChildItem build/conan | Measure-Object |
+  Select-Object Count
+Get-Content conan.lock | Select-String 'requires|build_requires' |
+  Select-Object -First 5
+C:/tools/vcpkg/vcpkg.exe list |
+  Select-String 'fmt|toolchain'
+Get-Content vcpkg.json
+cmake --preset linux-gcc
+cmake --preset windows-msvc`,
+        output: `Count : 5
+"requires": ["fmt/10.2.1#..."]
+fmt:x64-windows 10.2.1
+"builtin-baseline": "a3d..."
+
+Conan 用显式 lockfile 冻结依赖图与包 ID。
+vcpkg 用 baseline 冻结版本数据库，文件更少但粒度由 baseline 与 overrides 控制。`,
+      }],
     ],
   },
   {
@@ -106,11 +814,206 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X0_COURSES: readonly ProgrammingCourseS
     commonErrors: ['用全局 set(CMAKE_CXX_STANDARD 20) 一刀切，下游 target 被迫跟随同一标准，应改用 target_compile_features 按需声明。', '只在单一平台验证就宣称跨平台，Windows 的 CRLF 与 Linux 的路径大小写差异要等对方平台 CI 才暴露。'],
     sourceRefs: ['CMake Documentation. https://cmake.org/documentation/', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['工程骨架与显式源清单', '最小骨架是顶层 CMakeLists 搭配 src 与 include：cmake_minimum_required(VERSION 3.23) 与 project(demo CXX) 打头，add_library(core STATIC) 收纳实现，add_executable(app) 链接 core；源文件逐个列出而非 file(GLOB)，glob 不会因新增文件自动触发重新配置，是常见的漏编来源。验证：构建后手动新建一个未列入清单的 cpp，确认它完全没被编译。', '源文件逐个列出'],
-      ['target 级语言基线', 'target_compile_features(core PUBLIC cxx_std_20) 把语言需求写进 target，CMake 换算成各编译器正确的 -std 参数，比全局 set(CMAKE_CXX_STANDARD 20) 更精准；多 target 并存时最终取最大需求。边界：仅需 c++17 的模块单独声明 cxx_std_17，同一编译器最终仍只落一个最高档位；再配 set(CMAKE_CXX_STANDARD_REQUIRED ON) 防止编译器静默降级。', '需求进 target 层'],
-      ['平台差异走导入目标', '平台分支用 if(WIN32)、if(APPLE) 与 elseif(UNIX) 处理，例如 Windows 链 ws2_32、Linux 链 pthread，后者几乎是带线程代码的必选项；更稳妥的是 find_package(Threads REQUIRED) 后链 Threads::Threads 这类导入目标，把平台差异交给 CMake 抹平。验证动作：在 Linux preset 下删掉 Threads 声明，复现含 std::thread 代码的链接失败，恢复后通过。', '找导入目标抹平'],
-      ['preset 矩阵与行尾约定', '顶层 CMakePresets.json 为每个平台配 configure preset：linux-gcc 用 Ninja 加 CMAKE_BUILD_TYPE，windows-msvc 用 Visual Studio 17 2022 或 Ninja 配 cl，macos-clang 用 Ninja 并可指定 libc++；preset 名与平台一一对应，CI 矩阵按名称取用，新增平台只需在 json 里加一个条目。边界：仓库用 .gitattributes 强制 LF，避免脚本与源文件在 Windows 与 Unix 工具间因 CRLF 漂移。', '矩阵逐平台跑'],
-      ['交付验收清单', '交付前按固定清单核验：各平台 cmake --workflow --preset 全绿、ctest 全部通过、-Wall -Wextra 警告清零、build 目录由 .gitignore 拦截不进版本库、CMakePresets.json 与依赖锁定文件一同提交。可验证动作：换一个干净目录重新 clone，仅凭仓库内 preset 命令完成配置、构建与测试，任何一步需要额外口头交代即视为不合格。', '清单逐项核验'],
+      ['工程骨架与显式源清单', '最小骨架是顶层 CMakeLists 搭配 src 与 include：cmake_minimum_required(VERSION 3.23) 与 project(demo CXX) 打头，add_library(core STATIC) 收纳实现，add_executable(app) 链接 core；源文件逐个列出而非 file(GLOB)，glob 不会因新增文件自动触发重新配置，是常见的漏编来源。验证：构建后手动新建一个未列入清单的 cpp，确认它完全没被编译。', '源文件逐个列出', {
+        title: '跨平台工程：显式源清单与 src/include/tests',
+        language: 'PowerShell',
+        code: `New-Item -ItemType Directory -Force src,include,tests | Out-Null
+@'
+#pragma once
+int core_value();
+'@ | Set-Content include/core.hpp
+@'
+#include "core.hpp"
+int core_value() { return 42; }
+'@ | Set-Content src/core.cpp
+@'
+#include "core.hpp"
+int main() { return core_value() == 42 ? 0 : 1; }
+'@ | Set-Content src/main.cpp
+@'
+#include "core.hpp"
+int main() { return core_value() == 42 ? 0 : 1; }
+'@ | Set-Content tests/smoke.cpp
+@'
+cmake_minimum_required(VERSION 3.23)
+project(demo LANGUAGES CXX)
+add_library(core STATIC src/core.cpp)
+target_include_directories(core PUBLIC include)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE core)
+enable_testing()
+add_executable(smoke tests/smoke.cpp)
+target_link_libraries(smoke PRIVATE core)
+add_test(NAME core-smoke COMMAND smoke)
+'@ | Set-Content CMakeLists.txt
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build --output-on-failure
+'int not_compiled() { return 0; }' | Set-Content src/unlisted.cpp
+cmake --build build
+Select-String build/build.ninja -Pattern 'unlisted'`,
+        output: `[1/4] Building CXX object CMakeFiles/core.dir/src/core.cpp.o
+[4/4] Linking CXX executable smoke
+100% tests passed, 0 tests failed out of 1
+
+新增 unlisted.cpp 没有被 build.ninja 引用，也没有参与编译。
+所有源文件在 target 中显式列出，新增文件必须同步修改 CMakeLists。`,
+      }],
+      ['target 级语言基线', 'target_compile_features(core PUBLIC cxx_std_20) 把语言需求写进 target，CMake 换算成各编译器正确的 -std 参数，比全局 set(CMAKE_CXX_STANDARD 20) 更精准；多 target 并存时最终取最大需求。边界：仅需 c++17 的模块单独声明 cxx_std_17，同一编译器最终仍只落一个最高档位；再配 set(CMAKE_CXX_STANDARD_REQUIRED ON) 防止编译器静默降级。', '需求进 target 层', {
+        title: 'target_compile_features：多 target 取最高标准需求',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(standards LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_library(cpp17 STATIC src/cpp17.cpp)
+target_compile_features(cpp17 PUBLIC cxx_std_17)
+add_library(cpp20 STATIC src/cpp20.cpp)
+target_compile_features(cpp20 PUBLIC cxx_std_20)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE cpp17 cpp20)
+'@ | Set-Content CMakeLists.txt
+New-Item -ItemType Directory -Force src | Out-Null
+'int cpp17() { return 17; }' | Set-Content src/cpp17.cpp
+'int cpp20() { return 20; }' | Set-Content src/cpp20.cpp
+'int cpp17(); int cpp20(); int main() { return cpp17() + cpp20(); }' |
+  Set-Content src/main.cpp
+cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build --verbose
+Select-String build/compile_commands.json -Pattern 'c\\+\\+17|c\\+\\+20'`,
+        output: `[1/3] c++ -std=c++17 ... cpp17.cpp
+[2/3] c++ -std=c++20 ... cpp20.cpp
+[3/3] c++ -std=c++20 ... main.cpp
+
+cpp17 target 只需 C++17，CMake 给它 -std=c++17。
+app 同时依赖两者，取最高需求，因此 main.cpp 用 -std=c++20。`,
+      }],
+      ['平台差异走导入目标', '平台分支用 if(WIN32)、if(APPLE) 与 elseif(UNIX) 处理，例如 Windows 链 ws2_32、Linux 链 pthread，后者几乎是带线程代码的必选项；更稳妥的是 find_package(Threads REQUIRED) 后链 Threads::Threads 这类导入目标，把平台差异交给 CMake 抹平。验证动作：在 Linux preset 下删掉 Threads 声明，复现含 std::thread 代码的链接失败，恢复后通过。', '找导入目标抹平', {
+        title: 'CMake Threads::Threads：平台线程库导入目标',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(threads LANGUAGES CXX)
+find_package(Threads REQUIRED)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE Threads::Threads)
+'@ | Set-Content CMakeLists.txt
+@'
+#include <iostream>
+#include <thread>
+int main() {
+    int value = 0;
+    std::thread worker([&] { value = 42; });
+    worker.join();
+    std::cout << value << '\\n';
+}
+'@ | Set-Content main.cpp
+cmake -S . -B build -G Ninja
+cmake --build build --verbose
+./build/app
+(Get-Content CMakeLists.txt -Raw) -replace 'target_link_libraries.*', '' |
+  Set-Content CMakeLists.no-threads.txt
+Copy-Item CMakeLists.no-threads.txt CMakeLists.txt
+cmake -S . -B build-broken -G Ninja
+cmake --build build-broken`,
+        output: `"c++ ... -pthread ..."
+42
+undefined reference to 'pthread_create'
+
+Threads::Threads 在 Linux 展开为 -pthread，在 Windows 映射到 Windows 线程库。
+删掉导入目标后，std::thread 的底层符号无人补齐。`,
+      }],
+      ['preset 矩阵与行尾约定', '顶层 CMakePresets.json 为每个平台配 configure preset：linux-gcc 用 Ninja 加 CMAKE_BUILD_TYPE，windows-msvc 用 Visual Studio 17 2022 或 Ninja 配 cl，macos-clang 用 Ninja 并可指定 libc++；preset 名与平台一一对应，CI 矩阵按名称取用，新增平台只需在 json 里加一个条目。边界：仓库用 .gitattributes 强制 LF，避免脚本与源文件在 Windows 与 Unix 工具间因 CRLF 漂移。', '矩阵逐平台跑', {
+        title: 'CMakePresets：Linux/Windows/macOS 矩阵',
+        language: 'PowerShell',
+        code: `@'
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "linux-gcc",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/linux-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++"
+      },
+      "condition": { "type": "equals", "lhs": "\${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "windows-msvc",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "\${sourceDir}/build/windows-msvc",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "\${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "macos-clang",
+      "generator": "Ninja",
+      "binaryDir": "\${sourceDir}/build/macos-clang",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++" },
+      "condition": { "type": "equals", "lhs": "\${hostSystemName}", "rhs": "Darwin" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" },
+    { "name": "macos-clang", "configurePreset": "macos-clang" }
+  ],
+  "testPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc", "output": { "outputOnFailure": true } }
+  ],
+  "workflowPresets": [
+    {
+      "name": "linux-gcc",
+      "steps": [
+        { "type": "configure", "name": "linux-gcc" },
+        { "type": "build", "name": "linux-gcc" },
+        { "type": "test", "name": "linux-gcc" }
+      ]
+    }
+  ]
+}
+'@ | Set-Content CMakePresets.json
+'* text=auto eol=lf' | Set-Content .gitattributes
+cmake --list-presets
+cmake --preset linux-gcc
+cmake --build --preset linux-gcc`,
+        output: `Available configure presets:
+  "linux-gcc"
+  "windows-msvc"
+  "macos-clang"
+-- Configuring done
+-- Build files have been written to: .../build/linux-gcc
+
+condition 让当前平台显示自己的 preset，CI 矩阵仍可按名称解析。
+.gitattributes 统一 LF，避免 PowerShell 与 shell 脚本出现行尾改写噪声。`,
+      }],
+      ['交付验收清单', '交付前按固定清单核验：各平台 cmake --workflow --preset 全绿、ctest 全部通过、-Wall -Wextra 警告清零、build 目录由 .gitignore 拦截不进版本库、CMakePresets.json 与依赖锁定文件一同提交。可验证动作：换一个干净目录重新 clone，仅凭仓库内 preset 命令完成配置、构建与测试，任何一步需要额外口头交代即视为不合格。', '清单逐项核验', {
+        title: '干净 clone 验收：workflow + ctest + warning 门禁',
+        language: 'PowerShell',
+        code: `'build/' | Set-Content .gitignore
+git add CMakeLists.txt CMakePresets.json .gitignore src include tests
+git -c user.name='Course Lab' -c user.email='lab@example.invalid' \\
+  commit -m 'build: add portable C++20 preset workflow'
+git status --short
+$fresh = Join-Path $env:TEMP "demo-fresh-$PID"
+git clone . $fresh
+Set-Location $fresh
+cmake --workflow --preset linux-gcc
+ctest --preset linux-gcc --output-on-failure
+Get-ChildItem build |
+  Select-Object Name
+git status --short`,
+        output: `[1/4] Building CXX object ... core.cpp.o
+100% tests passed, 0 tests failed out of 1
+Name
+linux-gcc
+(no git status output)
+
+干净 clone 只靠仓库内 preset 完成配置、构建和测试。
+build 目录被 .gitignore 拦截，工作树没有生成物污染。`,
+      }],
     ],
   },
 ];
