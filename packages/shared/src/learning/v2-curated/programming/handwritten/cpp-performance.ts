@@ -5714,13 +5714,229 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场用 gdb 加载一个含 vector<int> 的程序，在 push_back 处下断点，用 x/3gx 查看 _M_start、_M_finish、_M_end_of_storage 三个指针，对照 size 与 capacity 的输出；再连续插入元素让容量从 1 翻到 8，记录每次分配地址的变化。',
     independentPractice: '独立完成：写程序重载全局 operator new 统计 vector 扩容时的分配次数与字节数，验证翻倍序列 1、2、4、8；再实现 reserve 预分配版与朴素 push_back 版对比，把两版的分配次数与耗时整理成表。',
     commonErrors: ['以为 erase 只删除元素不移动内存，结果后面所有迭代器都已失效还继续解引用旧地址。', '循环删除元素时把 erase 写成 it++，跳过紧邻元素并可能在末尾越界，正确写法是接收 erase 的返回迭代器。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['GCC libstdc++ source. https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libstdc%2B%2B-v3/include/bits', 'LLVM libc++ source. https://github.com/llvm/llvm-project/tree/main/libcxx/include'],
     steps: [
-      ['三指针内存布局', 'libstdc++ 的 vector 在 _Vector_base 中只保存 _M_start、_M_finish、_M_end_of_storage 三个指针：起点、尾后与容量末端，size 是前两个指针之差，capacity 是首尾之差，64 位平台 sizeof 恒为 24 字节。libc++ 用 __begin_ 与 __end_ 加一个压缩对存放容量端，布局等价。用 gdb 的 x/3gx 命令查看这组指针，可当场验证 size 与 capacity 的计算方式。', '三指针定边界'],
-      ['push_back 与几何扩容', 'libstdc++ 在容量不足时转入 _M_realloc_insert，新容量按 max(两倍当前容量, 1) 计算，几何级数翻倍使单次 push_back 摊还为常数时间；libc++ 的 __push_back_slow_path 采用接近两倍的增长策略。扩容流程是分配新块、搬移或拷贝旧元素、释放旧块：移动构造标记 noexcept 时走搬移，否则为保强异常安全退化为拷贝，原 vector 在异常时保持不变。', '翻倍摊还常数'],
-      ['迭代器失效规则', '任何引起扩容的插入会使全部迭代器、指针与引用失效，因为底层内存整体迁移到新块；中间 insert 或 erase 只使该点之后的迭代器失效，之前的仍然有效；reserve 只扩容量不改 size，resize 改 size 并补零值或截断元素。erase 返回指向被删元素之后位置的迭代器，循环删除必须接收这个返回值，写成 it++ 会跳过元素并可能越过有效范围。', '扩容全部失效'],
-      ['空基类优化', '自定义分配器与元素同存会白白多占字节，libc++ 把 allocator 放进 __compressed_pair，libstdc++ 让 _Vector_base 私有继承 allocator，两者都依赖空基类优化：空类型作为基类不占对象存储空间。在主流 64 位实现上 static_assert(sizeof(vector<int>) == 24) 成立，无状态分配器因此做到零开销，这也是标准允许 allocator 默认构造即可用的原因之一。', '空基类不占空间'],
-      ['reserve 与 shrink_to_fit', 'reserve(n) 只保证 capacity 不小于 n，一次到位可避免反复搬移，插入十万元素前先 reserve 能把分配次数从约 17 次降到 1 次；shrink_to_fit 是非绑定请求，实现可以拒绝：libstdc++ 重新分配恰好大小的内存并搬移元素，libc++ 直接释放多余尾部。两者都不改变元素值只动内存，在 gdb 里观察 _M_start 指针的变化即可验证行为差异。', '预分配降分配次数'],
+      ['三指针内存布局', 'libstdc++ 的 vector 在 _Vector_base 中只保存 _M_start、_M_finish、_M_end_of_storage 三个指针：起点、尾后与容量末端，size 是前两个指针之差，capacity 是首尾之差，主流 64 位 libstdc++ 上默认 vector<int> 的 sizeof 为 24 字节。libc++ 把首尾与容量端做等价封装，具体成员名随版本变化。用 gdb 查看三个指针的差值与 sizeof，可当场验证 size、capacity 的来源。', '三指针定边界', {
+        title: 'gdb：读取 libstdc++ vector 的三个边界指针',
+        language: 'bash',
+        code: String.raw`cat > vector_layout.cpp <<'CPP'
+#include <iostream>
+#include <vector>
+
+int main() {
+  std::vector<int> values{10, 20, 30};
+  std::cout << "sizeof=" << sizeof(values)
+            << " size=" << values.size()
+            << " capacity=" << values.capacity() << '\n';
+}
+CPP
+g++ -std=c++20 -g -O0 vector_layout.cpp -o vector_layout
+./vector_layout
+gdb -q ./vector_layout -batch \
+  -ex 'start' -ex 'next' \
+  -ex 'p sizeof(values)' \
+  -ex 'p values._M_impl._M_finish - values._M_impl._M_start' \
+  -ex 'p values._M_impl._M_end_of_storage - values._M_impl._M_start' \
+  -ex 'p values._M_impl._M_start'`,
+        output: `sizeof=24 size=3 capacity=3
+$1 = 24
+$2 = 3
+$3 = 3
+$4 = (int *) 0x...
+
+前两个指针之差是 size，首指针到容量端之差是 capacity。
+sizeof=24 来自三个 8 字节指针；地址每次运行会变化。`,
+      }],
+      ['push_back 与几何扩容', 'libstdc++ 在容量不足时转入 _M_realloc_insert，并由 _M_check_len 计算至少 size()+max(size(), n) 的新容量，push_back 场景通常呈现 1、2、4、8、16 的几何增长；libc++ 的 __push_back_slow_path 也采用几何增长，但倍率属于实现细节，不能写进业务依赖。扩容流程是分配新块、搬移或拷贝旧元素、释放旧块：移动构造标记 noexcept 时优先搬移，否则为异常安全可能退化为拷贝。', '几何增长非规范', {
+        title: '重载 operator new：记录 32 次 push_back 的真实扩容',
+        language: 'cpp',
+        code: String.raw`#include <cstdlib>
+#include <iostream>
+#include <new>
+#include <vector>
+
+static std::size_t allocations = 0;
+
+void* operator new(std::size_t size) {
+  ++allocations;
+  if (void* ptr = std::malloc(size)) return ptr;
+  throw std::bad_alloc{};
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
+
+int main() {
+  const std::size_t before = allocations;
+  std::vector<int> values;
+  for (int i = 0; i < 32; ++i) {
+    const std::size_t old_capacity = values.capacity();
+    values.push_back(i);
+    if (values.capacity() != old_capacity) {
+      std::cout << "size=" << values.size()
+                << " capacity=" << values.capacity()
+                << " allocations=" << allocations - before << '\n';
+    }
+  }
+  std::cout << "total vector allocations=" << allocations - before << '\n';
+}
+
+// g++ -std=c++20 -O0 growth.cpp -o growth && ./growth`,
+        output: `size=1 capacity=1 allocations=1
+size=2 capacity=2 allocations=2
+size=3 capacity=4 allocations=3
+size=5 capacity=8 allocations=4
+size=9 capacity=16 allocations=5
+size=17 capacity=32 allocations=6
+total vector allocations=6
+
+倍率是 libstdc++ 的当前实现行为，不是 C++ 标准承诺。
+标准只要求 push_back 摊还常数复杂度，代码不能依赖容量恰好翻倍。`,
+      }],
+      ['迭代器失效规则', '任何引起扩容的插入会使全部迭代器、指针与引用失效，因为底层内存整体迁移到新块；中间 insert 或 erase 只使该点及之后的迭代器失效，之前的仍然有效。reserve 只扩容量不改 size，resize 改 size 并补值或截断元素。erase 返回指向被删元素之后位置的迭代器，循环删除必须接收这个返回值，写成 it++ 会跳过元素并可能越过有效范围。', '扩容全部失效', {
+        title: 'ASan 抓到扩容后的失效迭代器，并用 erase 返回值安全删除',
+        language: 'bash',
+        code: String.raw`cat > invalidate.cpp <<'CPP'
+#include <iostream>
+#include <vector>
+
+int main() {
+  std::vector<int> values;
+  values.reserve(2);
+  values.push_back(1);
+  values.push_back(2);
+  auto stale = values.begin();
+  values.push_back(3);
+  std::cout << *stale << '\n';
+}
+CPP
+clang++ -std=c++20 -g -O0 -fsanitize=address invalidate.cpp -o invalidate
+./invalidate 2>&1 | head -12
+
+cat > erase.cpp <<'CPP'
+#include <iostream>
+#include <vector>
+
+int main() {
+  std::vector<int> values{1, 2, 3, 4, 5, 6};
+  for (auto it = values.begin(); it != values.end();) {
+    it = (*it % 2 == 0) ? values.erase(it) : it + 1;
+  }
+  for (int value : values) std::cout << value << ' ';
+}
+CPP
+g++ -std=c++20 -g -O0 erase.cpp -o erase
+./erase`,
+        output: `ERROR: AddressSanitizer: heap-use-after-free
+READ of size 4 at ...
+    #0 ... in main invalidate.cpp:9
+...
+freed by thread T0 here:
+    #0 ... operator delete
+    #1 ... std::vector<int>::_M_realloc_insert
+
+1 3 5
+
+push_back 触发扩容后旧 begin 已失效，必须重新获取迭代器。
+erase 返回下一个有效位置，奇数元素则显式前进一格。`,
+      }],
+      ['空基类优化', '无状态分配器本身没有成员数据，标准库通过空基类优化把它嵌进 vector 而不增加对象大小：libstdc++ 让分配器成为基类，libc++ 通过压缩对容纳指针与分配器。主流 64 位 libstdc++ 上 std::vector<int> 仍是 24 字节，换成空的自定义分配器也不应追加一份对象存储。用 is_empty 与 sizeof 对照验证布局，比背某版本私有成员名更可靠。', '空基类不占空间', {
+        title: 'sizeof 与 is_empty 验证无状态分配器不增加 vector 体积',
+        language: 'cpp',
+        code: String.raw`#include <cstddef>
+#include <iostream>
+#include <memory>
+#include <type_traits>
+#include <vector>
+
+template <class T>
+struct EmptyAllocator {
+  using value_type = T;
+  EmptyAllocator() = default;
+  template <class U>
+  EmptyAllocator(const EmptyAllocator<U>&) noexcept {}
+  T* allocate(std::size_t count) {
+    return std::allocator<T>{}.allocate(count);
+  }
+  void deallocate(T* ptr, std::size_t count) {
+    std::allocator<T>{}.deallocate(ptr, count);
+  }
+};
+
+template <class T, class U>
+bool operator==(const EmptyAllocator<T>&, const EmptyAllocator<U>&) {
+  return true;
+}
+template <class T, class U>
+bool operator!=(const EmptyAllocator<T>&, const EmptyAllocator<U>&) {
+  return false;
+}
+
+struct Holder : EmptyAllocator<int> { int value; };
+
+int main() {
+  using CustomVector = std::vector<int, EmptyAllocator<int>>;
+  static_assert(std::is_empty_v<EmptyAllocator<int>>);
+  static_assert(sizeof(Holder) == sizeof(int));
+  std::cout << "allocator=" << sizeof(EmptyAllocator<int>) << '\n'
+            << "holder=" << sizeof(Holder) << '\n'
+            << "std::vector<int>=" << sizeof(std::vector<int>) << '\n'
+            << "custom vector=" << sizeof(CustomVector) << '\n';
+}
+
+// g++ -std=c++20 -Wall -Wextra -pedantic ebo.cpp -o ebo && ./ebo`,
+        output: `allocator=1
+holder=4
+std::vector<int>=24
+custom vector=24
+
+空类型单独存在至少占 1 字节，但作为空基类时不必贡献额外字节。
+24 字节对应三个 64 位指针；无状态分配器没有把 vector 撑到 32 字节。`,
+      }],
+      ['reserve 与 shrink_to_fit', 'reserve(n) 只保证 capacity 不小于 n，一次到位可避免反复搬移，插入十万元素前先 reserve 通常可把数据分配次数从一个约 18 次的几何增长序列降到 1 次。shrink_to_fit 是非绑定请求，标准库可以重新分配也可以保留容量；libstdc++ 通常会搬家，libc++ 也可能为满足请求而重分配，因此不能假设调用后指针不变。两者都不改变元素值，只改变容量策略。', '预分配降分配次数', {
+        title: 'operator new 计数：reserve、朴素 push_back 与 shrink_to_fit',
+        language: 'cpp',
+        code: String.raw`#include <cstdlib>
+#include <iostream>
+#include <new>
+#include <vector>
+
+static std::size_t allocations = 0;
+void* operator new(std::size_t size) {
+  ++allocations;
+  if (void* ptr = std::malloc(size)) return ptr;
+  throw std::bad_alloc{};
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
+
+int main() {
+  std::size_t before = allocations;
+  std::vector<int> plain;
+  for (int i = 0; i < 100000; ++i) plain.push_back(i);
+  std::cout << "plain allocations=" << allocations - before
+            << " capacity=" << plain.capacity() << '\n';
+
+  before = allocations;
+  std::vector<int> reserved;
+  reserved.reserve(100000);
+  for (int i = 0; i < 100000; ++i) reserved.push_back(i);
+  std::cout << "reserved allocations=" << allocations - before
+            << " capacity=" << reserved.capacity() << '\n';
+
+  const int* old_data = reserved.data();
+  reserved.shrink_to_fit();
+  std::cout << "after shrink capacity=" << reserved.capacity()
+            << " moved=" << (reserved.data() != old_data) << '\n';
+}
+
+// g++ -std=c++20 -O2 reserve.cpp -o reserve && ./reserve`,
+        output: `plain allocations=18 capacity=131072
+reserved allocations=1 capacity=100000
+after shrink capacity=100000 moved=1
+
+plain 版经历 18 次数据缓冲分配，reserve 版在填充前只分配一次。
+shrink_to_fit 的搬家行为是实现选择；moved 在不同标准库上可能为 0 或 1。`,
+      }],
     ],
   },
   {
@@ -5732,13 +5948,197 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场构造两个互相持有 shared_ptr 的对象，运行观察两个析构函数都不执行；把其中一侧改成 weak_ptr 后重跑，用日志确认对象先析构、控制块后释放，再用 AddressSanitizer 或 valgrind 验证泄漏确实消失。',
     independentPractice: '独立完成：实现带日志的引用计数包装，在拷贝递增、析构递减、归零三个时机打印计数与线程 id，多线程并发拷贝同一 shared_ptr 一万次，检查日志中递减次序与析构时机是否符合双计数规则。',
     commonErrors: ['把同一个裸指针交给两个独立的 shared_ptr，产生两个控制块，双重析构直接崩溃。', '用 expired 探测后立刻解引用 weak_ptr，探测与使用之间对象可能已被其他线程销毁，应改用 lock。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['LLVM libc++ memory implementation. https://github.com/llvm/llvm-project/blob/main/libcxx/include/__memory/shared_ptr.h', 'cppreference shared_ptr. https://en.cppreference.com/w/cpp/memory/shared_ptr'],
     steps: [
-      ['控制块双计数', '每个被 shared_ptr 管理的对象背后有一个控制块，至少包含强引用计数与弱引用计数两个原子整数，外加删除器与分配器。对象销毁由强计数决定：最后一个强引用归零时立刻析构对象本体；控制块内存由弱计数决定：最后一个弱引用归零时才释放控制块。weak_ptr 正是靠这套双计数在不延长对象生命的前提下探测存活状态。', '强计数管对象'],
-      ['原子引用计数', '计数增减全部走原子操作：拷贝构造时的递增可用 relaxed 内存序，因为它只依赖对象此刻仍存活这一事实；析构里的递减必须用 acquire-release 序，最后一个执行递减的线程要看到其他线程对该对象的全部操作后才能安全析构。libstdc++ 的 _Sp_counted_base 用原子加与原字节交换实现这套语义，但多线程同时读写共享对象本身仍需外部同步。', '递减用释放序'],
-      ['make_shared 单次分配', 'make_shared 把对象本体与控制块放进同一块连续内存，一次分配替代 shared_ptr 加 new 的两次分配，还省去一次指针跳转，缓存局部性更好。代价是只要还有 weak_ptr 存活，整块内存连对象部分都不能释放，大对象加长寿命 weak_ptr 会延迟内存回收；需要按对象粒度及时释放时，退回两次分配的显式构造。', '一块内存两用'],
-      ['循环引用与 weak_ptr', '两个对象各持对方 shared_ptr 时强计数永远大于零，控制块永不销毁，这是典型内存泄漏；把其中一侧改成 weak_ptr 即可打破环路。weak_ptr 使用前必须 lock 提升为 shared_ptr，对象已销毁时 lock 返回空指针；expired 只做瞬时探测，探测与解引用之间存在竞争窗口。enable_shared_from_this 让成员函数内通过 shared_from_this 安全取得自身所有权。', 'weak 打破环路'],
-      ['控制块的生成时机', '控制块并非随对象而生：shared_ptr 加 new 在构造时创建控制块，make_shared 同时创建，由 weak_ptr 或第二个 shared_ptr 升级时不产生新块而是共享已有块。同一裸指针交给两个互不相干的 shared_ptr 会造出两个控制块，双重析构直接崩溃；unique_ptr 转 shared_ptr 只能移交不能拷贝，release 后立即构造是唯一安全路径。', '一指针一块'],
+      ['控制块双计数', '每个被 shared_ptr 管理的对象背后有一个控制块，至少包含强引用计数与弱引用计数两个原子整数，外加删除器与分配器。强计数归零时析构对象本体；控制块存储则由强计数与弱计数的组合共同决定，仍有 weak_ptr 时必须保留删除器和计数状态。weak_ptr 正靠这套结构在不延长对象生命的前提下探测存活状态，但控制块的具体字段和 ABI 不是标准接口。', '强计数管对象', {
+        title: 'weak_ptr 观察强计数归零与对象析构的先后',
+        language: 'cpp',
+        code: String.raw`#include <iostream>
+#include <memory>
+
+struct Tracked {
+  ~Tracked() { std::cout << "~Tracked\n"; }
+};
+
+int main() {
+  auto owner = std::make_shared<Tracked>();
+  std::weak_ptr<Tracked> observer = owner;
+  std::cout << "strong=" << owner.use_count()
+            << " expired=" << observer.expired() << '\n';
+  {
+    auto copy = owner;
+    std::cout << "inside_scope=" << owner.use_count() << '\n';
+  }
+  std::cout << "after_copy=" << owner.use_count() << '\n';
+  owner.reset();
+  std::cout << "after_reset strong=" << owner.use_count()
+            << " expired=" << observer.expired() << '\n';
+}
+
+// g++ -std=c++20 -Wall -Wextra -pedantic weak_count.cpp -o weak_count`,
+        output: `strong=1 expired=0
+inside_scope=2
+after_copy=1
+~Tracked
+after_reset strong=0 expired=1
+
+最后一次强引用析构时对象本体立即销毁。
+observer 仍存在，但 expired() 已为真；控制块会在 weak_ptr 释放后完成回收。`,
+      }],
+      ['原子引用计数', 'shared_ptr 的引用计数增减由标准库用原子操作实现，多个线程各自复制不同的 shared_ptr 实例时可以安全地共同持有同一对象。计数只保证控制块生命周期安全，不保护被管理对象的成员：多个线程同时修改同一对象仍要 mutex、原子变量或 strand。用 TSan 运行并发复制实验可验证计数操作本身无数据竞争。', '计数原子对象不原子', {
+        title: 'TSan：四线程并发复制同一个 shared_ptr',
+        language: 'bash',
+        code: String.raw`cat > shared_count.cpp <<'CPP'
+#include <atomic>
+#include <iostream>
+#include <memory>
+#include <thread>
+#include <vector>
+
+int main() {
+  std::shared_ptr<int> shared = std::make_shared<int>(7);
+  std::atomic<long long> copies{0};
+  std::vector<std::thread> workers;
+  for (int thread_id = 0; thread_id < 4; ++thread_id) {
+    workers.emplace_back([&] {
+      for (int i = 0; i < 25000; ++i) {
+        auto local = shared;
+        copies.fetch_add(local ? 1 : 0, std::memory_order_relaxed);
+      }
+    });
+  }
+  for (auto& worker : workers) worker.join();
+  std::cout << "copies=" << copies.load()
+            << " final_use_count=" << shared.use_count() << '\n';
+}
+CPP
+clang++ -std=c++20 -O1 -g -fsanitize=thread \
+  shared_count.cpp -o shared_count -pthread
+./shared_count`,
+        output: `copies=100000 final_use_count=1
+
+程序输出后没有 TSan data race 报告。
+所有局部 shared_ptr 已析构，因此最终强计数回到 1。
+若把被管理 int 同时改写而不加同步，TSan 会另外报告该对象的竞争。`,
+      }],
+      ['make_shared 单次分配', 'make_shared 通常把对象本体与控制块放进同一块连续存储，一次分配替代 shared_ptr(new T) 常见的一次对象分配加一次控制块分配，缓存局部性也更好。代价是只要还有 weak_ptr 存活，包含对象槽位的整块分配就不能归还，大对象加长寿命 weak_ptr 会延迟回收；需要让对象存储尽早释放时，可显式构造 shared_ptr。', '一块存储两用', {
+        title: 'operator new 计数：make_shared 与 shared_ptr(new T)',
+        language: 'cpp',
+        code: String.raw`#include <cstdlib>
+#include <iostream>
+#include <memory>
+#include <new>
+
+static std::size_t allocations = 0;
+void* operator new(std::size_t size) {
+  ++allocations;
+  if (void* ptr = std::malloc(size)) return ptr;
+  throw std::bad_alloc{};
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
+
+struct Large {
+  unsigned char bytes[1024 * 1024]{};
+};
+
+int main() {
+  auto before = allocations;
+  auto combined = std::make_shared<Large>();
+  const auto combined_allocations = allocations - before;
+
+  before = allocations;
+  std::shared_ptr<Large> separate(new Large);
+  const auto separate_allocations = allocations - before;
+
+  std::weak_ptr<Large> weak = combined;
+  combined.reset();
+  std::cout << "make_shared=" << combined_allocations
+            << " explicit_new=" << separate_allocations
+            << " weak_expired=" << weak.expired() << '\n';
+}
+
+// g++ -std=c++20 -O2 allocation.cpp -o allocation && ./allocation`,
+        output: `make_shared=1 explicit_new=2 weak_expired=1
+
+make_shared 把对象槽位与控制块合为一次分配。
+shared_ptr(new Large) 分别分配对象和控制块，因此计数为 2。
+weak 仍存在时对象已析构，但合并分配所属的存储块会继续保留。`,
+      }],
+      ['循环引用与 weak_ptr', '两个对象各持对方 shared_ptr 时强计数永远大于零，双方都不能析构；把其中一侧改成 weak_ptr 即可打破强引用环路。weak_ptr 使用前必须 lock 提升为 shared_ptr，对象已销毁时 lock 返回空指针；expired 只是瞬时探测，不能把 expired 的检查结果当作后续解引用许可。enable_shared_from_this 让成员函数内安全取得已有控制块对应的自身所有权。', 'weak 打破环路', {
+        title: 'weak_ptr 打断父子双向强引用并验证析构',
+        language: 'cpp',
+        code: String.raw`#include <iostream>
+#include <memory>
+#include <string>
+
+struct Node {
+  explicit Node(std::string label) : label(std::move(label)) {}
+  ~Node() { std::cout << "~" << label << '\n'; }
+  std::string label;
+  std::shared_ptr<Node> peer;
+  std::weak_ptr<Node> parent;
+};
+
+int main() {
+  auto first = std::make_shared<Node>("first");
+  auto second = std::make_shared<Node>("second");
+  first->peer = second;
+  second->parent = first;
+
+  first.reset();
+  std::cout << "parent_locked=" << !second->parent.expired()
+            << " second_count=" << second.use_count() << '\n';
+  second.reset();
+  std::cout << "all released\n";
+}
+
+// g++ -std=c++20 -Wall -Wextra cycle.cpp -o cycle && ./cycle`,
+        output: `~first
+parent_locked=0 second_count=1
+~second
+all released
+
+second 的 parent 是 weak_ptr，不延长 first 的生命。
+second 被 first.peer 强持有，所以 first 归零后它仍存活且 use_count=1。
+second.reset() 释放最后一个强引用，两个对象都完成析构。`,
+      }],
+      ['控制块的生成时机', '控制块并非随对象而生：shared_ptr 从裸指针构造时建立控制块，make_shared 同时建立，复制 shared_ptr 或从 weak_ptr lock 时共享已有控制块。同一裸指针交给两个互不相干的 shared_ptr 会造出两个控制块，双重析构直接崩溃；enable_shared_from_this 也只能在对象已由一个 shared_ptr 管理后使用，否则抛出 bad_weak_ptr。', '一指针一块', {
+        title: 'enable_shared_from_this：已有控制块与孤立对象对照',
+        language: 'cpp',
+        code: String.raw`#include <iostream>
+#include <memory>
+
+struct Session : std::enable_shared_from_this<Session> {
+  std::shared_ptr<Session> retain() {
+    return shared_from_this();
+  }
+};
+
+int main() {
+  Session orphan;
+  try {
+    (void)orphan.shared_from_this();
+  } catch (const std::bad_weak_ptr&) {
+    std::cout << "orphan=bad_weak_ptr\n";
+  }
+
+  auto owner = std::make_shared<Session>();
+  auto retained = owner->retain();
+  std::cout << "with_owner=" << owner.use_count() << '\n';
+  owner.reset();
+  std::cout << "after_owner_reset=" << retained.use_count() << '\n';
+}
+
+// g++ -std=c++20 -Wall -Wextra from_this.cpp -o from_this && ./from_this`,
+        output: `orphan=bad_weak_ptr
+with_owner=2
+after_owner_reset=1
+
+孤立栈对象没有控制块，shared_from_this 必须抛 bad_weak_ptr。
+make_shared 建立控制块后，retain 取得的第二份所有权与 owner 共享同一控制块。
+owner 释放后 retained 仍持有对象，所以强计数为 1。`,
+      }],
     ],
   },
   {
@@ -5750,13 +6150,192 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场起一个多线程 io_context 服务，post 十万个轻量回调观察各线程的执行分布；再给共享计数器分别套 mutex 与 strand 两种写法压测对比，记录两种方案的吞吐差异与代码改动点。',
     independentPractice: '独立交付：实现带 strand 串行化的 TCP 会话类，读写回调全部经 bind_executor 提交，多线程 run 下用数据竞争检测工具验证无竞争，并附一条定时器取消时处理 operation_aborted 的路径。',
     commonErrors: ['只在主线程调用一次 io_context 的 run，没有线程继续投递任务，事件循环提前返回导致服务假死。', '同一连接的读回调与写回调分别提交到不同线程却没套 strand，共享缓冲区产生数据竞争。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html', 'Asio C++ Library. https://think-async.com/Asio/AsioStandalone/'],
     steps: [
-      ['io_context 与事件循环', 'io_context 是 Asio 的调度核心，run 驱动事件循环：先让 epoll_reactor 调 epoll_wait 等待就绪事件，再逐个执行到期定时器与完成回调，全部任务做完且没有注册中的监听事件时 run 立即返回，后台线程随之退出。多个线程各自调用 run 才能并行消费任务；make_work_guard 创建 work 对象可阻止空转返回，让服务在无任务时保持待命。', '无任务即返回'],
-      ['epoll_reactor 后端', 'Linux 默认实现是 epoll_reactor：async_read 之类操作先把描述符注册进 epoll 兴趣列表，epoll_wait 返回就绪后把回调排入 io_context 队列，由某个 run 线程取用。Asio 新版支持 io_uring 后端，定义 ASIO_HAS_IO_URING 并把 io_uring 对象传给 io_context 构造即可切换，io_uring 以提交队列批量化系统调用减少上下文切换，但完成语义与 epoll 并不完全一致。', 'epoll 等就绪'],
-      ['post dispatch defer', '向 io_context 投递函数有三个入口：post 一定把回调排进队列等事件循环取用；dispatch 若当前线程已在该 io_context 中则直接执行，否则等价于 post；defer 排队但提示不必立刻执行。回调里再用 post 投递下一步能避免深递归耗尽栈；在 io_context 线程之外调用 dispatch 不会立即执行，只能等事件循环取用。', '同线程才直跑'],
-      ['strand 串行化', '多个线程同时调用 run 时，同一 TCP 连接的读写回调可能并行执行，共享状态产生数据竞争。strand 把包进来的回调串行化：同一 strand 内的 handler 永远不会并发运行，无需互斥锁。官方推荐做法是给每个连接建一个 strand，回调一律用 bind_executor 提交，这样共享缓冲区与状态只在单线程语境里被访问，锁的开销与遗漏风险同时消除。', 'strand 免锁串行'],
-      ['定时器与组合操作', 'steady_timer 基于 steady_clock 计时，不受系统时间跳变影响，async_wait 注册到期回调，cancel 触发回调携带 operation_aborted 错误码。组合操作 async_read 内部循环投递 async_read_some 直到读满或出错，中途取消要靠 cancellation signal；回调里必须先检查 error code 再使用数据，否则失败路径直接解引用空缓冲导致崩溃。', '先查错误码再用'],
+      ['io_context 与事件循环', 'io_context 是 Asio 的调度核心，run 驱动事件循环：让 reactor 等待就绪事件，执行到期定时器与完成回调，全部任务做完且没有未完成操作或 work guard 时 run 返回。多个线程各自调用 run 才能并行消费任务；make_work_guard 创建 work 对象可阻止无任务时立即返回，让服务线程保持待命，退出前要停止 io_context 并 reset work guard。', '无任务即返回', {
+        title: 'io_context：空循环返回值与 work_guard 保持待命',
+        language: 'cpp',
+        code: String.raw`#include <boost/asio.hpp>
+#include <iostream>
+#include <thread>
+
+namespace asio = boost::asio;
+
+int main() {
+  asio::io_context idle;
+  std::cout << "idle_run=" << idle.run() << '\n';
+
+  asio::io_context service;
+  auto work = asio::make_work_guard(service);
+  std::thread worker([&] { service.run(); });
+  asio::post(service, [&] {
+    std::cout << "posted_handler\n";
+    service.stop();
+  });
+  worker.join();
+  work.reset();
+  std::cout << "service_stopped\n";
+}
+
+// g++ -std=c++20 reactor.cpp -o reactor -pthread -lboost_system
+// ./reactor`,
+        output: `idle_run=0
+posted_handler
+service_stopped
+
+第一个 io_context 没有任何异步操作，run 立即返回 0。
+第二个 io_context 有 work_guard，线程会等到 post 的 handler 执行并主动 stop。
+没有 guard 且任务在 run 启动前耗尽时，工作线程可能提前退出。`,
+      }],
+      ['epoll_reactor 后端', 'Linux 上常见后端是 epoll_reactor：异步操作先向 epoll 注册描述符，epoll_wait 返回就绪后把完成回调排入 io_context 队列，由某个 run 线程取用。新版 Asio 还可能提供 io_uring 等可选后端，启用条件、构造方式和完成语义取决于 Asio 版本与构建配置，不能把 epoll 或 io_uring 某个版本的内部调用当成跨平台 API。', '后端属于实现细节', {
+        title: 'strace：看 Asio 定时器如何创建、修改并等待 epoll',
+        language: 'bash',
+        code: String.raw`cat > timer_once.cpp <<'CPP'
+#include <boost/asio.hpp>
+#include <chrono>
+#include <iostream>
+
+namespace asio = boost::asio;
+using namespace std::chrono_literals;
+
+int main() {
+  asio::io_context io;
+  asio::steady_timer timer(io, 30ms);
+  timer.async_wait([&](const boost::system::error_code& error) {
+    std::cout << "fired=" << !error << '\n';
+  });
+  io.run();
+}
+CPP
+g++ -std=c++20 timer_once.cpp -o timer_once -pthread -lboost_system
+strace -f -e trace=epoll_create1,epoll_ctl,epoll_wait \
+  ./timer_once 2>&1 | tail -12`,
+        output: `epoll_create1(EPOLL_CLOEXEC) = 3
+epoll_ctl(3, EPOLL_CTL_ADD, ...) = 0
+epoll_wait(3, ...) = 0
+fired=1
+
+timerfd 或 eventfd 的具体描述符随 Asio 版本和编译配置变化。
+关键不是背调用序列，而是确认 reactor 等待事件并把完成 handler 交回 io_context。
+若用 io_uring 后端，系统调用轨迹会不同，但上层异步契约不变。`,
+      }],
+      ['post dispatch defer', '向 executor 投递函数有三个入口：post 一定创建异步操作，不在当前函数调用栈里直接执行 handler；dispatch 若当前线程已符合目标 executor 的执行条件则可就地执行，否则转成排队；defer 也会排队，并给 executor 一个可以安全合并后续工作的提示，但保证不在当前投递调用中直接运行。回调内用 post 或 defer 投递下一步能避免深递归耗尽栈。', '同线程才直跑', {
+        title: 'post、dispatch、defer：同一次 handler 内的执行顺序',
+        language: 'cpp',
+        code: String.raw`#include <boost/asio.hpp>
+#include <iostream>
+
+namespace asio = boost::asio;
+
+int main() {
+  asio::io_context io;
+  asio::post(io, [&] {
+    std::cout << "outer-start\n";
+    asio::dispatch(io, [] { std::cout << "dispatch\n"; });
+    asio::post(io, [] { std::cout << "post\n"; });
+    asio::defer(io, [] { std::cout << "defer\n"; });
+    std::cout << "outer-end\n";
+  });
+  io.run();
+}
+
+// g++ -std=c++20 injection.cpp -o injection -pthread -lboost_system
+// ./injection`,
+        output: `outer-start
+dispatch
+outer-end
+post
+defer
+
+当前已在 io_context 线程内，dispatch 会立即执行。
+post 与 defer 都排到外层 handler 结束之后，实际执行顺序由 executor 队列决定。
+生产代码不应依赖超出标准契约的次序，而应在 handler 内显式编排依赖。`,
+      }],
+      ['strand 串行化', '多个线程同时调用 run 时，同一 TCP 连接的读写回调可能并行执行，共享状态产生数据竞争。strand 把包进来的回调串行化：同一 strand 内的 handler 永远不会并发运行，但不同 strand 仍可并行。官方推荐给每个连接建 strand，并用 bind_executor 或 strand 自身 executor 投递，这样连接缓冲区与状态只在单线程语境里被访问。', 'strand 免锁串行', {
+        title: 'strand：两个 run 线程下验证 200 个 handler 从不重叠',
+        language: 'cpp',
+        code: String.raw`#include <boost/asio.hpp>
+#include <atomic>
+#include <chrono>
+#include <iostream>
+#include <thread>
+#include <vector>
+
+namespace asio = boost::asio;
+using namespace std::chrono_literals;
+
+int main() {
+  asio::io_context io;
+  auto work = asio::make_work_guard(io);
+  auto lane = asio::make_strand(io);
+  int active = 0;
+  int completed = 0;
+  bool overlapped = false;
+  constexpr int total = 200;
+
+  for (int i = 0; i < total; ++i) {
+    asio::post(io, asio::bind_executor(lane, [&] {
+      ++active;
+      if (active != 1) overlapped = true;
+      std::this_thread::sleep_for(200us);
+      --active;
+      if (++completed == total) io.stop();
+    }));
+  }
+
+  std::vector<std::thread> workers;
+  for (int i = 0; i < 2; ++i) workers.emplace_back([&] { io.run(); });
+  for (auto& worker : workers) worker.join();
+  work.reset();
+  std::cout << "completed=" << completed
+            << " overlapped=" << overlapped << '\n';
+}
+
+// g++ -std=c++20 strand.cpp -o strand -pthread -lboost_system
+// ./strand`,
+        output: `completed=200 overlapped=0
+
+两个 run 线程可以并行处理不同 strand，但同一 lane 的 handler 绝不并发。
+active 始终为 1，说明共享缓冲区无需再加 mutex。
+strand 只串行化回调，不会让同步函数自动变成异步，也不保护其他 strand 的数据。`,
+      }],
+      ['定时器与组合操作', 'steady_timer 基于 steady_clock 计时，不受系统时间跳变影响，async_wait 注册到期回调，cancel 触发回调携带 operation_aborted 错误码。组合操作 async_read 内部循环投递 async_read_some 直到读满或出错，中途取消可通过 cancellation slot 或关闭 socket 完成；回调里必须先检查 error code 再使用数据，否则失败路径可能直接使用未完成的缓冲。', '先查错误码再用', {
+        title: 'steady_timer.cancel：捕获 operation_aborted 而不读取过期结果',
+        language: 'cpp',
+        code: String.raw`#include <boost/asio.hpp>
+#include <chrono>
+#include <iostream>
+
+namespace asio = boost::asio;
+using namespace std::chrono_literals;
+
+int main() {
+  asio::io_context io;
+  asio::steady_timer timer(io, 100ms);
+  int generation = 7;
+  timer.async_wait([&](const boost::system::error_code& error) {
+    if (error == asio::error::operation_aborted) {
+      std::cout << "cancelled generation=" << generation << '\n';
+      return;
+    }
+    if (error) {
+      std::cout << "failed " << error.message() << '\n';
+      return;
+    }
+    std::cout << "expired generation=" << generation << '\n';
+  });
+  timer.cancel();
+  io.run();
+}
+
+// g++ -std=c++20 timer_cancel.cpp -o timer_cancel -pthread -lboost_system
+// ./timer_cancel`,
+        output: `cancelled generation=7
+
+cancel 让未到期的 async_wait 以 operation_aborted 完成。
+handler 先分支处理取消，再处理其他错误和成功路径。
+组合操作也遵循同一原则：错误码未清空时，业务缓冲区不保证已包含完整消息。`,
+      }],
     ],
   },
   {
@@ -5768,13 +6347,175 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场从 libc++ 的 push_back 入口逐跳走到 allocator，把每跳的文件、函数与行号抄成调用链清单；再用 gdb 的 info line 验证清单，用 nm -C 找出 push_back 的实例化符号，逐条核对。',
     independentPractice: '独立交付：为 shared_ptr 控制块整理一份锚点清单，覆盖强计数递增、递减与销毁三处，每条附文件与行号；用最小实验验证递减发生在最后一个拷贝析构的线程，实验代码随清单一起归档。',
     commonErrors: ['只记结论不记文件与行号，被追问某一跳时翻不回源码现场，链条断裂。', '把模板声明当成实际实现，忽视了只有实例化后才产出代码，nm 里找不到对应符号。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['GCC libstdc++ headers. https://github.com/gcc-mirror/gcc/tree/master/libstdc%2B%2B-v3/include/bits', 'GDB Documentation. https://sourceware.org/gdb/documentation/'],
     steps: [
-      ['定位源码锚点', '源码阅读从锚点起步：libc++ 的 vector 定义在 libcxx/include/vector，push_back 容量不足时委托 __push_back_slow_path；libstdc++ 的实现主体在 libstdc++-v3/include/bits/vector.tcc。用 clangd 或 ctags 让编辑器跳到定义，编译时加头文件搜索路径指向源码目录，gdb 里用 info line 查询成员函数可直接输出实现所在的文件与行号。', '先找到定义行'],
-      ['追一条完整调用链', '从用户一行 push_back 出发追到底：libc++ 路径是 push_back 检查尾指针是否到达容量端，不足则转 __push_back_slow_path，经 allocator_traits 调 allocate、搬移旧元素、再 deallocate 释放旧块；libstdc++ 对应 _M_realloc_insert。把每一跳的文件与函数名记成链，链上每个环节都要能指到具体行号，不能凭印象转述。', '一跳一跳追'],
-      ['看模板实例化', '模板只有被实例化才产出代码：nm -C 加 grep 能在目标文件里找到 push_back 的实例化符号；godbolt 在线把 C++ 标准与优化等级逐档切换，右侧汇编里直接观察扩容分支与内存搬运指令。编译报错时设置 -ftemplate-backtrace-limit=0 可打印完整的模板嵌套链，便于定位是哪一层实例化触发了错误。', '符号里找实例'],
-      ['写最小实验验证', '锚点与调用链要靠实验坐实：sizeof(vector<int>) 在 64 位 libstdc++ 上输出 24，对应三个指针；重载全局 operator new 统计扩容时的分配次数，验证翻倍序列；gdb 在 _M_realloc_insert 下断点，用 bt 打印调用栈与推演的调用链对照，两处不一致时以汇编与实验输出为准，修正清单后再继续。', '实验坐实结论'],
-      ['锚点清单留档', '读源码的产出是一份锚点清单：每条包含库名、文件路径、函数名、行号与一句话机制说明，例如 libc++ vector 扩容锚点在 include/vector 的 __push_back_slow_path。清单按调用链顺序排列，复述时能从入口函数一路走到 allocator，中途任何一跳都要能翻回对应文件现场指认，避免只记结论不记路径。', '锚点清单留档'],
+      ['定位源码锚点', '源码阅读从锚点起步：libc++ 的 vector 定义在 libcxx/include/vector，容量不足时委托 __push_back_slow_path；libstdc++ 的 vector 声明在 bits/stl_vector.h，扩容实现主体在 bits/vector.tcc。先用编译器把版本目录展开，再用 rg 搜函数名，最后用 gdb 的 info line 核对编译进调试信息的文件与行号。', '先找到定义行', {
+        title: '定位本机 libstdc++ vector 源码与版本路径',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+VERSION="$(g++ -dumpversion)"
+INCLUDE="/usr/include/c++/$VERSION"
+test -r "$INCLUDE/bits/stl_vector.h"
+test -r "$INCLUDE/bits/vector.tcc"
+
+printf 'gcc=%s\nheaders=%s\n' "$(g++ --version | head -1)" "$INCLUDE"
+rg -n "class vector|_M_realloc_insert|_M_check_len" \
+  "$INCLUDE/bits/stl_vector.h" "$INCLUDE/bits/vector.tcc" |
+  head -8
+
+cat > anchor.cpp <<'CPP'
+#include <vector>
+int main() { std::vector<int> values(8); values.reserve(64); }
+CPP
+g++ -std=c++20 -g -O0 anchor.cpp -o anchor
+gdb -q ./anchor -batch -ex 'info line std::vector<int>::reserve'`,
+        output: `gcc=g++ (Ubuntu ...) ...
+headers=/usr/include/c++/...
+/usr/include/c++/.../bits/stl_vector.h:...: class vector
+/usr/include/c++/.../bits/vector.tcc:...: void vector<_Tp, _Alloc>::_M_realloc_insert
+/usr/include/c++/.../bits/vector.tcc:...: size_type vector<_Tp, _Alloc>::_M_check_len
+Line ... of "/usr/include/c++/.../bits/stl_vector.h" starts at address ...
+
+行号和目录随发行版与 GCC 版本变化。
+实验先确认版本目录，再记录本机真实行号，文档里不能抄旧机器的绝对路径。`,
+      }],
+      ['追一条完整调用链', '从用户一行 push_back 出发追到底：libc++ 路径是 push_back 检查尾指针是否到达容量端，不足则转 __push_back_slow_path，经 allocator_traits 调 allocate、搬移旧元素、再 deallocate 释放旧块；libstdc++ 对应 _M_realloc_insert。把每一跳的文件与函数名记成链，链上每个环节都要能指到具体行号，不能凭印象转述。', '一跳一跳追', {
+        title: 'nm -C 与 gdb：从 push_back 找到扩容实例化符号',
+        language: 'bash',
+        code: String.raw`cat > chain.cpp <<'CPP'
+#include <vector>
+
+int main() {
+  std::vector<int> values;
+  for (int i = 0; i < 9; ++i) values.push_back(i);
+}
+CPP
+g++ -std=c++20 -g -O0 -c chain.cpp -o chain.o
+nm -C chain.o | rg "vector<int.*_M_realloc_insert|vector<int.*push_back" | head -5
+gdb -q ./chain.o -batch \
+  -ex 'info functions _M_realloc_insert' \
+  -ex 'info functions _M_check_len'
+
+STD="/usr/include/c++/$(g++ -dumpversion)"
+rg -n "_M_realloc_insert|_M_check_len|allocate\(" \
+  "$STD/bits/vector.tcc" | head -8`,
+        output: `... W std::vector<int, ...>::_M_realloc_insert<...>
+... W std::vector<int, ...>::push_back(int&&)
+All functions matching regular expression "_M_realloc_insert":
+... std::vector<int, ...>::_M_realloc_insert<...>
+All functions matching regular expression "_M_check_len":
+...
+
+用户入口是 push_back，容量不足后进入 _M_realloc_insert。
+_M_realloc_insert 再计算长度、分配新块、搬移元素并释放旧块。
+nm 里出现的是具体 int 实例化符号，不是模板声明的抽象名称。`,
+      }],
+      ['看模板实例化', '模板只有被实例化才产出代码：nm -C 能在目标文件里找到具体类型实例化后的 push_back 与扩容辅助函数；Godbolt 可把 C++ 标准与优化等级逐档切换，在汇编里观察扩容分支。编译报错时设置 -ftemplate-backtrace-limit=0 可打印完整模板嵌套链，便于定位哪一层实例化触发了错误。', '符号里找实例', {
+        title: 'nm 对照具体实例化，并让模板错误输出完整回溯',
+        language: 'bash',
+        code: String.raw`cat > instances.cpp <<'CPP'
+#include <vector>
+
+void ints() {
+  std::vector<int> values;
+  values.push_back(42);
+}
+void doubles() {
+  std::vector<double> values;
+  values.push_back(4.2);
+}
+CPP
+g++ -std=c++20 -g -O0 -c instances.cpp -o instances.o
+nm -C instances.o | rg "vector<(int|double).*push_back" | head -4
+
+cat > failure.cpp <<'CPP'
+template <class T>
+struct NeedsComplete {
+  static_assert(sizeof(T) > 0, "T must be complete");
+  T value;
+};
+struct Incomplete;
+int main() { NeedsComplete<Incomplete> box; (void)box; }
+CPP
+g++ -std=c++20 -ftemplate-backtrace-limit=0 \
+  -c failure.cpp -o failure.o 2>&1 | head -14 || true`,
+        output: `... W std::vector<int, ...>::push_back(int&&)
+... W std::vector<double, ...>::push_back(double&&)
+instances.cpp:...: required from here
+error: static assertion failed: T must be complete
+... NeedsComplete<T>::value
+[with T = Incomplete]
+
+同一个函数模板为 int 与 double 各生成一份实例化符号。
+故意触发错误时，完整回溯把 required from 链逐层展开。
+线上排查先看最底层的触发类型，再沿模板回溯找到自己的调用点。`,
+      }],
+      ['写最小实验验证', '锚点与调用链要靠实验坐实：sizeof(vector<int>) 在主流 64 位 libstdc++ 上输出 24，对应三个指针；重载全局 operator new 统计扩容分配；gdb 在 _M_realloc_insert 下断点，用 bt 对照推演栈。两处不一致时以可重复运行的实验输出和当前源码版本为准，修正清单后再继续。', '实验坐实结论', {
+        title: '最小实验：同时核对 vector 大小、容量与分配次数',
+        language: 'cpp',
+        code: String.raw`#include <cstdlib>
+#include <iostream>
+#include <new>
+#include <vector>
+
+static int allocations = 0;
+void* operator new(std::size_t size) {
+  ++allocations;
+  if (void* ptr = std::malloc(size)) return ptr;
+  throw std::bad_alloc{};
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
+
+int main() {
+  std::vector<int> values;
+  const int before = allocations;
+  for (int i = 0; i < 9; ++i) values.push_back(i);
+  std::cout << "sizeof=" << sizeof(values)
+            << " size=" << values.size()
+            << " capacity=" << values.capacity()
+            << " allocations=" << allocations - before << '\n';
+}
+
+// g++ -std=c++20 -g -O0 probe.cpp -o probe
+// ./probe
+// gdb -q ./probe -batch -ex 'start' -ex continue \
+//   -ex 'info line std::vector<int>::_M_realloc_insert<int const&>'`,
+        output: `sizeof=24 size=9 capacity=16 allocations=5
+
+24 字节与三个指针的布局推演一致。
+9 个元素触发容量 1、2、4、8、16 的增长，共发生 5 次数据缓冲分配。
+若 gdb 因内联或符号优化找不到函数，改用 -O0 -g 重新编译，以新实验输出修正锚点。`,
+      }],
+      ['锚点清单留档', '读源码的产出是一份锚点清单：每条包含库名、文件路径、函数名、行号与一句话机制说明，例如 libc++ vector 扩容锚点在 include/vector 的 __push_back_slow_path。清单按调用链顺序排列，复述时能从入口函数一路走到 allocator，中途任何一跳都要能翻回对应文件现场指认，避免只记结论不记路径。', '锚点清单留档', {
+        title: '从本机头文件生成可校验的四列源码锚点清单',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+VERSION="$(g++ -dumpversion)"
+STD="/usr/include/c++/$VERSION"
+
+{
+  printf 'libstdc++\tbits/stl_vector.h\t%s\tvector 的公开成员声明\n' \
+    "$(rg -n 'class vector' "$STD/bits/stl_vector.h" | head -1 | cut -d: -f2)"
+  printf 'libstdc++\tbits/vector.tcc\t%s\t扩容并搬移元素\n' \
+    "$(rg -n '_M_realloc_insert' "$STD/bits/vector.tcc" | head -1 | cut -d: -f2)"
+  printf 'libstdc++\tbits/vector.tcc\t%s\t计算新容量\n' \
+    "$(rg -n '_M_check_len' "$STD/bits/vector.tcc" | head -1 | cut -d: -f2)"
+} > anchors.tsv
+
+awk -F '\t' 'NF != 4 || length($4) < 8 { exit 1 }
+  END { print NR " anchors validated" }' anchors.tsv
+cut -f1-3 anchors.tsv
+test -s anchors.tsv`,
+        output: `3 anchors validated
+libstdc++	bits/stl_vector.h	1234
+libstdc++	bits/vector.tcc	567
+libstdc++	bits/vector.tcc	601
+
+四列分别为库、文件、行号、机制说明。
+每列都必须来自当前头文件，而不是从旧文章抄死的行号。
+换编译器版本后重新生成清单，调用链评审以新行号为准。`,
+      }],
     ],
   },
   {
@@ -5786,13 +6527,190 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场给服务加连接数、内存、写缓冲三个水位配置，用 wrk 把并发压到水位线附近，观察拒绝日志与 ss 的连接曲线；再手动制造描述符耗尽故障，记录 EMFILE 在回调路径上的实际表现。',
     independentPractice: '独立交付：为服务写一份含故障判定与处置命令两栏的运行手册，覆盖描述符耗尽、线程退出、内存耗尽三种场景；按手册从零启动、注入故障、恢复服务走一遍全程，把每条命令输出贴进手册附录。',
     commonErrors: ['async_accept 回调收到 EMFILE 后既不处理也不停止监听，事件循环空转占满 CPU。', '只备份快照不保留增量日志，两次快照之间的数据在崩溃后全部丢失且无法补回。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html', 'Linux man-pages. https://man7.org/linux/man-pages/'],
     steps: [
-      ['容量估算', '容量从单连接内存倒推：每连接读缓冲 64KiB 加写缓冲与对象开销约计 100KiB，一万并发连接就要约 1GiB 驻留内存；连接容器一次性 reserve 到规模上限，避免运行期 vector 搬移。描述符上限用 ulimit -n 查看并写进部署清单，上限 8192 的机器压到六千并发就该告警，还要给 epoll 与定时器本身留出描述符余量。', '按连接倒推内存'],
-      ['故障模式清单', '常见故障按层列出：描述符耗尽时 accept 返回 EMFILE，错误出现在 async_accept 回调里，若不处理事件循环可能空转；io_context 线程因未捕获异常退出后 run 返回，服务假死但端口仍在监听；大流量下写缓冲无限增长触发内核内存回收。每条故障配观察命令：ss 看连接数，dmesg 查内核内存回收记录，journalctl 收集服务日志。', '逐条配观察命令'],
-      ['压测与水位线', '压测用 wrk 或自写 Asio 客户端，固定并发跑六十秒取 p50 与 p99 延迟，扩容前后对比；给每连接写缓冲设上限水位，超过四 MiB 主动断开慢消费者，防止单连接拖垮整机。容量红线写进配置：连接数、内存占用、队列深度各设阈值，超线即拒绝新连接并记日志，而不是等内核内存回收机制随机杀进程。', 'p99 定水位'],
-      ['镜像与备份', '状态数据的镜像分两层：内存快照定期落盘成文件，追加日志记录增量，恢复时先加载快照再重放日志到检查点；异地镜像用 rsync 或对象存储同步，同步周期与可容忍丢失窗口保持一致。用 mmap 写日志时注意 msync 的调用频率，崩溃窗口内未刷盘的记录就是实际丢失量；恢复演练按季度执行一次，验证备份可读可重放。', '快照加日志'],
-      ['运行手册', '运行手册面向值班人员：启动命令、systemd 单元配置、优雅退出流程（收到终止信号先停止 accept 并排空写缓冲再退出事件循环）、重启后自检步骤逐条列出。故障处置写成判定与动作两栏：p99 超过两百毫秒先看连接数曲线，再抓热点函数定位；手册附每条命令的实际输出样例，值班时照抄即可执行。', '判定加动作两栏'],
+      ['容量估算', '容量从单连接内存倒推：每连接读缓冲 64KiB 加写缓冲与对象开销，按一百 KiB 估，一万并发连接就要约一 GiB 驻留内存；连接容器一次性 reserve 到规模上限，避免运行期 vector 搬移。描述符上限用 ulimit -n 或 getrlimit 查看并写进部署清单，上限 8192 的机器压到六千并发就该告警，还要给 epoll、日志与定时器留出描述符余量。', '按连接倒推内存', {
+        title: 'getrlimit：把描述符上限换算成连接水位',
+        language: 'cpp',
+        code: String.raw`#include <cstdio>
+#include <iostream>
+#include <sys/resource.h>
+
+int main() {
+  rlimit limit{};
+  if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+    std::perror("getrlimit");
+    return 1;
+  }
+  constexpr rlim_t reserved = 32;
+  constexpr rlim_t memory_budget = 4ULL * 1024 * 1024 * 1024;
+  constexpr rlim_t bytes_per_connection = 100 * 1024;
+  const rlim_t usable = limit.rlim_cur > reserved
+      ? limit.rlim_cur - reserved : 0;
+  const rlim_t memory_bound = memory_budget / bytes_per_connection;
+  const rlim_t recommended = usable < memory_bound ? usable : memory_bound;
+  std::cout << "nofile_soft=" << limit.rlim_cur
+            << " nofile_hard=" << limit.rlim_max
+            << " fd_bound=" << usable
+            << " memory_bound=" << memory_bound
+            << " recommended=" << recommended << '\n';
+}
+
+// g++ -std=c++20 capacity.cpp -o capacity && ./capacity
+// ulimit -n 4096 && ./capacity`,
+        output: `nofile_soft=1048576 nofile_hard=1048576 fd_bound=1048544 memory_bound=41943 recommended=41943
+
+默认值来自当前 shell 和 systemd 限制，复测时必须先记录。
+limits 改成 4096 后，fd_bound 降到 4064，推荐连接数也随描述符上限下降。
+memory_bound 由 4GiB 预算除以每连接 100KiB 得到，真实部署还要把业务对象与写缓冲计入。
+最终连接上限取 fd_bound、memory_bound 与压测水位三者较小值。`,
+      }],
+      ['故障模式清单', '常见故障按层列出：描述符耗尽时 accept 返回 EMFILE，错误出现在 async_accept 回调里，若不处理事件循环可能空转；io_context 线程因未捕获异常退出后 run 返回，服务假死但端口仍可能被其他线程持有；大流量下写缓冲无限增长触发内存压力。每条故障配观察命令：ss 看连接数，dmesg 查内核内存回收记录，journalctl 收集服务日志。', '逐条配观察命令', {
+        title: 'setrlimit + accept：可重复制造并识别 EMFILE',
+        language: 'cpp',
+        code: String.raw`#include <arpa/inet.h>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
+#include <iostream>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+int main() {
+  rlimit limit{};
+  getrlimit(RLIMIT_NOFILE, &limit);
+  limit.rlim_cur = 8;
+  if (setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+    std::perror("setrlimit");
+    return 1;
+  }
+
+  int listener = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+  listen(listener, 16);
+
+  int held[16]{};
+  int count = 0;
+  while (count < 16 && (held[count] = open("/dev/null", O_RDONLY)) >= 0) {
+    ++count;
+  }
+  std::cout << "held=" << count << " open_errno=" << errno
+            << " (" << std::strerror(errno) << ")\n";
+  int accepted = accept(listener, nullptr, nullptr);
+  std::cout << "accept=" << accepted << " errno=" << errno
+            << " (" << std::strerror(errno) << ")\n";
+  for (int i = 0; i < count; ++i) close(held[i]);
+  close(listener);
+}
+
+// g++ -std=c++20 emfile.cpp -o emfile && ./emfile`,
+        output: `held=4 open_errno=24 (Too many open files)
+accept=-1 errno=24 (Too many open files)
+
+0、1、2、listener 占用四个描述符，因此只能再打开四个 /dev/null。
+EMFILE 是 process-wide 描述符耗尽，不是单个连接协议错误。
+服务应停止继续 accept、记录指标并退避重试；持续空转只会占满 CPU。`,
+      }],
+      ['压测与水位线', '压测用 wrk 或自写 Asio 客户端，固定并发跑六十秒取 p50 与 p99 延迟，扩容前后对比；给每连接写缓冲设上限水位，超过四 MiB 主动断开慢消费者，防止单连接拖垮整机。容量红线写进配置：连接数、内存占用、队列深度各设阈值，超线即拒绝新连接并记日志，而不是等内核内存回收机制随机杀进程。', 'p99 定水位', {
+        title: 'wrk + ss + pidstat：把并发梯度与 p99、连接数和 CPU 一起留档',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+TARGET="http://127.0.0.1:9000/echo"
+SERVER_NAME="asio_server"
+mkdir -p measurements
+for CONNECTIONS in 200 600 1000; do
+  OUT="measurements/c$CONNECTIONS.txt"
+  wrk -t8 -c"$CONNECTIONS" -d60s --latency "$TARGET" | tee "$OUT"
+  ss -tan state established | awk 'NR > 1 { count++ }
+    END { print "established=" count }' | tee -a "$OUT"
+  pidstat -p "$(pgrep -n "$SERVER_NAME")" 1 5 | tail -6 | tee -a "$OUT"
+done
+grep -H -E 'Latency|Requests/sec|established=' measurements/*.txt`,
+        output: `Running 1m test @ http://127.0.0.1:9000/echo
+  8 threads and 1000 connections
+  Latency 18.42ms 12.31ms 92.00ms 91.00%
+  Req/Sec 53.21k
+  Requests/sec: 425,102.33
+established=984
+Average:  asio_server  78.4  21.3 ...
+
+并发梯度必须对应同一台服务、同一份构建和同一段时长。
+p99 上升而 CPU 未满时先查连接队列、系统调用和锁；CPU 满时再查热点函数。
+任何阈值都要连同 established、CPU、内存和错误日志一起解释。`,
+      }],
+      ['镜像与备份', '状态数据的镜像分两层：内存快照定期落盘成文件，追加日志记录增量，恢复时先加载快照再重放日志到检查点；异地镜像用 rsync 或对象存储同步，同步周期与可容忍丢失窗口保持一致。用 mmap 写日志时注意 msync 的调用频率，崩溃窗口内未刷盘的记录就是实际丢失量；恢复演练按季度执行一次，验证备份可读可重放。', '快照加日志', {
+        title: 'tar + sha256 + 重放检查：验证快照与追加日志可恢复',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/state"
+printf 'account,balance\nA,100\nB,50\n' > "$WORK/state/snapshot.csv"
+printf '{"seq":1,"account":"A","delta":-10}\n' > "$WORK/state/oplog.jsonl"
+printf '{"seq":2,"account":"B","delta":25}\n' >> "$WORK/state/oplog.jsonl"
+
+tar -C "$WORK" -czf "$WORK/backup.tgz" state
+sha256sum "$WORK/backup.tgz" | tee "$WORK/backup.sha256"
+mkdir "$WORK/restored"
+tar -C "$WORK/restored" -xzf "$WORK/backup.tgz"
+test "$(wc -l < "$WORK/restored/state/oplog.jsonl")" -eq 2
+grep -q '"seq":2' "$WORK/restored/state/oplog.jsonl"
+printf 'restored_rows=%s replay_tail=%s\n' \
+  "$(wc -l < "$WORK/restored/state/snapshot.csv")" \
+  "$(tail -1 "$WORK/restored/state/oplog.jsonl")"
+
+# 异地镜像示例：rsync -a --delete state/ backup-host:/srv/service/state/`,
+        output: `9f2c...  /tmp/.../backup.tgz
+restored_rows=3 replay_tail={"seq":2,"account":"B","delta":25}
+
+恢复时先校验归档完整性，再加载快照，随后按 seq 重放日志到检查点。
+快照和日志必须来自同一版本与同一事务边界，否则会重复或漏掉增量。
+异地复制成功不等于可恢复，必须像这里一样解包、校验并实际重放。`,
+      }],
+      ['运行手册', '运行手册面向值班人员：启动命令、systemd 单元配置、优雅退出流程（收到终止信号先停止 accept 并排空写缓冲再退出事件循环）、重启后自检步骤逐条列出。故障处置写成判定与动作两栏：p99 超过两百毫秒先看连接数曲线，再抓热点函数定位；手册附每条命令的实际输出样例，值班时照抄即可执行。', '判定加动作两栏', {
+        title: 'systemd --user：从单元校验、启动、探活到停止的演练',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+cat > edge.service <<'UNIT'
+[Unit]
+Description=Asio edge learning service
+After=network.target
+[Service]
+Type=simple
+ExecStart=%h/ai-assistant/build/asio_server --port=9000
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+KillSignal=SIGTERM
+[Install]
+WantedBy=default.target
+UNIT
+
+systemd-analyze verify ./edge.service
+systemctl --user daemon-reload
+systemctl --user start edge.service
+systemctl --user is-active edge.service
+curl -fsS http://127.0.0.1:9000/healthz
+journalctl --user -u edge.service -n 20 --no-pager
+systemctl --user stop edge.service
+systemctl --user is-active edge.service || true`,
+        output: `active
+{"status":"ok","connections":0}
+... Started Asio edge learning service.
+... listening on 0.0.0.0:9000
+inactive
+
+systemd-analyze 通过后才能进入启动步骤。
+SIGTERM 后程序应在 TimeoutStopSec 内停止 accept、排空写缓冲并退出。
+探活必须检查真实业务依赖；只看端口有监听，无法发现事件循环线程已退出。`,
+      }],
     ],
   },
   {
@@ -5804,13 +6722,214 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES: readonly ProgrammingCourseS
     guidedPractice: '现场按三层搭最小版本：io_context 池、连接类、echo 处理器，跑通后用 wrk 以八线程一千并发压六十秒，记下基线吞吐与 p99；随后把 echo 换成帧解析协议，重压一次并对照两份报告差异。',
     independentPractice: '独立交付：完成完整服务与答辩材料，材料含调用链讲解路径、三组压测数据、已知缺陷清单与边界说明；按十五分钟节奏预演一次答辩，重点准备 strand 生命周期、缓冲上限、连接回收三类追问。',
     commonErrors: ['优化结论没有基线数字支撑，答辩时被要求现场复测无法重现。', '回调里用裸指针捕获连接对象，连接关闭后回调仍被触发，解引用悬垂指针崩溃。'],
-    sourceRefs: ['LLVM libcxx. https://github.com/llvm/llvm-project/tree/main/libcxx', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
+    sourceRefs: ['Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['项目范围与基线', '毕业项目选一个 Asio 高并发 TCP 服务：连接管理、协议帧解析、可插拔业务处理三层，代码量控制在三千行以内保证每行都读过。交付顺序是能跑通的最小版本在前：io_context 池加 echo 回环，先压出基线吞吐与 p99 延迟记进档案，后续每个优化都对照基线报数，没有基线数字支撑的优化结论在答辩里一律不成立。', '先记基线数字'],
-      ['连接与内存设计', '核心数据结构要能自答：连接类持有 socket、strand 与读写缓冲，读写缓冲用 vector 且一次性预留到水位上限，规避运行期扩容导致的迭代器失效；对象生命周期用 shared_ptr 配 enable_shared_from_this，回调捕获自身引用，连接关闭后靠弱计数确认控制块回收。替换 jemalloc 分配器后重跑压测，对比分配开销占比并留档。', '生命周期自证'],
-      ['答辩必备数据', '答辩要备三组数据：吞吐与延迟随并发数变化的曲线、不同优化等级加链接时优化的差异、默认分配器与 jemalloc 的单次操作耗时对比。每条数据注明压测命令的完整参数与机器规格，性能采样工具抓出热点函数前五名，火焰图随材料提交；评审复测时按文档逐条命令应当能重现，数据来源不清的结论会被当场质疑。', '三组数据三份命令'],
-      ['源码讲解路径', '源码答辩走调用链：从 async_accept 进入连接建立，到读回调触发帧解析器，再到 strand 提交业务回调，每个环节标注关键行号；用到的 STL 与 Asio 实现锚点一并附上，例如 epoll_reactor 注册描述符的位置。评审会随机指定链上一环要求现场展开，讲不出的环节按未掌握计，链路完整比功能数量更重要。', '沿调用链讲解'],
-      ['边界与复盘', '结题材料如实写清边界：已验证的并发上限、未覆盖的故障场景、协议解析对粘包与半包的处理依据；已知缺陷逐条列出，例如写缓冲超限时对慢客户端的断连策略不够平滑。复盘记录每条设计决策的备选方案与放弃理由，例如为何选 strand 而非全局互斥锁；边界清晰的项目比包装完美的项目更经得起追问。', '边界如实列出'],
+      ['项目范围与基线', '毕业项目选一个 Asio 高并发 TCP 服务：连接管理、协议帧解析、可插拔业务处理三层，代码量控制在三千行以内保证每行都读过。交付顺序是能跑通的最小版本在前：io_context 池加 echo 回环，先压出基线吞吐与 p99 延迟记进档案，后续每个优化都对照基线报数，没有基线数字支撑的优化结论在答辩里一律不成立。', '先记基线数字', {
+        title: '从干净构建到 echo 基线：一条脚本完成构建、探活和压测',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+mkdir -p reports/baseline
+./build/asio_server --port 9000 > reports/baseline/server.log 2>&1 &
+SERVER_PID=$!
+trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true' EXIT
+
+for attempt in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:9000/healthz && break
+  sleep 0.2
+done
+wrk -t8 -c1000 -d60s --latency http://127.0.0.1:9000/echo \
+  | tee reports/baseline/wrk.txt
+kill -TERM "$SERVER_PID"
+wait "$SERVER_PID"
+grep -E 'Requests/sec|Latency|Socket errors' reports/baseline/wrk.txt`,
+        output: `compiling 42 source files
+{"status":"ok"}
+Running 1m test @ http://127.0.0.1:9000/echo
+  8 threads and 1000 connections
+  Latency 19.74ms 11.80ms 104.00ms 93.00%
+  Requests/sec: 401,882.10
+  Socket errors: connect 0, read 0, write 0, timeout 0
+
+基线必须来自干净 Release 构建和固定机器。
+服务日志、wrk 原始输出和二进制哈希一起归档，后续优化才可比较。
+没有探活成功就压测，会把启动失败误判成低吞吐。`,
+      }],
+      ['连接与内存设计', '核心数据结构要能自答：连接类持有 socket、strand 与读写缓冲，读写缓冲用 vector 且一次性预留到水位上限，规避运行期扩容导致的迭代器失效；对象生命周期用 shared_ptr 配 enable_shared_from_this，回调捕获自身引用，连接关闭后靠 weak_ptr 与计数确认控制块回收。替换分配器后重跑压测，对比分配开销占比并留档。', '生命周期自证', {
+        title: 'enable_shared_from_this + strand：打印回调前后的真实强计数',
+        language: 'cpp',
+        code: String.raw`#include <boost/asio.hpp>
+#include <iostream>
+#include <memory>
+#include <vector>
+
+namespace asio = boost::asio;
+
+class Connection : public std::enable_shared_from_this<Connection> {
+ public:
+  explicit Connection(asio::io_context& io)
+      : lane_(asio::make_strand(io)),
+        read_buffer_(64 * 1024),
+        write_buffer_(4 * 1024) {}
+
+  void arm() {
+    auto self = shared_from_this();
+    asio::post(lane_, [self] {
+      std::cout << "inside_handler_count=" << self.use_count() << '\n';
+    });
+  }
+
+  std::size_t read_capacity() const { return read_buffer_.capacity(); }
+  std::size_t write_capacity() const { return write_buffer_.capacity(); }
+
+ private:
+  asio::strand<asio::io_context::executor_type> lane_;
+  std::vector<char> read_buffer_;
+  std::vector<char> write_buffer_;
+};
+
+int main() {
+  asio::io_context io;
+  auto connection = std::make_shared<Connection>(io);
+  connection->arm();
+  std::cout << "main_after_arm=" << connection.use_count()
+            << " read=" << connection->read_capacity()
+            << " write=" << connection->write_capacity() << '\n';
+  io.run();
+  std::cout << "after_run=" << connection.use_count() << '\n';
+}
+
+// clang++ -std=c++20 -g -O1 -fsanitize=address,undefined \
+//   session.cpp -o session -pthread -lboost_system
+// ./session`,
+        output: `main_after_arm=2 read=65536 write=4096
+inside_handler_count=2
+after_run=1
+
+arm 返回后强计数为 2：main 一份，队列中的 self 捕获一份。
+handler 执行时同样看到 2；执行完捕获销毁，回到 main 的一份。
+读写缓冲在构造时一次预留，回调只改 size，不依赖运行期扩容。`,
+      }],
+      ['答辩必备数据', '答辩要备三组数据：吞吐与延迟随并发数变化的曲线、不同优化等级加链接时优化的差异、默认分配器与 jemalloc 的单次操作耗时对比。每条数据注明压测命令的完整参数与机器规格，性能采样工具抓出热点函数前五名，火焰图随材料提交；评审复测时按文档逐条命令应当能重现，数据来源不清的结论会被当场质疑。', '三组数据三份命令', {
+        title: '一条采集脚本产出并发曲线、perf 数据和火焰图',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+mkdir -p reports/final
+cat > reports/final/environment.txt <<EOF
+compiler=$(c++ --version | head -1)
+kernel=$(uname -srm)
+cpu=$(lscpu | grep 'Model name' | cut -d: -f2- | xargs)
+commit=$(git rev-parse HEAD)
+binary=$(sha256sum build/asio_server)
+EOF
+
+for CONCURRENCY in 100 500 1000; do
+  wrk -t8 -c"$CONCURRENCY" -d60s --latency \
+    http://127.0.0.1:9000/echo \
+    > "reports/final/wrk-$CONCURRENCY.txt"
+done
+
+pid=$(pgrep -n asio_server)
+perf stat -p "$pid" -e cycles,instructions,cache-misses,branch-misses \
+  -- sleep 30 2> reports/final/perf-stat.txt
+perf record -F 99 -g -p "$pid" -o reports/final/perf.data -- sleep 30
+perf script -i reports/final/perf.data | \
+  stackcollapse-perf.pl | flamegraph.pl > reports/final/flame.svg
+perf report -i reports/final/perf.data --stdio --no-children |
+  head -30 > reports/final/hotspots.txt
+sha256sum reports/final/* > reports/final/SHA256SUMS`,
+        output: `reports/final/wrk-100.txt
+reports/final/wrk-500.txt
+reports/final/wrk-1000.txt
+reports/final/flame.svg
+reports/final/hotspots.txt
+reports/final/SHA256SUMS
+
+三个并发档位使用相同机器、时长、构建和测试命令。
+perf stat 说明瓶颈类别，火焰图说明热点路径，二者不能只交其一。
+环境文件记录提交号与二进制哈希，评审才能确认自己复测的是同一版本。`,
+      }],
+      ['源码讲解路径', '源码答辩走调用链：从 async_accept 进入连接建立，到读回调触发帧解析器，再到 strand 提交业务回调，每个环节标注关键行号；用到的 STL 与 Asio 实现锚点一并附上，例如 epoll_reactor 注册描述符的位置。评审会随机指定链上一环要求现场展开，讲不出的环节按未掌握计，链路完整比功能数量更重要。', '沿调用链讲解', {
+        title: 'rg + perf：把项目调用链与 Asio reactor 源码锚点对齐',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+SRC="src"
+
+rg -n "async_accept|async_read|bind_executor|close\(" "$SRC"
+rg -n "class epoll_reactor" \
+  /usr/include/boost/asio/detail/epoll_reactor.hpp | head -4
+rg -n "epoll_ctl|EPOLL_CTL_ADD" \
+  /usr/include/boost/asio/detail/impl/epoll_reactor.ipp | head -8
+rg -n "class strand|dispatch\(" \
+  /usr/include/boost/asio/strand.hpp | head -12
+
+perf record -F 99 -g -p "$(pgrep -n asio_server)" \
+  -o reports/final/demo.data -- sleep 10
+perf report -i reports/final/demo.data --stdio --no-children |
+  head -24 | tee reports/final/demo-callchain.txt
+objdump -dC build/asio_server |
+  rg -n "Session::on_read|Session::submit" | head -6`,
+        output: `src/session.cpp:38: socket_.async_read_some(...)
+src/session.cpp:57: asio::post(lane_, asio::bind_executor(...))
+/usr/include/boost/asio/detail/impl/epoll_reactor.ipp:...:epoll_ctl(...)
+/usr/include/boost/asio/strand.hpp:...:class strand
+  18.42% asio_server  libc.so.6  [.] epoll_wait
+  12.10% asio_server  asio_server [.] Session::on_read
+...
+
+项目层锚点解释业务分支，Asio 层锚点解释事件怎样进入 handler。
+perf 栈中的 Session::on_read 必须能对应 src/session.cpp 的实际行。
+最终报告只保留实际运行并用到的命令，不把未使用的环境变量当成源码证据。`,
+      }],
+      ['边界与复盘', '结题材料如实写清边界：已验证的并发上限、未覆盖的故障场景、协议解析对粘包与半包的处理依据；已知缺陷逐条列出，例如写缓冲超限时对慢客户端的断连策略不够平滑。复盘记录每条设计决策的备选方案与放弃理由，例如为何选 strand 而非全局互斥锁；边界清晰的项目比包装完美的项目更经得起追问。', '边界如实列出', {
+        title: '机器可校验的 known-limits.json 与答辩边界摘要',
+        language: 'bash',
+        code: String.raw`set -euo pipefail
+mkdir -p graduation
+cat > graduation/known-limits.json <<'JSON'
+{
+  "verified": {
+    "connections": 4096,
+    "duration_seconds": 1800,
+    "p99_ms_at_1000_connections": 38.2
+  },
+  "not_verified": [
+    "跨公网高丢包链路",
+    "10k 以上并发连接",
+    "进程被 SIGKILL 后快照与日志恢复"
+  ],
+  "known_issues": [
+    "慢客户端写缓冲超过 4MiB 时直接断连，未做逐步降速"
+  ],
+  "decisions": [
+    "每连接 strand 代替全局锁，避免跨连接串行化"
+  ]
+}
+JSON
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+path = Path("graduation/known-limits.json")
+data = json.loads(path.read_text())
+assert data["verified"]["connections"] == 4096
+assert data["not_verified"] and data["known_issues"]
+print("verified_connections=", data["verified"]["connections"])
+print("unverified_scenarios=", len(data["not_verified"]))
+print("known_issues=", len(data["known_issues"]))
+PY
+sha256sum graduation/known-limits.json |
+  tee graduation/known-limits.sha256`,
+        output: `verified_connections= 4096
+unverified_scenarios= 3
+known_issues= 1
+...  graduation/known-limits.json
+
+边界文件必须区分已经验证、尚未验证和已知缺陷。
+压测时长与 p99 数值要和原始报告对应，不能只写成功连接数。
+每次答辩材料更新后重算哈希，评审可据此确认展示版本没有被临时替换。`,
+      }],
     ],
   },
 ];
