@@ -20,6 +20,11 @@ export function isElectronHost(): boolean {
   return typeof window !== 'undefined' && !!(window as { electronAPI?: unknown }).electronAPI;
 }
 
+/** 插件前端 bundle 的共享依赖 shim 依赖宿主桥，未就绪时不能提前 import。 */
+export function isPluginHostBridgeReady(): boolean {
+  return typeof window !== 'undefined' && !!window.__YZ_HOST__;
+}
+
 /**
  * 插件包内资源地址。
  *  · Electron file:// 页面：走 yz://，离线包内直读；
@@ -49,6 +54,9 @@ const loaded = new Map<string, Promise<unknown> | undefined>();
 
 /** 装载插件前端模块（带缓存与失败兜底）。返回 undefined = 装载失败，调用方降级。 */
 export async function loadPluginFrontend(pluginId: string, entry: string): Promise<unknown | undefined> {
+  // 没挂桥时 bundle 里的 shared/*.mjs 会立即抛错。返回 undefined 让路由走内置组件，
+  // 不缓存这次结果；后续入口补挂桥或重试时仍可正常加载。
+  if (!isPluginHostBridgeReady()) return undefined;
   const key = `${pluginId}#${entry}`;
   const cached = loaded.get(key);
   if (cached) return cached;

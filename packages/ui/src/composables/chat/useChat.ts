@@ -54,6 +54,7 @@ import {
 //      `from '.../useChat'` 的既有外部 import 全部有效（零破坏）。
 import { buildMessageRounds, type AgentStep, type SubAgentRound, type MessageRound } from './message-rounds';
 import { formatContinueTaskPrefill } from './continue-task';
+import { listWorkspaceFiles } from './workspace-files';
 export type { AgentStep, SubAgentRound, MessageRound };
 export { buildMessageRounds };
 
@@ -3970,24 +3971,7 @@ ${q.text}
   async function loadWorkspaceFiles() {
     try {
       const { getPlatformAdapter } = await import('@yan-zhi/core');
-      const adapter = getPlatformAdapter();
-      const filesDir = 'workspace/files';
-      const exists = await adapter.fs.exists(filesDir);
-      if (!exists) {
-        await adapter.fs.mkdir(filesDir);
-        workspaceFiles.value = [];
-        return;
-      }
-      const entries = await adapter.fs.readDir(filesDir);
-      const result: Array<{ name: string; path: string; size: number; isDir: boolean }> = [];
-      for (const entry of entries) {
-        const p = filesDir + '/' + entry;
-        const entryExists = await adapter.fs.exists(p);
-        if (!entryExists) continue;
-        result.push({ name: entry, path: p, size: 0, isDir: false });
-      }
-      result.sort((a: any, b: any) => a.name.localeCompare(b.name));
-      workspaceFiles.value = result;
+      workspaceFiles.value = await listWorkspaceFiles(getPlatformAdapter());
     } catch (e) {
       console.error('loadWorkspaceFiles error:', e);
     }

@@ -5,7 +5,7 @@ import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from '@yan-zhi/ui/App.vue';
-import { router } from '@yan-zhi/ui';
+import { initPluginHostBridge, router } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { App as CapApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
@@ -16,6 +16,8 @@ import { registerAndroidM1NfcDriver } from './m1-nfc';
 import { createHistoryBackGuard } from './back-navigation';
 
 setPlatformAdapter(mobileAdapter);
+// 插件前端 bundle 依赖宿主桥提供共享依赖；必须在挂载/同步插件路由前就绪。
+initPluginHostBridge();
 // M1 NFC 真机驱动：只有 Android 原生壳会注册，其余平台保持无驱动 → 课程自动走模拟器
 registerAndroidM1NfcDriver();
 

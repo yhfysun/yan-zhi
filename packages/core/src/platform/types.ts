@@ -32,6 +32,14 @@ export interface FsAdapter {
   readDir(path: string): Promise<string[]>;
   /** 可选：返回结构化目录条目（含 is_dir）。桌面端用 Rust 命令一次获取，避免 N+1 调用 */
   listDirEntries?(path: string): Promise<DirEntryInfo[]>;
+  /**
+   * 可选：当前是否已有可用的工作区根目录。
+   *
+   * Web 的 File System Access API 在用户授权前没有根目录，`exists()` 会返回 false，
+   * 但 `mkdir()` 会抛 WebPlatformNotSupportedError。调用方应先看此能力，避免把
+   * “尚未授权”误当成“目录不存在并需要创建”。未实现此方法的端视为根目录可用。
+   */
+  hasWorkspaceRoot?(): boolean;
 }
 
 /** 钥匙串适配器（安全存储 API Key） */

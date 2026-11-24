@@ -528,6 +528,7 @@ class WebFs implements FsAdapter {
 
   getAuthorized(): boolean { return !!this.rootHandle; }
   getRootName(): string { return this.rootName; }
+  hasWorkspaceRoot(): boolean { return this.getAuthorized(); }
 }
 
 /** 用原生 IndexedDB 持久化 FSA directory handle（结构化克隆兼容） */

@@ -5,7 +5,7 @@ import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from './App.vue';
-import { router } from '@yan-zhi/ui';
+import { initPluginHostBridge, router } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema } from '@yan-zhi/core';
 import { webAdapter } from './platform';
 
@@ -24,6 +24,10 @@ setPlatformAdapter({
   llmProxyBase: '/api/llm',
 });
 log('平台适配器已注入');
+
+// 插件前端 bundle 依赖宿主桥提供共享依赖；必须在挂载/同步插件路由前就绪。
+initPluginHostBridge();
+log('插件宿主桥已挂载');
 
 // 初始化数据库
 initSchema((sql) => webAdapter.db.exec(sql))

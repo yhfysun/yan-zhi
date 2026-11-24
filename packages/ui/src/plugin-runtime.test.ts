@@ -23,3 +23,30 @@ describe('pluginFrontendUrl 运行时来源', () => {
     expect(SRC).toContain('withMediaAuthQuery');
   });
 });
+
+describe('插件宿主桥时序', () => {
+  it('宿主桥未就绪时不 import 依赖 shim 的插件 bundle', () => {
+    const fn = SRC.match(/export async function loadPluginFrontend\([\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).not.toBe('');
+    const guardAt = fn.indexOf('if (!isPluginHostBridgeReady()) return undefined;');
+    const importAt = fn.indexOf('await import(');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(importAt).toBeGreaterThan(guardAt);
+  });
+
+  it('Web、移动和桌面入口都在挂载路由前初始化宿主桥', () => {
+    const entries = [
+      resolve(__dirname, '../../../apps/web/src/main.ts'),
+      resolve(__dirname, '../../../apps/mobile/src/main.ts'),
+      resolve(__dirname, '../../../apps/desktop/src/main.ts'),
+    ];
+    for (const path of entries) {
+      const source = readFileSync(path, 'utf8');
+      const bridgeAt = source.indexOf('initPluginHostBridge();');
+      const routerAt = source.indexOf('app.use(router);');
+      expect(bridgeAt, `${path} 未初始化插件宿主桥`).toBeGreaterThan(-1);
+      expect(routerAt, `${path} 未挂载路由`).toBeGreaterThan(-1);
+      expect(bridgeAt, `${path} 在路由挂载后才初始化宿主桥`).toBeLessThan(routerAt);
+    }
+  });
+});
