@@ -11,8 +11,125 @@ class WebPlatformNotSupportedError extends Error {
   override name = 'NotSupportedError';
 }
 
+export type WebSqlStatementKind =
+  | 'empty'
+  | 'ddl'
+  | 'insert'
+  | 'insert-select'
+  | 'update'
+  | 'delete'
+  | 'noop'
+  | 'unsupported';
+
+/**
+ * 去掉语句前面的 SQL 注释。`initSchema` 的 DDL 片段通常以
+ * `-- 平台\nCREATE TABLE...` 开头；如果直接按首关键字判断，会把合法 DDL
+ * 误判成不支持语句并阻断 Web 启动。
+ */
+export function stripLeadingWebSqlComments(sql: string): string {
+  let rest = sql.trimStart();
+  while (rest.startsWith('--') || rest.startsWith('/*')) {
+    if (rest.startsWith('--')) {
+      const newline = rest.indexOf('\n');
+      rest = newline < 0 ? '' : rest.slice(newline + 1).trimStart();
+      continue;
+    }
+    const end = rest.indexOf('*/', 2);
+    rest = end < 0 ? '' : rest.slice(end + 2).trimStart();
+  }
+  return rest.trim();
+}
+
+/** 按 SQLite 语句边界拆分，忽略字符串、标识符和注释里的分号。 */
+export function splitWebSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | '`' | ']' | null = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    const next = sql[index + 1];
+
+    if (lineComment) {
+      current += char;
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      current += char;
+      if (char === '*' && next === '/') {
+        current += next;
+        index += 1;
+        blockComment = false;
+      }
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (quote === ']' && char === ']') {
+        quote = null;
+      } else if (quote !== ']' && char === quote) {
+        if (next === quote) {
+          current += next;
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === '-' && next === '-') {
+      current += `${char}${next}`;
+      index += 1;
+      lineComment = true;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      current += `${char}${next}`;
+      index += 1;
+      blockComment = true;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === '[') {
+      quote = ']';
+      current += char;
+      continue;
+    }
+    if (char === ';') {
+      if (current.trim()) statements.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) statements.push(current.trim());
+  return statements;
+}
+
+/** 对 Web 端支持范围做单一分类，运行时与回归测试共用同一口径。 */
+export function classifyWebSqlStatement(raw: string): WebSqlStatementKind {
+  const sql = stripLeadingWebSqlComments(raw);
+  if (!sql) return 'empty';
+  if (/^(?:CREATE|DROP|ALTER)\b/i.test(sql)) return 'ddl';
+  if (/^(?:BEGIN|COMMIT|END|PRAGMA|VACUUM|ANALYZE)\b/i.test(sql)) return 'noop';
+  if (/^INSERT\s+(?:OR\s+\w+\s+)?INTO\b/i.test(sql)) {
+    return /\bSELECT\b/i.test(sql) ? 'insert-select' : 'insert';
+  }
+  if (/^UPDATE\b/i.test(sql)) return 'update';
+  if (/^DELETE\s+FROM\b/i.test(sql)) return 'delete';
+  return 'unsupported';
+}
+
 /** Web 端数据库（用 Dexie 模拟 SQL 接口） */
-class WebDatabase extends Dexie implements DatabaseAdapter {
+export class WebDatabase extends Dexie implements DatabaseAdapter {
   _tables: Record<string, Dexie.Table<any, string>>;
   keyring!: Dexie.Table<{ key: string; value: string }, string>;
 
@@ -64,71 +181,117 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
   }
 
   async exec(sql: string, params: unknown[] = []): Promise<void> {
-    // Web 端用 Dexie ORM，DDL 通过 version() 声明，这里只实现 INSERT/UPDATE/DELETE
-    const trimmed = sql.trim();
-
-    // INSERT INTO table (col1, col2, ...) VALUES (?, ?, ...)
-    const ins = trimmed.match(/^INSERT\s+(?:OR\s+\w+\s+)?INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
-    if (ins) {
-      const [, tableName, colsRaw, phRaw] = ins;
-      const table = this._tables[tableName];
-      if (!table) throw new Error(`未知表: ${tableName}`);
-      const cols = colsRaw.split(',').map((c) => c.trim());
-      const phCount = phRaw.split(',').length;
-      if (phCount !== cols.length || phCount !== params.length) {
-        throw new Error(`INSERT 参数数量不匹配: cols=${cols.length}, placeholders=${phCount}, params=${params.length}`);
+    // Web 端用 Dexie ORM，DDL 通过 version() 声明，语句执行器负责吸收 SQLite 方言差异。
+    for (const rawStatement of splitWebSqlStatements(sql)) {
+      const trimmed = stripLeadingWebSqlComments(rawStatement);
+      const kind = classifyWebSqlStatement(trimmed);
+      if (kind === 'empty' || kind === 'ddl' || kind === 'noop' || kind === 'insert-select') {
+        continue;
       }
-      const row: Record<string, unknown> = {};
-      cols.forEach((c, i) => (row[c] = params[i]));
-      await table.add(row);
-      return;
-    }
 
-    // UPDATE table SET col1=?, col2=? WHERE col=?
-    const upd = trimmed.match(/^UPDATE\s+(\w+)\s+SET\s+([^]+?)\s+WHERE\s+([^]+)$/i);
-    if (upd) {
-      const [, tableName, setRaw, whereRaw] = upd;
-      const table = this._tables[tableName];
-      if (!table) throw new Error(`未知表: ${tableName}`);
-      const setCols = setRaw.split(',').map((s) => s.trim().split('=')[0].trim());
-      // 简化：SET 部分按顺序消耗 params，WHERE 部分剩余的 params 用于过滤
-      const setValues = params.slice(0, setCols.length);
-      const whereValues = params.slice(setCols.length);
-      const patch: Record<string, unknown> = {};
-      setCols.forEach((c, i) => (patch[c] = setValues[i]));
-      // 简化 WHERE：仅支持 col=? 形式，取最后一个作为主键过滤
-      const whereMatch = whereRaw.match(/(\w+)\s*=\s*\?/);
-      if (whereMatch) {
-        const [, whereCol] = whereMatch;
-        const whereVal = whereValues[whereValues.length - 1];
-        await table.where(whereCol).equals(whereVal as never).modify(patch);
-      } else {
-        await table.toCollection().modify(patch);
+      // INSERT [OR IGNORE|REPLACE] INTO table (col1, col2, ...) VALUES (?, ?, ...)
+      const ins = trimmed.match(
+        /^INSERT\s+(?:OR\s+(IGNORE|REPLACE)\s+)?INTO\s+["`[]?(\w+)["`\]]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i,
+      );
+      if (ins) {
+        const [, conflictMode, tableName, colsRaw, phRaw] = ins;
+        const table = this._tables[tableName];
+        if (!table) throw new Error(`未知表: ${tableName}`);
+        const cols = colsRaw.split(',').map((c) => c.trim().replace(/^["`[]|["`\]]$/g, ''));
+        const phCount = phRaw.split(',').length;
+        if (phCount !== cols.length || phCount !== params.length) {
+          throw new Error(`INSERT 参数数量不匹配: cols=${cols.length}, placeholders=${phCount}, params=${params.length}`);
+        }
+        const row: Record<string, unknown> = {};
+        cols.forEach((c, i) => (row[c] = params[i]));
+        if (conflictMode?.toUpperCase() === 'REPLACE') {
+          await table.put(row);
+        } else if (conflictMode?.toUpperCase() === 'IGNORE' && row.id != null) {
+          if (!(await table.get(row.id))) await table.add(row);
+        } else {
+          await table.add(row);
+        }
+        continue;
       }
-      return;
-    }
 
-    // DELETE FROM table WHERE col=?
-    const del = trimmed.match(/^DELETE\s+FROM\s+(\w+)\s+WHERE\s+([^]+)$/i);
-    if (del) {
-      const [, tableName, whereRaw] = del;
-      const table = this._tables[tableName];
-      if (!table) throw new Error(`未知表: ${tableName}`);
-      const whereMatch = whereRaw.match(/(\w+)\s*=\s*\?/);
-      if (whereMatch) {
-        const [, whereCol] = whereMatch;
-        await table.where(whereCol).equals(params[params.length - 1] as never).delete();
+      // UPDATE table SET col1=?, col2=? WHERE col=?
+      const upd = trimmed.match(/^UPDATE\s+["`[]?(\w+)["`\]]?\s+SET\s+([\s\S]+?)\s+WHERE\s+([\s\S]+)$/i);
+      if (upd) {
+        const [, tableName, setRaw, whereRaw] = upd;
+        const table = this._tables[tableName];
+        if (!table) throw new Error(`未知表: ${tableName}`);
+        const whereEq = whereRaw.match(/^["`[]?(\w+)["`\]]?\s*=\s*\?$/i);
+        const whereNull = whereRaw.match(/^["`[]?(\w+)["`\]]?\s+IS\s+NULL$/i);
+        const coalesceSet = setRaw.match(
+          /^["`[]?(\w+)["`\]]?\s*=\s*COALESCE\(\s*["`[]?(\w+)["`\]]?\s*,\s*["`[]?(\w+)["`\]]?\s*\)$/i,
+        );
+        if (coalesceSet && whereNull) {
+          const [, targetColumn, firstColumn, fallbackColumn] = coalesceSet;
+          const nullColumn = whereNull[1];
+          await table.toCollection().modify((row: Record<string, unknown>) => {
+            if (row[nullColumn] == null) {
+              row[targetColumn] = row[firstColumn] ?? row[fallbackColumn];
+            }
+          });
+          continue;
+        }
+        const setParts = setRaw.split(',').map((part) => part.trim());
+        const patch: Record<string, unknown> = {};
+        let paramIndex = 0;
+        for (const part of setParts) {
+          const assignment = part.match(/^["`[]?(\w+)["`\]]?\s*=\s*(.*)$/s);
+          if (!assignment) {
+            throw new Error(`[WebDatabase] 不支持的 UPDATE 赋值: ${part.slice(0, 80)}`);
+          }
+          const [, column, expression] = assignment;
+          if (expression.trim() === '?') {
+            patch[column] = params[paramIndex];
+            paramIndex += 1;
+          } else if (/^NULL$/i.test(expression.trim())) {
+            patch[column] = null;
+          } else {
+            patch[column] = expression.trim();
+          }
+        }
+
+        if (whereEq) {
+          const whereVal = params[paramIndex];
+          await table.where(whereEq[1]).equals(whereVal as never).modify(patch);
+        } else if (whereNull) {
+          const column = whereNull[1];
+          await table.toCollection().modify((row: Record<string, unknown>) => {
+            if (row[column] == null) {
+              Object.assign(row, patch);
+            }
+          });
+        } else if (params.length === 0) {
+          // schema.ts 的 SQLite 数据回填使用表达式而非绑定参数；Web 端保留调用时的数据，
+          // 不把表达式字符串写进 Dexie 行。
+          continue;
+        } else {
+          throw new Error(`[WebDatabase] 不支持的 UPDATE 条件: ${whereRaw.slice(0, 100)}`);
+        }
+        continue;
       }
-      return;
+
+      // DELETE FROM table WHERE col=?
+      const del = trimmed.match(/^DELETE\s+FROM\s+["`[]?(\w+)["`\]]?\s+WHERE\s+([\s\S]+)$/i);
+      if (del) {
+        const [, tableName, whereRaw] = del;
+        const table = this._tables[tableName];
+        if (!table) throw new Error(`未知表: ${tableName}`);
+        const whereMatch = whereRaw.match(/^["`[]?(\w+)["`\]]?\s*=\s*\?$/i);
+        if (whereMatch) {
+          await table.where(whereMatch[1]).equals(params[params.length - 1] as never).delete();
+        }
+        continue;
+      }
+
+      // 非 DDL 的未知语句不再静默吞掉，显式失败并记录结构化能力告警
+      const err = new Error(`[WebDatabase] 不支持的 SQL: ${trimmed.slice(0, 120)}`);
+      console.warn('[WebDatabase] capability: unsupported-sql', { sql: trimmed.slice(0, 200) });
+      throw err;
     }
-
-    // DDL（CREATE TABLE / CREATE INDEX / CREATE VIRTUAL TABLE）：Dexie 已通过 version() 声明，忽略
-    if (/^(CREATE|DROP|ALTER)\s/i.test(trimmed)) return;
-
-    // 非 DDL 的未知语句不再静默吞掉，显式失败并记录结构化能力告警
-    const err = new Error(`[WebDatabase] 不支持的 SQL: ${sql.slice(0, 120)}`);
-    console.warn('[WebDatabase] capability: unsupported-sql', { sql: sql.slice(0, 200) });
-    throw err;
   }
 
   async query<T>(sql: string, _params?: unknown[]): Promise<T[]> {
