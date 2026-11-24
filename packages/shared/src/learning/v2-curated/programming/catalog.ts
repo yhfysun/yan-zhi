@@ -71,6 +71,7 @@ import {
 import { C_SYSTEMS_COURSE_QUIZ } from './quiz-c-systems.js';
 import { CPP_PERFORMANCE_COURSE_QUIZ } from './quiz-cpp-performance.js';
 import { PROJECT_TRAINING_BATCHES_04_06_COURSE_QUIZ } from './quiz-project-training-batches-04-06.js';
+import { PROJECT_TRAINING_BATCHES_10_11_COURSE_QUIZ } from './quiz-project-training-batches-10-11.js';
 import { PROGRAMMING_SYSTEMS_COURSES } from './systems.js';
 import {
   programmingLessonSteps,
@@ -175,6 +176,7 @@ const ALL_COURSE_QUIZ: Readonly<Record<string, readonly LearningV2Practice[]>> =
   ...C_SYSTEMS_COURSE_QUIZ,
   ...CPP_PERFORMANCE_COURSE_QUIZ,
   ...PROJECT_TRAINING_BATCHES_04_06_COURSE_QUIZ,
+  ...PROJECT_TRAINING_BATCHES_10_11_COURSE_QUIZ,
   ...PROJECT_TRAINING_COURSE_QUIZ,
 };
 
