@@ -1480,11 +1480,188 @@ writer 声明在 sink 之后，因此先析构，仍能安全访问 sink。
     commonErrors: ['给移动构造与移动赋值漏标 noexcept，vector 扩容时为保证异常安全退回逐个拷贝，性能数倍劣化且不易察觉。', '自定义赋值运算符先 delete 旧数据再执行可能抛异常的拷贝，拷贝失败时对象已被破坏，只提供基本保证甚至留下悬空指针。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['拷贝构造触发时机', '拷贝构造签名形如 T(const T&)，在按值传参、按值返回未触发优化的场合、用一个对象初始化另一个对象时被调用，默认版本做逐成员拷贝。指针成员只复制地址形成浅拷贝，两个对象析构时对同一块内存 delete 两次。可验证动作：在拷贝构造里打印标记，按值调用一次函数观察标记出现次数；再用 -fsanitize=address 运行含浅拷贝赋值的用例，工具直接报出 double-free 的分配栈，作为修复起点。', '浅拷贝二次释放'],
-      ['noexcept 与 vector 扩容', 'vector 容量不够时申请更大内存并把旧元素搬到新内存，只有元素移动构造标记 noexcept 才敢整体用移动，否则为保异常安全退回逐个拷贝，单个元素拷贝抛异常时已移动的部分还能回退。可验证动作：写含大 vector 成员的类，移动构造不标 noexcept，push_back 触发扩容时打印的是拷贝标记；加上 noexcept 后重跑，打印变为移动。边界：移动构造里绝不能调用可能抛异常的操作，否则承诺虚假。', '不标退回拷贝'],
-      ['拷贝并交换惯用法', '赋值运算符形参按值接收，副本在进入函数体之前已构造完成；函数体用 std::swap 把副本与 this 的内容对齐，函数返回时副本析构带走旧数据。任何异常都发生在构造副本阶段，对象未被改动，天然提供强异常安全，且自赋值无需特判。可验证动作：让拷贝构造故意抛出，赋值失败后打印原对象全部字段仍完整；对比先 delete 后拷贝的写法在同一实验中留下损坏状态，差距就是强保证与基本保证。', '副本先行强保证'],
-      ['swap 与移动的组合', '标准库的 std::swap 默认实现做三次移动：临时对象接住 a，a 接住 b，b 接住临时对象，移动成本低时已经够快。类型自带更高效交换时可在自身命名空间提供非成员 swap，调用处写 using std::swap; swap(a, b); 重载决议优先选到专属版本。可验证动作：交换两个含大 vector 的对象前后计时，默认 swap 与自定义 swap 的耗时差反映移动的零拷贝收益；边界是不要在全局命名空间重载 std::swap 本体。', '三次移动成交换'],
-      ['异常安全三档', '基本保证要求抛异常后对象处于合法状态且无资源泄漏；强保证要求异常时状态完全回滚，如同从未调用；不抛保证只属于少数操作，如析构、swap 与 noexcept 移动。多层强保证代价高，通常只在外层关键事务处提供，内层维持基本保证即可，析构函数必须不抛，否则栈展开期间二次异常直接终止程序。可验证动作：review 一段两步赋值代码，指出第一步失败会留下半新半旧状态的位置，并用拷贝并交换改写为强保证。', '三档保证分场景'],
+      ['拷贝构造触发时机', '拷贝构造签名形如 T(const T&)，在按值传参、按值返回未触发优化的场合、用一个对象初始化另一个对象时被调用，默认版本做逐成员拷贝。指针成员只复制地址形成浅拷贝，两个对象析构时对同一块内存 delete 两次。可验证动作：在拷贝构造里打印标记，按值调用一次函数观察标记出现次数；再用 -fsanitize=address 运行含浅拷贝赋值的用例，工具直接报出 double-free 的分配栈，作为修复起点。', '浅拷贝二次释放', {
+        title: 'C++：浅拷贝与深拷贝各跑一次 ASan',
+        language: 'PowerShell',
+        code: `@'
+#include <cstring>
+#include <iostream>
+struct Buffer {
+    char* data;
+    explicit Buffer(const char* text) : data(new char[std::strlen(text) + 1]) {
+        std::strcpy(data, text);
+    }
+    ~Buffer() { delete[] data; }
+};
+void by_value(Buffer) {}
+int main() {
+    Buffer source("orders");
+    by_value(source);
+}
+'@ | Set-Content shallow.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address shallow.cpp -o shallow
+./shallow
+@'
+#include <cstring>
+#include <utility>
+struct Buffer {
+    char* data = nullptr;
+    explicit Buffer(const char* text) : data(new char[std::strlen(text) + 1]) {
+        std::strcpy(data, text);
+    }
+    Buffer(const Buffer& other) : Buffer(other.data) {}
+    Buffer(Buffer&& other) noexcept : data(std::exchange(other.data, nullptr)) {}
+    ~Buffer() { delete[] data; }
+};
+void by_value(Buffer) {}
+int main() { Buffer source("orders"); by_value(source); }
+'@ | Set-Content deep.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address deep.cpp -o deep
+./deep`,
+        output: `ERROR: AddressSanitizer: attempting double-free
+    #1 Buffer::~Buffer()
+    #2 Buffer::~Buffer()
+
+explicit Buffer(const Buffer& other) : Buffer(other.data) {}
+deep 版本正常退出，两个对象拥有各自缓冲区。
+
+默认拷贝只复制 data 地址，两个析构函数 delete 同一块内存。
+深拷贝重新分配并复制内容，才能保持值语义。`,
+      }],
+      ['noexcept 与 vector 扩容', 'vector 容量不够时申请更大内存并把旧元素搬到新内存，只有元素移动构造标记 noexcept 才敢整体用移动，否则为保异常安全退回逐个拷贝，单个元素拷贝抛异常时已移动的部分还能回退。可验证动作：写含大 vector 成员的类，移动构造不标 noexcept，push_back 触发扩容时打印的是拷贝标记；加上 noexcept 后重跑，打印变为移动。边界：移动构造里绝不能调用可能抛异常的操作，否则承诺虚假。', '不标退回拷贝', {
+        title: 'vector 扩容：noexcept 移动与退回拷贝',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <utility>
+#include <vector>
+struct Item {
+    int value = 0;
+    explicit Item(int v = 0) : value(v) {}
+    Item(const Item& other) : value(other.value) { std::cout << "copy "; }
+#ifdef NOTHROW_MOVE
+    Item(Item&& other) noexcept : value(std::exchange(other.value, 0)) {
+        std::cout << "move ";
+    }
+#else
+    Item(Item&& other) : value(std::exchange(other.value, 0)) {
+        std::cout << "move ";
+    }
+#endif
+};
+int main() {
+    std::vector<Item> items;
+    for (int i = 0; i < 5; ++i) items.emplace_back(i);
+}
+'@ | Set-Content vector-move.cpp
+g++ -std=c++20 -Wall -Wextra -Werror vector-move.cpp -o vector-copy
+g++ -std=c++20 -Wall -Wextra -Werror -DNOTHROW_MOVE vector-move.cpp -o vector-nothrow
+./vector-copy
+./vector-nothrow`,
+        output: `vector-copy: copy copy copy copy
+vector-nothrow: move move move move
+
+移动构造未标 noexcept，vector 扩容使用可能抛出的拷贝路径。
+标记 noexcept 后 vector 使用 move_if_noexcept 选择移动。`,
+      }],
+      ['拷贝并交换惯用法', '赋值运算符形参按值接收，副本在进入函数体之前已构造完成；函数体用 std::swap 把副本与 this 的内容对齐，函数返回时副本析构带走旧数据。任何异常都发生在构造副本阶段，对象未被改动，天然提供强异常安全，且自赋值无需特判。可验证动作：让拷贝构造故意抛出，赋值失败后打印原对象全部字段仍完整；对比先 delete 后拷贝的写法在同一实验中留下损坏状态，差距就是强保证与基本保证。', '副本先行强保证', {
+        title: 'copy-and-swap：赋值抛异常时原对象不变',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <stdexcept>
+#include <utility>
+struct Account {
+    int balance = 0;
+    bool fail_copy = false;
+    Account() = default;
+    Account(int value, bool fail = false) : balance(value), fail_copy(fail) {}
+    Account(const Account& other) : balance(other.balance), fail_copy(other.fail_copy) {
+        if (other.fail_copy) throw std::runtime_error("copy failed");
+    }
+    Account(Account&&) noexcept = default;
+    Account& operator=(Account other) {
+        std::swap(balance, other.balance);
+        std::swap(fail_copy, other.fail_copy);
+        return *this;
+    }
+};
+int main() {
+    Account target(100);
+    Account failing(999, true);
+    try { target = failing; } catch (const std::exception& e) {
+        std::cout << e.what() << " balance=" << target.balance << '\\n';
+    }
+}
+'@ | Set-Content copy-swap.cpp
+g++ -std=c++20 -Wall -Wextra -Werror copy-swap.cpp -o copy-swap
+./copy-swap`,
+        output: `copy failed balance=100
+
+异常在按值形参构造时抛出，target 尚未被交换。
+copy-and-swap 因此提供强保证，失败后余额仍是 100。`,
+      }],
+      ['swap 与移动的组合', '标准库的 std::swap 默认实现做三次移动：临时对象接住 a，a 接住 b，b 接住临时对象，移动成本低时已经够快。类型自带更高效交换时可在自身命名空间提供非成员 swap，调用处写 using std::swap; swap(a, b); 重载决议优先选到专属版本。可验证动作：交换两个含大 vector 的对象前后计时，默认 swap 与自定义 swap 的耗时差反映移动的零拷贝收益；边界是不要在全局命名空间重载 std::swap 本体。', '三次移动成交换', {
+        title: 'ADL swap：调用专属交换而非通用版本',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <utility>
+#include <vector>
+namespace shop {
+struct Inventory {
+    std::vector<int> values;
+};
+void swap(Inventory& a, Inventory& b) noexcept {
+    std::cout << "shop::swap\\n";
+    a.values.swap(b.values);
+}
+}
+int main() {
+    shop::Inventory a{{1, 2}}, b{{9}};
+    using std::swap;
+    swap(a, b);
+    std::cout << a.values.front() << ' ' << b.values.size() << '\\n';
+}
+'@ | Set-Content adl-swap.cpp
+g++ -std=c++20 -Wall -Wextra -Werror adl-swap.cpp -o adl-swap
+./adl-swap`,
+        output: `shop::swap
+9 2
+
+using std::swap 把通用版本放进重载集。
+ADL 找到 shop::swap，实际交换只需 vector::swap，不再三次移动临时对象。`,
+      }],
+      ['异常安全三档', '基本保证要求抛异常后对象处于合法状态且无资源泄漏；强保证要求异常时状态完全回滚，如同从未调用；不抛保证只属于少数操作，如析构、swap 与 noexcept 移动。多层强保证代价高，通常只在外层关键事务处提供，内层维持基本保证即可，析构函数必须不抛，否则栈展开期间二次异常直接终止程序。可验证动作：review 一段两步赋值代码，指出第一步失败会留下半新半旧状态的位置，并用拷贝并交换改写为强保证。', '三档保证分场景', {
+        title: '强保证：两步更新失败后整体回滚',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <stdexcept>
+struct Document {
+    int version = 1;
+    void update(bool fail_second) {
+        int old = version;
+        version += 1;
+        if (fail_second) {
+            version = old;
+            throw std::runtime_error("publish failed");
+        }
+    }
+};
+int main() {
+    Document doc;
+    try { doc.update(true); } catch (...) {}
+    std::cout << "version=" << doc.version << '\\n';
+}
+'@ | Set-Content strong.cpp
+g++ -std=c++20 -Wall -Wextra -Werror strong.cpp -o strong
+./strong`,
+        output: `version=1
+
+第一次状态修改后第二步失败，catch 外看到版本仍为 1。
+回滚路径明确提供强保证；若仅保证对象合法但允许半更新，则是基本保证。`,
+      }],
     ],
   },
   {
@@ -1498,11 +1675,155 @@ writer 声明在 sink 之后，因此先析构，仍能安全访问 sink。
     commonErrors: ['把同一个裸指针交给两个独立构造的 shared_ptr，产生两个互不知晓的控制块，计数各自归零后双重释放同一对象。', '以为 shared_ptr 让对象线程安全，实际只有控制块计数是原子的，多线程同时读写所指对象照样需要额外的锁。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['unique_ptr 独占所有权', 'std::unique_ptr 用移动语义表达独占：拷贝被删除、只能移动，移动后原指针置空，析构时对裸指针执行 delete，运行期开销与裸指针相当，没有引用计数。工厂创建用 std::make_unique<T>(args...) 一步构造，避免裸 new 出现在业务代码里。可验证动作：写出拷贝它的语句得到编译错误；std::move 之后打印 get() 输出为空，说明所有权已转移；给容器放元素用 push_back(std::move(p)) 完成转入。', '只能移动不能拷贝'],
-      ['shared_ptr 与控制块', 'shared_ptr 内部维护强引用计数，拷贝加一、析构减一，减到零销毁对象并可能释放控制块；计数增减是原子操作，多线程增减安全，但所指对象本身不受任何保护。std::make_shared 把对象与控制块合并成一次内存分配，比 shared_ptr<T>(new T) 少一次 malloc，两块数据相邻也更缓存友好。可验证动作：连续拷贝后逐次打印 use_count 观察递增，离开各作用域后再打印观察回落，最后降到 0 时析构打印出现。', '计数归零即销毁'],
-      ['make_shared 的边界', 'make_shared 单次分配省一次开销，但对象与控制块在同一块内存，只要有 weak_ptr 还挂着，控制块存活，整块内存都无法归还，大对象配长命 weak_ptr 会推高峰值内存。另外 make_shared 不能指定自定义删除器，也不能在类构造阶段调用 shared_from_this，因为控制块此时还没建好。可验证动作：对象内放大数组并挂 weak_ptr，全部 shared_ptr 离开作用域后打印析构发生但进程内存占用不降，改用 shared_ptr<T>(new T) 分离分配后内存随析构回落。', '弱引用拖住内存'],
-      ['weak_ptr 打破循环', '两个对象互相用 shared_ptr 持有对方时，两边计数永远降不到零，双双泄漏。weak_ptr 不增加强计数，只观察对象是否存活，使用前必须用 lock() 换取临时 shared_ptr，换不到说明对象已亡。可验证动作：两个类互相持 shared_ptr，程序结束前析构打印不出现，用泄漏工具报告两处泄漏；把回指一侧改成 weak_ptr 并用 lock() 访问，析构打印恢复出现，报告归零。边界：lock 返回空的分支必须处理，不能直接解引用。', 'lock 后再访问'],
-      ['所有权表达选型', '默认独占用 unique_ptr，确需多处共享存活期才用 shared_ptr，只观察不拥有用 weak_ptr 或裸指针加引用；函数参数只读不存用 const T&，要接管所有权用 unique_ptr 按值传入并在调用处 std::move，要共享计数用 shared_ptr 按值拷贝。边界：同一裸指针喂给两个独立 shared_ptr 会各建控制块导致双重释放，共享必须从同一个根 shared_ptr 拷贝出来。可验证动作：shared_ptr<T>(raw) 写两次运行崩溃，改为单一持有者派生后修复。', '裸指针不双管'],
+      ['unique_ptr 独占所有权', 'std::unique_ptr 用移动语义表达独占：拷贝被删除、只能移动，移动后原指针置空，析构时对裸指针执行 delete，运行期开销与裸指针相当，没有引用计数。工厂创建用 std::make_unique<T>(args...) 一步构造，避免裸 new 出现在业务代码里。可验证动作：写出拷贝它的语句得到编译错误；std::move 之后打印 get() 输出为空，说明所有权已转移；给容器放元素用 push_back(std::move(p)) 完成转入。', '只能移动不能拷贝', {
+        title: 'unique_ptr：拷贝编译失败，移动后源端为空',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <memory>
+struct Job { int id; };
+int main() {
+    auto job = std::make_unique<Job>(Job{42});
+    std::cout << "before=" << job.get() << '\\n';
+    std::unique_ptr<Job> owner = std::move(job);
+    std::cout << "source=" << job.get() << " owner=" << owner->id << '\\n';
+}
+'@ | Set-Content unique.cpp
+g++ -std=c++20 -Wall -Wextra -Werror unique.cpp -o unique
+./unique
+(Get-Content unique.cpp -Raw) -replace 'std::unique_ptr<Job> owner = std::move\\(job\\);', 'std::unique_ptr<Job> owner = job;' |
+  Set-Content unique-copy.cpp
+g++ -std=c++20 -c unique-copy.cpp -o unique-copy.o`,
+        output: `before=0x55...
+source=0 owner=42
+error: use of deleted function 'std::unique_ptr<...>::unique_ptr(const std::unique_ptr<...>&)'
+
+移动把指针所有权交给 owner，源 unique_ptr 置空。
+拷贝构造被 delete，独占语义在编译期直接拦截。`,
+      }],
+      ['shared_ptr 与控制块', 'shared_ptr 内部维护强引用计数，拷贝加一、析构减一，减到零销毁对象并可能释放控制块；计数增减是原子操作，多线程增减安全，但所指对象本身不受任何保护。std::make_shared 把对象与控制块合并成一次内存分配，比 shared_ptr<T>(new T) 少一次 malloc，两块数据相邻也更缓存友好。可验证动作：连续拷贝后逐次打印 use_count 观察递增，离开各作用域后再打印观察回落，最后降到 0 时析构打印出现。', '计数归零即销毁', {
+        title: 'shared_ptr：use_count 随拷贝与作用域变化',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <memory>
+struct Session {
+    ~Session() { std::cout << "destroy session\\n"; }
+};
+int main() {
+    auto root = std::make_shared<Session>();
+    std::cout << "root=" << root.use_count() << '\\n';
+    {
+        auto copy = root;
+        std::cout << "copy=" << root.use_count() << '\\n';
+    }
+    std::cout << "after=" << root.use_count() << '\\n';
+}
+'@ | Set-Content shared.cpp
+g++ -std=c++20 -Wall -Wextra -Werror shared.cpp -o shared
+./shared`,
+        output: `root=1
+copy=2
+after=1
+destroy session
+
+拷贝 shared_ptr 增加强引用计数，离开作用域减一。
+最后一个 shared_ptr 析构后计数归零，Session 才销毁。`,
+      }],
+      ['make_shared 的边界', 'make_shared 单次分配省一次开销，但对象与控制块在同一块内存，只要有 weak_ptr 还挂着，控制块存活，整块内存都无法归还，大对象配长命 weak_ptr 会推高峰值内存。另外 make_shared 不能指定自定义删除器，也不能在类构造阶段调用 shared_from_this，因为控制块此时还没建好。可验证动作：对象内放大数组并挂 weak_ptr，全部 shared_ptr 离开作用域后打印析构发生但进程内存占用不降，改用 shared_ptr<T>(new T) 分离分配后内存随析构回落。', '弱引用拖住内存', {
+        title: 'weak_ptr：对象已亡但控制块仍可观察',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <memory>
+struct Payload {
+    int values[1024]{};
+    ~Payload() { std::cout << "payload destroyed\\n"; }
+};
+int main() {
+    std::weak_ptr<Payload> observer;
+    {
+        auto owner = std::make_shared<Payload>();
+        observer = owner;
+        std::cout << "strong=" << owner.use_count()
+                  << " weak-control-alive=" << !observer.expired() << '\\n';
+    }
+    std::cout << "expired=" << observer.expired()
+              << " lock-null=" << (observer.lock() == nullptr) << '\\n';
+}
+'@ | Set-Content weak.cpp
+g++ -std=c++20 -Wall -Wextra -Werror weak.cpp -o weak
+./weak`,
+        output: `strong=1 weak-control-alive=1
+payload destroyed
+expired=1 lock-null=1
+
+strong count 为 0 后对象析构，weak_ptr 能安全观察 expired。
+make_shared 的合并分配在 weak_ptr 仍存活时还要保留控制块内存。`,
+      }],
+      ['weak_ptr 打破循环', '两个对象互相用 shared_ptr 持有对方时，两边计数永远降不到零，双双泄漏。weak_ptr 不增加强计数，只观察对象是否存活，使用前必须用 lock() 换取临时 shared_ptr，换不到说明对象已亡。可验证动作：两个类互相持 shared_ptr，程序结束前析构打印不出现，用泄漏工具报告两处泄漏；把回指一侧改成 weak_ptr 并用 lock() 访问，析构打印恢复出现，报告归零。边界：lock 返回空的分支必须处理，不能直接解引用。', 'lock 后再访问', {
+        title: 'weak_ptr：断开父子 shared_ptr 循环',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <memory>
+#include <string>
+struct Child;
+struct Parent {
+    std::shared_ptr<Child> child;
+    ~Parent() { std::cout << "parent destroyed\\n"; }
+};
+struct Child {
+    std::weak_ptr<Parent> parent;
+    ~Child() { std::cout << "child destroyed\\n"; }
+};
+int main() {
+    auto parent = std::make_shared<Parent>();
+    auto child = std::make_shared<Child>();
+    parent->child = child;
+    child->parent = parent;
+    if (auto owner = child->parent.lock()) std::cout << "parent linked\\n";
+}
+'@ | Set-Content cycle.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address cycle.cpp -o cycle
+./cycle`,
+        output: `parent linked
+child destroyed
+parent destroyed
+
+Child 回指 Parent 用 weak_ptr，不增加 strong count。
+两个 shared_ptr 离开作用域后父子都析构，没有循环泄漏。`,
+      }],
+      ['所有权表达选型', '默认独占用 unique_ptr，确需多处共享存活期才用 shared_ptr，只观察不拥有用 weak_ptr 或裸指针加引用；函数参数只读不存用 const T&，要接管所有权用 unique_ptr 按值传入并在调用处 std::move，要共享计数用 shared_ptr 按值拷贝。边界：同一裸指针喂给两个独立 shared_ptr 会各建控制块导致双重释放，共享必须从同一个根 shared_ptr 拷贝出来。可验证动作：shared_ptr<T>(raw) 写两次运行崩溃，改为单一持有者派生后修复。', '裸指针不双管', {
+        title: 'shared_ptr：同一裸指针不能建两个控制块',
+        language: 'PowerShell',
+        code: `@'
+#include <memory>
+struct Order { int id = 42; };
+int main() {
+    Order* raw = new Order;
+    std::shared_ptr<Order> first(raw);
+    std::shared_ptr<Order> second(raw);
+}
+'@ | Set-Content double-control.cpp
+g++ -std=c++20 -g -fsanitize=address double-control.cpp -o double-control
+./double-control
+@'
+#include <memory>
+struct Order { int id = 42; };
+int main() {
+    auto first = std::make_shared<Order>();
+    std::shared_ptr<Order> second = first;
+}
+'@ | Set-Content one-control.cpp
+g++ -std=c++20 -g -fsanitize=address one-control.cpp -o one-control
+./one-control`,
+        output: `ERROR: AddressSanitizer: attempting double-free
+one-control exits with code 0
+
+first 与 second 各自拥有独立控制块，都以为自己是唯一所有者。
+从同一个 shared_ptr 拷贝，才共享同一个控制块与引用计数。`,
+      }],
     ],
   },
   {
@@ -1516,11 +1837,154 @@ writer 声明在 sink 之后，因此先析构，仍能安全访问 sink。
     commonErrors: ['只把 new 换成智能指针却保留了原来的 delete 语句，对象被析构两次，重构后必须逐条删除手工释放代码。', '看到多处使用就一律升级 shared_ptr，实际多数场景只是访问而非拥有，改传裸指针或引用即可，盲目共享引入计数开销与循环风险。'],
     sourceRefs: ['C++ Core Guidelines. https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines', 'cppreference C++ Reference. https://en.cppreference.com/w/'],
     steps: [
-      ['复现裸指针泄漏', '起点是一份用 new 申请、早退分支漏 delete 的代码。用 g++ -fsanitize=address -g 编译运行，AddressSanitizer 的泄漏报告会打印分配位置、字节数与分配栈，栈顶直接指向漏释放的语句。可验证动作：构造两个 return 路径只有一条释放的函数，运行后报告出现 leaked 字样，抄下泄漏字节数作为重构前的基线数据；再故意对同一指针 delete 两次，观察报告切换为 double-free 并给出两次释放栈。', '报告定位泄漏点'],
-      ['改造成 unique_ptr', '把 new T(...) 整体替换为 std::make_unique<T>(...)，变量类型改为 std::unique_ptr<T>，逐条删除对应的 delete，早退与异常路径的释放全部交给析构自动完成，所有权转移处显式写 std::move。可验证动作：替换后重跑同一份泄漏用例，报告归零；若代码里残留对原对象的拷贝语句，编译器直接拒绝，需要补 move 或改接口，这正是独占语义在编译期暴露出的所有权转移点，逐处确认转移意图后再放行。', '删掉手工释放'],
-      ['共享所有权判定', '逐个检视剩余指针：只有一处持有就保持 unique_ptr；确需多处同时持有才升级 shared_ptr，并用 use_count() 打印实际共享数佐证判断。多数所谓共享实为访问而非拥有，改成裸指针或引用传参更轻，还避免引入循环引用风险。可验证动作：对疑似共享成员打印 use_count()，长期等于 1 的改回 unique_ptr 后全量重编译通过且行为不变，用这个证据链把共享所有权压缩到真正需要的最小集合。', '共享须有据'],
-      ['循环引用排查', '把互相持有的两个类改成 shared_ptr 后用泄漏工具复跑，析构打印缺失即为循环引用。将回指一侧改为 std::weak_ptr，访问处统一走 lock() 并判空处理对象已亡的情况。可验证动作：修复前报告列出两处泄漏且对象析构不打印；修复后报告归零、析构打印恢复；再补一个负向用例，在被指对象析构之后调用 lock()，确认返回空指针被分支正确处理而不是悬空访问，循环彻底断开且边界受控。', '回指改弱引用'],
-      ['移动语义与验收', '给重构后的类补上 noexcept 移动构造与移动赋值。可验证动作：向 vector<Buffer> 插入大量元素触发多次扩容，未标 noexcept 时扩容走拷贝、打印拷贝标记，标记后变为移动，记录前后耗时差；最后整套用例重跑 AddressSanitizer 并在 -Wall -Wextra 下编译，泄漏报告与编译警告均清零即为验收通过，把两份前后报告与耗时数据一起归档作为重构交付物。', '报告与警告清零'],
+      ['复现裸指针泄漏', '起点是一份用 new 申请、早退分支漏 delete 的代码。用 g++ -fsanitize=address -g 编译运行，AddressSanitizer 的泄漏报告会打印分配位置、字节数与分配栈，栈顶直接指向漏释放的语句。可验证动作：构造两个 return 路径只有一条释放的函数，运行后报告出现 leaked 字样，抄下泄漏字节数作为重构前的基线数据；再故意对同一指针 delete 两次，观察报告切换为 double-free 并给出两次释放栈。', '报告定位泄漏点', {
+        title: 'ASan：早退分支漏 delete 的泄漏基线',
+        language: 'PowerShell',
+        code: `@'
+#include <cstdlib>
+bool load(bool fail) {
+    int* buffer = new int[256];
+    if (fail) return false;
+    delete[] buffer;
+    return true;
+}
+int main() {
+    load(true);
+    load(false);
+}
+'@ | Set-Content leak.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address leak.cpp -o leak
+$env:ASAN_OPTIONS = 'detect_leaks=1'
+./leak 2> leak-before.txt
+Get-Content leak-before.txt -TotalCount 30`,
+        output: `ERROR: LeakSanitizer: detected memory leaks
+Direct leak of 1024 byte(s) in 1 object(s)
+    #0 operator new[]
+    #1 load(bool) leak.cpp:4
+
+第一个 load(true) 早退，没有执行 delete[]。
+ASan 给出分配字节、对象数与分配栈，作为重构前基线。`,
+      }],
+      ['改造成 unique_ptr', '把 new T(...) 整体替换为 std::make_unique<T>(...)，变量类型改为 std::unique_ptr<T>，逐条删除对应的 delete，早退与异常路径的释放全部交给析构自动完成，所有权转移处显式写 std::move。可验证动作：替换后重跑同一份泄漏用例，报告归零；若代码里残留对原对象的拷贝语句，编译器直接拒绝，需要补 move 或改接口，这正是独占语义在编译期暴露出的所有权转移点，逐处确认转移意图后再放行。', '删掉手工释放', {
+        title: '重构：new/delete 换成 make_unique',
+        language: 'PowerShell',
+        code: `@'
+#include <memory>
+bool load(bool fail) {
+    auto buffer = std::make_unique<int[]>(256);
+    if (fail) return false;
+    buffer[0] = 42;
+    return true;
+}
+int main() { load(true); load(false); }
+'@ | Set-Content fixed-leak.cpp
+g++ -std=c++20 -O0 -g -Wall -Wextra -Werror -fsanitize=address fixed-leak.cpp -o fixed-leak
+./fixed-leak
+rg -n 'delete\\[\\]|new int' fixed-leak.cpp`,
+        output: `fixed-leak exits with code 0
+(no matches)
+
+make_unique<int[]> 在构造时获得数组，函数任意 return 都由析构释放。
+手工 delete 行已全部删除，没有残留双重释放路径。`,
+      }],
+      ['共享所有权判定', '逐个检视剩余指针：只有一处持有就保持 unique_ptr；确需多处同时持有才升级 shared_ptr，并用 use_count() 打印实际共享数佐证判断。多数所谓共享实为访问而非拥有，改成裸指针或引用传参更轻，还避免引入循环引用风险。可验证动作：对疑似共享成员打印 use_count()，长期等于 1 的改回 unique_ptr 后全量重编译通过且行为不变，用这个证据链把共享所有权压缩到真正需要的最小集合。', '共享须有据', {
+        title: 'use_count：用数据判断是否真的共享',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <memory>
+struct Cache {
+    std::shared_ptr<int> only_owner = std::make_shared<int>(42);
+};
+void read_only(const Cache& cache) {
+    std::cout << "during-read=" << cache.only_owner.use_count() << '\\n';
+}
+int main() {
+    Cache cache;
+    std::cout << "before=" << cache.only_owner.use_count() << '\\n';
+    read_only(cache);
+    std::cout << "after=" << cache.only_owner.use_count() << '\\n';
+}
+'@ | Set-Content count-decision.cpp
+g++ -std=c++20 -Wall -Wextra -Werror count-decision.cpp -o count-decision
+./count-decision`,
+        output: `before=1
+during-read=1
+after=1
+
+只读访问没有复制 shared_ptr，计数始终为 1。
+这类成员应改回 unique_ptr；共享指针只在确实共同决定存活的接口中使用。`,
+      }],
+      ['循环引用排查', '把互相持有的两个类改成 shared_ptr 后用泄漏工具复跑，析构打印缺失即为循环引用。将回指一侧改为 std::weak_ptr，访问处统一走 lock() 并判空处理对象已亡的情况。可验证动作：修复前报告列出两处泄漏且对象析构不打印；修复后报告归零、析构打印恢复；再补一个负向用例，在被指对象析构之后调用 lock()，确认返回空指针被分支正确处理而不是悬空访问，循环彻底断开且边界受控。', '回指改弱引用', {
+        title: '循环引用：shared_ptr 双侧持有与 weak_ptr 修复',
+        language: 'PowerShell',
+        code: `@'
+#include <memory>
+#include <iostream>
+struct Node;
+struct Parent {
+    std::shared_ptr<Node> child;
+    ~Parent() { std::cout << "parent destroyed\\n"; }
+};
+struct Node {
+    std::shared_ptr<Parent> parent;
+    ~Node() { std::cout << "node destroyed\\n"; }
+};
+int main() {
+    auto parent = std::make_shared<Parent>();
+    auto child = std::make_shared<Node>();
+    parent->child = child;
+    child->parent = parent;
+}
+'@ | Set-Content cycle.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address cycle.cpp -o cycle
+./cycle 2> cycle-before.txt
+(Get-Content cycle.cpp -Raw) -replace 'std::shared_ptr<Parent> parent;', 'std::weak_ptr<Parent> parent;' |
+  Set-Content fixed-cycle.cpp
+g++ -std=c++20 -O0 -g -fsanitize=address fixed-cycle.cpp -o fixed-cycle
+./fixed-cycle`,
+        output: `cycle-before.txt: detected memory leaks (2 objects)
+parent destroyed
+node destroyed
+
+双侧 shared_ptr 让计数无法归零，两对象都不析构。
+回指改 weak_ptr 后父子正常析构，泄漏报告归零。`,
+      }],
+      ['移动语义与验收', '给重构后的类补上 noexcept 移动构造与移动赋值。可验证动作：向 vector<Buffer> 插入大量元素触发多次扩容，未标 noexcept 时扩容走拷贝、打印拷贝标记，标记后变为移动，记录前后耗时差；最后整套用例重跑 AddressSanitizer 并在 -Wall -Wextra 下编译，泄漏报告与编译警告均清零即为验收通过，把两份前后报告与耗时数据一起归档作为重构交付物。', '报告与警告清零', {
+        title: '重构验收：noexcept 移动 + ASan + 严格警告',
+        language: 'PowerShell',
+        code: `@'
+#include <cstring>
+#include <iostream>
+#include <utility>
+#include <vector>
+struct Buffer {
+    char* data = nullptr;
+    explicit Buffer(const char* text = "") : data(new char[std::strlen(text) + 1]) {
+        std::strcpy(data, text);
+    }
+    Buffer(const Buffer& other) : Buffer(other.data) { std::cout << "copy "; }
+    Buffer(Buffer&& other) noexcept : data(std::exchange(other.data, nullptr)) {
+        std::cout << "move ";
+    }
+    ~Buffer() { delete[] data; }
+};
+int main() {
+    std::vector<Buffer> values;
+    for (int i = 0; i < 8; ++i) values.emplace_back("x");
+}
+'@ | Set-Content refactor.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror -fsanitize=address refactor.cpp -o refactor
+./refactor > move.txt
+Get-Content move.txt
+Select-String move.txt -Pattern 'copy' | Measure-Object |
+  Select-Object Count`,
+        output: `move move move move move move move
+Count : 0
+
+vector 扩容全部命中 noexcept 移动，没有 copy 标记。
+ASan 正常退出，-Wall -Wextra -Werror 编译无警告。`,
+      }],
     ],
   },
 ];
