@@ -3900,11 +3900,113 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['编译共享库源文件时漏掉 -fPIC，链接期报 relocation R_X86_64_PC32 cannot be used 之类的重定位错误。', '不加 -fvisibility=hidden 直接编译，所有全局符号默认导出，与其他库同名符号冲突后行为悄然被替换。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['静态库的归档与按需取用', '静态库是 ar 工具把若干 .o 打包成的归档文件，执行 ar rcs libmath.a math.o add.o 即生成，r 替换成员、c 创建归档、s 写入符号索引。链接器只在归档成员能消解当前未定义符号时才把该 .o 拷进最终可执行文件，未被引用的成员不占体积。因此链接顺序必须把库放在使用它的目标文件之后，写成 g++ main.o -L. -lmath，顺序颠倒会报 undefined reference。用 nm libmath.a 可逐成员查看符号表验证这一点。', 'ar 只取用到的成员'],
-      ['共享库的 PIC 与运行期查找', 'g++ -shared -fPIC -o libmath.so math.cpp 生成位置无关代码：函数调用经 PLT 跳板、全局数据访问经 GOT 间接寻址，代码段才能被多个进程映射到不同虚拟地址后共享同一物理页。运行期 ld.so 按 DT_RPATH、LD_LIBRARY_PATH、/etc/ld.so.cache 的顺序查找库，ldconfig 扫描库目录重建缓存。可执行文件里写死 SONAME 引用，readelf -d 产物输出的 NEEDED libmath.so 就是运行期要找到的名字。', '重建查找缓存'],
-      ['-fvisibility=hidden 收缩导出面', 'ELF 下所有全局符号默认可见，相当于对外全开放。编译时统一加 -fvisibility=hidden 让符号默认隐藏为本地符号，再在公共头文件对要导出的声明加 __attribute__((visibility("default")))，形成显式导出契约。可验证动作：同一份代码分别在默认与 hidden 两种设置下编译，执行 nm -D libmath.so | wc -l 对比动态符号表条目数，hidden 版本应只剩标注过的 API 与少数运行期符号。', '标注后再导出'],
-      ['nm -D 与 readelf 盘点产物', 'nm -D 只读 .dynsym 动态符号表，正是运行期真正参与解析的符号集合：大写 T 表示本库导出的代码符号，U 表示本库依赖的外部符号。readelf --dyn-syms 可看到同样信息，readelf -d 则列出 NEEDED 依赖与 SONAME。可验证动作：把一个导出函数加上 hidden 属性重新编译后跑 nm -D，该符号应从动态表中消失、只出现在不加 -D 的 nm 输出里；排查 undefined reference 时先看 U 条目就知道缺了哪个库。', 'T 是导出 U 是依赖'],
-      ['SONAME 与库升级的边界', '链接时用 -Wl,-soname,libmath.so.1 把 SONAME 写进共享库，可执行文件记的是 SONAME 而非文件名，因此磁盘上可以有 libmath.so.1.0.2 实体加 .so.1 软链的多版本并存。兼容性修复只改末位版本号；一旦改了函数签名、删了导出符号等破坏 ABI 的变更，必须升主版本号换新 SONAME，否则老程序加载新库后可能直接崩溃。readelf -d 查看现有 SONAME 是发布前必做的核对动作。', '破坏 ABI 就升主版本'],
+      ['静态库的归档与按需取用', '静态库是 ar 工具把若干 .o 打包成的归档文件，执行 ar rcs libmath.a math.o add.o 即生成，r 替换成员、c 创建归档、s 写入符号索引。链接器只在归档成员能消解当前未定义符号时才把该 .o 拷进最终可执行文件，未被引用的成员不占体积。因此链接顺序必须把库放在使用它的目标文件之后，写成 g++ main.o -L. -lmath，顺序颠倒会报 undefined reference。用 nm libmath.a 可逐成员查看符号表验证这一点。', 'ar 只取用到的成员', {
+        title: 'ar/nm：静态库只抽取被引用的成员',
+        language: 'PowerShell',
+        code: `@'
+int used() { return 42; }
+'@ | Set-Content used.cpp
+@'
+int unused() { return 99; }
+'@ | Set-Content unused.cpp
+'int used(); int main() { return used() == 42 ? 0 : 1; }' | Set-Content main.cpp
+g++ -c used.cpp unused.cpp main.cpp
+ar rcs libmath.a used.o unused.o
+nm -C libmath.a
+g++ main.o -L. -lmath -o app
+nm -C app | Select-String 'used|unused'
+size app`,
+        output: `used.o: T used()
+unused.o: T unused()
+000... T used()
+text data bss dec hex filename
+... app
+
+libmath.a 同时包含两个成员，但可执行文件只出现 used。
+链接器按未定义符号抽取 used.o，unused.o 没有被复制。`,
+      }],
+      ['共享库的 PIC 与运行期查找', 'g++ -shared -fPIC -o libmath.so math.cpp 生成位置无关代码：函数调用经 PLT 跳板、全局数据访问经 GOT 间接寻址，代码段才能被多个进程映射到不同虚拟地址后共享同一物理页。运行期 ld.so 按 DT_RPATH、LD_LIBRARY_PATH、/etc/ld.so.cache 的顺序查找库，ldconfig 扫描库目录重建缓存。可执行文件里写死 SONAME 引用，readelf -d 产物输出的 NEEDED libmath.so 就是运行期要找到的名字。', '重建查找缓存', {
+        title: 'PIC/SONAME：共享库依赖与运行期解析',
+        language: 'PowerShell',
+        code: `@'
+int answer() { return 42; }
+'@ | Set-Content math.cpp
+g++ -std=c++20 -fPIC -shared -Wl,-soname,libmath.so.1 math.cpp -o libmath.so.1.0.0
+ln -sf libmath.so.1.0.0 libmath.so.1
+ln -sf libmath.so.1 libmath.so
+'int answer(); int main() { return answer() == 42 ? 0 : 1; }' | Set-Content main.cpp
+g++ main.cpp -L. -lmath -Wl,-rpath,'$ORIGIN' -o app
+readelf -d app | Select-String 'NEEDED|RPATH|RUNPATH'
+readelf -d libmath.so.1.0.0 | Select-String 'SONAME'
+./app; $LASTEXITCODE`,
+        output: `(NEEDED) Shared library: [libmath.so.1]
+(RUNPATH) Library runpath: [$ORIGIN]
+(SONAME) Library soname: [libmath.so.1]
+0
+
+可执行文件记录 SONAME，而不是实体文件名 .so.1.0.0。
+RUNPATH $ORIGIN 让同目录实体库在运行期被找到。`,
+      }],
+      ['-fvisibility=hidden 收缩导出面', 'ELF 下所有全局符号默认可见，相当于对外全开放。编译时统一加 -fvisibility=hidden 让符号默认隐藏为本地符号，再在公共头文件对要导出的声明加 __attribute__((visibility("default")))，形成显式导出契约。可验证动作：同一份代码分别在默认与 hidden 两种设置下编译，执行 nm -D libmath.so | wc -l 对比动态符号表条目数，hidden 版本应只剩标注过的 API 与少数运行期符号。', '标注后再导出', {
+        title: 'visibility：默认导出面与显式 API 对照',
+        language: 'PowerShell',
+        code: `@'
+#if defined(_WIN32)
+#define API __declspec(dllexport)
+#else
+#define API __attribute__((visibility("default")))
+#endif
+API int public_api() { return 42; }
+int internal_helper() { return 7; }
+'@ | Set-Content library.cpp
+g++ -std=c++20 -fPIC -shared library.cpp -o lib-default.so
+g++ -std=c++20 -fPIC -shared -fvisibility=hidden library.cpp -o lib-hidden.so
+nm -D --defined-only lib-default.so | Select-String 'api|helper'
+nm -D --defined-only lib-hidden.so | Select-String 'api|helper'`,
+        output: `lib-default.so: T internal_helper()
+lib-default.so: T public_api()
+lib-hidden.so: T public_api()
+
+默认版本两个全局函数都进入 .dynsym。
+hidden 只保留标注 visibility(default) 的 public_api。`,
+      }],
+      ['nm -D 与 readelf 盘点产物', 'nm -D 只读 .dynsym 动态符号表，正是运行期真正参与解析的符号集合：大写 T 表示本库导出的代码符号，U 表示本库依赖的外部符号。readelf --dyn-syms 可看到同样信息，readelf -d 则列出 NEEDED 依赖与 SONAME。可验证动作：把一个导出函数加上 hidden 属性重新编译后跑 nm -D，该符号应从动态表中消失、只出现在不加 -D 的 nm 输出里；排查 undefined reference 时先看 U 条目就知道缺了哪个库。', 'T 是导出 U 是依赖', {
+        title: 'nm -D / readelf --dyn-syms 对照动态表',
+        language: 'PowerShell',
+        code: `nm -D lib-hidden.so | Select-String 'public_api|internal_helper| U '
+readelf --dyn-syms --wide lib-hidden.so |
+  Select-String 'public_api|internal_helper|UND'
+readelf -d lib-hidden.so | Select-String 'NEEDED|SONAME'
+objdump -T lib-hidden.so | Select-String 'public_api|internal_helper'`,
+        output: `T public_api()
+UND _ITM_registerTMCloneTable
+UND __cxa_finalize
+NEEDED libstdc++.so.6
+000... g DF .text ... public_api()
+
+.dynsym 是运行期链接器看到的符号表。
+internal_helper 不在动态表，但留在普通 .symtab 供调试。`,
+      }],
+      ['SONAME 与库升级的边界', '链接时用 -Wl,-soname,libmath.so.1 把 SONAME 写进共享库，可执行文件记的是 SONAME 而非文件名，因此磁盘上可以有 libmath.so.1.0.2 实体加 .so.1 软链的多版本并存。兼容性修复只改末位版本号；一旦改了函数签名、删了导出符号等破坏 ABI 的变更，必须升主版本号换新 SONAME，否则老程序加载新库后可能直接崩溃。readelf -d 查看现有 SONAME 是发布前必做的核对动作。', '破坏 ABI 就升主版本', {
+        title: 'SONAME：兼容升级 .so.1.0.2 与破坏升级 .so.2',
+        language: 'PowerShell',
+        code: `g++ -fPIC -shared -Wl,-soname,libmath.so.1 math.cpp -o libmath.so.1.0.1
+ln -sf libmath.so.1.0.1 libmath.so.1
+readelf -d libmath.so.1.0.1 | Select-String SONAME
+g++ main.cpp -L. -lmath -o app-v1
+readelf -d app-v1 | Select-String NEEDED
+g++ -fPIC -shared -Wl,-soname,libmath.so.2 math.cpp -o libmath.so.2.0.0
+ln -sf libmath.so.2.0.0 libmath.so.2
+readelf -d libmath.so.2.0.0 | Select-String SONAME
+readelf -d app-v1 | Select-String NEEDED`,
+        output: `(SONAME) Library soname: [libmath.so.1]
+(NEEDED) Shared library: [libmath.so.1]
+(SONAME) Library soname: [libmath.so.2]
+(NEEDED) Shared library: [libmath.so.1]
+
+旧 app 继续依赖 .so.1。
+破坏 ABI 的新库使用 .so.2，不会偷偷替换老程序加载目标。`,
+      }],
     ],
   },
   {
@@ -3918,11 +4020,113 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['工程里一部分文件用 -D_GLIBCXX_USE_CXX11_ABI=0 编译、另一部分用默认值 1，std::string 的 mangled 名不同导致链接期 undefined reference。', '库声明与实现一侧写 noexcept 一侧不写，GCC 7 起异常规范进入函数类型，mangled 名不同直接找不到符号。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['Itanium mangling 的编码规则', 'GCC 与 Clang 在 Linux 上遵循 Itanium C++ ABI 的 mangling：函数名、命名空间、参数类型全部编码进符号。void f(int) 编为 _Z1fi，前缀 _Z 是标记，1fi 表示一字符名 f 加参数 int；命名空间函数 ns::process(double) 编为 _ZN2ns7processEd，N 到 E 之间是嵌套名。可验证动作：对 nm libdemo.so 输出中任意 _Z 开头符号执行 c++filt _Z1fi，应还原出 f(int)，排查链接错误时先用它翻译报错里的乱码符号。', 'c++filt 反解乱码'],
-      ['MSVC mangling 与工具差异', 'MSVC 用自有编码体系：符号以 ? 开头，信息密度更高但与 Itanium 不兼容，如 ?add@@YAHHH@Z 对应 int add(int,int)。MinGW-w64 虽在 Windows 上却走 Itanium 规则，因此 MSVC 与 MinGW 的目标文件不能混链，C 接口除外。可验证动作：用 dumpbin /exports demo.dll 看导出表里的 ? 名，再交给 undname.exe 反解为可读签名；报错定位时 MSVC 链接器输出的 LNK2019 附带原始符号名，同样可用 undname 翻译。', 'dumpbin 反解'],
-      ['extern C 是跨编译器通道', 'extern C 关闭 mangling，符号按 C 规则原样导出，是 C++ 库向其他语言与不同编译器暴露稳定边界的唯一通道；头文件惯用 extern C 块包裹声明并配 __cplusplus 宏条件。代价是同名无法重载、异常不得穿越该边界传播。可验证动作：同一函数分别以 C++ 与 extern C 编译后跑 nm，符号从 _Z1fi 变成裸名 f；插件系统用 dlsym 按 C 名字找入口，正是因为它绕开了 mangling 差异。', '异常不许穿 C 边界'],
-      ['noexcept 进入类型系统', 'GCC 7 起异常规范成为函数类型的一部分：void save(int) 与 void save(int) noexcept 的 mangled 名不同，链接器视为两个函数。库的声明头与实现文件、调用方的旧头文件之间若一边加了 noexcept 一边没加，运行期行为不变但链接期直接报 undefined reference。可验证动作：同一函数加 noexcept 前后各编译一次目标文件，nm 对比符号名会发现多了小写 n 参数编码；升级编译器后链接失败先怀疑这类签名漂移。', 'noexcept 换符号'],
-      ['标准库实现与 CXX11 ABI 宏', 'GCC 默认链接 libstdc++，Clang 可用 -stdlib=libc++ 换 LLVM 实现，两者容器内存布局不同、mangled 名空间不同，跨库传递 std::string 等对象时二进制不兼容。libstdc++ 内部还有一层：_GLIBCXX_USE_CXX11_ABI=1 使用带短字符串优化的新 std::string，符号带 std::__cxx11 前缀；=0 回退旧的写时复制实现。可验证动作：同一 std::string 相关代码在两种宏下编译后跑 nm -C，符号名差异肉眼可见，全工程宏必须一致。', '全工程宏要统一'],
+      ['Itanium mangling 的编码规则', 'GCC 与 Clang 在 Linux 上遵循 Itanium C++ ABI 的 mangling：函数名、命名空间、参数类型全部编码进符号。void f(int) 编为 _Z1fi，前缀 _Z 是标记，1fi 表示一字符名 f 加参数 int；命名空间函数 ns::process(double) 编为 _ZN2ns7processEd，N 到 E 之间是嵌套名。可验证动作：对 nm libdemo.so 输出中任意 _Z 开头符号执行 c++filt _Z1fi，应还原出 f(int)，排查链接错误时先用它翻译报错里的乱码符号。', 'c++filt 反解乱码', {
+        title: 'nm + c++filt：还原 Itanium 修饰名',
+        language: 'PowerShell',
+        code: `@'
+namespace shop { int total(int, int); }
+namespace shop { int total(int a, int b) { return a + b; } }
+'@ | Set-Content mangling.cpp
+g++ -std=c++20 -c mangling.cpp -o mangling.o
+nm mangling.o
+nm -C mangling.o
+$symbol = (nm mangling.o | Select-String '_ZN4shop5totalEii').Line.Split()[2]
+c++filt $symbol`,
+        output: `000... T _ZN4shop5totalEii
+000... T shop::total(int, int)
+shop::total(int, int)
+
+_Z 是 Itanium 前缀，N...E 包住 shop::total，ii 编码两个 int 参数。
+c++filt 与 nm -C 都能把符号还原成源码签名。`,
+      }],
+      ['MSVC mangling 与工具差异', 'MSVC 用自有编码体系：符号以 ? 开头，信息密度更高但与 Itanium 不兼容，如 ?add@@YAHHH@Z 对应 int add(int,int)。MinGW-w64 虽在 Windows 上却走 Itanium 规则，因此 MSVC 与 MinGW 的目标文件不能混链，C 接口除外。可验证动作：用 dumpbin /exports demo.dll 看导出表里的 ? 名，再交给 undname.exe 反解为可读签名；报错定位时 MSVC 链接器输出的 LNK2019 附带原始符号名，同样可用 undname 翻译。', 'dumpbin 反解', {
+        title: 'MSVC：dumpbin /symbols 与 undname',
+        language: 'PowerShell',
+        code: `@'
+int add(int a, int b) { return a + b; }
+'@ | Set-Content add.cpp
+cl /c /EHsc add.cpp
+dumpbin /symbols add.obj | Select-String 'add'
+undname '?add@@YAHHH@Z'
+link /DLL /OUT:add.dll add.obj
+dumpbin /exports add.dll | Select-String 'add'
+cl /LD /EHsc add.cpp /link /OUT:add.dll`,
+        output: `... UND ... ?add@@YAHHH@Z
+?add@@YAHHH@Z -> int __cdecl add(int,int)
+... ?add@@YAHHH@Z
+
+MSVC 以 ? 开头并使用自有类型编码，与 Linux 的 _Z 前缀不兼容。
+undname 把链接器错误里的修饰名还原为函数签名。`,
+      }],
+      ['extern C 是跨编译器通道', 'extern C 关闭 mangling，符号按 C 规则原样导出，是 C++ 库向其他语言与不同编译器暴露稳定边界的唯一通道；头文件惯用 extern C 块包裹声明并配 __cplusplus 宏条件。代价是同名无法重载、异常不得穿越该边界传播。可验证动作：同一函数分别以 C++ 与 extern C 编译后跑 nm，符号从 _Z1fi 变成裸名 f；插件系统用 dlsym 按 C 名字找入口，正是因为它绕开了 mangling 差异。', '异常不许穿 C 边界', {
+        title: 'extern C：修饰名变成稳定裸符号',
+        language: 'PowerShell',
+        code: `@'
+extern "C" int create_plugin() { return 42; }
+int cpp_only() { return 7; }
+'@ | Set-Content entry.cpp
+g++ -std=c++20 -c entry.cpp -o entry.o
+nm entry.o | Select-String 'create_plugin|cpp_only'
+nm -C entry.o | Select-String 'create_plugin|cpp_only'
+cat > entry.map <<'EOF'
+{ global: create_plugin; local: *; };
+EOF
+g++ -shared entry.o -Wl,--version-script=entry.map -o libentry.so
+nm -D --defined-only libentry.so`,
+        output: `T create_plugin
+T _Z9cpp_onlyv
+T create_plugin
+T cpp_only()
+000... T create_plugin
+
+extern "C" 阻止修饰，插件入口可按字符串精确查找。
+其他 C++ 全局符号仍被 mangling，版本脚本可进一步全隐藏。`,
+      }],
+      ['noexcept 进入类型系统', 'GCC 7 起异常规范成为函数类型的一部分：void save(int) 与 void save(int) noexcept 的 mangled 名不同，链接器视为两个函数。库的声明头与实现文件、调用方的旧头文件之间若一边加了 noexcept 一边没加，运行期行为不变但链接期直接报 undefined reference。可验证动作：同一函数加 noexcept 前后各编译一次目标文件，nm 对比符号名会发现多了小写 n 参数编码；升级编译器后链接失败先怀疑这类签名漂移。', 'noexcept 换符号', {
+        title: 'noexcept：函数类型变化导致符号不一致',
+        language: 'PowerShell',
+        code: `@'
+void save(int value) {}
+'@ | Set-Content normal.cpp
+@'
+void save(int value) noexcept {}
+'@ | Set-Content noexc.cpp
+g++ -std=c++20 -c normal.cpp -o normal.o
+g++ -std=c++20 -c noexc.cpp -o noexc.o
+nm normal.o | Select-String save
+nm noexc.o | Select-String save
+@'
+void save(int) noexcept;
+int main() { save(1); }
+'@ | Set-Content caller.cpp
+g++ -std=c++20 -c caller.cpp -o caller.o
+g++ caller.o normal.o -o mismatch`,
+        output: `T _Z4savei
+T _Z4saveiv
+undefined reference to 'save(int)'
+
+noexcept 从 C++17 起属于函数类型，GCC 会把它编码进 Itanium 符号。
+声明与实现必须一致，否则调用方链接不到对应定义。`,
+      }],
+      ['标准库实现与 CXX11 ABI 宏', 'GCC 默认链接 libstdc++，Clang 可用 -stdlib=libc++ 换 LLVM 实现，两者容器内存布局不同、mangled 名空间不同，跨库传递 std::string 等对象时二进制不兼容。libstdc++ 内部还有一层：_GLIBCXX_USE_CXX11_ABI=1 使用带短字符串优化的新 std::string，符号带 std::__cxx11 前缀；=0 回退旧的写时复制实现。可验证动作：同一 std::string 相关代码在两种宏下编译后跑 nm -C，符号名差异肉眼可见，全工程宏必须一致。', '全工程宏要统一', {
+        title: 'CXX11 ABI：std::string 符号前缀差异',
+        language: 'PowerShell',
+        code: `@'
+#include <string>
+std::string make_name() { return std::string("orders"); }
+'@ | Set-Content abi-string.cpp
+g++ -std=c++20 -c abi-string.cpp -o abi-new.o
+g++ -std=c++20 -D_GLIBCXX_USE_CXX11_ABI=0 -c abi-string.cpp -o abi-old.o
+nm -C abi-new.o | Select-String 'make_name|basic_string'
+nm -C abi-old.o | Select-String 'make_name|basic_string'
+readelf --version-info abi-new.o | Select-String 'GLIBCXX'`,
+        output: `std::__cxx11::basic_string<...> make_name()
+std::basic_string<...> make_name()
+GLIBCXX_3.4.21: ... /usr/lib/.../libstdc++.so.6
+
+新 ABI 的类型在符号中带 std::__cxx11。
+同一工程混用两种宏会把 string 布局与符号当两个不同 ABI。`,
+      }],
     ],
   },
   {
@@ -3936,11 +4140,131 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['插件入口函数忘记 extern C，dlsym 按原始名字查找时符号已被 mangle，永远返回 NULL 且 dlerror 报 undefined symbol。', '把 DL_LIBRARY_PATH 拼错成环境变量名，或依赖 LD_LIBRARY_PATH 硬指定路径，部署到生产环境后库查找顺序悄悄变化。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['dlopen 句柄与引用计数', 'dlopen(path, RTLD_NOW | RTLD_LOCAL) 立即完成重定位并返回 void* 句柄，失败返回 NULL，此时必须调 dlerror() 取错误串。同一库被多次 dlopen 时引用计数递增，每次 dlclose 递减，减到零才真正卸载并执行 __attribute__((destructor)) 标记的清理函数。可验证动作：对同一 so 连续 dlopen 两次、dlclose 一次后再 dlsym 取符号仍应成功，说明库未卸载；两个插件共用同一依赖库时正是靠这个机制只加载一份。', '计数归零才卸载'],
-      ['dlsym 入口与 RTLD 作用域', 'dlsym(handle, create_plugin) 按字符串查符号，入口函数必须 extern C 导出否则名字被 mangle 找不到。RTLD_LOCAL 是默认值，插件符号不进全局命名空间，避免插件之间同名符号互抢；RTLD_GLOBAL 则把库符号开放给后续加载的库。宿主想让插件回调自己，需链接时加 -rdynamic 即 -Wl,--export-dynamic 把可执行文件符号导出。可验证动作：不加 -rdynamic 时插件调宿主函数报 undefined symbol，加上后正常。', '宿主导出符号'],
-      ['版本脚本精确控制导出', '链接时传 -Wl,--version-script=lib.map，map 文件中 global 段列出导出符号可配通配符，local: * 把其余全部降为本地符号，比 visibility 属性更集中、适合纯 C 接口库。可验证动作：链接后执行 nm -D libdemo.so，动态表应只剩 global 段声明的名字，其余符号消失；符号还带隐式版本节点，nm 输出形如 api@@LIBDEMO_1.0，供后续做符号级兼容声明使用。', 'global 之外全隐藏'],
-      ['glibc 符号版本只向后兼容', 'glibc 的导出符号挂在版本节点上，nm libpthread 输出 memcpy@@GLIBC_2.14 双 at 表示本文件默认提供的版本，memcpy@GLIBC_2.2.5 单 at 表示旧版本仍在供老程序引用。编译时链接器把用到的最高版本写进 .gnu.version_r，运行期 ld.so 校验通过才加载；因此 2.17 上编译的程序能在 2.35 运行，反过来在 2.35 编译的产物搬到 2.17 会报 version GLIBC_2.34 not found。可验证动作：readelf -V 产物查看版本需求集，确认最高版本不超部署目标。', '向下兼容不向上'],
-      ['加载失败路径与排查手段', 'dlopen 失败的常见原因有三类：依赖库缺失、undefined symbol（插件引用的符号宿主没导出或版本不符）、GLIBC 版本不足，前两者 dlerror 都会给出原文。ldd plugin.so 列出全部 NEEDED 并指出找不到的项；LD_DEBUG=libs 打印 ld.so 的完整查找序列，能看出它在哪些目录找了哪个名字。边界：ldd 本质是让 ld.so 以探测模式执行加载逻辑，对不可信二进制不要直接跑 ldd，改用 objdump -p 读 NEEDED 段即可。', 'dlerror 给出原文'],
+      ['dlopen 句柄与引用计数', 'dlopen(path, RTLD_NOW | RTLD_LOCAL) 立即完成重定位并返回 void* 句柄，失败返回 NULL，此时必须调 dlerror() 取错误串。同一库被多次 dlopen 时引用计数递增，每次 dlclose 递减，减到零才真正卸载并执行 __attribute__((destructor)) 标记的清理函数。可验证动作：对同一 so 连续 dlopen 两次、dlclose 一次后再 dlsym 取符号仍应成功，说明库未卸载；两个插件共用同一依赖库时正是靠这个机制只加载一份。', '计数归零才卸载', {
+        title: 'dlopen/dlclose：同一插件句柄的引用计数',
+        language: 'PowerShell',
+        code: `@'
+#include <cstdio>
+extern "C" int plugin_value() { return 42; }
+__attribute__((destructor)) void unload() { std::puts("plugin unloaded"); }
+'@ | Set-Content plugin.cpp
+g++ -std=c++20 -fPIC -shared plugin.cpp -o libplugin.so
+@'
+#include <dlfcn.h>
+#include <iostream>
+int main() {
+    void* first = dlopen("./libplugin.so", RTLD_NOW | RTLD_LOCAL);
+    void* second = dlopen("./libplugin.so", RTLD_NOW | RTLD_LOCAL);
+    dlclose(first);
+    auto function = (int(*)())dlsym(second, "plugin_value");
+    std::cout << "value=" << function() << '\\n';
+    dlclose(second);
+}
+'@ | Set-Content host.cpp
+g++ -std=c++20 -Wall -Wextra -Werror host.cpp -ldl -o host
+./host`,
+        output: `value=42
+plugin unloaded
+
+两次 dlopen 使同一 so 的加载引用计数加二。
+第一次 dlclose 后符号仍可用，第二次归零才执行 destructor。`,
+      }],
+      ['dlsym 入口与 RTLD 作用域', 'dlsym(handle, create_plugin) 按字符串查符号，入口函数必须 extern C 导出否则名字被 mangle 找不到。RTLD_LOCAL 是默认值，插件符号不进全局命名空间，避免插件之间同名符号互抢；RTLD_GLOBAL 则把库符号开放给后续加载的库。宿主想让插件回调自己，需链接时加 -rdynamic 即 -Wl,--export-dynamic 把可执行文件符号导出。可验证动作：不加 -rdynamic 时插件调宿主函数报 undefined symbol，加上后正常。', '宿主导出符号', {
+        title: 'dlsym：extern C 入口与 dlerror',
+        language: 'PowerShell',
+        code: `@'
+extern "C" int create_plugin() { return 42; }
+int cpp_only() { return 7; }
+'@ | Set-Content plugin-entry.cpp
+g++ -std=c++20 -fPIC -shared plugin-entry.cpp -o libentry.so
+@'
+#include <dlfcn.h>
+#include <iostream>
+int main() {
+    void* handle = dlopen("./libentry.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle) { std::cerr << dlerror() << '\\n'; return 1; }
+    auto create = (int(*)())dlsym(handle, "create_plugin");
+    auto missing = (int(*)())dlsym(handle, "cpp_only");
+    std::cout << "create=" << (create ? create() : -1)
+              << " missing=" << (missing == nullptr) << '\\n';
+    if (!missing) std::cout << dlerror() << '\\n';
+}
+'@ | Set-Content host-entry.cpp
+g++ -std=c++20 -Wall -Wextra -Werror host-entry.cpp -ldl -o host-entry
+./host-entry`,
+        output: `create=42 missing=1
+./libentry.so: undefined symbol: cpp_only
+
+extern C 的 create_plugin 按原始字符串可查。
+cpp_only 实际导出名已被 mangling，dlsym 用裸名失败并写 dlerror。`,
+      }],
+      ['版本脚本精确控制导出', '链接时传 -Wl,--version-script=lib.map，map 文件中 global 段列出导出符号可配通配符，local: * 把其余全部降为本地符号，比 visibility 属性更集中、适合纯 C 接口库。可验证动作：链接后执行 nm -D libdemo.so，动态表应只剩 global 段声明的名字，其余符号消失；符号还带隐式版本节点，nm 输出形如 api@@LIBDEMO_1.0，供后续做符号级兼容声明使用。', 'global 之外全隐藏', {
+        title: 'version-script：只导出公共 C API',
+        language: 'PowerShell',
+        code: `@'
+extern "C" int public_api() { return 42; }
+extern "C" int debug_helper() { return 7; }
+int cpp_internal() { return 9; }
+'@ | Set-Content lib.cpp
+@'
+LIBDEMO_1.0 {
+  global: public_api;
+  local: *;
+};
+'@ | Set-Content lib.map
+g++ -std=c++20 -fPIC -shared lib.cpp -Wl,--version-script=lib.map -o libdemo.so
+nm -D --defined-only libdemo.so
+readelf --version-info libdemo.so | Select-String 'LIBDEMO'
+nm libdemo.so | Select-String 'debug_helper|cpp_internal'`,
+        output: `000... T public_api@@LIBDEMO_1.0
+Name: LIBDEMO_1.0
+T debug_helper
+T _Z12cpp_internalv
+
+动态表只留下 public_api 及其版本节点。
+其他符号仍在本地普通符号表，但不会被外部运行期解析。`,
+      }],
+      ['glibc 符号版本只向后兼容', 'glibc 的导出符号挂在版本节点上，nm libpthread 输出 memcpy@@GLIBC_2.14 双 at 表示本文件默认提供的版本，memcpy@GLIBC_2.2.5 单 at 表示旧版本仍在供老程序引用。编译时链接器把用到的最高版本写进 .gnu.version_r，运行期 ld.so 校验通过才加载；因此 2.17 上编译的程序能在 2.35 运行，反过来在 2.35 编译的产物搬到 2.17 会报 version GLIBC_2.34 not found。可验证动作：readelf -V 产物查看版本需求集，确认最高版本不超部署目标。', '向下兼容不向上', {
+        title: 'readelf：查看产物最高 GLIBC 版本需求',
+        language: 'PowerShell',
+        code: `@'
+#include <pthread.h>
+int main() { pthread_t thread; pthread_create(&thread, nullptr, nullptr, nullptr); }
+'@ | Set-Content glibc-version.cpp
+g++ -std=c++20 glibc-version.cpp -pthread -o glibc-version
+readelf --version-info glibc-version | Select-String 'GLIBC_'
+objdump -T glibc-version | Select-String 'GLIBC_2.34|GLIBC_2.2.5' |
+  Select-Object -First 10
+ldd --version | Select-Object -First 1`,
+        output: `Name: GLIBC_2.34 ... pthread_create
+Name: GLIBC_2.2.5 ... __libc_start_main
+ldd (Ubuntu GLIBC 2.39-...)
+
+产物的版本需求由实际使用符号决定。
+在 glibc 2.39 编译不等于必然要求 2.39，但用了新版 pthread 符号就会抬高下限。`,
+      }],
+      ['加载失败路径与排查手段', 'dlopen 失败的常见原因有三类：依赖库缺失、undefined symbol（插件引用的符号宿主没导出或版本不符）、GLIBC 版本不足，前两者 dlerror 都会给出原文。ldd plugin.so 列出全部 NEEDED 并指出找不到的项；LD_DEBUG=libs 打印 ld.so 的完整查找序列，能看出它在哪些目录找了哪个名字。边界：ldd 本质是让 ld.so 以探测模式执行加载逻辑，对不可信二进制不要直接跑 ldd，改用 objdump -p 读 NEEDED 段即可。', 'dlerror 给出原文', {
+        title: 'LD_DEBUG 与 objdump：定位 dlopen 失败',
+        language: 'PowerShell',
+        code: `@'
+int missing_function();
+int plugin_entry() { return missing_function(); }
+'@ | Set-Content broken-plugin.cpp
+g++ -std=c++20 -fPIC -shared broken-plugin.cpp -o libbroken.so
+$env:LD_DEBUG='libs'
+python -c "import ctypes; ctypes.CDLL('./libbroken.so')" 2>&1 |
+  Select-String 'libbroken|calling init|undefined symbol'
+objdump -p libbroken.so | Select-String 'NEEDED|SONAME'
+readelf -d libbroken.so | Select-String 'NEEDED'
+rm $env:LD_DEBUG`,
+        output: `calling init: .../libbroken.so
+.../libbroken.so: undefined symbol: _Z16missing_functionv
+NEEDED libstdc++.so.6
+NEEDED libc.so.6
+
+LD_DEBUG 显示 ld.so 已找到插件，随后在重定位时缺符号。
+objdump 只读 NEEDED，不对不可信 so 执行加载器。`,
+      }],
     ],
   },
   {
@@ -3954,11 +4278,125 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['/MT 构建的主程序链接了 /MD 构建的第三方库，进程内存在两份 CRT，一块内存一边申请另一边释放直接崩溃。', '在 Linux 用 g++ -static 全静态链接，误以为产物零依赖，实际 glibc 的 NSS 等模块运行期仍会动态加载。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['三套工具链与运行库默认值', 'MSVC 的 cl.exe 用 /MD 让程序运行期依赖 VCRUNTIME140.dll 等 VC 运行库 DLL，/MT 则把运行库静态编进 exe；GCC 与 Clang 默认动态链接 libstdc++ 或 libc++，产物运行期必须有对应共享库。三家的诊断能力与扩展行为也不同，同一份代码在 MSVC 下能过、在 GCC 高告警等级下可能暴露越界。可验证动作：dumpbin /dependents app.exe 对照 /MD 与 /MT 两个版本，前者必须出现 VCRUNTIME140.dll，后者没有。', '运行库可静可动'],
-      ['平台 API 与动态库扩展差异', '动态库扩展名三平台各异：Windows .dll、Linux .so、macOS .dylib；加载接口也不同，Linux 与 macOS 都走 dlopen，Windows 用 LoadLibrary 与 GetProcAddress。路径分隔符与大小写敏感性同样不同，文件路径代码必须在预处理分支 _WIN32、__APPLE__ 下隔离实现，不要自造平台宏。可验证动作：在三个平台分别执行 uname 与 file 产物，file 输出会标明 Mach-O 或 ELF 共享对象，脚本里据此选扩展名。', '预处理分支隔离平台'],
-      ['静态链接运行库的边界', '/MT 消除了 VC 运行库部署问题，但全工程必须统一：主程序 /MT 就不能混入 /MD 构建的库，否则两份 CRT 各管各的堆，跨边界 free 必崩。GCC 侧折中方案是 -static-libstdc++ -static-libgcc，只把标准库静态进产物，libc 仍动态；glibc 不建议整体 -static，因为它会在运行期按需 dlopen NSS 模块完成用户名解析等功能，静态产物反而带着动态依赖。可验证动作：-static 链接后跑 ldd，输出 not a dynamic executable 之外再用 strace 观察运行期仍打开系统 so。', '混 CRT 必崩'],
-      ['依赖管理工具与消费方式', 'vcpkg 清单模式在工程根放 vcpkg.json 声明依赖，vcpkg install 解析出完整依赖树并生成工具链文件；Conan 用 conanfile.py 声明，conan install 生成 conan_toolchain.cmake 与依赖配置。CMake 侧统一用 -DCMAKE_TOOLCHAIN_FILE=<路径> 消费，find_package 即可找到第三方库。可验证动作：vcpkg install 后按 preset 执行 cmake --preset default 构建目录，日志中 find_package 直接命中；同一依赖的 Debug 与 Release、x86 与 x64 产物绝不能混链。', '工具链文件接 CMake'],
-      ['运行期依赖盘点三件套', '发布前必须盘点直接依赖：Linux 用 ldd 产物、macOS 用 otool -L 产物、Windows 用 dumpbin /dependents 产物，三者分别列出 NEEDED 库与加载路径。ldd 的原理是设置环境变量后让 ld.so 模拟执行一次加载，对不可信二进制不要用，改读 readelf -d 的 NEEDED 即可。可验证动作：盘点出缺失库后，把 so 复制到产物同级目录并在启动脚本设 LD_LIBRARY_PATH=$ORIGIN，再跑 ldd 确认所有条目解析成功。', 'ldd 对不可信文件慎用'],
+      ['三套工具链与运行库默认值', 'MSVC 的 cl.exe 用 /MD 让程序运行期依赖 VCRUNTIME140.dll 等 VC 运行库 DLL，/MT 则把运行库静态编进 exe；GCC 与 Clang 默认动态链接 libstdc++ 或 libc++，产物运行期必须有对应共享库。三家的诊断能力与扩展行为也不同，同一份代码在 MSVC 下能过、在 GCC 高告警等级下可能暴露越界。可验证动作：dumpbin /dependents app.exe 对照 /MD 与 /MT 两个版本，前者必须出现 VCRUNTIME140.dll，后者没有。', '运行库可静可动', {
+        title: 'MSVC：/MD 与 /MT 的依赖表对照',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() { std::cout << "runtime\\n"; }
+'@ | Set-Content runtime.cpp
+cl /EHsc /MD runtime.cpp /Fe:app-md.exe
+cl /EHsc /MT runtime.cpp /Fe:app-mt.exe
+dumpbin /dependents app-md.exe | Select-String 'VCRUNTIME|MSVCP|KERNEL32'
+dumpbin /dependents app-mt.exe | Select-String 'VCRUNTIME|MSVCP|KERNEL32'
+Get-Item app-md.exe,app-mt.exe | Select-Object Name,Length`,
+        output: `VCRUNTIME140.dll
+MSVCP140.dll
+KERNEL32.dll
+KERNEL32.dll
+app-md.exe 128000
+app-mt.exe 248000
+
+/MD 依赖 VC 运行时 DLL，部署必须随包提供正确版本。
+/MT 静态编入 CRT，体积更大但无需 VCRUNTIME/MSVCP DLL。`,
+      }],
+      ['平台 API 与动态库扩展差异', '动态库扩展名三平台各异：Windows .dll、Linux .so、macOS .dylib；加载接口也不同，Linux 与 macOS 都走 dlopen，Windows 用 LoadLibrary 与 GetProcAddress。路径分隔符与大小写敏感性同样不同，文件路径代码必须在预处理分支 _WIN32、__APPLE__ 下隔离实现，不要自造平台宏。可验证动作：在三个平台分别执行 uname 与 file 产物，file 输出会标明 Mach-O 或 ELF 共享对象，脚本里据此选扩展名。', '预处理分支隔离平台', {
+        title: '平台宏与动态库后缀：编译期分支实验',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+#if defined(_WIN32)
+    std::cout << "dll LoadLibrary\\n";
+#elif defined(__APPLE__)
+    std::cout << "dylib dlopen\\n";
+#elif defined(__linux__)
+    std::cout << "so dlopen\\n";
+#else
+#error unsupported platform
+#endif
+}
+'@ | Set-Content platform.cpp
+g++ -std=c++20 -D__linux__ platform.cpp -o platform-linux
+./platform-linux
+file platform-linux
+g++ -std=c++20 -fPIC -shared platform.cpp -o libplatform.so
+file libplatform.so`,
+        output: `so dlopen
+platform-linux: ELF 64-bit LSB pie executable
+libplatform.so: ELF 64-bit LSB shared object
+
+平台差异由标准预处理宏隔离，不能用自造宏。
+file 可直接确认 Linux 产物是 ELF 而非 Mach-O 或 PE。`,
+      }],
+      ['静态链接运行库的边界', '/MT 消除了 VC 运行库部署问题，但全工程必须统一：主程序 /MT 就不能混入 /MD 构建的库，否则两份 CRT 各管各的堆，跨边界 free 必崩。GCC 侧折中方案是 -static-libstdc++ -static-libgcc，只把标准库静态进产物，libc 仍动态；glibc 不建议整体 -static，因为它会在运行期按需 dlopen NSS 模块完成用户名解析等功能，静态产物反而带着动态依赖。可验证动作：-static 链接后跑 ldd，输出 not a dynamic executable 之外再用 strace 观察运行期仍打开系统 so。', '混 CRT 必崩', {
+        title: '-static-libstdc++：只静态标准库，保留 libc',
+        language: 'PowerShell',
+        code: `g++ -std=c++20 runtime.cpp -o app-dynamic
+g++ -std=c++20 runtime.cpp -static-libstdc++ -static-libgcc -o app-static-cxx
+g++ -std=c++20 runtime.cpp -static -o app-static-all
+ldd app-dynamic | Select-String 'libstdc|libc.so'
+ldd app-static-cxx | Select-String 'libstdc|libc.so'
+ldd app-static-all
+file app-static-all`,
+        output: `libstdc++.so.6 => ...
+libc.so.6 => ...
+libc.so.6 => ...
+not a dynamic executable
+app-static-all: ELF 64-bit ... statically linked
+
+中间版本去掉 libstdc++ 依赖但 libc 仍动态。
+整体 -static 虽显示静态，glibc NSS 等功能仍可能运行期加载模块。`,
+      }],
+      ['依赖管理工具与消费方式', 'vcpkg 清单模式在工程根放 vcpkg.json 声明依赖，vcpkg install 解析出完整依赖树并生成工具链文件；Conan 用 conanfile.py 声明，conan install 生成 conan_toolchain.cmake 与依赖配置。CMake 侧统一用 -DCMAKE_TOOLCHAIN_FILE=<路径> 消费，find_package 即可找到第三方库。可验证动作：vcpkg install 后按 preset 执行 cmake --preset default 构建目录，日志中 find_package 直接命中；同一依赖的 Debug 与 Release、x86 与 x64 产物绝不能混链。', '工具链文件接 CMake', {
+        title: 'vcpkg/Conan：同一依赖的两种 CMake 接入',
+        language: 'PowerShell',
+        code: `@'
+{
+  "name": "orders",
+  "version": "0.1.0",
+  "dependencies": ["fmt"]
+}
+'@ | Set-Content vcpkg.json
+vcpkg install --triplet x64-linux
+cmake -S . -B build-vcpkg -G Ninja -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+@'
+[requires]
+fmt/10.2.1
+[generators]
+CMakeDeps
+CMakeToolchain
+'@ | Set-Content conanfile.txt
+conan install . -of build-conan --build=missing
+cmake -S . -B build-conan -G Ninja -DCMAKE_TOOLCHAIN_FILE=build-conan/conan_toolchain.cmake
+Select-String build-vcpkg/CMakeCache.txt -Pattern 'CMAKE_TOOLCHAIN_FILE'
+Select-String build-conan/CMakeCache.txt -Pattern 'CMAKE_TOOLCHAIN_FILE'`,
+        output: `vcpkg ... fmt:x64-linux ... installed
+conan ... fmt/10.2.1 ... package installed
+CMAKE_TOOLCHAIN_FILE:...vcpkg.cmake
+CMAKE_TOOLCHAIN_FILE:...conan_toolchain.cmake
+
+两条路径都通过 CMake 工具链文件消费包管理器。
+Debug/Release 与架构必须与依赖变体一致，不能跨 ABI 混链。`,
+      }],
+      ['运行期依赖盘点三件套', '发布前必须盘点直接依赖：Linux 用 ldd 产物、macOS 用 otool -L 产物、Windows 用 dumpbin /dependents 产物，三者分别列出 NEEDED 库与加载路径。ldd 的原理是设置环境变量后让 ld.so 模拟执行一次加载，对不可信二进制不要用，改读 readelf -d 的 NEEDED 即可。可验证动作：盘点出缺失库后，把 so 复制到产物同级目录并在启动脚本设 LD_LIBRARY_PATH=$ORIGIN，再跑 ldd 确认所有条目解析成功。', 'ldd 对不可信文件慎用', {
+        title: '依赖盘点：ldd、otool、dumpbin 与只读替代',
+        language: 'PowerShell',
+        code: `ldd app-dynamic | Select-String 'not found|libstdc|libc'
+objdump -p app-dynamic | Select-String 'NEEDED'
+readelf -d app-dynamic | Select-String 'RPATH|RUNPATH|NEEDED'
+otool -L app-macos
+dumpbin /dependents app-md.exe
+LD_LIBRARY_PATH='$ORIGIN/lib' ldd app-dynamic | Select-String 'not found'`,
+        output: `libstdc++.so.6 => /lib/.../libstdc++.so.6
+libc.so.6 => /lib/.../libc.so.6
+NEEDED libstdc++.so.6
+NEEDED libc.so.6
+(no 'not found' output)
+
+ldd 会触发 ld.so 探测加载，不可信文件改用 readelf/objdump 读 NEEDED。
+三平台工具分别给出实际运行期依赖清单。`,
+      }],
     ],
   },
   {
@@ -3972,11 +4410,121 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['多阶段构建里运行镜像用了与构建镜像不同的基础系统，glibc 版本更低，启动即报 version GLIBC_2.xx not found。', 'strip 产物后随手删掉符号文件，线上崩溃时只有地址没有函数名，无法把栈还原到代码行。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['CPack 出 DEB 与 RPM', 'CMake 内置 CPack：在 CMakeLists 配 CPACK_GENERATOR、CPACK_PACKAGE_NAME、CPACK_DEBIAN_PACKAGE_MAINTAINER 等变量后，命令行执行 cpack -G DEB 即产出 .deb，-G RPM 产出 .rpm，安装路径由 CMAKE_INSTALL_PREFIX 决定。可验证动作：dpkg -I 包文件查看元数据，dpkg -c 包文件列出内容树，核对二进制是否落在预期前缀；装完后 dpkg -L 包名回查已装清单，卸载验证用 dpkg -r。', 'dpkg -c 核对路径'],
-      ['多阶段构建裁剪镜像', '多阶段 Dockerfile 第一阶段用 gcc:13 等完整镜像完成 cmake --build，第二阶段 FROM gcr.io/distroless/cc 或 ubuntu:24.04，只 COPY 二进制与必要的 so 进去。完整构建镜像通常超过 1GB，运行镜像可压到 100MB 量级。边界：两阶段基础系统的 glibc 必须兼容，低版本运行镜像会报 version GLIBC_2.xx not found。可验证动作：docker image ls 对比两阶段镜像体积，再用 docker run 产物镜像直接跑冒烟命令验证可用。', '两阶段版本对齐'],
-      ['objcopy 分离调试符号', 'strip app 去掉符号与调试信息后体积骤减，但崩溃栈只剩地址。标准做法是先 objcopy --only-keep-debug app app.debug 生成纯符号文件，再 strip app，最后 objcopy --add-gnu-debuglink=app.debug app 把关联写进产物；gdb 加载 stripped 产物时按 debuglink 在同目录或 /usr/lib/debug 下自动找到符号。可验证动作：strip 前后 ls -lh 对比体积，随后对 stripped 产物执行 gdb -q ./app -ex bt，栈帧应显示函数名而非纯地址。', 'debuglink 关联'],
-      ['MSVC PDB 与符号服务器', 'MSVC 用 /Zi 生成 PDB 文件，PDB 与 exe 通过内部 GUID 严格成对，重新编译即换 GUID，错配的 PDB 无法解析栈。发布时应保留每版 PDB：用 symstore add 把符号按版本收进符号服务器目录，调试机设 _NT_SYMBOL_PATH 指向服务器与本地缓存，调试器自动按 GUID 拉取。可验证动作：用 WinDbg 打开崩溃 dump，设置符号路径后栈帧从模块加偏移变为函数名与源码行号；缺 PDB 时同一栈帧只显示地址。', 'GUID 严格成对'],
-      ['符号与版本的严格一致', '符号包必须与二进制版本逐字对应：DEB 发行版惯例把调试符号做成 -dbgsym 包，版本号与主包完全一致；容器场景把符号放独立镜像层，按崩溃产物的构建指纹（git commit、编译器版本、链接时间）拉取对应层。可验证动作：崩溃上报的模块版本号与符号包版本逐字符比对一致后，栈才能正确解析到行号，不一致时解析器会静默给出错位结果，这是排障前必做的核对。', '版本不一致解析错位'],
+      ['CPack 出 DEB 与 RPM', 'CMake 内置 CPack：在 CMakeLists 配 CPACK_GENERATOR、CPACK_PACKAGE_NAME、CPACK_DEBIAN_PACKAGE_MAINTAINER 等变量后，命令行执行 cpack -G DEB 即产出 .deb，-G RPM 产出 .rpm，安装路径由 CMAKE_INSTALL_PREFIX 决定。可验证动作：dpkg -I 包文件查看元数据，dpkg -c 包文件列出内容树，核对二进制是否落在预期前缀；装完后 dpkg -L 包名回查已装清单，卸载验证用 dpkg -r。', 'dpkg -c 核对路径', {
+        title: 'CPack：构建 DEB 并核对安装树',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(orders VERSION 1.2.3 LANGUAGES CXX)
+add_executable(orders main.cpp)
+install(TARGETS orders DESTINATION bin)
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "orders")
+set(CPACK_PACKAGE_VERSION "\${PROJECT_VERSION}")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Team <team@example.com>")
+include(CPack)
+'@ | Set-Content CMakeLists.txt
+'int main() { return 0; }' | Set-Content main.cpp
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cpack --config build/CPackConfig.cmake -G DEB
+dpkg -I orders-1.2.3-Linux.deb
+dpkg -c orders-1.2.3-Linux.deb`,
+        output: `Package: orders
+Version: 1.2.3
+Maintainer: Team <team@example.com>
+./usr/bin/orders
+
+CPack 按 install 规则把二进制放入 /usr/bin。
+dpkg -I 核对元数据，dpkg -c 核对包内容树。`,
+      }],
+      ['多阶段构建裁剪镜像', '多阶段 Dockerfile 第一阶段用 gcc:13 等完整镜像完成 cmake --build，第二阶段 FROM gcr.io/distroless/cc 或 ubuntu:24.04，只 COPY 二进制与必要的 so 进去。完整构建镜像通常超过 1GB，运行镜像可压到 100MB 量级。边界：两阶段基础系统的 glibc 必须兼容，低版本运行镜像会报 version GLIBC_2.xx not found。可验证动作：docker image ls 对比两阶段镜像体积，再用 docker run 产物镜像直接跑冒烟命令验证可用。', '两阶段版本对齐', {
+        title: 'Docker 多阶段：构建镜像与运行镜像分离',
+        language: 'PowerShell',
+        code: `@'
+FROM gcc:13 AS build
+WORKDIR /src
+COPY . .
+RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
+FROM ubuntu:24.04
+COPY --from=build /src/build/orders /usr/local/bin/orders
+ENTRYPOINT ["/usr/local/bin/orders"]
+'@ | Set-Content Dockerfile
+docker build -t orders:dev .
+docker images orders --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+docker run --rm orders:dev --version
+readelf --version-info build/orders | Select-String 'GLIBC_'`,
+        output: `orders:dev 118MB
+orders 1.2.3
+Name: GLIBC_2.34
+
+运行镜像只复制二进制与基础系统，不含编译器缓存。
+运行基础镜像必须提供产物要求的最高 GLIBC 版本。`,
+      }],
+      ['objcopy 分离调试符号', 'strip app 去掉符号与调试信息后体积骤减，但崩溃栈只剩地址。标准做法是先 objcopy --only-keep-debug app app.debug 生成纯符号文件，再 strip app，最后 objcopy --add-gnu-debuglink=app.debug app 把关联写进产物；gdb 加载 stripped 产物时按 debuglink 在同目录或 /usr/lib/debug 下自动找到符号。可验证动作：strip 前后 ls -lh 对比体积，随后对 stripped 产物执行 gdb -q ./app -ex bt，栈帧应显示函数名而非纯地址。', 'debuglink 关联', {
+        title: 'objcopy：拆分 app.debug 并用 debuglink 找回',
+        language: 'PowerShell',
+        code: `@'
+int crash() { int* pointer = nullptr; return *pointer; }
+int main() { return crash(); }
+'@ | Set-Content crash.cpp
+g++ -std=c++20 -O2 -g crash.cpp -o app-symbols
+cp app-symbols app
+objcopy --only-keep-debug app app.debug
+strip --strip-debug app
+objcopy --add-gnu-debuglink=app.debug app
+ls -lh app app.debug
+readelf --string-dump=.gnu_debuglink app
+gdb -q ./app -batch -ex run -ex bt`,
+        output: `app 16K
+app.debug 32K
+String dump of section '.gnu_debuglink': app.debug
+#0 crash() at crash.cpp:1
+
+运行二进制去掉调试信息，体积下降。
+debuglink 记录符号文件名，gdb 自动找到 app.debug 还原函数与行号。`,
+      }],
+      ['MSVC PDB 与符号服务器', 'MSVC 用 /Zi 生成 PDB 文件，PDB 与 exe 通过内部 GUID 严格成对，重新编译即换 GUID，错配的 PDB 无法解析栈。发布时应保留每版 PDB：用 symstore add 把符号按版本收进符号服务器目录，调试机设 _NT_SYMBOL_PATH 指向服务器与本地缓存，调试器自动按 GUID 拉取。可验证动作：用 WinDbg 打开崩溃 dump，设置符号路径后栈帧从模块加偏移变为函数名与源码行号；缺 PDB 时同一栈帧只显示地址。', 'GUID 严格成对', {
+        title: 'PDB/symstore：按 GUID 归档与恢复符号',
+        language: 'PowerShell',
+        code: `cl /Zi /EHsc /Fe:app.exe crash.cpp
+symstore add /f app.pdb /s symbols /t orders /v 1.2.3
+symstore add /f app.exe /s symbols /t orders /v 1.2.3
+Get-ChildItem symbols -Recurse | Select-Object FullName
+$env:_NT_SYMBOL_PATH='srv*C:\\symbols*C:\\symbol-cache'
+cdb -z crash.dmp -y "srv*C:\\symbol-cache*C:\\symbols" -c "kb; q"`,
+        output: `symbols\\orders\\1.2.3\\app.pdb\\...
+symbols\\orders\\1.2.3\\app.exe\\...
+ChildEBP RetAddr
+... orders!crash+0x...
+
+symstore 按模块、版本与 GUID 归档 PDB。
+调试器读取 dump 的 GUID 自动匹配符号，栈显示函数名。`,
+      }],
+      ['符号与版本的严格一致', '符号包必须与二进制版本逐字对应：DEB 发行版惯例把调试符号做成 -dbgsym 包，版本号与主包完全一致；容器场景把符号放独立镜像层，按崩溃产物的构建指纹（git commit、编译器版本、链接时间）拉取对应层。可验证动作：崩溃上报的模块版本号与符号包版本逐字符比对一致后，栈才能正确解析到行号，不一致时解析器会静默给出错位结果，这是排障前必做的核对。', '版本不一致解析错位', {
+        title: '构建指纹：把二进制与符号包成对归档',
+        language: 'PowerShell',
+        code: `$commit = git rev-parse --short HEAD
+$compiler = (g++ -dumpfullversion)
+$buildId = (readelf -n app | Select-String 'Build ID').Line.Split(':')[1].Trim()
+@"
+commit=$commit
+compiler=$compiler
+build_id=$buildId
+package=orders-1.2.3
+debug=orders-dbgsym-1.2.3
+"@ | Set-Content app-fingerprint.txt
+sha256sum app app.debug | Set-Content SHA256SUMS
+dpkg-deb -f orders-dbgsym-1.2.3.deb Version
+dpkg-deb -f orders-1.2.3.deb Version
+diff app-fingerprint.txt archive/app-fingerprint.txt`,
+        output: `1.2.3
+1.2.3
+(no diff output)
+
+二进制、debug 文件、DEB 与 dbgsym 都绑定同一 build_id 和版本。
+排障前先核对指纹，避免用近似版本 PDB/debug 解析出错误行号。`,
+      }],
     ],
   },
   {
@@ -3990,11 +4538,130 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES: readonly ProgrammingCourseS
     commonErrors: ['在最新发行版上编译再发往老系统，产物隐含高版本 GLIBC 符号需求，老环境启动即报 version not found。', '改了导出函数签名却不升 SONAME，依赖旧库的程序加载新库后行为异常甚至崩溃。'],
     sourceRefs: ['Itanium C++ ABI. https://itanium-cxx-abi.github.io/cxx-abi/abi.html', 'CMake Documentation. https://cmake.org/documentation/'],
     steps: [
-      ['支持矩阵与版本下限', '发布前先定支持矩阵：目标架构 x86_64 与 aarch64、最低 glibc 版本、覆盖的发行版列表。glibc 符号版本只向后兼容不向前兼容，产物需求的最高 GLIBC_2.x 版本就决定了部署下限。可验证动作：对候选产物执行 readelf -n 或 readelf -V，读取 .gnu.version_r 段里最高版本节点，与矩阵下限逐字核对，超过即重新选择构建环境。', 'readelf 查版本'],
-      ['最低版本环境构建策略', '要压低符号版本需求，就在最老支持系统上构建：容器方案是用 manylinux2014（glibc 2.17）作为构建镜像，产物即可运行在 2.17 及以上所有系统。边界要盯紧第三方库：链接了需要 GLIBC_2.34 新符号的依赖（如 2.34 起 pthread 符号并入 libc）会整体抬升下限。可验证动作：在构建容器内编译后立即跑 readelf -V 产物核对版本集，再交付；构建镜像版本一旦升级，必须重跑这一核对。', 'manylinux 保底'],
-      ['ABI 兼容性自动检查', '升级库版本前用工具对比新旧 ABI：abi-dumper 依据带调试信息的 so 生成 ABI dump，abi-compliance-checker 对比两份 dump，报告类型大小、成员布局、虚表顺序、符号签名的具体差异；libabigail 的 abidiff 是同类工具，输出更轻量。可验证动作：给某导出结构体增删一个成员后跑 abidiff old.so new.so，报告中应出现类型大小变化与布局错位的条目，凡出现即判定破坏 ABI，必须升 SONAME 换文件名。', 'abidiff 查布局'],
-      ['多发行版冒烟测试矩阵', '发布用例在 CI 里以容器代表目标环境：ubuntu:20.04、debian:11、rockylinux:9 各起一个 job，对同一产物执行冒烟脚本——打印版本号、加载全部 dlopen 插件、跑核心功能用例。产物只构建一次，各环境仅做运行验证，避免分环境编译引入差异。可验证动作：CI 日志中每个环境输出同一版本指纹且用例全绿才允许发版，任一环境报 version not found 即挡下整个发布。', '产物一份环境多测'],
-      ['灰度放量与回滚演练', '发布按批次放量：首批小比例流量，崩溃上报按符号栈聚类统计崩溃率，异常即停；每版保留完整产物与对应符号包，回滚时切回上一版并重跑冒烟。可验证动作：在测试环境完成一次回滚演练，核对切换后运行产物的构建指纹与上一版一致、冒烟用例通过；边界是配置文件 schema 必须向后兼容，否则回滚后的旧程序解析新配置会启动失败。', '回滚前先验指纹'],
+      ['支持矩阵与版本下限', '发布前先定支持矩阵：目标架构 x86_64 与 aarch64、最低 glibc 版本、覆盖的发行版列表。glibc 符号版本只向后兼容不向前兼容，产物需求的最高 GLIBC_2.x 版本就决定了部署下限。可验证动作：对候选产物执行 readelf -n 或 readelf -V，读取 .gnu.version_r 段里最高版本节点，与矩阵下限逐字核对，超过即重新选择构建环境。', 'readelf 查版本', {
+        title: 'readelf -V：提取最高 GLIBC 版本需求',
+        language: 'PowerShell',
+        code: `readelf --version-info build/orders |
+  Select-String 'Name: GLIBC_'
+objdump -T build/orders | Select-String 'GLIBC_' |
+  ForEach-Object { [regex]::Match($_.Line, 'GLIBC_[0-9.]+').Value } |
+  Sort-Object { [version]($_) } -Descending |
+  Select-Object -First 5
+@"
+os=ubuntu-20.04
+glibc_max=2.31
+arch=x86_64
+artifact_sha256=$(sha256sum build/orders)
+"@ | Set-Content support-matrix.txt`,
+        output: `GLIBC_2.34
+GLIBC_2.2.5
+GLIBC_2.34
+GLIBC_2.2.5
+
+产物最高要求 GLIBC_2.34。
+若支持矩阵下限是 2.17 或 2.31，这份产物必须重编，不能直接发布。`,
+      }],
+      ['最低版本环境构建策略', '要压低符号版本需求，就在最老支持系统上构建：容器方案是用 manylinux2014（glibc 2.17）作为构建镜像，产物即可运行在 2.17 及以上所有系统。边界要盯紧第三方库：链接了需要 GLIBC_2.34 新符号的依赖（如 2.34 起 pthread 符号并入 libc）会整体抬升下限。可验证动作：在构建容器内编译后立即跑 readelf -V 产物核对版本集，再交付；构建镜像版本一旦升级，必须重跑这一核对。', 'manylinux 保底', {
+        title: 'manylinux2014：老 glibc 构建并立即验版',
+        language: 'PowerShell',
+        code: `docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux2014_x86_64 bash -lc '
+  cmake -S . -B build-many -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build build-many
+  readelf --version-info build-many/orders | grep GLIBC_
+'
+ldd build-many/orders
+readelf -h build-many/orders | Select-String 'Class|Machine'`,
+        output: `GLIBC_2.2.5
+GLIBC_2.17
+Class: ELF64
+Machine: Advanced Micro Devices X86-64
+
+构建容器基于 glibc 2.17，最高依赖不超过容器提供符号。
+产物可在 2.17 及以上 glibc 系统运行。`,
+      }],
+      ['ABI 兼容性自动检查', '升级库版本前用工具对比新旧 ABI：abi-dumper 依据带调试信息的 so 生成 ABI dump，abi-compliance-checker 对比两份 dump，报告类型大小、成员布局、虚表顺序、符号签名的具体差异；libabigail 的 abidiff 是同类工具，输出更轻量。可验证动作：给某导出结构体增删一个成员后跑 abidiff old.so new.so，报告中应出现类型大小变化与布局错位的条目，凡出现即判定破坏 ABI，必须升 SONAME 换文件名。', 'abidiff 查布局', {
+        title: 'abidiff：结构体增成员被判定 ABI 破坏',
+        language: 'PowerShell',
+        code: `@'
+struct Order { int id; };
+extern "C" int order_id(const Order* order) { return order->id; }
+'@ | Set-Content old.cpp
+@'
+struct Order { int id; long amount; };
+extern "C" int order_id(const Order* order) { return order->id; }
+'@ | Set-Content new.cpp
+g++ -fPIC -shared -g old.cpp -o libold.so
+g++ -fPIC -shared -g new.cpp -o libnew.so
+abidiff libold.so libnew.so
+abi-dumper libold.so -o old.abi -l 0
+abi-dumper libnew.so -o new.abi -l 0
+abi-compliance-checker -l orders -old old.abi -new new.abi`,
+        output: `[C] 'struct Order' changed:
+  size changed from 4 to 16 bytes
+  'long amount' was added
+
+类型大小与成员布局改变，旧调用方按 4 字节布局访问会错位。
+应升主 SONAME 到 liborders.so.2，不能原位替换。`,
+      }],
+      ['多发行版冒烟测试矩阵', '发布用例在 CI 里以容器代表目标环境：ubuntu:20.04、debian:11、rockylinux:9 各起一个 job，对同一产物执行冒烟脚本——打印版本号、加载全部 dlopen 插件、跑核心功能用例。产物只构建一次，各环境仅做运行验证，避免分环境编译引入差异。可验证动作：CI 日志中每个环境输出同一版本指纹且用例全绿才允许发版，任一环境报 version not found 即挡下整个发布。', '产物一份环境多测', {
+        title: 'CI 矩阵：同一产物在多发行版容器冒烟',
+        language: 'PowerShell',
+        code: `@'
+name: release-smoke
+on: [workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build && cmake --build build
+      - uses: actions/upload-artifact@v4
+        with: { name: orders, path: build/orders }
+  smoke:
+    needs: build
+    strategy:
+      matrix:
+        image: [ubuntu:20.04, debian:11, rockylinux:9]
+    runs-on: ubuntu-latest
+    container: \${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: orders, path: /opt/orders }
+      - run: /opt/orders/orders --version && /opt/orders/orders --smoke
+'@ | Set-Content .github/workflows/release-smoke.yml
+for ($image in 'ubuntu:20.04','debian:11','rockylinux:9') {
+  docker run --rm -v "$PWD/build:/opt/orders" $image /opt/orders/orders --smoke
+}`,
+        output: `ubuntu:20.04 smoke passed
+debian:11 smoke passed
+rockylinux:9 smoke passed
+
+构建只发生一次，三个容器下载同一 artifact 执行冒烟。
+任一环境 version not found 或 smoke 失败，矩阵整体挡下发布。`,
+      }],
+      ['灰度放量与回滚演练', '发布按批次放量：首批小比例流量，崩溃上报按符号栈聚类统计崩溃率，异常即停；每版保留完整产物与对应符号包，回滚时切回上一版并重跑冒烟。可验证动作：在测试环境完成一次回滚演练，核对切换后运行产物的构建指纹与上一版一致、冒烟用例通过；边界是配置文件 schema 必须向后兼容，否则回滚后的旧程序解析新配置会启动失败。', '回滚前先验指纹', {
+        title: '灰度回滚：版本指纹与冒烟双重确认',
+        language: 'PowerShell',
+        code: `$stable = 'orders:1.2.2'
+$candidate = 'orders:1.2.3'
+docker run --rm $stable --version
+$stableId = docker inspect --format '{{.Id}}' $stable
+$candidateId = docker inspect --format '{{.Id}}' $candidate
+docker service update --image $candidate orders
+Start-Sleep -Seconds 30
+docker service logs --tail 20 orders | Select-String 'error|panic'
+$rate = 0.02
+if ($rate -gt 0.005) { docker service update --rollback orders }
+docker service update --image $stable orders
+docker run --rm $stable --smoke
+Write-Output "stable=$stableId candidate=$candidateId rollback_smoke=0"`,
+        output: `orders 1.2.2
+rollback_smoke=0
+stable=sha256:... candidate=sha256:...
+
+候选版按灰度放量，错误率超阈值触发服务回滚。
+回滚后镜像 ID 与稳定版指纹一致，冒烟通过。`,
+      }],
     ],
   },
 ];

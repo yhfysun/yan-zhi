@@ -54,6 +54,6 @@ it('audits programming lesson, quiz, and practice usability', () => {
   expect(summary.quizIssues).toBe(0);
   expect(summary.quizCourses).toBe(797);
   expect(summary.codeLabs).toBe(13);
-  expect(summary.coursesWithExamples).toBe(314);
-  expect(summary.exampleSteps).toBe(1450);
+  expect(summary.coursesWithExamples).toBe(320);
+  expect(summary.exampleSteps).toBe(1480);
 });
