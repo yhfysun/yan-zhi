@@ -12,7 +12,11 @@ import { PROGRAMMING_PROJECT_COURSE_SEEDS } from './projects.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_04_COURSES } from './handwritten/project-training-batch-04.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_05_COURSES } from './handwritten/project-training-batch-05.js';
 import { PROGRAMMING_PROJECT_TRAINING_BATCH_06_COURSES } from './handwritten/project-training-batch-06.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_07_COURSES } from './handwritten/project-training-batch-07.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_08_COURSES } from './handwritten/project-training-batch-08.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_09_COURSES } from './handwritten/project-training-batch-09.js';
 import { PROGRAMMING_COURSE_QUIZ } from './quiz.js';
+import { PROJECT_TRAINING_COURSE_QUIZ } from './quiz-project-training.js';
 // 手写教案：spread 放末尾覆盖同名模板课（逐门进度见 docs/编程课程教案重写进度-2026-11-21.md）
 import {
   HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES,
@@ -144,6 +148,9 @@ const HANDWRITTEN_SEEDS: readonly ProgrammingCourseSeed[] = [
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_04_COURSES,
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_05_COURSES,
   ...PROGRAMMING_PROJECT_TRAINING_BATCH_06_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_07_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_08_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_09_COURSES,
 ];
 const handwrittenNames = new Set(HANDWRITTEN_SEEDS.map((s) => s.name));
 const withoutHandwritten = (seeds: readonly ProgrammingCourseSeed[]) =>
@@ -168,6 +175,7 @@ const ALL_COURSE_QUIZ: Readonly<Record<string, readonly LearningV2Practice[]>> =
   ...C_SYSTEMS_COURSE_QUIZ,
   ...CPP_PERFORMANCE_COURSE_QUIZ,
   ...PROJECT_TRAINING_BATCHES_04_06_COURSE_QUIZ,
+  ...PROJECT_TRAINING_COURSE_QUIZ,
 };
 
 function attachQuiz(
