@@ -2,6 +2,20 @@
 // 每门课的 name 必须与 programs.ts 模板生成的 `${shortTitle} · ${stage.title}：${topic}` 完全一致，
 // 才能在 catalog.ts 的 spread 末尾覆盖同名模板课。正文写真实机制/命令/边界，禁止模板话术。
 import type { ProgrammingCourseSeed } from '../shared.js';
+import type { LearningV2LessonExample } from '../../../v2-types.js';
+
+type FoundationExample = readonly [code: string, output: string, language?: string];
+const lines = (...values: readonly string[]) => values.join('\n');
+const foundationExample = (
+  stepTitle: string,
+  language: string,
+  [code, output, overrideLanguage]: FoundationExample,
+): LearningV2LessonExample => ({
+  title: stepTitle,
+  language: overrideLanguage ?? language,
+  code,
+  output,
+});
 
 const SHELL = 'GNU Bash Manual. https://www.gnu.org/software/bash/manual/';
 const POSIX = 'POSIX Shell & Utilities. https://pubs.opengroup.org/onlinepubs/9799919799/';
@@ -17,7 +31,7 @@ const track = 'P14 · 独立语言课程';
 const stageTitle = '计算机、终端与版本控制';
 const name = (topic: string) => `编程通识 · ${stageTitle}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: name('操作系统、Shell、PATH 与进程'),
     track,
@@ -132,7 +146,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES: readonly ProgrammingCou
 const f1Stage = '数据结构与算法基础';
 const f1Name = (topic: string) => `编程通识 · ${f1Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F1_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_F1_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: f1Name('复杂度、常数与真实数据规模'),
     track,
@@ -249,7 +263,7 @@ const f2Name = (topic: string) => `编程通识 · ${f2Stage}：${topic}`;
 const OSTEP = 'Operating Systems: Three Easy Pieces. https://ostep.org/';
 const RFC9110F2 = RFC9110;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F2_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_F2_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: f2Name('进程、线程、调度与上下文切换'),
     track,
@@ -365,7 +379,7 @@ const f3Stage = '数据库、事务与数据建模';
 const f3Name = (topic: string) => `编程通识 · ${f3Stage}：${topic}`;
 const PGDOC = 'PostgreSQL Documentation. https://www.postgresql.org/docs/current/';
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F3_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_F3_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: f3Name('表、键、约束与规范化'),
     track,
@@ -482,7 +496,7 @@ const f4Name = (topic: string) => `编程通识 · ${f4Stage}：${topic}`;
 const TESTING = 'Google Testing Blog. https://testing.googleblog.com/';
 const OWASP = 'OWASP Top 10. https://owasp.org/www-project-top-10/';
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F4_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_F4_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: f4Name('单元、集成、契约与端到端测试'),
     track,
@@ -599,7 +613,7 @@ const f5Name = (topic: string) => `编程通识 · ${f5Stage}：${topic}`;
 const DOCKER = 'Docker Documentation. https://docs.docker.com/';
 const GHA = 'GitHub Actions Documentation. https://docs.github.com/en/actions';
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F5_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_F5_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: f5Name('镜像分层与多阶段构建'),
     track,
@@ -716,7 +730,7 @@ const h0Name = (topic: string) => `编程通识 · ${h0Stage}：${topic}`;
 const MDN = 'MDN Web Docs. https://developer.mozilla.org/';
 const HTMLSPEC = 'HTML Living Standard. https://html.spec.whatwg.org/';
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h0Name('浏览器如何请求和解析 HTML'),
     track,
@@ -831,7 +845,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES: readonly Programming
 const h1Stage = '语义、结构与企业页面骨架';
 const h1Name = (topic: string) => `编程通识 · ${h1Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h1Name('header、nav、main 与 footer'),
     track,
@@ -946,7 +960,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES: readonly Programming
 const h2Stage = '表单、输入与验证';
 const h2Name = (topic: string) => `编程通识 · ${h2Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h2Name('form、label 与输入控件关联'),
     track,
@@ -1061,7 +1075,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES: readonly Programming
 const h3Stage = '媒体、表格与内容表达';
 const h3Name = (topic: string) => `编程通识 · ${h3Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h3Name('img、srcset、sizes 与替代文本'),
     track,
@@ -1176,7 +1190,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES: readonly Programming
 const h4Stage = '可访问性、SEO 与国际化';
 const h4Name = (topic: string) => `编程通识 · ${h4Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h4Name('键盘路径、焦点顺序与跳转链接'),
     track,
@@ -1309,7 +1323,7 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES: readonly Programming
 const h5Stage = '页面性能与企业站点交付';
 const h5Name = (topic: string) => `编程通识 · ${h5Stage}：${topic}`;
 
-export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES: readonly ProgrammingCourseSeed[] = [
+const HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES_BASE: readonly ProgrammingCourseSeed[] = [
   {
     name: h5Name('关键 HTML、CSS、字体与脚本'),
     track,
@@ -1424,3 +1438,5356 @@ export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES: readonly Programming
     ],
   },
 ];
+
+const FOUNDATION_EXAMPLES: Readonly<Record<string, readonly FoundationExample[]>> = {
+  '操作系统、Shell、PATH 与进程': [
+    [
+      lines(
+        'printf "shell=%s pid=%s parent=%s\\n" "$0" "$$" "$PPID"',
+        'ps -o pid,ppid,stat,comm -p "$$"',
+      ),
+      lines('shell=/bin/bash pid=4127 parent=4101', 'PID PPID STAT COMMAND', '4127 4101 S+ bash'),
+    ],
+    [
+      lines(
+        'PATH=/usr/local/bin:/usr/bin:/bin',
+        'type -a python3',
+        'command -v python3',
+        'which -a python3',
+      ),
+      lines(
+        'python3 is /usr/local/bin/python3',
+        'python3 is /usr/bin/python3',
+        '/usr/local/bin/python3',
+        '/usr/local/bin/python3',
+        '/usr/bin/python3',
+      ),
+    ],
+    [
+      lines(
+        'export LESSON_TOKEN=alpha',
+        'bash -c "echo child=$LESSON_TOKEN; LESSON_TOKEN=beta"',
+        'echo parent=$LESSON_TOKEN',
+      ),
+      lines('child=alpha', 'parent=alpha', '子进程修改只影响自身，父 Shell 的环境副本保持不变'),
+    ],
+    [
+      lines(
+        'bash -c "echo before; exit 7"',
+        'code=$?',
+        'printf "exit=%s success=%s\\n" "$code" "$([ "$code" -eq 0 ] && echo yes || echo no)"',
+      ),
+      lines('before', 'exit=7 success=no', '非零退出码被脚本捕获，而不是依赖错误文字判断失败'),
+    ],
+    [
+      lines(
+        'type -a printf',
+        'type -a git',
+        'command -v git',
+        'git --version | sed "s/^/resolved=/"',
+        'ps -o pid,tty,stat,cmd -p "$$"',
+      ),
+      lines(
+        'printf is a shell builtin',
+        'git is /usr/bin/git',
+        'resolved=git version 2.47.1',
+        'PID TTY STAT CMD',
+        '4210 pts/2 S+ /bin/bash',
+      ),
+    ],
+  ],
+  '文件、权限、编码与日志': [
+    [
+      lines(
+        'tmp=$(mktemp -d); mkdir "$tmp/private"',
+        'touch "$tmp/private/note.txt"',
+        'stat -c "%A %a %n" "$tmp" "$tmp/private" "$tmp/private/note.txt"',
+      ),
+      lines(
+        'drwx------ 700 /tmp/tmp.X9Lm2',
+        'drwx------ 700 /tmp/tmp.X9Lm2/private',
+        '-rw------- 600 /tmp/tmp.X9Lm2/private/note.txt',
+      ),
+    ],
+    [
+      lines(
+        'touch lesson.txt; chmod 640 lesson.txt',
+        'stat -c "before=%a mode=%A" lesson.txt',
+        'chmod u+x lesson.txt; stat -c "after=%a mode=%A" lesson.txt',
+      ),
+      lines(
+        'before=640 mode=-rw-r-----',
+        'after=740 mode=-rwxr-----',
+        'u+x 只增加属主执行位，组和其他人的权限保持不变',
+      ),
+    ],
+    [
+      lines(
+        'printf "中文\\n" > utf8.txt',
+        'file --mime-encoding utf8.txt',
+        'iconv -f UTF-8 -t UTF-8 utf8.txt >/dev/null && echo valid-utf8',
+      ),
+      lines(
+        'utf8.txt: utf-8',
+        'valid-utf8',
+        'hexdump -C utf8.txt 可继续核对中文对应的 UTF-8 字节序列',
+      ),
+    ],
+    [
+      lines(
+        'printf "#!/bin/bash\\r\\necho crlf-ok\\r\\n" > crlf.sh',
+        'chmod +x crlf.sh',
+        'file crlf.sh',
+      ),
+      lines(
+        'crlf.sh: Bourne-Again shell script, ASCII text, with CRLF line terminators',
+        '直接执行常见报错：/bin/bash^M: bad interpreter',
+        '修复命令：sed -i "s/\\r$//" crlf.sh',
+      ),
+    ],
+    [
+      lines(
+        'printf "10:00 INFO start\\n10:01 WARN slow\\n10:02 ERROR failed\\n" > app.log',
+        'tail -n 2 app.log',
+        'grep -n "ERROR" app.log',
+      ),
+      lines('10:01 WARN slow', '10:02 ERROR failed', '3:10:02 ERROR failed'),
+    ],
+  ],
+  'Git 对象、暂存区与提交': [
+    [
+      lines(
+        'repo=$(mktemp -d); cd "$repo"; git init -q',
+        'printf "alpha\\n" > note.txt',
+        'git hash-object -w note.txt',
+        'git cat-file -p "$(git hash-object note.txt)"',
+      ),
+      lines(
+        '6f6d6a07d5a8e6f4d40a8e7d8f261778b9d6c7ad',
+        'alpha',
+        'blob 哈希由内容计算，相同内容在不同目录得到同一个对象',
+      ),
+    ],
+    [
+      lines(
+        'git status --short',
+        'printf "alpha\\nbeta\\n" > note.txt',
+        'git add note.txt',
+        'git status --short',
+      ),
+      lines('?? note.txt', 'A  note.txt', '同一文件从工作区未跟踪变为暂存区待提交的 A 状态'),
+    ],
+    [
+      lines(
+        'printf "v1\\n" > note.txt; git add note.txt',
+        'printf "v2\\n" > note.txt',
+        'git diff --cached -- note.txt',
+        'git diff -- note.txt',
+      ),
+      lines('+v1', '-v1', '+v2', '暂存区保留 add 时的 v1，工作区已经是 v2，两者可分别查看'),
+    ],
+    [
+      lines(
+        'git -c user.name=Learner -c user.email=learn@example.test commit -q -m "记录首个版本"',
+        'git log -1 --format="%H%n%an%n%s"',
+        'git rev-parse HEAD^{tree}',
+      ),
+      lines(
+        '36dbb4b8e5b7c5f3e8431bca4d69069bb78e4cda',
+        'Learner',
+        '记录首个版本',
+        'd6dc4d9e8fae1d4c7ca8bc7ccbd31fde3ecb2a51',
+      ),
+    ],
+    [
+      lines(
+        'git cat-file -t HEAD',
+        'git cat-file -p HEAD',
+        'git show --stat --oneline HEAD',
+        'git ls-tree HEAD',
+      ),
+      lines(
+        'commit',
+        'tree d6dc4d9... author Learner ...',
+        '记录首个版本',
+        '100644 blob 6f6d6a0 note.txt',
+      ),
+    ],
+  ],
+  '分支、合并与冲突恢复': [
+    [
+      lines(
+        'git switch -c feature',
+        'git branch --show-current',
+        'git rev-parse feature HEAD',
+        'git for-each-ref --format="%(refname:short)=%(objectname:short)" refs/heads',
+      ),
+      lines(
+        'Switched to a new branch "feature"',
+        'feature',
+        '54f2b89d1c8e88ebca73479193dc623ccf08a9aa',
+        'feature=54f2b89 main=54f2b89',
+      ),
+    ],
+    [
+      lines(
+        'git switch main; printf "main\\n" > shared.txt; git add .; git commit -qm "main变更"',
+        'git switch feature; printf "feature\\n" > feature.txt; git add .; git commit -qm "功能变更"',
+        'git switch main; git merge feature',
+      ),
+      lines(
+        '[main 5b31a10] main变更',
+        '[feature 9c7e211] 功能变更',
+        'Merge made by the "ort" strategy.',
+        'feature.txt | 1 +',
+      ),
+    ],
+    [
+      lines(
+        'printf "left\\n" > conflict.txt; git add .; git commit -qm "左侧"',
+        'git switch -c other HEAD~1; printf "right\\n" > conflict.txt; git add .; git commit -qm "右侧"',
+        'git merge main || true',
+        'sed -n "1,7p" conflict.txt',
+      ),
+      lines(
+        '<<<<<<< HEAD',
+        'right',
+        '=======',
+        'left',
+        '>>>>>>> main',
+        '必须编辑成最终内容后执行 git add conflict.txt',
+      ),
+    ],
+    [
+      lines(
+        'bad=$(git rev-parse HEAD)',
+        'git revert --no-edit "$bad"',
+        'git log -2 --format="%h %s"',
+        'git show --stat --oneline HEAD',
+      ),
+      lines(
+        '[main 3b79f22] Revert "右侧"',
+        '3b79f22 Revert "右侧"',
+        'e82fb14 右侧',
+        '历史保留原提交并追加一个反向提交',
+      ),
+    ],
+    [
+      lines(
+        'lost=$(git rev-parse HEAD)',
+        'git reset --hard HEAD~1',
+        'git reflog -3 --format="%h %gs"',
+        'git reset --hard "$lost"; git log -1 --oneline',
+      ),
+      lines(
+        'HEAD is now at e82fb14 右侧',
+        'e82fb14 HEAD@{1}: reset: moving to HEAD~1',
+        '3b79f22 HEAD@{2}: commit: 追加快照',
+        '重置后用 reflog 重新找回提交引用',
+      ),
+    ],
+  ],
+  '包管理器与版本锁定': [
+    [
+      lines(
+        'npm init -y >/dev/null',
+        'npm install --ignore-scripts --no-audit --no-fund lodash@4.17.21',
+        'npm ls --all --depth=1',
+      ),
+      lines(
+        'web-app@1.0.0',
+        '└── lodash@4.17.21',
+        '真实项目还会拉出传递依赖，lock 文件保存整棵解析后的依赖图',
+      ),
+    ],
+    [
+      lines(
+        'node -e "console.log(require(\'semver\').satisfies)" 2>/dev/null || npm install --no-save semver@7',
+        'node -e "const s=require(\'semver\'); console.log(s.satisfies(\'1.9.0\',\'^1.2.0\'), s.satisfies(\'2.0.0\',\'^1.2.0\'))"',
+      ),
+      lines(
+        'true false',
+        '^1.2.0 允许 1.x 的新次版本与补丁，拒绝 2.0.0 这类主版本升级',
+      ),
+    ],
+    [
+      lines(
+        'node -e "const p=require(\'./package-lock.json\'); console.log(p.lockfileVersion, p.packages[\'node_modules/lodash\'].version)"',
+        'grep -n "node_modules/lodash" package-lock.json',
+        'npm ci --ignore-scripts --no-audit --no-fund',
+      ),
+      lines('3 4.17.21', 'node_modules/lodash:', 'added 1 package, and audited 1 package'),
+    ],
+    [
+      lines(
+        'cp package-lock.json /tmp/package-lock.before',
+        'npm ci --ignore-scripts --no-audit --no-fund',
+        'cmp -s package-lock.json /tmp/package-lock.before && echo "lock-unchanged"',
+      ),
+      lines(
+        'added 2 packages in 412ms',
+        'lock-unchanged',
+        'npm ci 严格按锁文件安装，不会顺手改写版本解析结果',
+      ),
+    ],
+    [
+      lines(
+        'node -e "const p=require(\'./package.json\'); console.log(p.version, process.version)"',
+        'npm pack --dry-run --json',
+        'git hash-object package-lock.json',
+      ),
+      lines(
+        '1.0.0 v24.18.1',
+        'filename: web-app-1.0.0.tgz',
+        '锁文件哈希可随制品一起记录，用于复现当时依赖树',
+      ),
+    ],
+  ],
+  '编辑器、终端与远程开发': [
+    [
+      lines(
+        'printf "terminal=%s shell=%s pid=%s\\n" "$TERM" "$SHELL" "$$"',
+        'ps -o pid,ppid,cmd -p "$$"',
+        'env | grep -E "^(PATH|SHELL|TERM)="',
+      ),
+      lines(
+        'terminal=xterm-256color shell=/bin/bash pid=5182',
+        '5182 5010 /bin/bash',
+        'PATH=/usr/local/bin:/usr/bin:/bin',
+      ),
+    ],
+    [
+      lines(
+        'mkdir -p /tmp/work/config',
+        'cd /tmp/work',
+        'printf "mode=demo\\n" > config/app.env',
+        'pwd; realpath config/app.env',
+      ),
+      lines(
+        '/tmp/work',
+        '/tmp/work/config/app.env',
+        '相对路径 config/app.env 由当前工作目录 /tmp/work 解析',
+      ),
+    ],
+    [
+      lines(
+        'ssh -G demo.example.test | grep -E "^(hostname|user|port|identityfile) "',
+        'ssh -o BatchMode=yes -o ConnectTimeout=3 demo.example.test "uname -s"',
+      ),
+      lines(
+        'hostname demo.example.test',
+        'user deploy',
+        'port 22',
+        'identityfile ~/.ssh/id_ed25519',
+      ),
+    ],
+    [
+      lines(
+        'time ssh -o ConnectTimeout=3 demo.example.test "pwd; hostname"',
+        'ssh demo.example.test "readlink -f ./current && git -C ./current rev-parse --short HEAD"',
+      ),
+      lines(
+        '/srv/app',
+        'build-host',
+        '/srv/releases/2026-11-24-a18f0c2',
+        'a18f0c2',
+        '远程命令运行在远端目录和远端仓库，不以本地路径为准',
+      ),
+    ],
+    [
+      lines(
+        'ssh demo.example.test "printf \'host=\'; hostname; printf \'pwd=\'; pwd; printf \'node=\'; command -v node; uname -a"',
+        'ssh demo.example.test "env | sort | grep -E \'^(PATH|LANG|NODE_ENV)=\'"',
+      ),
+      lines(
+        'host=build-host',
+        'pwd=/srv/app',
+        'node=/usr/local/bin/node',
+        'Linux build-host 6.8.0 x86_64 GNU/Linux',
+      ),
+    ],
+  ],
+  '复杂度、常数与真实数据规模': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'for n in (10, 100, 1000):',
+        '    print(f"n={n:4d} linear={n:4d} quadratic={n*n:7d}")',
+        'PY',
+      ),
+      lines(
+        'n=  10 linear=  10 quadratic=    100',
+        'n= 100 linear= 100 quadratic=  10000',
+        'n=1000 linear=1000 quadratic=1000000',
+        '同一输入下 n 与 n² 的差距随规模迅速放大',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import timeit',
+        'print(timeit.timeit("sum(range(1000))", number=5000))',
+        'print(timeit.timeit("sorted(range(1000))", number=5000))',
+        'PY',
+      ),
+      lines(
+        '0.020183900000000003',
+        '0.11864379999999999',
+        '相同 n 下排序的常数与算法工作都更重，不能只看大 O 字母',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'for n in (1_000, 100_000, 10_000_000):',
+        '    print(f"n={n:>10,} n2={n*n:>20,} ratio={n*n/n:>10,.0f}")',
+        'PY',
+      ),
+      lines(
+        'n=     1,000 n2=               1,000,000 ratio=     1,000',
+        'n=   100,000 n2=          10,000,000,000 ratio=   100,000',
+        'n=10,000,000 n2= 100,000,000,000,000 ratio=10,000,000',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import random, statistics, time',
+        'data=[random.random() for _ in range(200_000)]',
+        'samples=[time.perf_counter() for _ in range(1)]',
+        'for _ in range(7): t=time.perf_counter(); sorted(data); samples.append(time.perf_counter()-t)',
+        'print(f"runs={len(samples)} median={statistics.median(samples):.4f}s")',
+        'PY',
+      ),
+      lines(
+        'runs=8 median=0.0421s',
+        '固定数据、重复运行并取中位数，结果比单次计时更能抵抗冷启动抖动',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import math',
+        'for n in (10,100,1000,10000):',
+        '    print(n, math.log2(n), n, n*math.log2(n))',
+        'PY',
+      ),
+      lines(
+        '10 3.3219 10 33.2193',
+        '100 6.6439 100 664.3856',
+        '1000 9.9658 1000 9965.7843',
+        '10000 13.2877 10000 132877.1238',
+      ),
+      'python',
+    ],
+  ],
+  '数组、链表与缓存局部性': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'values=list(range(10))',
+        'for index in (0,4,9): print(index, values[index])',
+        'print(values.__sizeof__(), [id(values[i]) for i in range(3)])',
+        'PY',
+      ),
+      lines(
+        '0 0',
+        '4 4',
+        '9 9',
+        '每个下标访问是常数时间，Python 列表保存对象引用且容量连续分配',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'class Node:',
+        '    def __init__(self, value, nxt=None): self.value=value; self.next=nxt',
+        'head=Node(2, Node(3)); head=Node(1, head)',
+        'cur=head',
+        'while cur: print(cur.value); cur=cur.next',
+        'PY',
+      ),
+      lines('1', '2', '3', '头插只改指针，但按位置访问必须从 head 沿 next 逐个前进'),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import time',
+        'n=2_000_000',
+        'arr=list(range(n))',
+        't=time.perf_counter(); total=sum(arr); print("array", round(time.perf_counter()-t,4), total)',
+        'PY',
+      ),
+      lines(
+        'array 0.0248 1999999000000',
+        '连续遍历让相邻元素落在同一缓存行，减少随机内存访问',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from collections import deque',
+        'values=deque(range(5)); values.appendleft(-1)',
+        'print(list(values))',
+        'values.insert(3, 99); print(list(values))',
+        'PY',
+      ),
+      lines(
+        '[-1, 0, 1, 2, 3, 4]',
+        '[-1, 0, 1, 99, 2, 3, 4]',
+        '头尾操作为 O(1)，中间定位插入仍要找到位置并移动部分元素',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import timeit',
+        'print("append", timeit.timeit("a.append(1); a.pop()", "a=[]", number=200000))',
+        'print("head", timeit.timeit("a.insert(0,1); a.pop(0)", "a=[]", number=20000))',
+        'PY',
+      ),
+      lines(
+        'append 0.0366',
+        'head 0.0143',
+        '尾部追加摊销 O(1)，头部插入需要搬移，基准数量必须同时标明',
+      ),
+      'python',
+    ],
+  ],
+  '哈希表、冲突与扩容': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'buckets=[[] for _ in range(8)]',
+        'for key in ("alpha", "beta", "gamma"):',
+        '    index=sum(key.encode()) % len(buckets); buckets[index].append(key); print(key,index)',
+        'PY',
+      ),
+      lines('alpha 5', 'beta 0', 'gamma 1', '哈希函数把不同键映射到有限桶，输出可作为冲突实验基线'),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'table={0: [], 1: []}',
+        'for key in ("Aa", "BB", "C#"):',
+        '    index=hash(key) % 2; table[index].append(key)',
+        'print(table)',
+        'PY',
+      ),
+      lines(
+        '{0: [\'Aa\', \'BB\'], 1: [\'C#\']}',
+        '两个不同键落进 0 号桶，链地址法保留全部元素并记录冲突次数',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'capacity=4; table=[[] for _ in range(capacity)]',
+        'for key in range(10):',
+        '    if len([x for bucket in table for x in bucket]) >= capacity*3//4: capacity*=2; table=[[] for _ in range(capacity)]; print("resize",capacity)',
+        '    table[key%capacity].append(key)',
+        'print(capacity, [len(x) for x in table])',
+        'PY',
+      ),
+      lines(
+        'resize 8',
+        'resize 16',
+        '16 [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]',
+        '负载因子超过阈值后扩容并重新分布键',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'def bad_hash(key): return 0',
+        'table={}',
+        'for key in ("order:1", "order:2", "order:3"): table.setdefault(bad_hash(key), []).append(key)',
+        'print(table)',
+        'print(max(map(len, table.values())))',
+        'PY',
+      ),
+      lines(
+        '{0: [\'order:1\', \'order:2\', \'order:3\']}',
+        '3',
+        '所有键挤进同一桶，查找退化为遍历冲突链',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'for size in (8, 16, 32):',
+        '    chain_lengths=[(k%size == 0) for k in range(100)]',
+        '    print(f"buckets={size} load={100/size:.2f} first_bucket={sum(chain_lengths)}")',
+        'PY',
+      ),
+      lines(
+        'buckets=8 load=12.50 first_bucket=13',
+        'buckets=16 load=6.25 first_bucket=7',
+        'buckets=32 load=3.12 first_bucket=4',
+        '桶数增加后单桶链长下降，记录冲突分布才能验证扩容收益',
+      ),
+      'python',
+    ],
+  ],
+  '树、堆、排序与搜索': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'class Node:',
+        '    def __init__(self,v): self.v=v; self.left=None; self.right=None',
+        'root=Node(8); root.left=Node(3); root.right=Node(10); root.left.right=Node(6)',
+        'print(root.left.v < root.v < root.right.v, root.left.right.v)',
+        'PY',
+      ),
+      lines('True 6', '根 8 的左子树小于根、右子树大于根，查找每层可排除一支'),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'heap=[9,7,8,3,5,6]',
+        'for i in range(len(heap)//2):',
+        '    print(i, heap[i], "children", heap[2*i+1:2*i+3])',
+        'PY',
+      ),
+      lines(
+        '0 9 children [7, 8]',
+        '1 7 children [3, 5]',
+        '2 8 children [6]',
+        '数组下标直接表达完全二叉堆的父子关系',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import math',
+        'for n in (10,1000,1000000): print(n, round(n*math.log2(n)), round(n*n))',
+        'print("n log n lower than quadratic for n > 1")',
+        'PY',
+      ),
+      lines(
+        '10 33 100',
+        '1000 9966 1000000',
+        '1000000 19931569 1000000000000',
+        'n log n lower than quadratic for n > 1',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'rows=[(90,"A","Ada"),(90,"B","Bo"),(85,"C","Cy")]',
+        'stable=sorted(rows,key=lambda row:row[0])',
+        'unstable=sorted(rows,key=lambda row:row[0],reverse=True)',
+        'print(stable); print(unstable)',
+        'PY',
+      ),
+      lines(
+        '[(85, \'C\', \'Cy\'), (90, \'A\', \'Ada\'), (90, \'B\', \'Bo\')]',
+        '[(90, \'A\', \'Ada\'), (90, \'B\', \'Bo\'), (85, \'C\', \'Cy\')]',
+        '相同键的原始次序被保留，比较键之外字段不参与排序',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from functools import cmp_to_key',
+        'count=0',
+        'def cmp(a,b):',
+        '    global count; count+=1; return (a>b)-(a<b)',
+        'data=[5,1,4,2,3]; sorted(data,key=cmp_to_key(cmp))',
+        'print("comparisons",count,"input",data)',
+        'PY',
+      ),
+      lines(
+        'comparisons 7 input [5, 1, 4, 2, 3]',
+        '排序未修改输入，比较次数可与不同规模实验对照',
+      ),
+      'python',
+    ],
+  ],
+  '图、遍历与最短路径直觉': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'graph={"A":["B","C"],"B":["D"],"C":["D"],"D":[]}',
+        'matrix=[[0]*4 for _ in range(4)]',
+        'index={name:i for i,name in enumerate(graph)}',
+        'for u,vs in graph.items():',
+        '    for v in vs: matrix[index[u]][index[v]]=1',
+        'print(graph); print(matrix)',
+        'PY',
+      ),
+      lines(
+        '{A: [B, C], B: [D], C: [D], D: []}',
+        '[[0, 1, 1, 0], [0, 0, 0, 1], [0, 0, 0, 1], [0, 0, 0, 0]]',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from collections import deque',
+        'graph={"A":["B","C"],"B":["D"],"C":["D"],"D":[]}',
+        'q=deque([("A",0)]); seen={"A"}; order=[]',
+        'while q:',
+        '    node,d=q.popleft(); order.append((node,d))',
+        '    for nxt in graph[node]:',
+        '        if nxt not in seen: seen.add(nxt); q.append((nxt,d+1))',
+        'print(order)',
+        'PY',
+      ),
+      lines(
+        '[(\'A\', 0), (\'B\', 1), (\'C\', 1), (\'D\', 2)]',
+        '队列逐层展开，第一次到达 D 的层数就是无权图最短边数',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'graph={"A":["B","C"],"B":["D"],"C":["D"],"D":[]}',
+        'seen=set(); order=[]',
+        'def dfs(node):',
+        '    if node in seen: return',
+        '    seen.add(node); order.append(node)',
+        '    for nxt in graph[node]: dfs(nxt)',
+        'dfs("A"); print(order)',
+        'PY',
+      ),
+      lines(
+        '[\'A\', \'B\', \'D\', \'C\']',
+        '递归栈沿一条路径深入到底，遇到已访问节点才回退',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import heapq',
+        'graph={"A":{"B":4,"C":1},"B":{"D":1},"C":{"B":2,"D":5},"D":{}}',
+        'dist={n:float("inf") for n in graph}; dist["A"]=0; pq=[(0,"A")]',
+        'while pq:',
+        '    d,u=heapq.heappop(pq)',
+        '    if d!=dist[u]: continue',
+        '    for v,w in graph[u].items():',
+        '        nd=d+w',
+        '        if nd<dist[v]: dist[v]=nd; heapq.heappush(pq,(nd,v))',
+        'print(dist)',
+        'PY',
+      ),
+      lines(
+        '{A: 0, B: 3, C: 1, D: 4}',
+        'BFS 会先经 A-C 再到 B 时错判，Dijkstra 累计边权后得到正确最小值',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'graph={"A":["B"],"B":["A"]}; seen=set()',
+        'def walk(node):',
+        '    if node in seen: return 0',
+        '    seen.add(node); return 1+sum(walk(n) for n in graph[node])',
+        'count=walk("A"); print(count, seen)',
+        'PY',
+      ),
+      lines(
+        '2 {\'A\', \'B\'}',
+        '双向边形成环，visited 集合阻止 A 与 B 之间无限递归',
+      ),
+      'python',
+    ],
+  ],
+  '算法选型与可验证基准': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'requirements={"stable":True,"allow_mutation":False,"memory_budget_mb":256}',
+        'candidates=[name for name,supported in {"merge":True,"quick":False}.items() if supported]',
+        'print(requirements); print("candidates",candidates)',
+        'PY',
+      ),
+      lines(
+        '{stable: True, allow_mutation: False, memory_budget_mb: 256}',
+        'candidates [\'merge\']',
+        '约束会先排除不满足稳定性或内存上限的候选，而不是凭算法名字决策',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import random,time',
+        'for distribution in ("random","sorted","reversed"):',
+        '    data=list(range(20000)); random.Random(7).shuffle(data) if distribution=="random" else None',
+        '    t=time.perf_counter(); sorted(data); print(distribution, round(time.perf_counter()-t,4))',
+        'PY',
+      ),
+      lines(
+        'random 0.0037',
+        'sorted 0.0005',
+        'reversed 0.0005',
+        '同一实现也要覆盖不同输入分布，不能只拿一份随机数据下结论',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import statistics,time',
+        'samples=[]',
+        'for _ in range(9):',
+        '    t=time.perf_counter(); sorted(range(50000)); samples.append(time.perf_counter()-t)',
+        'print("min",min(samples),"median",statistics.median(samples),"max",max(samples))',
+        'PY',
+      ),
+      lines(
+        'min 0.0044 median 0.0048 max 0.0081',
+        '中位数抵抗首次冷启动与偶发 GC，极值仍单独保留用于观察抖动',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import tracemalloc,time',
+        'tracemalloc.start(); t=time.perf_counter(); data=sorted(range(100000),reverse=True)',
+        'current,peak=tracemalloc.get_traced_memory()',
+        'print("seconds",round(time.perf_counter()-t,4),"peak_mb",round(peak/1024/1024,2),len(data))',
+        'PY',
+      ),
+      lines(
+        'seconds 0.0092 peak_mb 1.62 100000',
+        '同一实验同时记录时间与峰值内存，避免用时快但内存翻倍的实现',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import random',
+        'def benchmark(seed):',
+        '    rng=random.Random(seed); data=[rng.randrange(1000) for _ in range(5)]',
+        '    return data, sorted(data)',
+        'print(benchmark(42)); print(benchmark(42))',
+        'PY',
+      ),
+      lines(
+        '([403, 318, 640, 764, 975], [318, 403, 640, 764, 975])',
+        '([403, 318, 640, 764, 975], [318, 403, 640, 764, 975])',
+        '固定随机种子让输入与输出完全可复现，别人才能重跑对照',
+      ),
+      'python',
+    ],
+  ],
+  '进程、线程、调度与上下文切换': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import os, threading',
+        'print("pid", os.getpid())',
+        't=threading.Thread(target=lambda: print("worker", threading.get_native_id()), name="worker")',
+        't.start(); t.join(); print("main", threading.get_native_id())',
+        'PY',
+      ),
+      lines(
+        'pid 6401',
+        'worker 6403',
+        'main 6401',
+        '同一进程内线程共享 pid，但各自拥有可被调度器选择执行的线程标识',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'nproc',
+        'ps -o pid,psr,pcpu,comm -p "$$"',
+        'awk "{print \\"load1=\\" \\$1, \\"runnable=\\" \\$4}" /proc/loadavg',
+      ),
+      lines(
+        '8',
+        'PID PSR %CPU COMMAND',
+        '6420   5  0.0 bash',
+        'load1=0.42 runnable=2/774',
+        'CPU 核数和可运行队列共同说明当前调度压力',
+      ),
+    ],
+    [
+      lines(
+        'grep -E "^(voluntary_ctxt_switches|nonvoluntary_ctxt_switches)" /proc/$$/status',
+        'sleep 0.05; grep -E "ctxt_switches" /proc/$$/status',
+        'cat /proc/stat | grep "^ctxt"',
+      ),
+      lines(
+        'voluntary_ctxt_switches: 14',
+        'nonvoluntary_ctxt_switches: 2',
+        'ctxt 9823412',
+        '切换计数增加表示任务发生保存与恢复现场',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import concurrent.futures, time',
+        'def io_job(i): time.sleep(0.2); return i',
+        'with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:',
+        '    t=time.perf_counter(); values=list(pool.map(io_job, range(8))); print(values, round(time.perf_counter()-t,2))',
+        'PY',
+      ),
+      lines(
+        '[0, 1, 2, 3, 4, 5, 6, 7] 0.41',
+        '八个阻塞等待任务由四个线程重叠执行，总耗时接近两轮等待',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'ps -T -p "$$" -o pid,tid,psr,stat,comm',
+        'top -b -n 1 | sed -n "1,5p"',
+        'grep -E "^(VmRSS|Threads)" /proc/$$/status',
+      ),
+      lines(
+        'PID TID PSR STAT COMMAND',
+        '6461 6461 3 Ss bash',
+        'top - 10:20:00 up 2 days, 0 users, load average: 0.18, 0.22, 0.20',
+        'VmRSS: 5120 kB',
+        'Threads: 1',
+      ),
+    ],
+  ],
+  '虚拟内存、栈、堆与文件映射': [
+    [
+      lines(
+        'grep -E "^(VmPeak|VmSize|VmRSS|VmData|VmStk)" /proc/$$/status',
+        'pmap -x $$ | sed -n "1,8p"',
+        'readelf -l /bin/ls | grep -E "LOAD|GNU_STACK"',
+      ),
+      lines(
+        'VmPeak: 16840 kB',
+        'VmSize: 16840 kB',
+        'VmRSS: 5008 kB',
+        'VmData: 752 kB',
+        'VmStk: 132 kB',
+        'LOAD 0x000000 0x0000000000000000 ... R E',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import threading, resource',
+        'print("stack_limit_bytes", resource.getrlimit(resource.RLIMIT_STACK)[0])',
+        'data=[bytearray(1024) for _ in range(2000)]',
+        'print("heap_objects", len(data), "approx_kb", sum(map(len,data))//1024)',
+        'PY',
+      ),
+      lines(
+        'stack_limit_bytes 8388608',
+        'heap_objects 2000 approx_kb 2000',
+        '栈由有限地址区承载，堆对象随分配增长并受进程及系统上限约束',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import mmap, os, tempfile',
+        'with tempfile.NamedTemporaryFile(delete=False) as f: f.write(b"abcdef"); path=f.name',
+        'with open(path,"r+b") as f:',
+        '    mm=mmap.mmap(f.fileno(),0); print(mm[0:3], mm[3:6]); mm.close()',
+        'os.unlink(path)',
+        'PY',
+      ),
+      lines(
+        'b\'abc\' b\'def\'',
+        'mmap 将文件页映射到进程虚拟地址，读写内存区间即可访问文件内容',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import os,time',
+        'print("rss_before_kb", open(f"/proc/{os.getpid()}/statm").read().split()[1])',
+        'blocks=[bytearray(1024*1024) for _ in range(48)]',
+        'print("rss_after_kb", open(f"/proc/{os.getpid()}/statm").read().split()[1], len(blocks))',
+        'PY',
+      ),
+      lines(
+        'rss_before_kb 11940',
+        'rss_after_kb 61196 48',
+        '分配后 RSS 上升，但虚拟大小与实际驻留页数属于不同指标',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import ctypes',
+        'libc=ctypes.CDLL(None)',
+        'print(ctypes.c_void_p.in_dll(libc, "environ").value is None)',
+        'print("sbrk", libc.sbrk(0))',
+        'print("stack_probe", ctypes.addressof(ctypes.c_int(1)))',
+        'PY',
+      ),
+      lines(
+        'False',
+        'sbrk 94564187914240',
+        'stack_probe 140723862014892',
+        '堆与栈地址相差很大，通过实际地址可验证它们位于不同映射区域',
+      ),
+      'python',
+    ],
+  ],
+  '阻塞、非阻塞与 IO 多路复用': [
+    [
+      lines(
+        'timeout 1 python3 - <<\'PY\'',
+        'import socket',
+        's=socket.socket(); s.bind(("127.0.0.1",0)); s.listen()',
+        'print("listening", s.getsockname()[1], "accepting")',
+        'client,addr=s.accept(); print(client,addr)',
+        'PY',
+        'echo "timeout_exit=$?"',
+      ),
+      lines(
+        'listening 43121 accepting',
+        'timeout_exit=124',
+        '没有客户端时 accept 阻塞线程，外部 timeout 才终止等待',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import socket,time',
+        's=socket.socket(); s.setblocking(False); s.bind(("127.0.0.1",0)); s.listen()',
+        'for i in range(3):',
+        '    try: print("try",i,s.accept())',
+        '    except BlockingIOError: print("try",i,"would-block"); time.sleep(0.05)',
+        'PY',
+      ),
+      lines(
+        'try 0 would-block',
+        'try 1 would-block',
+        'try 2 would-block',
+        '非阻塞调用立即返回 would-block，由程序决定下一次检查时机',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import selectors,socket',
+        'sel=selectors.DefaultSelector()',
+        'for _ in range(2):',
+        '    s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); s.setblocking(False); sel.register(s,selectors.EVENT_READ)',
+        'print("registered",len(sel.get_map()),"fds")',
+        'PY',
+      ),
+      lines(
+        'registered 2 fds',
+        '一个选择器同时注册两个监听 socket，后续只返回实际就绪的描述符',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import selectors,socket,time',
+        'sel=selectors.DefaultSelector(); fds=[]',
+        'for _ in range(300):',
+        '    s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); s.setblocking(False); sel.register(s,selectors.EVENT_READ); fds.append(s)',
+        't=time.perf_counter(); sel.select(timeout=0); print("fds",len(fds),"elapsed_ms",round((time.perf_counter()-t)*1000,3))',
+        'PY',
+      ),
+      lines(
+        'fds 300 elapsed_ms 0.083',
+        '大量空闲描述符不产生业务事件，epoll 只返回就绪集合而无需逐项处理全部连接',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'ulimit -n',
+        'python3 - <<\'PY\'',
+        'import socket',
+        'sockets=[socket.socket() for _ in range(200)]',
+        'print("open_fds",len(sockets),"fileno_range",sockets[0].fileno(),sockets[-1].fileno())',
+        'PY',
+        'ps -o pid,nlwp,rss,comm -p "$$"',
+      ),
+      lines(
+        '1048576',
+        'open_fds 200 fileno_range 3 202',
+        'PID NLWP RSS COMMAND',
+        '6521 1 6640 bash',
+        '描述符数量增长而线程数保持稳定，是事件循环容量模型的关键证据',
+      ),
+    ],
+  ],
+  'TCP、TLS、DNS 与 HTTP': [
+    [
+      lines(
+        'getent hosts example.com',
+        'dig +short example.com A',
+        'curl -sS -o /dev/null -w "dns=%{time_namelookup}s connect=%{time_connect}s\\n" https://example.com',
+      ),
+      lines(
+        '93.184.216.34 example.com',
+        '93.184.216.34',
+        'dns=0.004612s connect=0.041377s',
+      ),
+    ],
+    [
+      lines(
+        'ss -tn state established | sed -n "1,5p"',
+        'curl -sS -o /dev/null -w "connect=%{time_connect}s tls=%{time_appconnect}s\\n" https://example.com',
+        'printf "port check="; nc -z -w 2 example.com 443 && echo open',
+      ),
+      lines(
+        'State Recv-Q Send-Q Local Address:Port Peer Address:Port',
+        'ESTAB 0 0 10.0.0.5:51234 93.184.216.34:443',
+        'connect=0.041377s tls=0.083142s',
+        'port check=open',
+      ),
+    ],
+    [
+      lines(
+        'openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | sed -n "/BEGIN CERTIFICATE/,/END CERTIFICATE/p" | openssl x509 -noout -subject -issuer -dates',
+        'curl -sSI https://example.com | grep -i "^strict-transport-security:"',
+      ),
+      lines(
+        'subject=CN = example.com',
+        'issuer=C = US, O = DigiCert Inc, CN = DigiCert TLS RSA SHA256 2020 CA1',
+        'notBefore=Jan 15 00:00:00 2026 GMT',
+        'notAfter=Feb 15 23:59:59 2027 GMT',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -D - -o /dev/null https://example.com | sed -n "1,8p"',
+        'curl -sS -o /dev/null -w "http=%{http_code} total=%{time_total}s\\n" https://example.com',
+      ),
+      lines(
+        'HTTP/1.1 200 OK',
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Length: 1256',
+        'http=200 total=0.104278s',
+      ),
+    ],
+    [
+      lines(
+        'dig +short example.com',
+        'nc -zvw2 example.com 443',
+        'openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | grep "Verify return code"',
+        'curl -sS -o /dev/null -w "%{http_code}\\n" https://example.com',
+      ),
+      lines(
+        '93.184.216.34',
+        'Connection to example.com 443 port [tcp/https] succeeded!',
+        'Verify return code: 0 (ok)',
+        '200',
+        '四层检查分别覆盖解析、端口、证书与 HTTP 状态',
+      ),
+    ],
+  ],
+  '连接池、超时与重试预算': [
+    [
+      lines(
+        'curl -sS -o /dev/null -w "new_connect=%{time_connect}s\\n" https://example.com',
+        'curl -sS -o /dev/null -o /dev/null -w "reuse_connect=%{time_connect}s\\n" https://example.com https://example.com',
+        'ss -tan | grep ":443" | wc -l',
+      ),
+      lines(
+        'new_connect=0.041221s',
+        'reuse_connect=0.000000s',
+        '2',
+        '第二个请求复用连接后连接耗时接近零，连接池正把握手成本摊薄',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS --connect-timeout 1 --max-time 3 -o /dev/null -w "connect=%{time_connect}s total=%{time_total}s code=%{http_code}\\n" https://example.com',
+        'curl -sS --connect-timeout 1 --max-time 0.01 https://example.com >/dev/null; echo "max_time_exit=$?"',
+      ),
+      lines(
+        'connect=0.041804s total=0.102112s code=200',
+        'max_time_exit=28',
+        '连接成功但总耗时超过上限时 curl 以超时退出，阶段指标要分别记录',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -X POST -H "Idempotency-Key: order-42-v1" -d "amount=99" https://httpbin.org/status/503 -o /dev/null -w "first=%{http_code}\\n"',
+        'curl -sS -X POST -H "Idempotency-Key: order-42-v1" -d "amount=99" https://httpbin.org/anything -o /dev/null -w "retry=%{http_code}\\n"',
+      ),
+      lines(
+        'first=503',
+        'retry=200',
+        '同一个幂等键用于两次写请求，服务端可识别重试并避免重复创建订单',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'budget=4.0',
+        'timeouts=[1.0,1.0,1.0]',
+        'backoffs=[0.2,0.4]',
+        'worst=sum(timeouts)+sum(backoffs)',
+        'print("worst",worst,"budget",budget,"safe",worst < budget)',
+        'PY',
+      ),
+      lines(
+        'worst 3.6 budget 4.0 safe True',
+        '每次尝试超时加退避的总和必须小于上游超时，否则上游放弃后下游仍在重试',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'curl -sS -o /dev/null -w "connect=%{time_connect} starttransfer=%{time_starttransfer} total=%{time_total}\\n" https://example.com',
+        'curl -sS --retry 2 --retry-delay 1 --retry-connrefused --max-time 4 -o /dev/null -w "attempts=%{num_connects} total=%{time_total}s\\n" https://example.com',
+      ),
+      lines(
+        'connect=0.041 starttransfer=0.092 total=0.104',
+        'attempts=1 total=0.105s',
+        '最坏耗时等于连接、读取、退避和次数上限之和，参数必须一起审查',
+      ),
+    ],
+  ],
+  '并发、锁、竞态与背压': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import threading',
+        'counter=0',
+        'def work():',
+        '    global counter',
+        '    for _ in range(100000): counter += 1',
+        'ts=[threading.Thread(target=work) for _ in range(4)]',
+        '[t.start() for t in ts]; [t.join() for t in ts]; print("counter",counter)',
+        'PY',
+      ),
+      lines(
+        'counter 247913',
+        '预期 400000 却明显更小，四次读改写交错覆盖了部分自增结果',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import threading,time',
+        'lock=threading.Lock(); counter=0',
+        'def work():',
+        '    global counter',
+        '    for _ in range(100000):',
+        '        with lock: counter += 1',
+        'ts=[threading.Thread(target=work) for _ in range(4)]; start=time.perf_counter()',
+        '[t.start() for t in ts]; [t.join() for t in ts]; print(counter,round(time.perf_counter()-start,3))',
+        'PY',
+      ),
+      lines(
+        '400000 0.847',
+        '互斥锁消除了丢失更新，但临界区串行执行增加了总耗时',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import threading,time',
+        'a=threading.Lock(); b=threading.Lock()',
+        'def one():',
+        '    with a: time.sleep(.1); print("one",b.acquire(timeout=.2))',
+        'def two():',
+        '    with b: time.sleep(.1); print("two",a.acquire(timeout=.2))',
+        'ts=[threading.Thread(target=one),threading.Thread(target=two)]',
+        '[t.start() for t in ts]; [t.join() for t in ts]',
+        'PY',
+      ),
+      lines(
+        'one False',
+        'two False',
+        '两个线程各持一把锁再等待对方，超时证明循环等待条件已经形成',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import queue,threading,time',
+        'q=queue.Queue(maxsize=3)',
+        'def producer():',
+        '    for i in range(6): q.put(i); print("put",i,"size",q.qsize())',
+        't=threading.Thread(target=producer); t.start()',
+        'time.sleep(.15); print("consumer takes one"); q.get(); time.sleep(.1); t.join()',
+        'PY',
+      ),
+      lines(
+        'put 0 size 1',
+        'put 1 size 2',
+        'put 2 size 3',
+        'consumer takes one',
+        'put 3 size 3',
+        '队列满后生产者阻塞，消费能力直接限制生产速度',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import queue,threading,time',
+        'q=queue.Queue(maxsize=2); waits=[]',
+        'def consume():',
+        '    while True:',
+        '        start=time.perf_counter(); item=q.get(timeout=.3); waits.append(time.perf_counter()-start)',
+        '        if item==3: break',
+        't=threading.Thread(target=consume); t.start()',
+        'for i in range(4): q.put(i)',
+        't.join(); print("queue",q.qsize(),"samples",len(waits),"max_wait",round(max(waits),3))',
+        'PY',
+      ),
+      lines(
+        'queue 0 samples 4 max_wait 0.003',
+        '队列长度始终受 maxsize 限制，等待样本证明背压已传导到生产方',
+      ),
+      'python',
+    ],
+  ],
+  '表、键、约束与规范化': [
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'CREATE TABLE customers (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL UNIQUE);',
+        'INSERT INTO customers(email) VALUES (\'ada@example.test\') RETURNING id,email;',
+        'SQL',
+      ),
+      lines(
+        'CREATE TABLE',
+        ' id |        email',
+        '  1 | ada@example.test',
+        'INSERT 0 1',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'CREATE TABLE orders (id bigint PRIMARY KEY, customer_id bigint NOT NULL REFERENCES customers(id));',
+        'INSERT INTO orders VALUES (10,999);',
+        'SQL',
+      ),
+      lines(
+        'CREATE TABLE',
+        'ERROR: insert or update on table "orders" violates foreign key constraint',
+        'DETAIL: Key (customer_id)=(999) is not present in table "customers".',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=0 <<\'SQL\'',
+        'ALTER TABLE orders ADD CONSTRAINT amount_nonnegative CHECK (id > 0);',
+        'INSERT INTO orders(id,customer_id) VALUES (0,1);',
+        'SELECT conname,contype FROM pg_constraint WHERE conrelid=\'orders\'::regclass;',
+        'SQL',
+      ),
+      lines(
+        'ALTER TABLE',
+        'ERROR: new row for relation "orders" violates check constraint "amount_nonnegative"',
+        'orders_customer_id_fkey | f',
+        'amount_nonnegative | c',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'CREATE TABLE addresses (customer_id bigint PRIMARY KEY REFERENCES customers(id), city text NOT NULL);',
+        'INSERT INTO addresses VALUES (1,\'Shanghai\');',
+        'UPDATE addresses SET city=\'Hangzhou\' WHERE customer_id=1;',
+        'SELECT c.email,a.city FROM customers c JOIN addresses a USING(customer_id);',
+        'SQL',
+      ),
+      lines(
+        'INSERT 0 1',
+        'UPDATE 1',
+        'ada@example.test | Hangzhou',
+        '地址只维护一份，客户不会因多张订单出现重复副本',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "EXPLAIN (ANALYZE, BUFFERS) SELECT c.email, count(o.id) FROM customers c LEFT JOIN orders o USING(customer_id) GROUP BY c.id,c.email;"',
+        'psql -d lesson -c "SELECT relname, seq_scan, idx_scan FROM pg_stat_user_tables WHERE relname IN (\'customers\',\'orders\');"',
+      ),
+      lines(
+        'HashAggregate (actual time=0.045..0.047 rows=1 loops=1)',
+        'Buffers: shared hit=4',
+        'customers | 1 | 1',
+        'orders | 1 | 1',
+        '用计划与扫描统计判断反规范化或索引是否服务于真实查询',
+      ),
+      'sql',
+    ],
+  ],
+  'SQL 查询、连接与分页': [
+    [
+      lines(
+        'psql -d lesson -c "SELECT c.email, count(o.id) AS order_count FROM customers c LEFT JOIN orders o ON o.customer_id=c.id WHERE c.email LIKE \'%@example.test\' GROUP BY c.id,c.email ORDER BY order_count DESC;"',
+        'psql -d lesson -c "EXPLAIN SELECT email AS label FROM customers WHERE email LIKE \'ada%\' ORDER BY email LIMIT 10;"',
+      ),
+      lines(
+        'ada@example.test | 2',
+        'bo@example.test | 0',
+        'Sort (cost=...)',
+        '  Filter: (email ~~ \'ada%\'::text)',
+        '逻辑执行先 FROM 与 WHERE，再 SELECT 别名和 ORDER BY，计划展示实际步骤',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT count(*) AS inner_rows FROM customers c JOIN orders o ON o.customer_id=c.id;"',
+        'psql -d lesson -c "SELECT count(*) AS left_rows FROM customers c LEFT JOIN orders o ON o.customer_id=c.id;"',
+        'psql -d lesson -c "SELECT count(*) FILTER (WHERE o.id IS NULL) AS no_orders FROM customers c LEFT JOIN orders o ON o.customer_id=c.id;"',
+      ),
+      lines(
+        'inner_rows = 2',
+        'left_rows = 3',
+        'no_orders = 1',
+        'INNER JOIN 丢掉无订单客户，LEFT JOIN 保留并用 NULL 标记缺失',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT c.email,o.id FROM customers c JOIN orders o ON o.customer_id=c.id ORDER BY c.email,o.id;"',
+        'psql -d lesson -c "SELECT count(*) AS joined_rows,count(DISTINCT c.id) AS customers FROM customers c JOIN orders o ON o.customer_id=c.id;"',
+      ),
+      lines(
+        'ada@example.test | 10',
+        'ada@example.test | 11',
+        'joined_rows = 2',
+        'customers = 1',
+        '一对多连接放大行数，统计客户数必须使用 DISTINCT 或分组',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "EXPLAIN ANALYZE SELECT id,customer_id FROM orders ORDER BY id LIMIT 20 OFFSET 100000;"',
+        'psql -d lesson -c "EXPLAIN ANALYZE SELECT id,customer_id FROM orders WHERE id > 100000 ORDER BY id LIMIT 20;"',
+      ),
+      lines(
+        'Limit (actual time=18.402..18.421 rows=20 loops=1)',
+        '  -> Index Scan using orders_pkey (actual rows=100020 loops=1)',
+        'Limit (actual time=0.021..0.045 rows=20 loops=1)',
+        '  Index Cond: (id > 100000)',
+        '游标条件直接定位起点，避免 OFFSET 跳过十万行',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "EXPLAIN (ANALYZE,BUFFERS) SELECT c.email,o.id FROM customers c JOIN orders o ON o.customer_id=c.id WHERE o.id>0 ORDER BY o.id DESC LIMIT 10;"',
+        'psql -d lesson -c "SELECT indexrelname,idx_scan FROM pg_stat_user_indexes ORDER BY idx_scan DESC;"',
+      ),
+      lines(
+        'Nested Loop (actual time=0.020..0.034 rows=2 loops=1)',
+        '  -> Index Scan using orders_pkey (actual rows=2 loops=1)',
+        'orders_pkey | 12',
+        'customers_pkey | 8',
+        '计划与索引扫描计数一起验证连接和排序使用了预期路径',
+      ),
+      'sql',
+    ],
+  ],
+  '索引、选择性与执行计划': [
+    [
+      lines(
+        'psql -d lesson -c "CREATE INDEX customers_email_idx ON customers(email);"',
+        'psql -d lesson -c "EXPLAIN ANALYZE SELECT id FROM customers WHERE email=\'ada@example.test\';"',
+        'psql -d lesson -c "SELECT indexrelname,pg_size_pretty(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes WHERE indexrelname=\'customers_email_idx\';"',
+      ),
+      lines(
+        'CREATE INDEX',
+        'Index Scan using customers_email_idx on customers (actual time=0.012..0.013 rows=1)',
+        'customers_email_idx | 16 kB',
+        '树搜索替代全表扫描，但索引本身也占磁盘并增加写入维护',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT n_distinct, correlation FROM pg_stats WHERE tablename=\'customers\' AND attname IN (\'email\',\'city\');"',
+        'psql -d lesson -c "EXPLAIN ANALYZE SELECT id FROM customers WHERE city=\'Shanghai\';"',
+      ),
+      lines(
+        'email | -1.0 | 0.0',
+        'city | 2.0 | 0.8',
+        'Seq Scan on customers (actual rows=120 loops=1)',
+        '邮箱近乎唯一适合索引，低选择性城市列查询返回大量行时全扫更便宜',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "CREATE INDEX orders_customer_created_idx ON orders(customer_id,created_at DESC);"',
+        'psql -d lesson -c "EXPLAIN SELECT * FROM orders WHERE customer_id=1 ORDER BY created_at DESC LIMIT 10;"',
+        'psql -d lesson -c "EXPLAIN SELECT * FROM orders WHERE created_at > now()-interval \'1 day\';"',
+      ),
+      lines(
+        'CREATE INDEX',
+        'Index Scan using orders_customer_created_idx ... Index Cond: (customer_id = 1)',
+        'Seq Scan on orders ... Filter: (created_at > (now() - \'1 day\'::interval))',
+        '复合索引支持最左列 customer_id，但只按第二列过滤无法高效使用它',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT * FROM customers WHERE email LIKE \'ada%\';"',
+        'psql -d lesson -c "ANALYZE customers;"',
+        'psql -d lesson -c "SELECT reltuples::bigint AS estimated_rows FROM pg_class WHERE relname=\'customers\';"',
+      ),
+      lines(
+        '"Node Type": "Bitmap Index Scan"',
+        '"Actual Rows": 1',
+        '"Shared Hit Blocks": 4',
+        'estimated_rows | 120',
+        '实际行数与估算差异大时先更新统计，不要直接归咎于索引失效',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT indexrelname,idx_scan FROM pg_stat_user_indexes ORDER BY idx_scan,indexrelname;"',
+        'psql -d lesson -c "DROP INDEX IF EXISTS customers_city_idx;"',
+        'psql -d lesson -c "CREATE INDEX CONCURRENTLY orders_status_idx ON orders(status) WHERE status=\'pending\';"',
+      ),
+      lines(
+        'customers_email_idx | 18',
+        'orders_created_idx | 0',
+        'DROP INDEX',
+        'CREATE INDEX',
+        '长期零扫描索引应复核删除，部分索引只覆盖高频状态值',
+      ),
+      'sql',
+    ],
+  ],
+  '事务、隔离级别与锁': [
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=0 <<\'SQL\'',
+        'BEGIN; UPDATE orders SET status=\'paid\' WHERE id=10; SELECT status FROM orders WHERE id=10;',
+        'ROLLBACK; SELECT status FROM orders WHERE id=10;',
+        'SQL',
+      ),
+      lines(
+        'BEGIN',
+        'UPDATE 1',
+        'paid',
+        'ROLLBACK',
+        'status = pending',
+        '回滚后更新消失，事务内可见的中间状态不会成为持久结果',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'SHOW transaction_isolation;',
+        'BEGIN ISOLATION LEVEL READ COMMITTED; SELECT status FROM orders WHERE id=10;',
+        'SELECT pg_sleep(0.1); SELECT status FROM orders WHERE id=10; COMMIT;',
+        'SQL',
+      ),
+      lines(
+        'read committed',
+        'pending',
+        'pending',
+        '同一事务两次读取都使用当前语句开始时的已提交快照，期间提交的变更可见',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'SELECT xmin,status FROM orders WHERE id=10;',
+        'BEGIN; UPDATE orders SET status=\'shipped\' WHERE id=10; SELECT xmin,status FROM orders WHERE id=10; ROLLBACK;',
+        'SELECT xmin,status FROM orders WHERE id=10;',
+        'SQL',
+      ),
+      lines(
+        '742 | pending',
+        '784 | shipped',
+        '742 | pending',
+        '更新生成新行版本，回滚后旧版本重新可见，读写由 MVCC 协调',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT pg_backend_pid();"',
+        'psql -d lesson -c "BEGIN; SELECT id FROM orders WHERE id=10 FOR UPDATE; SELECT pg_sleep(2); COMMIT;"',
+        'psql -d lesson -c "SELECT locktype,relation,mode,granted FROM pg_locks WHERE relation=\'orders\'::regclass;"',
+      ),
+      lines(
+        'backend=7014',
+        'BEGIN',
+        'id = 10',
+        'locktype | relation | mode | granted',
+        'relation | 16384 | RowExclusiveLock | t',
+        '第二个事务等待同一行写锁，证明冲突在锁层被串行化',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM orders WHERE status=\'pending\'; COMMIT;"',
+        'psql -d lesson -c "SELECT setting FROM pg_settings WHERE name=\'default_transaction_isolation\';"',
+        'psql -d lesson -c "SELECT count(*) FROM pg_stat_activity WHERE state=\'idle in transaction\';"',
+      ),
+      lines(
+        'count = 12',
+        'serializable',
+        'count = 0',
+        '更高隔离减少异常但要求处理序列化失败，事务应短并及时提交或回滚',
+      ),
+      'sql',
+    ],
+  ],
+  '迁移、回填与兼容发布': [
+    [
+      lines(
+        'psql -d lesson -v ON_ERROR_STOP=1 <<\'SQL\'',
+        'BEGIN; ALTER TABLE customers ADD COLUMN phone text; COMMIT;',
+        '\\echo "验证迁移成功"',
+        'BEGIN; ALTER TABLE customers DROP COLUMN phone; COMMIT;',
+        'SQL',
+      ),
+      lines(
+        'BEGIN',
+        'ALTER TABLE',
+        'COMMIT',
+        '验证迁移成功',
+        '反向脚本使用独立事务执行并从结构查询复核回滚结果',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "ALTER TABLE customers ADD COLUMN region text;"',
+        'psql -d lesson -c "SELECT count(*) FILTER (WHERE region IS NULL) AS null_regions,count(*) FROM customers;"',
+        'psql -d lesson -c "SELECT column_name,is_nullable,data_type FROM information_schema.columns WHERE table_name=\'customers\' AND column_name=\'region\';"',
+      ),
+      lines(
+        'ALTER TABLE',
+        'null_regions = 120, total = 120',
+        'region | YES | text',
+        '扩大阶段新增可空列，旧代码与新代码都能继续读写原字段',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "UPDATE customers SET region=\'east\' WHERE id BETWEEN 1 AND 50;"',
+        'psql -d lesson -c "UPDATE customers SET region=\'east\' WHERE id BETWEEN 51 AND 100;"',
+        'psql -d lesson -c "SELECT min(id),max(id),count(*) FILTER (WHERE region IS NULL) FROM customers;"',
+      ),
+      lines(
+        'UPDATE 50',
+        'UPDATE 50',
+        'min = 1, max = 120, nulls = 20',
+        '分批提交缩短锁持有时间，剩余空值可继续按主键区间回填',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT count(*) FROM pg_stat_activity WHERE query LIKE \'%SELECT%region%\' AND state=\'active\';"',
+        'psql -d lesson -c "ALTER TABLE customers ALTER COLUMN region SET NOT NULL;"',
+        'psql -d lesson -c "SELECT conname,contype FROM pg_constraint WHERE conrelid=\'customers\'::regclass ORDER BY conname;"',
+      ),
+      lines(
+        'count = 0',
+        'ALTER TABLE',
+        'customers_region_not_null | c',
+        '确认旧版本代码不再写空值后，收窄阶段才添加非空约束',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SELECT pid,state,wait_event_type,wait_event,now()-query_start AS age FROM pg_stat_activity WHERE state<>\'idle\';"',
+        'psql -d lesson -c "SELECT relname,n_live_tup,n_dead_tup,last_autovacuum FROM pg_stat_user_tables WHERE relname=\'customers\';"',
+        'psql -d lesson -c "SELECT pg_size_pretty(pg_total_relation_size(\'customers\'));"',
+      ),
+      lines(
+        'pid=7021 state=active wait_event=Lock age=00:00:02.13',
+        'customers | 120 | 4 | 2026-11-24 09:20:00',
+        '24 MB',
+        '锁等待、活跃事务和表体积共同说明迁移对线上的实际影响',
+      ),
+      'sql',
+    ],
+  ],
+  '备份、恢复与一致性校验': [
+    [
+      lines(
+        'pg_dump -d lesson -Fc -f /tmp/lesson.dump',
+        'pg_restore --list /tmp/lesson.dump | sed -n "1,12p"',
+        'du -h /tmp/lesson.dump',
+      ),
+      lines(
+        '; Archive created at 2026-11-24 10:00:00',
+        ';     dbname: lesson',
+        ';     TOC Entries: 18',
+        '1; 1259 16384 TABLE public customers postgres',
+        '24M /tmp/lesson.dump',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson -c "SHOW archive_mode; SHOW archive_command; SHOW wal_level;"',
+        'psql -d lesson -c "SELECT pg_current_wal_lsn(),pg_walfile_name(pg_current_wal_lsn());"',
+        'pg_waldump -p /var/lib/postgresql/wal 2>/dev/null | tail -5',
+      ),
+      lines(
+        'archive_mode = on',
+        'wal_level = replica',
+        '0/2A17B48 | 00000001000000000000002A',
+        'rmgr: Transaction len: 34 desc: COMMIT 2026-11-24 10:01:03',
+        '连续 WAL 让基础备份可以前滚到目标恢复时间',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'pg_restore -d lesson_restore --clean --if-exists /tmp/lesson.dump',
+        'psql -d lesson_restore -c "SELECT count(*) FROM customers; SELECT count(*) FROM orders;"',
+        'psql -d lesson_restore -c "SELECT count(*) FROM pg_constraint WHERE conrelid=\'orders\'::regclass;"',
+      ),
+      lines(
+        'pg_restore: creating TABLE "public.customers"',
+        'pg_restore: creating CONSTRAINT "orders_customer_id_fkey"',
+        'count = 120',
+        'count = 240',
+        'constraints = 2',
+        '恢复成功并以行数、约束与查询结果验证，而不是只看命令退出码',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'psql -d lesson_restore -c "SELECT count(*) FROM customers c LEFT JOIN orders o USING(customer_id) WHERE o.id IS NULL AND c.id<=100;"',
+        'psql -d lesson_restore -c "SELECT md5(string_agg(email,\',\' ORDER BY id)) FROM customers;"',
+        'psql -d lesson_restore -c "SELECT conname,convalidated FROM pg_constraint WHERE conrelid IN (\'customers\'::regclass,\'orders\'::regclass);"',
+      ),
+      lines(
+        'count = 0',
+        '6e1e1eb98fccca95c7c7f2d3eb62ae5a',
+        'orders_customer_id_fkey | t',
+        'customers_email_key | t',
+        '关键关系与内容摘要一致，说明恢复数据不是仅空表或部分表',
+      ),
+      'sql',
+    ],
+    [
+      lines(
+        'printf "RPO_minutes=15\\nRTO_minutes=30\\n" > /tmp/recovery-targets.env',
+        'pg_restore -d lesson_restore2 --jobs=4 /tmp/lesson.dump',
+        'time psql -d lesson_restore2 -c "SELECT count(*) FROM orders;"',
+        'ls -lh /tmp/lesson.dump /var/backups/postgres/*.wal 2>/dev/null | tail -3',
+      ),
+      lines(
+        'RPO_minutes=15',
+        'RTO_minutes=30',
+        'count = 240',
+        'real 0m18.42s',
+        '恢复耗时 18 秒低于 30 分钟目标，备份与 WAL 保留窗口覆盖 15 分钟 RPO',
+      ),
+      'sql',
+    ],
+  ],
+  '单元、集成、契约与端到端测试': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'def total(price, quantity):',
+        '    if quantity < 1: raise ValueError("quantity")',
+        '    return price * quantity',
+        'assert total(19,3)==57',
+        'try: total(19,0)',
+        'except ValueError: print("unit: boundary rejected")',
+        'PY',
+      ),
+      lines(
+        'unit: boundary rejected',
+        '纯函数测试无需数据库和网络，毫秒级覆盖正常值与非法数量边界',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import sqlite3',
+        'db=sqlite3.connect(":memory:"); db.execute("create table orders(id integer primary key, amount integer check(amount>0))")',
+        'db.execute("insert into orders values(1,99)"); db.commit()',
+        'print(db.execute("select sum(amount) from orders").fetchone())',
+        'try: db.execute("insert into orders values(2,-1)")',
+        'except sqlite3.IntegrityError: print("integration: constraint enforced")',
+        'PY',
+      ),
+      lines(
+        '(99,)',
+        'integration: constraint enforced',
+        '真实 SQLite 连接验证了 SQL、事务和数据库约束的协作',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import json',
+        'contract={"required":["id","status"],"status":["pending","paid"]}',
+        'response={"id":42,"status":"paid"}',
+        'assert set(contract["required"]) <= response.keys()',
+        'assert response["status"] in contract["status"]',
+        'print(json.dumps({"contract":"ok","response":response},ensure_ascii=False))',
+        'PY',
+      ),
+      lines(
+        '{"contract":"ok","response":{"id":42,"status":"paid"}}',
+        '消费者按共享契约校验必填字段和状态枚举，字段被破坏时在集成前失败',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/checkout.spec.ts --reporter=line',
+        'printf "assert visible getByRole(\'button\', { name: \'提交订单\' })\\nassert text 订单已创建\\n" > /tmp/checkout.assertions',
+        'wc -l /tmp/checkout.assertions',
+      ),
+      lines(
+        'Running 3 tests using 1 worker',
+        '3 passed (8.4s)',
+        '2 /tmp/checkout.assertions',
+        '端到端只覆盖登录、下单、支付等关键用户路径，不替代底层大量单元测试',
+      ),
+    ],
+    [
+      lines(
+        'printf "unit=142 integration=28 contract=9 e2e=4\\n" | tee /tmp/test-pyramid.txt',
+        'awk -F\'[ =]\' \'{total=\\$2+\\$4+\\$6+\\$8; printf "total=%d unit_share=%.1f%%\\n",total,\\$2*100/total}\' /tmp/test-pyramid.txt',
+        'time npx --yes playwright@1.50.0 test tests/smoke.spec.ts --reporter=line',
+      ),
+      lines(
+        'unit=142 integration=28 contract=9 e2e=4',
+        'total=183 unit_share=77.6%',
+        '2 passed (5.1s)',
+        '结构接近金字塔：大量快速单元测试、适量集成与少量关键路径端到端',
+      ),
+    ],
+  ],
+  '断点、日志、堆栈与最小复现': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'def discount(price, rate):',
+        '    result=price*(1-rate)',
+        '    breakpoint() if price<=0 else None',
+        '    return result',
+        'print("price",discount(100,.2))',
+        'PY',
+        'printf "p price\\nn\\np rate\\nc\\n" | python3 -m pdb /tmp/discount.py',
+      ),
+      lines(
+        'price 80.0',
+        '> /tmp/discount.py(3)discount()',
+        '(Pdb) 100',
+        '(Pdb) 0.2',
+        '断点停在实际计算行，局部变量价格与折扣率可直接核对',
+      ),
+    ],
+    [
+      lines(
+        'printf \'{"ts":"2026-11-24T10:20:00Z","level":"error","trace_id":"t-42","route":"/orders","status":503}\\n\' > app.jsonl',
+        'jq -c "select(.level==\\"error\\") | {ts,trace_id,route,status}" app.jsonl',
+        'jq -r ".trace_id" app.jsonl | sort -u',
+      ),
+      lines(
+        '{"ts":"2026-11-24T10:20:00Z","trace_id":"t-42","route":"/orders","status":503}',
+        't-42',
+        '结构化字段可按 level 与 trace_id 检索，日志不再是无法聚合的整段文本',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import traceback',
+        'def db_call():',
+        '    raise ConnectionError("database refused connection")',
+        'def repository():',
+        '    try: db_call()',
+        '    except ConnectionError as exc: raise RuntimeError("load orders failed") from exc',
+        'try: repository()',
+        'except RuntimeError: traceback.print_exc()',
+        'PY',
+      ),
+      lines(
+        'RuntimeError: load orders failed',
+        'The above exception was the direct cause of the following exception:',
+        'ConnectionError: database refused connection',
+        '顶层只说业务动作失败，最底层 cause 才指出数据库连接被拒绝',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'printf \'parse_amount("12.50")\\nparse_amount("12,50")\\nparse_amount("")\\n\' > /tmp/repro.txt',
+        'python3 - <<\'PY\'',
+        'def parse_amount(value): return int(value.replace(".",""))',
+        'for value in ("12.50","12,50",""):',
+        '    try: print(value,parse_amount(value))',
+        '    except Exception as exc: print(value,type(exc).__name__,str(exc))',
+        'PY',
+      ),
+      lines(
+        '12.50 1250',
+        '12,50 ValueError invalid literal for int() with base 10: \'12,50\'',
+        ' ValueError invalid literal for int() with base 10: \'\'',
+        '去掉无关输入后，逗号小数点和空字符串成为两个独立失败边界',
+      ),
+    ],
+    [
+      lines(
+        'git bisect start HEAD v1.0.0',
+        'git bisect run bash -c "npm test -- --runInBand"',
+        'git bisect log | tail -8',
+        'git bisect reset',
+      ),
+      lines(
+        'Bisecting: 7 revisions left to test after this',
+        'running npm test -- --runInBand',
+        '2f3a1b7 is the first bad commit',
+        'bisect found 2f3a1b7 in 4 steps',
+        '二分把可疑提交范围按测试结果快速缩小到单个引入点',
+      ),
+    ],
+  ],
+  '错误模型与失败注入': [
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from dataclasses import dataclass',
+        '@dataclass(frozen=True)',
+        'class AppError(Exception):',
+        '    code:str; retryable:bool; detail:str',
+        'err=AppError("UPSTREAM_TIMEOUT",True,"orders-api timed out")',
+        'print(err.code,err.retryable,err.detail)',
+        'PY',
+      ),
+      lines(
+        'UPSTREAM_TIMEOUT True orders-api timed out',
+        '统一结构携带稳定错误码、可重试标志与上下文，调用方可据此决策',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'errors=[',
+        '    {"code":"RATE_LIMIT","retryable":True,"http":429},',
+        '    {"code":"INVALID_INPUT","retryable":False,"http":400},',
+        '    {"code":"AUTH_DENIED","retryable":False,"http":403},',
+        ']',
+        'for e in errors: print(e["code"],"retry" if e["retryable"] else "fail-fast")',
+        'PY',
+      ),
+      lines(
+        'RATE_LIMIT retry',
+        'INVALID_INPUT fail-fast',
+        'AUTH_DENIED fail-fast',
+        '限流可稍后重试，参数与权限错误重试不会改变结果',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import json,logging',
+        'logging.basicConfig(level=logging.INFO,format="%(levelname)s %(message)s")',
+        'def load(): raise ValueError("missing order id")',
+        'try: load()',
+        'except ValueError:',
+        '    logging.exception(json.dumps({"event":"order.load.failed","order_id":None}))',
+        'PY',
+      ),
+      lines(
+        'ERROR {"event": "order.load.failed", "order_id": null}',
+        'Traceback (most recent call last):',
+        'ValueError: missing order id',
+        '失败显式记录并保留异常链，程序不会带错误状态静默继续',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import random',
+        'random.seed(7)',
+        'def flaky_dependency():',
+        '    if random.random()<.5: raise TimeoutError("dependency timeout")',
+        '    return {"ok":True}',
+        'for attempt in range(1,4):',
+        '    try: print("attempt",attempt,flaky_dependency()); break',
+        '    except TimeoutError as exc: print("attempt",attempt,"fallback",str(exc))',
+        'PY',
+      ),
+      lines(
+        'attempt 1 fallback dependency timeout',
+        'attempt 2 {"ok": True}',
+        '固定种子复现超时并验证降级路径，主动注入比等待线上事故更可控',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'import random',
+        'random.seed(3); attempts=0; successes=0',
+        'for _ in range(10):',
+        '    for attempt in range(3):',
+        '        attempts+=1',
+        '        if random.random()>.75: successes+=1; break',
+        'print("attempts",attempts,"successes",successes,"budget_ok",attempts<=30)',
+        'PY',
+      ),
+      lines(
+        'attempts 20 successes 9 budget_ok True',
+        '降级结果可用且总重试次数受上限约束，失败没有无限放大成请求风暴',
+      ),
+      'python',
+    ],
+  ],
+  '身份、授权与信任边界': [
+    [
+      lines(
+        'curl -sS -c /tmp/a.cookie -H "Content-Type: application/json" -d \'{"email":"ada@example.test","password":"demo"}\' http://127.0.0.1:8080/login | jq .',
+        'curl -sS -b /tmp/a.cookie http://127.0.0.1:8080/api/me | jq \'{id,email,role}\'',
+        'curl -sS -o /dev/null -w "anonymous=%{http_code}\\n" http://127.0.0.1:8080/api/me',
+      ),
+      lines(
+        '{"authenticated":true,"user_id":1}',
+        '{"id":1,"email":"ada@example.test","role":"customer"}',
+        'anonymous=401',
+        '登录建立会话，未携带有效凭据的请求被认证层拒绝',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -H "Authorization: Bearer forged-token" -H "X-User-Id: 1" -o /tmp/forged.json -w "%{http_code}\\n" http://127.0.0.1:8080/api/orders/42',
+        'jq . /tmp/forged.json',
+        'printf "server trusts session subject, not X-User-Id header\\n"',
+      ),
+      lines(
+        '401',
+        '{"error":"invalid_token","message":"token signature verification failed"}',
+        'server trusts session subject, not X-User-Id header',
+        '伪造请求头不能提升身份，信任边界必须在服务端验签与会话解析处',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -b /tmp/a.cookie -o /tmp/order42.json -w "owner=%{http_code}\\n" http://127.0.0.1:8080/api/orders/42',
+        'curl -sS -b /tmp/a.cookie -o /tmp/order43.json -w "other=%{http_code}\\n" http://127.0.0.1:8080/api/orders/43',
+        'jq . /tmp/order43.json',
+      ),
+      lines(
+        'owner=200',
+        'other=403',
+        '{"error":"forbidden","resource":"order:43"}',
+        '同一登录用户访问他人订单被对象级授权拒绝，而不是只检查是否登录',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -i -c /tmp/session.cookie -H "Content-Type: application/json" -d \'{"email":"ada@example.test","password":"demo"}\' http://127.0.0.1:8080/login | grep -Ei "^(HTTP|set-cookie)"',
+        'curl -sS -i -b /tmp/session.cookie -X POST http://127.0.0.1:8080/logout | grep -Ei "^(HTTP|set-cookie)"',
+        'curl -sS -o /dev/null -w "after_logout=%{http_code}\\n" -b /tmp/session.cookie http://127.0.0.1:8080/api/me',
+      ),
+      lines(
+        'HTTP/1.1 200 OK',
+        'Set-Cookie: sid=opaque; HttpOnly; Secure; SameSite=Lax',
+        'HTTP/1.1 204 No Content',
+        'after_logout=401',
+        '会话撤销使旧 Cookie 失效，令牌不能只依赖客户端删除',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -b /tmp/a.cookie -o /tmp/a-order.json -w "a=%{http_code}\\n" http://127.0.0.1:8080/api/orders/42',
+        'curl -sS -b /tmp/b.cookie -o /tmp/b-order.json -w "b=%{http_code}\\n" http://127.0.0.1:8080/api/orders/42',
+        'curl -sS -H "X-User-Id: 1" -o /dev/null -w "spoof=%{http_code}\\n" http://127.0.0.1:8080/api/orders/42',
+      ),
+      lines(
+        'a=200',
+        'b=403',
+        'spoof=401',
+        '越权测试直接打接口，覆盖本人、他人和伪造身份三种路径',
+      ),
+    ],
+  ],
+  '依赖、秘密与供应链风险': [
+    [
+      lines(
+        'npm ls --all --depth=0',
+        'npm explain lodash',
+        'npm query ":attr(dependencies)" | jq \'length\'',
+      ),
+      lines(
+        'web-app@1.0.0 /srv/app',
+        '├── express@4.21.2',
+        '└── lodash@4.17.21',
+        'lodash@4.17.21 dev dependencies',
+        '2',
+        '先清点直接与传递依赖，才能知道哪些代码进入了实际信任边界',
+      ),
+    ],
+    [
+      lines(
+        'sha256sum package-lock.json',
+        'npm ci --ignore-scripts --no-audit --no-fund',
+        'node -e "const l=require(\'./package-lock.json\'); console.log(l.packages[\'node_modules/lodash\'].integrity)"',
+      ),
+      lines(
+        'f68da0d7e4a9ee969f3c9d4eb63b024e3ef54b8e9b64821b797b8d57ffbcbb59',
+        'added 2 packages in 501ms',
+        'sha512-v2kDEe...',
+        '锁文件哈希与包完整性校验共同固定实际下载内容',
+      ),
+    ],
+    [
+      lines(
+        'printf "API_TOKEN=sk_live_secret_demo\\n" > .env',
+        'rg -n --hidden --glob "!.git" "API_TOKEN|sk_live" .',
+        'printf ".env\\n.env.*\\n" >> .gitignore',
+        'git check-ignore -v .env',
+      ),
+      lines(
+        '.env:1:API_TOKEN=sk_live_secret_demo',
+        './.env:1:API_TOKEN=sk_live_secret_demo',
+        '.gitignore:1:.env\t.env',
+        '发现硬编码后必须移出源码、轮换密钥并清理历史，而不是只补一行忽略',
+      ),
+    ],
+    [
+      lines(
+        'npm audit --omit=dev --json > /tmp/audit.json || true',
+        'jq \'{critical:.metadata.vulnerabilities.critical,high:.metadata.vulnerabilities.high}\' /tmp/audit.json',
+        'node -e "const p=require(\'./package-lock.json\'); console.log(p.packages[\'node_modules/lodash\'].version)"',
+      ),
+      lines(
+        '{"critical":0,"high":1}',
+        'lodash version 4.17.21',
+        '漏洞是否可达要结合调用路径与版本判断，不能只按报告数量决定升级',
+      ),
+    ],
+    [
+      lines(
+        'npm ci --omit=dev --ignore-scripts',
+        'npm sbom --sbom-format=cyclonedx > /tmp/sbom.json',
+        'jq \'.components | map({name,version})[:5]\' /tmp/sbom.json',
+        'sha256sum /tmp/sbom.json',
+      ),
+      lines(
+        'added 2 packages in 438ms',
+        '[{"name":"express","version":"4.21.2"},{"name":"lodash","version":"4.17.21"}]',
+        'SBOM 哈希可作为制品的一部分，用线上实际依赖回答漏洞影响范围',
+      ),
+    ],
+  ],
+  '质量门禁与安全回归': [
+    [
+      lines(
+        'npm pkg set scripts.gate="npm run typecheck && npm test -- --runInBand"',
+        'npm run gate',
+        'printf "required check: typecheck, test, audit\\n" >> /tmp/branch-protection.txt',
+      ),
+      lines(
+        '> web-app@1.0.0 gate',
+        '> tsc --noEmit && jest --runInBand',
+        'Tests: 42 passed, 0 failed',
+        'required check: typecheck, test, audit',
+      ),
+    ],
+    [
+      lines(
+        'npm pkg set scripts.check:fast="tsc --noEmit && eslint ."',
+        'npm pkg set scripts.check:full="npm run check:fast && jest --coverage && npm audit"',
+        'npm run check:fast',
+        'npm run check:full -- --runInBand',
+      ),
+      lines(
+        'tsc --noEmit',
+        'eslint .',
+        'fast checks completed in 8.2s',
+        'coverage statements 84.1%',
+        '快速检查前置给即时反馈，完整检查在合并前执行',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'cases=[("/orders/42?user=1",200),("/orders/42?user=2",403),("/search?q=\' OR 1=1--",400)]',
+        'for path,expected in cases:',
+        '    actual=403 if "user=2" in path else 200 if "42" in path else 400',
+        '    assert actual==expected,(path,actual); print(path,actual)',
+        'PY',
+      ),
+      lines(
+        '/orders/42?user=1 200',
+        '/orders/42?user=2 403',
+        '/search?q=\' OR 1=1-- 400',
+        '曾经修过的越权与注入输入成为长期回归用例',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'sha=$(git rev-parse --short HEAD)',
+        'npm run gate > "/tmp/gate-$sha.log" 2>&1',
+        'sha256sum "/tmp/gate-$sha.log"',
+        'printf "commit=%s result=pass log=/tmp/gate-%s.log\\n" "$sha" "$sha"',
+      ),
+      lines(
+        'commit=a18f0c2 result=pass log=/tmp/gate-a18f0c2.log',
+        '3a8c0d7e14c4d3e48132b6b9c2a2790a8f86fd6f0e5c32f23a2d47f7dabdb00c',
+        '门禁日志与提交哈希绑定，失败时可定位具体版本和具体检查',
+      ),
+    ],
+    [
+      lines(
+        'for name in typecheck unit-test security-scan; do printf "%s,%s\\n" "$name" "$(date +%s)" >> /tmp/check-cost.csv; done',
+        'awk -F, \'{sum+=\\$2} END {printf "checks=%d metric=%d\\n",NR,sum}\' /tmp/check-cost.csv',
+        'printf "review=quarterly owner=platform action=remove_never_failed_slow_checks\\n" >> /tmp/gate-review.txt',
+      ),
+      lines(
+        'checks=3 metric=528441',
+        'review=quarterly owner=platform action=remove_never_failed_slow_checks',
+        '定期统计门禁耗时和失败价值，删除长期无效或过慢的检查',
+      ),
+    ],
+  ],
+  '镜像分层与多阶段构建': [
+    [
+      lines(
+        'docker build -t lesson/app:base .',
+        'docker history --no-trunc lesson/app:base | sed -n "1,8p"',
+        'docker image inspect lesson/app:base --format "{{.Size}}"',
+      ),
+      lines(
+        'IMAGE CREATED CREATED BY SIZE',
+        'sha256:ab12... RUN /bin/sh -c npm ci # buildkit 182MB',
+        'sha256:cd34... COPY . . 12.4MB',
+        '194000000',
+      ),
+    ],
+    [
+      lines(
+        'printf "FROM node:24-alpine\\nWORKDIR /app\\nCOPY package*.json ./\\nRUN npm ci\\nCOPY . .\\nRUN npm run build\\n" > Dockerfile.cache',
+        'docker build -f Dockerfile.cache -t lesson/cache:v1 .',
+        'printf "\\n// touch\\n" >> src/main.ts',
+        'docker build -f Dockerfile.cache -t lesson/cache:v2 .',
+      ),
+      lines(
+        'CACHED [2/5] WORKDIR /app',
+        'CACHED [3/5] COPY package*.json ./',
+        'CACHED [4/5] RUN npm ci',
+        '>= [5/5] COPY . .',
+        '只改源码时依赖安装层命中缓存',
+      ),
+    ],
+    [
+      lines(
+        'printf "FROM node:24 AS build\\nWORKDIR /app\\nCOPY . .\\nRUN npm ci && npm run build\\nFROM nginx:1.27-alpine\\nCOPY --from=build /app/dist /usr/share/nginx/html\\n" > Dockerfile.multi',
+        'docker build -f Dockerfile.multi -t lesson/app:multi .',
+        'docker run --rm lesson/app:multi sh -c "test ! -f /app/src/main.ts && echo source-absent"',
+      ),
+      lines(
+        'exporting to image',
+        'naming to docker.io/library/lesson/app:multi',
+        'source-absent',
+        '运行镜像只带构建产物，编译器和源码留在构建阶段',
+      ),
+    ],
+    [
+      lines(
+        'docker run --rm lesson/app:multi sh -c "cat /etc/os-release | head -2; wc -c /bin/sh; command -v curl || true"',
+        'docker scout cves lesson/app:multi --only-severity critical,high 2>/dev/null | tail -8',
+        'printf "debug with: docker run --rm -it --entrypoint sh nginx:1.27-alpine\\n"',
+      ),
+      lines(
+        'NAME="Alpine Linux"',
+        '0 critical, 0 high vulnerabilities',
+        'debug with: docker run --rm -it --entrypoint sh nginx:1.27-alpine',
+        '生产镜像精简但可能缺调试工具，排障时用独立工具镜像而非把工具装回线上',
+      ),
+    ],
+    [
+      lines(
+        'docker image ls lesson/app --format "table {{.Tag}}\\t{{.Size}}"',
+        'docker history --no-trunc lesson/app:multi | awk \'{print \\$2,\\$7}\' | head -10',
+        'printf "node_modules\\n.git\\n.env\\n" > .dockerignore',
+        'docker build --no-cache -f Dockerfile.multi -t lesson/app:slim .',
+      ),
+      lines(
+        'TAG SIZE',
+        'base 194MB',
+        'multi 62.8MB',
+        'slim 59.6MB',
+        '层历史和最终大小验证优化，.dockerignore 同时避免本地秘密进入上下文',
+      ),
+    ],
+  ],
+  'Compose、数据卷与健康检查': [
+    [
+      lines(
+        'printf "services:\\n  api:\\n    image: lesson/api:local\\n    ports: [\\"8080:8080\\"]\\n  db:\\n    image: postgres:17-alpine\\n    environment: [POSTGRES_PASSWORD=demo]\\n" > compose.yaml',
+        'docker compose config',
+        'docker compose up -d',
+        'docker compose ps',
+      ),
+      lines(
+        'name: lesson',
+        'services.api.image: lesson/api:local',
+        'services.db.image: postgres:17-alpine',
+        'api ... Up 0.0.0.0:8080->8080/tcp',
+        'db ... Up 5432/tcp',
+      ),
+    ],
+    [
+      lines(
+        'docker compose exec -T db psql -U postgres -c "create table note(id int primary key, body text);"',
+        'docker compose exec -T db psql -U postgres -c "insert into note values(1,\'persist\');"',
+        'docker compose restart db',
+        'docker compose exec -T db psql -U postgres -c "select * from note;"',
+      ),
+      lines(
+        'CREATE TABLE',
+        'INSERT 0 1',
+        'Container lesson-db-1 Restarted',
+        '1 | persist',
+        '容器重启后数据仍由命名卷保存',
+      ),
+    ],
+    [
+      lines(
+        'printf "depends_on:\\n  db:\\n    condition: service_healthy\\nhealthcheck:\\n  test: [\\"CMD-SHELL\\",\\"pg_isready -U postgres\\"]\\n  interval: 2s\\n  retries: 10\\n" > compose.health.yaml',
+        'docker compose -f compose.yaml -f compose.health.yaml config',
+        'docker compose -f compose.yaml -f compose.health.yaml up -d',
+      ),
+      lines(
+        'depends_on.db.condition: service_healthy',
+        'healthcheck.test: CMD-SHELL pg_isready -U postgres',
+        'Container lesson-db-1 Healthy',
+        'API 在数据库健康后才启动，启动顺序不等于仅启动容器',
+      ),
+    ],
+    [
+      lines(
+        'docker compose ps --format json | jq -r \'.Name+" "+.Health+" "+.State\'',
+        'docker inspect lesson-db-1 --format "{{json .State.Health}}" | jq \'{Status,Log}\'',
+        'docker compose up -d --wait --wait-timeout 30',
+      ),
+      lines(
+        'lesson-db-1 healthy running',
+        'lesson-api-1 healthy running',
+        '{"Status":"healthy","Log":[{"ExitCode":0}]}',
+        '健康状态可直接驱动发布与自动恢复决策',
+      ),
+    ],
+    [
+      lines(
+        'docker compose stop db',
+        'docker compose ps api --format json | jq -r \'.Health+\" \"+.Status\'',
+        'docker compose start db; sleep 3',
+        'docker compose ps --format json | jq -r \'.Name+\" \"+.Health\'',
+      ),
+      lines(
+        'database unavailable',
+        'unhealthy running',
+        'lesson-db-1 healthy',
+        'lesson-api-1 healthy',
+        '依赖故障使 API 转为不健康，恢复后健康检查重新通过',
+      ),
+    ],
+  ],
+  'CI 缓存、测试矩阵与制品': [
+    [
+      lines(
+        'sha256sum package-lock.json | cut -d" " -f1 > /tmp/cache-key.txt',
+        'printf "cache-key=%s\\n" "$(cat /tmp/cache-key.txt)"',
+        'test -d ~/.npm/_cacache && du -sh ~/.npm/_cacache || echo cache-miss',
+      ),
+      lines(
+        'cache-key=f68da0d7e4a9ee969f3c9d4eb63b024e3ef54b8e9b64821b797b8d57ffbcbb59',
+        'cache-miss',
+        '缓存键绑定锁文件哈希，依赖变化时不会错误复用旧包',
+      ),
+    ],
+    [
+      lines(
+        'printf "matrix:\\n  node: [20,22,24]\\n  os: [ubuntu-latest,windows-latest]\\n" > /tmp/matrix.yaml',
+        'python3 - <<\'PY\'',
+        'import itertools,yaml',
+        'm=yaml.safe_load(open("/tmp/matrix.yaml"))["matrix"]',
+        'for combo in itertools.product(m["node"],m["os"]): print(combo)',
+        'PY',
+      ),
+      lines(
+        '(20, \'ubuntu-latest\')',
+        '(20, \'windows-latest\')',
+        '(22, \'ubuntu-latest\')',
+        '(24, \'windows-latest\')',
+        '矩阵组合数量等于各维度乘积，应只选有代表性的运行时与平台',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'npm run build',
+        'sha256sum dist/app.js > dist/app.js.sha256',
+        'for env in staging production; do cp -a dist "/tmp/artifact-$env"; done',
+        'diff -qr /tmp/artifact-staging /tmp/artifact-production',
+      ),
+      lines(
+        'build completed in 6.28s',
+        'dist/app.js  284 KiB',
+        'staging 与 production 没有差异，两个环境复用同一份不可变产物',
+      ),
+    ],
+    [
+      lines(
+        'commit=$(git rev-parse --short HEAD)',
+        'printf "{\\"commit\\":\\"%s\\",\\"build\\":\\"%s\\"}\\n" "$commit" "local-42" > dist/build-info.json',
+        'jq . dist/build-info.json',
+        'npm sbom --sbom-format=cyclonedx > dist/sbom.json',
+      ),
+      lines(
+        '{"commit":"a18f0c2","build":"local-42"}',
+        'SBOM components: 37',
+        '构建信息与软件物料清单随制品归档，可反查具体来源和依赖',
+      ),
+    ],
+    [
+      lines(
+        '/usr/bin/time -f "build_seconds=%e" npm run build',
+        'du -sh node_modules dist',
+        'npm cache ls | wc -l',
+        'printf "cache_hit=%s build_seconds=%s artifact_mb=%s\\n" "true" "6.4" "$(du -sm dist | cut -f1)"',
+      ),
+      lines(
+        'build_seconds=6.41',
+        '188M node_modules',
+        '284K dist',
+        'cache_hit=true build_seconds=6.4 artifact_mb=1',
+        '缓存命中率、构建时长和制品体积一起衡量 CI 是否真正变快',
+      ),
+    ],
+  ],
+  '环境配置、秘密与发布顺序': [
+    [
+      lines(
+        'export APP_ENV=production',
+        'export DATABASE_URL=postgres://app:demo@db:5432/app',
+        'node -e "console.log({env:process.env.APP_ENV,db:new URL(process.env.DATABASE_URL).host})"',
+        'env | grep -E "^(APP_ENV|DATABASE_URL)=" | sed "s#://[^@]*@#://***@#"',
+      ),
+      lines(
+        "{ env: 'production', db: 'db:5432' }",
+        'APP_ENV=production',
+        'DATABASE_URL=postgres://***@db:5432/app',
+        '同一制品通过环境变量连接不同环境，日志中秘密被遮蔽',
+      ),
+    ],
+    [
+      lines(
+        'printf "DATABASE_URL\\nAPI_TOKEN\\n" > /tmp/required-secrets.txt',
+        'test -n "$DATABASE_URL" && test -n "$API_TOKEN" && echo secrets-present',
+        'env | grep -E "^(DATABASE_URL|API_TOKEN)=" | sed -E "s/=.*/=<redacted>/"',
+        'docker image inspect lesson/app:prod --format "{{json .Config.Env}}"',
+      ),
+      lines(
+        'secrets-present',
+        'DATABASE_URL=<redacted>',
+        'API_TOKEN=<redacted>',
+        '["APP_ENV=production","NODE_VERSION=24.18.1"]',
+        '秘密运行时注入，镜像配置中不出现凭据内容',
+      ),
+    ],
+    [
+      lines(
+        'for slot in blue green; do kubectl get deployment web-$slot -o jsonpath="{.metadata.name} ready={.status.readyReplicas}\\n"; done',
+        'kubectl patch service web -p \'{"spec":{"selector":{"slot":"green"}}}\'',
+        'kubectl get endpoints web -o jsonpath="{.subsets[*].addresses[*].ip}"',
+      ),
+      lines(
+        'web-blue ready=3',
+        'web-green ready=3',
+        'service/web patched',
+        '10.42.1.15 10.42.1.16 10.42.1.17',
+        '蓝绿两套实例同时存在，切换流量后旧环境仍可直接回退',
+      ),
+    ],
+    [
+      lines(
+        'printf "steps=[5,20,50,100]\\nmetric=error_rate\\nthreshold=0.01\\n" > /tmp/canary.plan',
+        'for pct in 5 20; do printf "shift={\\"version\\":\\"v2\\",\\"weight\\":%s}\\n" "$pct"; sleep 1; done',
+        'printf "error_rate=0.004 decision=continue\\n" | tee /tmp/canary.result',
+      ),
+      lines(
+        'shift={"version":"v2","weight":5}',
+        'shift={"version":"v2","weight":20}',
+        'error_rate=0.004 decision=continue',
+        '真实指标未超过阈值才继续扩大流量，异常可直接停止放量',
+      ),
+    ],
+    [
+      lines(
+        'printf "1 migrate-add-column\\n2 deploy-compatible-app\\n3 backfill\\n4 verify\\n5 remove-old-column\\n" > /tmp/release-order.txt',
+        'cat /tmp/release-order.txt',
+        'psql -d app -c "ALTER TABLE orders ADD COLUMN status_v2 text;"',
+        'curl -sS -o /dev/null -w "old_app=%{http_code} new_app=%{http_code}\\n" http://127.0.0.1:8080/health http://127.0.0.1:8081/health',
+      ),
+      lines(
+        '1 migrate-add-column',
+        '2 deploy-compatible-app',
+        '3 backfill',
+        'ALTER TABLE',
+        'old_app=200 new_app=200',
+        '先做向后兼容结构变更，新旧应用可并行后才回填与收窄',
+      ),
+    ],
+  ],
+  '日志、指标、Trace 与告警': [
+    [
+      lines(
+        'printf \'{"ts":"2026-11-24T10:30:00Z","level":"info","trace_id":"t-9001","event":"order.created","order_id":"42"}\\n\' | tee -a app.jsonl',
+        'jq -c "select(.trace_id==\\"t-9001\\") | {ts,event,order_id}" app.jsonl',
+        'wc -l app.jsonl',
+      ),
+      lines(
+        '{"ts":"2026-11-24T10:30:00Z","event":"order.created","order_id":"42"}',
+        '1 app.jsonl',
+        '结构化日志用 trace_id 与业务键保留具体事件细节',
+      ),
+    ],
+    [
+      lines(
+        'cat > /tmp/metrics.txt <<\'EOF\'',
+        'http_requests_total 12540',
+        'http_errors_total 126',
+        'http_request_seconds_sum 8032',
+        'http_request_seconds_count 12540',
+        'EOF',
+        'awk \'NR==2{req=$2} NR==3{err=$2} END{printf "requests=%d error_rate=%.3f%%\\n",req,err*100/req}\' /tmp/metrics.txt',
+      ),
+      lines(
+        'requests=12540 error_rate=1.005%',
+        '计数器可聚合出请求量和错误率，适合趋势观察与阈值告警',
+      ),
+    ],
+    [
+      lines(
+        'printf \'{"trace_id":"t-9001","spans":[{"service":"web","ms":18},{"service":"orders","ms":64},{"service":"db","ms":52}]}\\n\' > trace.jsonl',
+        'jq -r \'.spans[] | [.service,.ms] | @tsv\' trace.jsonl',
+        'jq -r \'.trace_id as $id | .spans | max_by(.ms) | "\\($id) slowest=\\(.service):\\(.ms)ms"\' trace.jsonl',
+      ),
+      lines(
+        'web\t18',
+        'orders\t64',
+        'db\t52',
+        't-9001 slowest=orders:64ms',
+        '统一 trace_id 串起请求路径，span 耗时定位到最慢的下游段',
+      ),
+    ],
+    [
+      lines(
+        'printf "alert=HighErrorRate\\nexpr=error_ratio > 0.02 for 5m\\nrunbook=https://runbooks.example/high-error-rate\\n" > /tmp/alert.rules',
+        'cat /tmp/alert.rules',
+        'curl -sS -o /dev/null -w "health_endpoint=%{http_code}\\n" http://127.0.0.1:8080/health',
+        'printf "action=check_recent_deploy,open_incident,page_oncall\\n" >> /tmp/alert.rules',
+      ),
+      lines(
+        'alert=HighErrorRate',
+        'expr=error_ratio > 0.02 for 5m',
+        'runbook=https://runbooks.example/high-error-rate',
+        'health_endpoint=200',
+        'action=check_recent_deploy,open_incident,page_oncall',
+        '告警绑定用户影响、持续时长、运行手册与明确第一响应动作',
+      ),
+    ],
+    [
+      lines(
+        'printf "p50=0.08\\np95=0.42\\np99=1.90\\nmean=0.16\\n" | tee latency.txt',
+        'awk -F= \'$1=="p95"{print "p95_ms=" $2*1000} $1=="mean"{print "mean_ms=" $2*1000}\' latency.txt',
+        'python3 - <<\'PY\'',
+        'import statistics',
+        'lat=[0.08]*95+[0.42]*4+[1.90]',
+        'print("mean",round(statistics.mean(lat),3),"p99",sorted(lat)[98])',
+        'PY',
+      ),
+      lines(
+        'p95_ms=420',
+        'mean_ms=160',
+        'mean 0.103 p99 0.42',
+        '平均值掩盖长尾，P95/P99 才能反映少数慢请求的真实体验。',
+      ),
+    ],
+  ],
+  '备份、回滚、容量与运行手册': [
+    [
+      lines(
+        'printf "# Web Runbook\\n## Symptoms\\n5xx rate above 2%%\\n## First action\\ncheck deploy, health, logs\\n## Verification\\n5xx below 1%% for 10m\\n" > RUNBOOK.md',
+        'sed -n "1,8p" RUNBOOK.md',
+        'rg -n "Symptoms|First action|Verification" RUNBOOK.md',
+      ),
+      lines(
+        '# Web Runbook',
+        '## Symptoms',
+        '## First action',
+        '## Verification',
+        'RUNBOOK.md:2:## Symptoms',
+        'RUNBOOK.md:4:## First action',
+        'RUNBOOK.md:6:## Verification',
+      ),
+    ],
+    [
+      lines(
+        'kubectl rollout history deployment/web --revision=2',
+        'kubectl rollout undo deployment/web --to-revision=1',
+        'kubectl rollout status deployment/web --timeout=90s',
+        'curl -fsS http://127.0.0.1:8080/health && echo rollback-healthy',
+      ),
+      lines(
+        'deployment.apps/web with revision #1',
+        'deployment.apps/web rolled back',
+        'deployment "web" successfully rolled out',
+        'rollback-healthy',
+        '回滚命令、就绪等待与业务健康检查组成完整验证点',
+      ),
+    ],
+    [
+      lines(
+        'printf "peak_rps=1800\\nper_instance_rps=300\\nreserve_ratio=0.3\\n" > capacity.env',
+        'python3 - <<\'PY\'',
+        'import math,os',
+        'v=dict(line.strip().split("=") for line in open("capacity.env"))',
+        'need=math.ceil(float(v["peak_rps"])/float(v["per_instance_rps"])*(1+float(v["reserve_ratio"])))',
+        'print("instances",need,"connections",need*40)',
+        'PY',
+      ),
+      lines(
+        'instances 8 connections 320',
+        '按峰值与三成余量计算实例数，数据库连接池也要随实例数扩展',
+      ),
+      'python',
+    ],
+    [
+      lines(
+        'pg_dump -d app -Fc -f /tmp/app.dump',
+        'pg_restore -d app_restore --clean --if-exists /tmp/app.dump',
+        'psql -d app_restore -c "select count(*) from orders;"',
+        'printf "last_drill=2026-11-24 duration=42s result=pass\\n" >> RUNBOOK.md',
+      ),
+      lines(
+        'pg_restore: creating TABLE "public.orders"',
+        'count = 240',
+        'last_drill=2026-11-24 duration=42s result=pass',
+        '恢复演练真正导入数据并校验行数，结果回写运行手册',
+      ),
+    ],
+    [
+      lines(
+        'printf "incident=2026-11-23-db-failover\\nmissing=certificate-expiry-check\\nowner=platform\\n" > /tmp/postmortem.txt',
+        'rg -n "certificate|runbook|alert" RUNBOOK.md /tmp/postmortem.txt',
+        'printf "## Certificate expiry\\nRun openssl x509 -enddate monthly.\\n" >> RUNBOOK.md',
+        'rg -n "Certificate expiry|openssl x509" RUNBOOK.md',
+      ),
+      lines(
+        '/tmp/postmortem.txt:2:missing=certificate-expiry-check',
+        'RUNBOOK.md:8:## Certificate expiry',
+        'RUNBOOK.md:9:Run openssl x509 -enddate monthly.',
+        '事故复盘发现的缺口直接成为可执行手册条目',
+      ),
+    ],
+  ],
+  '浏览器如何请求和解析 HTML': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><meta charset="utf-8"><title>解析实验</title></head>',
+        '<body><main><h1>服务器返回的是文本</h1><p>浏览器将标签解析为 DOM。</p></main></body></html>',
+      ),
+      lines(
+        'Network: document 200 text/html 312 B',
+        'DOM: html > head + body > main > h1 + p',
+        '页面上显示“服务器返回的是文本”，但浏览器实际操作的是上方的元素树',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><ul id="orders"><li data-id="42">订单 42</li></ul>',
+        '<script>const node=document.querySelector("#orders li"); console.log(node.dataset.id,node.textContent);</script>',
+        '</body></html>',
+      ),
+      lines(
+        'Console: 42 订单 42',
+        'Elements: ul#orders > li[data-id="42"]',
+        '脚本读取的是解析后的 DOM 节点，而不是未解析的 HTML 源字符串',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><style>h1{color:#174ea6}.hidden{display:none}</style></head>',
+        '<body><h1 id="title">结构</h1><button id="toggle">切换</button>',
+        '<script>toggle.onclick=()=>title.classList.toggle("hidden")</script></body></html>',
+      ),
+      lines(
+        '初始：h1 文本可见，按钮可点击',
+        '点击后：h1.hidden 生效并停止渲染',
+        'HTML 提供标题与按钮结构，CSS 控制隐藏状态，脚本负责切换行为',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><style>.card{width:280px;padding:24px;border:2px solid #333}</style></head>',
+        '<body><article class="card"><h2>布局</h2><p>浏览器先计算尺寸，再绘制像素。</p></article></body></html>',
+      ),
+      lines(
+        'Performance: Parse HTML → Recalculate Style → Layout → Paint',
+        'Layout: article.card 332px × 108px',
+        '改变 width/padding 会触发布局，改变仅颜色通常只触发重绘',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><link rel="stylesheet" href="/app.css"></head>',
+        '<body><h1>请求链</h1><img src="/hero.webp" width="640" height="360" alt="首屏配图">',
+        '<script src="/app.js" defer></script></body></html>',
+      ),
+      lines(
+        'Network: / 200 document 1.2 kB',
+        'Network: /app.css 200 stylesheet 8.4 kB',
+        'Network: /hero.webp 200 image 92 kB',
+        'Network: /app.js 200 script 14 kB，DOMContentLoaded 后执行',
+      ),
+    ],
+  ],
+  'DOCTYPE、head、body 与文档树': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><meta charset="utf-8"><title>标准模式</title></head>',
+        '<body><div class="box">标准盒模型</div><style>.box{width:200px;padding:20px;border:5px solid}</style></body></html>',
+      ),
+      lines(
+        'document.compatMode = "CSS1Compat"',
+        'box content width = 200px',
+        'box outer width = 250px',
+        '标准模式按声明宽度计算内容盒，padding 与 border 额外增加',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
+        '<meta name="description" content="head 与 body 分工实验"><title>元信息</title></head>',
+        '<body><h1>可见内容只在 body</h1></body></html>',
+      ),
+      lines(
+        'document.title = "元信息"',
+        'document.head.querySelectorAll("meta").length = 2',
+        'document.body.textContent 包含“可见内容只在 body”',
+        'title 与 meta 描述文档，body 承载用户可见结构',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><section><h2>订单</h2>',
+        '<ul><li>订单 42</li><li>订单 43</li></ul></section></main></body></html>',
+      ),
+      lines(
+        'html',
+        '└─ body',
+        '   └─ main',
+        '      └─ section',
+        '         ├─ h2 订单',
+        '         └─ ul > li × 2',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><p>第一段<div>错误嵌套</div><p>第二段</body></html>',
+        'python3 -c "from html.parser import HTMLParser; HTMLParser().feed(open(\'/tmp/invalid.html\').read())"',
+      ),
+      lines(
+        '浏览器仍可能显示两段文字，但 p 内出现 div 会被自动调整',
+        'validator: Element div not allowed as child of element p',
+        '解析器容错不代表源码结构合法，应以验证器结果为准',
+      ),
+    ],
+    [
+      lines(
+        '{',
+        '  "css": [',
+        '    { "message": "Element head is missing a required instance of child element title." }',
+        '  ],',
+        '  "validation": { "messages": ["DOCTYPE is missing"] }',
+        '}',
+        'printf "用 https://validator.w3.org/nu/?doc= 或本地 html-validate 重现结构错误\\n"',
+      ),
+      lines(
+        'html-validate: 2 errors, 0 warnings',
+        'Missing doctype',
+        'head must contain a title element',
+        '验证器给出的具体元素与位置可直接用于修复文档树',
+      ),
+    ],
+  ],
+  '标题层级、段落、链接与图片': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>年度报告</h1>',
+        '<section><h2>收入</h2><p>收入同比增长 12%。</p></section>',
+        '<section><h2>成本</h2><h3>人力</h3><p>成本变化。</p></section></main></body></html>',
+      ),
+      lines(
+        'document.querySelectorAll("h1,h2,h3") => [1,2,2,3]',
+        '大纲: 年度报告 > 收入 / 成本 > 人力',
+        '标题层级表达内容关系，视觉字号由 CSS 另行控制',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>服务条款</h1><h2>账户</h2>',
+        '<h4>注销</h4><p>缺少 h3 会在大纲中造成断层。</p></main></body></html>',
+        'python3 -c "from bs4 import BeautifulSoup; s=BeautifulSoup(open(\'/tmp/headings.html\').read(),\'html.parser\'); print([int(h.name[1]) for h in s.find_all([\'h1\',\'h2\',\'h3\',\'h4\'])] )"',
+      ),
+      lines(
+        '[1, 2, 4]',
+        'outline issue: heading level jumped from h2 to h4',
+        '内容若属于 h2 的子节，应改为 h3，而不是用样式把 h4 缩小',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>订单帮助</h1>',
+        '<p><a href="/orders/42">查看订单 42 的退款进度</a></p>',
+        '<p><a href="/contact">联系客服并附上订单编号</a></p></main></body></html>',
+      ),
+      lines(
+        'Accessibility tree: link "查看订单 42 的退款进度"',
+        'Accessibility tree: link "联系客服并附上订单编号"',
+        '脱离上下文阅读链接文字仍能说明点击后去哪里或执行什么动作',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>门店照片</h1>',
+        '<img src="/store.webp" width="800" height="450" alt="上海门店入口与蓝色招牌">',
+        '<img src="/divider.svg" alt="" role="presentation">',
+        '<p>信息图：2026 年订单量较去年增长 18%。</p></main></body></html>',
+      ),
+      lines(
+        'Accessibility tree: image "上海门店入口与蓝色招牌"',
+        'Accessibility tree: decorative image ignored',
+        '信息型图片 alt 描述内容，装饰图片用空 alt 避免制造噪声',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>图片降级检查</h1>',
+        '<img src="/missing.webp" alt="上海门店入口与蓝色招牌" width="800" height="450">',
+        '<p>关闭图片后仍应保留图片表达的信息。</p></main></body></html>',
+      ),
+      lines(
+        'Broken image placeholder',
+        '上海门店入口与蓝色招牌',
+        '关闭图片后 alt 文本仍可读，标题与正文结构没有丢失',
+      ),
+    ],
+  ],
+  '相对路径、绝对路径与站点目录': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>帮助中心</h1>',
+        '<a href="orders.html">订单帮助</a>',
+        '<a href="../index.html">返回首页</a></main></body></html>',
+      ),
+      lines(
+        '当前 /help/faq/index.html',
+        'orders.html → /help/faq/orders.html',
+        '../index.html → /help/index.html',
+        '相对地址以当前文档 URL 为基准解析',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>站点根路径</h1>',
+        '<img src="/assets/logo.svg" width="160" height="48" alt="站点标志">',
+        '<a href="/pricing">价格</a></main></body></html>',
+      ),
+      lines(
+        '当前页 https://example.test/help/faq/orders.html',
+        '/assets/logo.svg → https://example.test/assets/logo.svg',
+        '/pricing → https://example.test/pricing',
+        '根相对路径不受当前页面层级影响',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>外部资源</h1>',
+        '<a href="https://developer.mozilla.org/zh-CN/">MDN 中文文档</a>',
+        '<script src="https://cdn.example.test/app.js"></script></main></body></html>',
+      ),
+      lines(
+        'link origin = https://developer.mozilla.org',
+        'script origin = https://cdn.example.test',
+        '完整绝对地址适合外部资源，站内链接若写死域名会增加迁移成本',
+      ),
+    ],
+    [
+      lines(
+        'mkdir -p site/{assets,css,help/faq}',
+        'printf "<img src=\\"../../assets/logo.svg\\" alt=\\"标志\\">" > site/help/faq/index.html',
+        'python3 -c "from pathlib import Path; p=Path(\'site/help/faq/index.html\').parent/Path(\'../../assets/logo.svg\'); print(p.resolve())"',
+        'cd site && python3 -m http.server 8090',
+      ),
+      lines(
+        '/srv/site/assets/logo.svg',
+        'Serving HTTP on 0.0.0.0 port 8090',
+        '目录层级与解析后的资源路径一致，统一小写命名可避免大小写敏感问题',
+      ),
+    ],
+    [
+      lines(
+        'mv site /tmp/site-moved',
+        'cd /tmp/site-moved && python3 -m http.server 8091',
+        'curl -sS -o /dev/null -w "doc=%{http_code} image=%{content_type}\\n" http://127.0.0.1:8091/help/faq/index.html',
+        'curl -sS -o /dev/null -w "asset=%{http_code}\\n" http://127.0.0.1:8091/assets/logo.svg',
+      ),
+      lines(
+        'doc=200 image=text/html',
+        'asset=200',
+        '整站目录移动到新位置后站内资源仍返回 200，说明没有写死本机绝对路径',
+      ),
+    ],
+  ],
+  'DevTools、验证器与最小调试': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><button class="primary" id="save">保存</button>',
+        '<script>document.querySelector("#save").classList.add("active"); console.log(save.outerHTML)</script>',
+        '</body></html>',
+      ),
+      lines(
+        'Console: <button class="primary active" id="save">保存</button>',
+        'Elements: button.primary.active#save',
+        '元素面板显示脚本执行后的实际 DOM，而不是磁盘里的原始源码',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><button id="save">保存</button>',
+        '<script>const save=document.querySelector("#save"); save.addEventListener("click",()=>missingFunction());</script>',
+        '</body></html>',
+      ),
+      lines(
+        'Uncaught ReferenceError: missingFunction is not defined',
+        'at HTMLButtonElement.<anonymous> (index.html:4:74)',
+        '控制台给出错误类型、文件和行号，先修这里再看点击行为',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><style>.title{color:#333}main .title{color:#0b57d0}</style></head>',
+        '<body><main><h1 class="title">样式优先级</h1></main></body></html>',
+      ),
+      lines(
+        'Computed color: rgb(11, 87, 208)',
+        'Styles: .title { color:#333 } — overridden',
+        'Styles: main .title { color:#0b57d0 } — active',
+        '样式面板直接展示被覆盖的规则与最终计算值',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes html-validate@9 minimal.html',
+        'npx --yes html-validate@9 --formatter stylish minimal.html',
+        'python3 -m http.server 8093',
+        'curl -sS -o /dev/null -w "status=%{http_code} type=%{content_type}\\n" http://127.0.0.1:8093/minimal.html',
+      ),
+      lines(
+        'minimal.html:1:1 error: DOCTYPE is required',
+        '1 error, 0 warnings',
+        'status=200 type=text/html',
+        '验证器查结构合法性，检查器看运行时加载与网络结果',
+      ),
+    ],
+    [
+      lines(
+        'printf "<!doctype html><html lang=\\"zh-CN\\"><body><button id=\\"b\\">保存</button><script>missing()</script></body></html>" > /tmp/minimal.html',
+        'npx --yes html-validate@9 /tmp/minimal.html',
+        'python3 -m http.server 8094 --directory /tmp',
+        'curl -sS http://127.0.0.1:8094/minimal.html | wc -c',
+      ),
+      lines(
+        'html-validate: 0 errors',
+        'Serving HTTP on 0.0.0.0 port 8094',
+        '132',
+        '结构合法的小页面仍可能脚本报错，最小复现把结构问题与运行时问题分开',
+      ),
+    ],
+  ],
+  '第一个语义化多页面站点': [
+    [
+      lines(
+        'mkdir -p site/{about,work,assets}',
+        'printf "index.html\\nabout/index.html\\nwork/index.html\\nassets/logo.svg\\n" > site/STRUCTURE.txt',
+        'tree -L 2 site',
+      ),
+      lines(
+        'site',
+        '├── STRUCTURE.txt',
+        '├── about/index.html',
+        '├── assets/logo.svg',
+        '├── index.html',
+        '└── work/index.html',
+        '写页面前先固定页面、公共资源与目录边界',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><a href="/">星图工作室</a></header>',
+        '<nav aria-label="主导航"><a href="/">首页</a><a href="/about">关于</a><a href="/work">作品</a></nav>',
+        '<main><h1>首页</h1></main></body></html>',
+      ),
+      lines(
+        'Landmarks: header / nav "主导航" / main',
+        'Navigation links: 首页, 关于, 作品',
+        '三页共享相同的导航顺序与名称，用户不会在不同页面重新学习路径',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><p>星图工作室</p></header><main>',
+        '<h1>关于我们</h1><section><h2>团队</h2><p>团队介绍。</p></section></main></body></html>',
+      ),
+      lines(
+        '每个页面只有 1 个 h1: 关于我们',
+        'h1 后接 h2: 团队',
+        '大纲无跳级，页面单独打开仍能理解主题与子主题',
+      ),
+    ],
+    [
+      lines(
+        'for page in index.html about/index.html work/index.html; do',
+        '  printf "%s: " "$page"; grep -o \'href="[^"]*"\\|src="[^"]*"\' "site/$page" | wc -l',
+        'done',
+        'mv site /tmp/site-final && python3 -m http.server 8095 --directory /tmp/site-final',
+      ),
+      lines(
+        'index.html: 6',
+        'about/index.html: 6',
+        'work/index.html: 7',
+        'Serving HTTP on 0.0.0.0 port 8095',
+        '整站移动后仍能启动，且每页资源引用数量可逐页核对',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes html-validate@9 "site/**/*.html"',
+        'for page in index.html about/index.html work/index.html; do curl -sS -o /dev/null -w "$page=%{http_code}\\n" "http://127.0.0.1:8095/$page"; done',
+        'rg -n "<img" site | wc -l',
+        'rg -n "<img(?![^>]*alt=)" site -P || echo all-images-have-alt',
+      ),
+      lines(
+        '0 errors, 0 warnings',
+        'index.html=200',
+        'about/index.html=200',
+        'work/index.html=200',
+        'all-images-have-alt',
+        '结构、链接与图片替代文本在交付前逐项验收',
+      ),
+    ],
+  ],
+  'header、nav、main 与 footer': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><p>星图科技</p></header>',
+        '<nav aria-label="主菜单"><a href="/products">产品</a><a href="/about">关于</a></nav>',
+        '<main><h1>企业服务</h1></main><footer><p>© 2026 星图科技</p></footer></body></html>',
+      ),
+      lines(
+        'Landmark header: 星图科技',
+        'Landmark navigation: 主菜单',
+        'Landmark main: 企业服务',
+        'Landmark footer: © 2026 星图科技',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>产品</h1></main>',
+        '<main><h1>价格</h1></main>',
+        '<script>console.log(document.querySelectorAll("main").length)</script></body></html>',
+      ),
+      lines(
+        'Console: 2',
+        'Accessibility issue: document has more than one main landmark',
+        '主内容必须唯一；价格应做成产品页内 section，而不是第二个 main',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><nav aria-label="主导航"><a href="/">首页</a><a href="/docs">文档</a></nav>',
+        '<main><h1>快速开始</h1><nav aria-label="本页目录"><a href="#install">安装</a><a href="#run">运行</a></nav></main></body></html>',
+      ),
+      lines(
+        'Navigation 1: 主导航, links=2',
+        'Navigation 2: 本页目录, links=2',
+        '多个 nav 用 aria-label 区分，区域里只放真正的导航链接',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><a class="skip" href="#content">跳到主内容</a>',
+        '<header><nav aria-label="主导航"><a href="/a">产品</a><a href="/b">方案</a></nav></header>',
+        '<main id="content" tabindex="-1"><h1>正文</h1></main></body></html>',
+      ),
+      lines(
+        'Tab 1: 跳到主内容',
+        'Enter → focus #content',
+        'Landmark main: 正文',
+        '语义 landmark 与 skip link 让键盘用户跳过重复导航',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from bs4 import BeautifulSoup',
+        'html=open("site/index.html").read(); soup=BeautifulSoup(html,"html.parser")',
+        'for tag in ("header","nav","main","footer"): print(tag,len(soup.find_all(tag)))',
+        'PY',
+      ),
+      lines(
+        'header 1',
+        'nav 2',
+        'main 1',
+        'footer 1',
+        '可访问性树与结构计数同时确认区域职责，main 保持唯一',
+      ),
+      'python',
+    ],
+  ],
+  'article、section 与 aside 的边界': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>博客</h1><article><h2>如何排查超时</h2>',
+        '<p>先区分连接与读取阶段。</p><footer>作者：Ada · 2026-11-24</footer></article></main></body></html>',
+      ),
+      lines(
+        'Article: 如何排查超时',
+        'Article footer: 作者 Ada, 2026-11-24',
+        '文章单独分发后仍有标题、正文和作者信息，满足独立内容标准',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>产品方案</h1><section><h2>适用场景</h2>',
+        '<p>适用于多地域订单系统。</p></section><section><h2>限制</h2><p>不适用于离线终端。</p></section></main></body></html>',
+      ),
+      lines(
+        'Section: 适用场景',
+        'Section: 限制',
+        '每个 section 有明确主题标题，视觉分组本身没有替代语义',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>安装指南</h1><p>主步骤。</p>',
+        '<aside aria-label="相关资源"><h2>相关资源</h2><a href="/cli">CLI 参考</a></aside></main></body></html>',
+      ),
+      lines(
+        'Main content: 安装指南',
+        'Complementary landmark: 相关资源',
+        'aside 是主流程的补充，抽掉后安装步骤仍完整成立',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>季度复盘</h1><div class="card"><h2>收入</h2><p>增长。</p></div>',
+        '<section><h2>成本</h2><p>下降。</p></section></main></body></html>',
+      ),
+      lines(
+        'div.card: visual grouping only',
+        'section: named thematic group 成本',
+        '无独立主题或标题的视觉卡片保留 div，有主题的区块才用 section',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from bs4 import BeautifulSoup',
+        's=BeautifulSoup(open("article.html").read(),"html.parser")',
+        'print([(tag.name,tag.find(["h1","h2","h3"]).get_text(strip=True)) for tag in s.find_all(["article","section","aside"])])',
+        'PY',
+      ),
+      lines(
+        '[(\'article\', \'如何排查超时\'), (\'section\', \'适用场景\'), (\'aside\', \'相关资源\')]',
+        '大纲顺序与读屏阅读顺序一致，article、section、aside 各司其职',
+      ),
+      'python',
+    ],
+  ],
+  '标题大纲与文档阅读顺序': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>平台手册</h1><h2>安装</h2><h3>前置条件</h3><h2>运行</h2></main></body></html>',
+        'python3 -c "from bs4 import BeautifulSoup; s=BeautifulSoup(open(\'/tmp/outline.html\').read(),\'html.parser\'); print([(h.name,h.text) for h in s.find_all([\'h1\',\'h2\',\'h3\'])] )"',
+      ),
+      lines(
+        '[(\'h1\', \'平台手册\'), (\'h2\', \'安装\'), (\'h3\', \'前置条件\'), (\'h2\', \'运行\')]',
+        '标题序列形成可扫描的目录，h3 归属于 h2 安装',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>支持中心</h1><h2>账户</h2><h4>注销</h4><h2>支付</h2></main></body></html>',
+        'python3 -c "from bs4 import BeautifulSoup; s=BeautifulSoup(open(\'/tmp/jump.html\').read(),\'html.parser\'); levels=[int(h.name[1]) for h in s.find_all([\'h1\',\'h2\',\'h3\',\'h4\'])]; print(levels,[(a,b) for a,b in zip(levels,levels[1:]) if b-a>1])"',
+      ),
+      lines(
+        '[1, 2, 4, 2] [(2, 4)]',
+        'h2 后直接 h4 形成层级跳跃，注销应改为 h3',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>报告</h1><section><h2>收入</h2><p>A</p></section>',
+        '<aside><h2>方法说明</h2><p>B</p></aside></main></body></html>',
+      ),
+      lines(
+        'DOM reading order: h1 报告 → h2 收入 → p A → h2 方法说明 → p B',
+        'Screen reader order follows DOM even if CSS visually places aside first',
+        '阅读顺序应在 HTML 中正确，而不是依赖视觉定位重排',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>结账</h1><ol><li><a href="#address">地址</a></li>',
+        '<li><a href="#payment">支付</a></li><li><a href="#confirm">确认</a></li></ol>',
+        '<section id="address"><h2>地址</h2></section><section id="payment"><h2>支付</h2></section></main></body></html>',
+      ),
+      lines(
+        'Navigation order: 地址 → 支付 → 确认',
+        'DOM heading order: 结账 → 地址 → 支付 → 确认',
+        '视觉步骤、Tab 顺序与标题大纲三者保持一致',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes @axe-core/cli@4 https://example.test/manual --exit',
+        'python3 - <<\'PY\'',
+        'checks=[("heading-jump",False),("one-main",True),("focus-order",True)]',
+        'print([name for name,ok in checks if not ok])',
+        'PY',
+      ),
+      lines(
+        'Violation: heading-order',
+        '[\'heading-jump\']',
+        '自动扫描发现跳级后，再人工按 Tab 与大纲确认阅读顺序完全一致',
+      ),
+    ],
+  ],
+  '列表、引用、代码与时间': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>发布步骤</h1><ol><li>运行测试</li><li>构建镜像</li><li>灰度发布</li></ol>',
+        '<h2>依赖</h2><ul><li>Docker</li><li>kubectl</li></ul></main></body></html>',
+      ),
+      lines(
+        'Ordered list: 1 运行测试, 2 构建镜像, 3 灰度发布',
+        'Unordered list: 2 dependency items',
+        '有序步骤用 ol，无先后关系的依赖用 ul，语义由列表类型表达',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>事故复盘</h1>',
+        '<blockquote cite="https://status.example.test/incidents/42"><p>故障持续 18 分钟。</p></blockquote>',
+        '<p>来源：<a href="https://status.example.test/incidents/42">状态页公告</a></p></main></body></html>',
+      ),
+      lines(
+        'Blockquote text: 故障持续 18 分钟。',
+        'cite attribute: https://status.example.test/incidents/42',
+        '可见来源链接让引用可核对，cite 属性本身不自动显示',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>命令示例</h1>',
+        '<p>先运行 <code>npm ci</code> 安装锁定依赖。</p>',
+        '<pre><code>npm ci --ignore-scripts\nnpm test -- --runInBand</code></pre></main></body></html>',
+      ),
+      lines(
+        'Inline code: npm ci',
+        'Preformatted code: npm ci --ignore-scripts / npm test -- --runInBand',
+        'code 标记代码语义，pre 保留换行与空白',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>发布时间</h1>',
+        '<p>发布于 <time datetime="2026-11-24T10:30:00+08:00">2026 年 11 月 24 日 10:30</time></p>',
+        '<p>活动截止 <time datetime="2026-12-01">12 月 1 日</time></p></main></body></html>',
+      ),
+      lines(
+        'time[0].datetime = 2026-11-24T10:30:00+08:00',
+        'time[1].datetime = 2026-12-01',
+        '机器读取标准 datetime，人类读取本地化文本',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from bs4 import BeautifulSoup',
+        's=BeautifulSoup(open("content.html").read(),"html.parser")',
+        'for tag in ("ol","ul","blockquote","code","pre","time"): print(tag,len(s.find_all(tag)))',
+        'PY',
+      ),
+      lines(
+        'ol 1',
+        'ul 1',
+        'blockquote 1',
+        'code 2',
+        'pre 1',
+        'time 2',
+        '结构计数验证每类内容都使用表达其关系的语义标签',
+      ),
+      'python',
+    ],
+  ],
+  '企业站点的页面信息架构': [
+    [
+      lines(
+        'printf "/\\n/products\\n/products/crm\\n/solutions/retail\\n/pricing\\n/docs/start\\n/contact\\n" > /tmp/ia.txt',
+        'awk -F/ \'{print NF-1,$0}\' /tmp/ia.txt',
+        'sort -t" " -k1,1n /tmp/ia.txt',
+      ),
+      lines(
+        '0 /',
+        '1 /products',
+        '2 /products/crm',
+        '1 /pricing',
+        '2 /docs/start',
+        '页面深度控制在两层左右，用户可按任务进入产品、方案或文档',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><a href="/">星图</a></header><nav aria-label="主导航">',
+        '<a href="/products">产品</a><a href="/solutions">方案</a><a href="/pricing">价格</a></nav>',
+        '<main><h1>CRM</h1><nav aria-label="产品目录"><a href="/products/crm">CRM</a><a href="/products/bi">BI</a></nav></main></body></html>',
+      ),
+      lines(
+        'Global navigation: 产品 / 方案 / 价格',
+        'Local navigation: CRM / BI',
+        '全局导航负责跨任务切换，局部导航负责当前产品域内浏览',
+      ),
+    ],
+    [
+      lines(
+        'for path in / /products /pricing /contact; do printf "%s " "$path"; curl -sS -o /dev/null -w "%{http_code} %{size_download}\\n" "http://127.0.0.1:8096$path"; done',
+        'for path in /products/crm /solutions/retail /docs/start; do printf "%s " "$path"; curl -sS -o /dev/null -w "%{http_code}\\n" "http://127.0.0.1:8096$path"; done',
+      ),
+      lines(
+        '/ 200 1240',
+        '/products 200 980',
+        '/pricing 200 1120',
+        '/contact 200 870',
+        '/products/crm 200',
+        '/docs/start 200',
+        '核心任务页面均在两层内可到达且返回有效内容',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><nav aria-label="主导航"><a href="/products">产品</a></nav></header>',
+        '<main><nav aria-label="面包屑"><a href="/">首页</a> / <a href="/products">产品</a> / CRM</nav>',
+        '<h1>CRM</h1><section><h2>能力</h2></section></main><footer><nav aria-label="页脚导航"><a href="/legal">法律</a></nav></footer></body></html>',
+      ),
+      lines(
+        'Landmarks: header → nav → main → breadcrumb nav → footer nav',
+        'H1: CRM',
+        'Shared skeleton keeps brand, location and exit routes predictable',
+        '各页骨架稳定，用户在不同页面之间移动时不必重新定位导航',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'tasks={"找产品":2,"查价格":1,"联系销售":1,"读入门文档":2}',
+        'for task,clicks in tasks.items(): print(task,"clicks",clicks,"pass",clicks<=2)',
+        'PY',
+      ),
+      lines(
+        '找产品 clicks 2 pass True',
+        '查价格 clicks 1 pass True',
+        '联系销售 clicks 1 pass True',
+        '读入门文档 clicks 2 pass True',
+        '用用户任务和点击数验证信息架构，而不是只看菜单是否整齐',
+      ),
+      'python',
+    ],
+  ],
+  '语义重构与回归检查': [
+    [
+      lines(
+        'cp index.html index.before.html',
+        'perl -0pi -e "s#<div class=\\"hero\\">#<header class=\\"hero\\">#; s#</div>#</header>#" index.html',
+        'diff -u index.before.html index.html | sed -n "1,20p"',
+      ),
+      lines(
+        '-<div class="hero">',
+        '+<header class="hero">',
+        '-</div>',
+        '+</header>',
+        '一次只替换一类容器，保持 class 用于延续原有样式',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 screenshot --device="Desktop Chrome" http://127.0.0.1:8097 after.png',
+        'cp baseline.png before.png',
+        'python3 -c "from PIL import Image,ImageChops; a=Image.open(\'before.png\'); b=Image.open(\'after.png\'); print(ImageChops.difference(a.convert(\'RGB\'),b.convert(\'RGB\')).getbbox())"',
+      ),
+      lines(
+        'Screenshot saved to after.png',
+        'None',
+        '语义标签替换后视觉差异边界为空，说明重构没有引入像素级改动',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes html-validate@9 index.html',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8097 --exit',
+        'python3 - <<\'PY\'',
+        'from bs4 import BeautifulSoup',
+        's=BeautifulSoup(open("index.html").read(),"html.parser")',
+        'print({tag:len(s.find_all(tag)) for tag in ("header","nav","main","footer")})',
+        'PY',
+      ),
+      lines(
+        '0 errors, 0 warnings',
+        '0 accessibility violations',
+        '{header: 1, nav: 2, main: 1, footer: 1}',
+        '结构、可访问性与区域计数共同覆盖不同访问方式',
+      ),
+    ],
+    [
+      lines(
+        'cp index.html snapshot.2026-11-24.html',
+        'git diff -- index.html > refactor.patch',
+        'wc -l refactor.patch',
+        'sha256sum index.before.html index.html snapshot.2026-11-24.html',
+      ),
+      lines(
+        '47 refactor.patch',
+        '6f31d... index.before.html',
+        'e28ad... index.html',
+        'e28ad... snapshot.2026-11-24.html',
+        '重构前文件、差异补丁与重构后快照共同保留审计证据',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes html-validate@9 "site/**/*.html"',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8097 --exit',
+        'npm test -- --runInBand',
+        'printf "semantic-refactor gate=pass date=2026-11-24\\n" > artifacts/semantic-refactor.txt',
+      ),
+      lines(
+        'html-validate: 0 errors',
+        'axe: 0 violations',
+        'Tests: 18 passed',
+        'semantic-refactor gate=pass date=2026-11-24',
+        '把结构、无障碍与交互回归固化为可重复执行的发布前检查',
+      ),
+    ],
+  ],
+  'form、label 与输入控件关联': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>登录</h1><form action="/login" method="post">',
+        '<label for="email">邮箱</label><input id="email" name="email" type="email">',
+        '<button type="submit">登录</button></form></main></body></html>',
+      ),
+      lines(
+        'form.elements.email.name = email',
+        'Submit serializes email=user@example.test',
+        '只有 form 内部具名字段进入提交数据，action 与 method 决定发送目标',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="account">账号</label>',
+        '<input id="account" name="account" autocomplete="username"></form></body></html>',
+      ),
+      lines(
+        'label.control.id = account',
+        'input.labels[0].textContent = 账号',
+        '点击“账号”文字后焦点进入 input，for 与 id 完全匹配',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label>手机号 <input name="phone" type="tel"></label>',
+        '<label for="code">验证码</label><input id="code" name="code" inputmode="numeric"></form></body></html>',
+      ),
+      lines(
+        'phone.labels.length = 1',
+        'code.labels[0].textContent = 验证码',
+        '隐式包裹简单可用，显式 for/id 更清晰且便于复杂布局',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="card">卡号</label>',
+        '<input id="card" name="card" placeholder="1234 5678 9012 3456" inputmode="numeric"></form></body></html>',
+      ),
+      lines(
+        'Persistent label: 卡号',
+        'Placeholder disappears after the first character',
+        '读屏与视觉用户始终能从 label 知道字段含义，placeholder 只做格式提示',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/form-label.spec.ts --reporter=line',
+        'python3 - <<\'PY\'',
+        'checks={"label_for":True,"click_focus":True,"accessible_name":"邮箱"}',
+        'print(checks)',
+        'PY',
+      ),
+      lines(
+        '1 passed (2.1s)',
+        '{"label_for": true, "click_focus": true, "accessible_name": "邮箱"}',
+        '自动测试验证点击 label 聚焦，再对可访问名称做实际读屏核对',
+      ),
+    ],
+  ],
+  '输入类型、自动填充与移动键盘': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="email">邮箱</label><input id="email" type="email" autocomplete="email">',
+        '<label for="date">日期</label><input id="date" type="date"><label for="amount">金额</label><input id="amount" type="number" min="0"></form></body></html>',
+      ),
+      lines(
+        'Mobile: email field opens keyboard with @',
+        'Mobile: date field opens native date picker',
+        'Mobile: number field opens numeric keypad and min participates in validation',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="price">报价</label>',
+        '<input id="price" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]+)?">',
+        '<label for="code">验证码</label><input id="code" type="text" inputmode="numeric" maxlength="6"></form></body></html>',
+      ),
+      lines(
+        'price keyboard = decimal',
+        'price.type = text',
+        'code keyboard = numeric',
+        'inputmode 只改变键盘，字段语义与校验仍由 type、pattern、maxlength 负责',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="name">姓名</label>',
+        '<input id="name" name="name" autocomplete="name"><label for="email">邮箱</label>',
+        '<input id="email" type="email" autocomplete="email"><label for="zip">邮编</label>',
+        '<input id="zip" inputmode="numeric" autocomplete="postal-code"></form></body></html>',
+      ),
+      lines(
+        'Browser autofill: name → 张三',
+        'Browser autofill: email → user@example.test',
+        'Browser autofill: postal-code → 200000',
+        '标准 autocomplete 值让浏览器和密码管理器正确识别字段用途',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="user">账号</label>',
+        '<input id="user" autocomplete="username"><label for="new-pass">新密码</label>',
+        '<input id="new-pass" type="password" autocomplete="new-password" minlength="10"></form></body></html>',
+      ),
+      lines(
+        'Login form: autocomplete=current-password',
+        'Registration form: autocomplete=new-password',
+        '密码管理器据此生成新密码或填入已有密码，避免注册时误填旧密码',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/mobile-input.spec.ts --project="Mobile Chrome" --reporter=line',
+        'python3 - <<\'PY\'',
+        'fields=[("email","email","email"),("phone","tel","tel"),("amount","text","decimal")]',
+        'for field,type_,mode in fields: print(field,type_,mode,"ok")',
+        'PY',
+      ),
+      lines(
+        '2 passed (4.8s)',
+        'email email email ok',
+        'phone tel tel ok',
+        'amount text decimal ok',
+        '真机或设备模拟验证键盘类型，桌面自动化只能覆盖可访问名称与校验',
+      ),
+    ],
+  ],
+  '原生约束验证与错误提示': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form id="f"><label for="name">姓名</label>',
+        '<input id="name" required minlength="2"><label for="age">年龄</label><input id="age" type="number" min="18" max="120">',
+        '<button>提交</button></form></body></html>',
+      ),
+      lines(
+        'name.validity.valueMissing = true when empty',
+        'name.validity.tooShort = true for one character',
+        'age.validity.rangeUnderflow = true for 17',
+        'required、minlength、min/max 由浏览器声明式执行',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="code">邀请码</label>',
+        '<input id="code" required pattern="[A-Z]{3}-[0-9]{4}">',
+        '<script>const c=code; console.log(c.checkValidity(),c.validationMessage);</script></form></body></html>',
+      ),
+      lines(
+        'false "请匹配要求的格式。"',
+        'input.validity.patternMismatch = true',
+        'constraint validation API 能读取约束状态与浏览器原生提示',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -o /tmp/register.json -w "%{http_code}\\n" -H "Content-Type: application/json" -d \'{"email":"not-an-email","age":12}\' http://127.0.0.1:8080/register',
+        'jq . /tmp/register.json',
+        'printf "server must repeat validation even when client attributes exist\\n"',
+      ),
+      lines(
+        '422',
+        '{"errors":[{"field":"email","code":"invalid_format"},{"field":"age","code":"below_minimum"}]}',
+        'server must repeat validation even when client attributes exist',
+        '前端约束可被绕过，服务端必须独立校验并返回字段级错误',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="password">新密码</label>',
+        '<input id="password" type="password" minlength="10" aria-describedby="password-help">',
+        '<p id="password-help">至少 10 位，建议包含数字与符号。</p></form></body></html>',
+      ),
+      lines(
+        'Accessible description: 至少 10 位，建议包含数字与符号。',
+        'Invalid message should identify the exact rule and how to fix it',
+        '错误提示关联字段且说明可执行修改，而不是只显示“输入无效”',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form id="f" novalidate><label for="email">邮箱</label><input id="email" required type="email">',
+        '<p id="err" role="alert"></p><script>f.onsubmit=e=>{e.preventDefault();err.textContent=email.validationMessage}</script></form></body></html>',
+      ),
+      lines(
+        'Submit empty → 请填写此字段。',
+        'Submit abc → 请在电子邮件地址中包括“@”。',
+        'novalidate 关闭默认弹层后仍使用 validity API，提示与字段保持关联',
+      ),
+    ],
+  ],
+  'fieldset、legend 与分组语义': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><fieldset><legend>收货地址</legend>',
+        '<label for="city">城市</label><input id="city" name="city"><label for="street">街道</label>',
+        '<input id="street" name="street"></fieldset></form></body></html>',
+      ),
+      lines(
+        'Group: 收货地址',
+        'Fields: 城市, 街道',
+        '读屏在每个字段前播报所属分组，用户知道这组信息属于收货地址',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><fieldset><legend>支付方式</legend>',
+        '<label><input type="radio" name="pay" value="card">银行卡</label>',
+        '<label><input type="radio" name="pay" value="wallet">钱包</label></fieldset></form></body></html>',
+      ),
+      lines(
+        'Group: 支付方式',
+        'Radio 1: 银行卡',
+        'Radio 2: 钱包',
+        'legend 提供题干，单选项才有上下文，同一 name 保证组内互斥',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><fieldset><legend>通知渠道</legend>',
+        '<label><input type="checkbox" name="channel" value="email">邮件</label>',
+        '<label><input type="checkbox" name="channel" value="sms">短信</label></fieldset></form></body></html>',
+      ),
+      lines(
+        'Checkbox group: 通知渠道',
+        'Can select: 邮件 and 短信 simultaneously',
+        '复选组用 fieldset/legend 表达共同问题，每个选项可独立选择',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><fieldset id="shipping" disabled><legend>配送信息</legend>',
+        '<label for="zip">邮编</label><input id="zip" name="zip"></fieldset></form>',
+        '<script>console.log([...shipping.elements].every(el=>el.disabled))</script></body></html>',
+      ),
+      lines(
+        'Console: true',
+        'Form data: shipping fields omitted',
+        'legend: 配送信息',
+        'fieldset disabled 让整组控件统一失效并被排除在提交数据之外',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/fieldset.spec.ts --reporter=line',
+        'python3 - <<\'PY\'',
+        'group={"legend":"支付方式","radios":2,"same_name":True,"disabled_together":True}',
+        'print(group)',
+        'PY',
+      ),
+      lines(
+        '1 passed (1.9s)',
+        '{"legend": "支付方式", "radios": 2, "same_name": true, "disabled_together": true}',
+        '语义分组与整体禁用行为都通过自动化检查',
+      ),
+    ],
+  ],
+  '提交、取消、加载与重复提交': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form id="f"><label for="email">邮箱</label><input id="email" required type="email">',
+        '<button>提交</button></form><script>f.addEventListener("submit",e=>{e.preventDefault();console.log(f.checkValidity())})</script></body></html>',
+      ),
+      lines(
+        'Submit invalid: false',
+        'Submit valid: true',
+        'preventDefault 阻止整页刷新，先校验再发起异步请求',
+      ),
+    ],
+    [
+      lines(
+        '<button id="save" type="submit">提交</button>',
+        '<script>',
+        'save.onclick=()=>{save.disabled=true;save.textContent="提交中…";setTimeout(()=>{save.disabled=false;save.textContent="提交"},800)}',
+        '</script>',
+      ),
+      lines(
+        'Click 1: disabled=true, text=提交中…',
+        'After 800ms: disabled=false, text=提交',
+        '加载反馈消除了“没反应就再点一次”的动因',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -H "Idempotency-Key: order-42-v1" -H "Content-Type: application/json" -d \'{"amount":99}\' -o /tmp/a.json -w "first=%{http_code}\\n" http://127.0.0.1:8080/orders',
+        'curl -sS -H "Idempotency-Key: order-42-v1" -H "Content-Type: application/json" -d \'{"amount":99}\' -o /tmp/b.json -w "second=%{http_code}\\n" http://127.0.0.1:8080/orders',
+        'jq -s \'.[0].id == .[1].id\' /tmp/a.json /tmp/b.json',
+      ),
+      lines(
+        'first=201',
+        'second=200',
+        'true',
+        '前端禁用只防误点，服务端幂等键让网络重试也只创建一笔订单',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form id="f"><label for="note">备注</label><textarea id="note"></textarea>',
+        '<button type="button" id="back">返回</button></form><script>back.onclick=()=>history.back();addEventListener("pagehide",()=>localStorage.draft=note.value)</script></body></html>',
+      ),
+      lines(
+        'Typed: 请周五送达',
+        'pagehide: localStorage.draft=请周五送达',
+        'Return: note.value restored',
+        '取消或返回后保留用户输入，避免整张表单重新填写',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/slow-network-form.spec.ts --reporter=line',
+        'npx --yes playwright@1.50.0 test tests/duplicate-submit.spec.ts --reporter=line',
+        'printf "orders_created=1 duplicate_requests=2\\n" | tee /tmp/form-audit.txt',
+      ),
+      lines(
+        '1 passed (6.2s)',
+        '1 passed (3.4s)',
+        'orders_created=1 duplicate_requests=2',
+        '慢网下发生两次请求但服务端只生成一笔订单，幂等生效',
+      ),
+    ],
+  ],
+  '可访问表单的完整实验': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="email">邮箱</label><input id="email" required>',
+        '<label for="password">密码</label><input id="password" required minlength="10">',
+        '<button>注册</button></form></body></html>',
+      ),
+      lines(
+        'Tab path: 邮箱 → 密码 → 注册',
+        'Focus ring visible at every stop',
+        'All fields reachable without a mouse',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="email">邮箱</label><input id="email" required aria-invalid="true" aria-describedby="email-error">',
+        '<p id="email-error" role="alert">请输入包含 @ 的邮箱地址。</p></form></body></html>',
+      ),
+      lines(
+        'Accessible name: 邮箱',
+        'Invalid state: true',
+        'Description: 请输入包含 @ 的邮箱地址。',
+        '错误通过 aria-invalid 与 aria-describedby 关联到字段并被朗读',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form id="signup"><label for="email">邮箱</label><input id="email" required aria-invalid="true">',
+        '<p id="error">请输入邮箱。</p><button>注册</button></form>',
+        '<script>signup.onsubmit=e=>{e.preventDefault();if(!email.checkValidity()){email.focus();error.hidden=false}}</script></body></html>',
+      ),
+      lines(
+        'Submit invalid: focus moves to input#email',
+        'document.activeElement.id = email',
+        'First invalid field receives focus and its error becomes visible',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><form><label for="email">邮箱</label><input id="email">',
+        '<button>注册</button></form><p id="status" role="status" aria-live="polite"></p>',
+        '<script>status.textContent="注册成功，已发送验证邮件。"</script></body></html>',
+      ),
+      lines(
+        'Live region role: status',
+        'Announcement: 注册成功，已发送验证邮件。',
+        '区域预先挂载后更新内容，读屏会在提交完成后主动播报结果',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/accessible-form.spec.ts --reporter=line',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8098/signup --exit',
+        'printf "keyboard=pass labels=pass errors=pass live=pass\\n" | tee artifacts/form-accessibility.txt',
+      ),
+      lines(
+        '1 passed (5.7s)',
+        '0 accessibility violations',
+        'keyboard=pass labels=pass errors=pass live=pass',
+        '键盘、标签、错误关联和动态播报都留下可复核结果',
+      ),
+    ],
+  ],
+  'img、srcset、sizes 与替代文本': [
+    [
+      lines(
+        '<img src="/images/hero-800.webp"',
+        '     srcset="/images/hero-480.webp 480w, /images/hero-800.webp 800w, /images/hero-1600.webp 1600w"',
+        '     sizes="(max-width: 700px) 100vw, 720px" width="1600" height="900"',
+        '     alt="团队在上海办公室讨论订单系统改造">',
+      ),
+      lines(
+        '390px viewport → hero-480.webp',
+        '1440px viewport → hero-800.webp at 1x',
+        'Network panel confirms only one candidate is downloaded',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/images/hero-1600.webp"',
+        '     srcset="/images/hero-480.webp 480w, /images/hero-800.webp 800w, /images/hero-1600.webp 1600w"',
+        '     sizes="(max-width: 600px) calc(100vw - 32px), (max-width: 1100px) 70vw, 760px"',
+        '     width="1600" height="900" alt="订单系统改造讨论现场">',
+      ),
+      lines(
+        '375px viewport with 16px gutters → display width 343px',
+        'Browser selects 480w candidate for 1x screen',
+        'sizes describes actual rendered width, so selection avoids oversized files',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/images/hero-800.webp" width="1600" height="900"',
+        '     style="width:100%;height:auto" alt="改造工作坊现场">',
+        '<script>const r=document.querySelector("img").getBoundingClientRect(); console.log(r.width,r.height)</script>',
+      ),
+      lines(
+        '385 216.5625',
+        'Aspect ratio reserved before image load: 1600 / 900',
+        'CSS can resize the rendered box while width/height preserve intrinsic ratio',
+      ),
+    ],
+    [
+      lines(
+        '<figure><img src="/images/slow.webp" width="800" height="450"',
+        '             alt="图：2026 年订单量同比增长 18%，华东地区贡献最高">',
+        '<figcaption>2026 年订单增长数据</figcaption></figure>',
+      ),
+      lines(
+        'Accessible image description: 图：2026 年订单量同比增长 18%，华东地区贡献最高',
+        'Caption: 2026 年订单增长数据',
+        'alt states the information conveyed, not merely “a chart”',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 screenshot --device="iPhone 13" http://127.0.0.1:8099/mobile.png',
+        'python3 - <<\'PY\'',
+        'requests=[("hero-480.webp",390),("hero-800.webp",800),("hero-1600.webp",1600)]',
+        'selected=min(requests,key=lambda item:abs(item[1]-390))',
+        'print("selected",selected[0],"width",selected[1])',
+        'PY',
+      ),
+      lines(
+        'Screenshot saved to mobile.png',
+        'selected hero-480.webp width 390',
+        '设备模拟截图与网络请求宽度同时核对，确认没有下载过大候选',
+      ),
+    ],
+  ],
+  'picture、figure 与图像决策': [
+    [
+      lines(
+        '<picture>',
+        '  <source media="(max-width: 600px)" srcset="/images/team-portrait-640.webp">',
+        '  <source media="(min-width: 601px)" srcset="/images/team-landscape-1600.webp">',
+        '  <img src="/images/team-landscape-1600.webp" width="1600" height="900" alt="产品团队在评审现场">',
+        '</picture>',
+      ),
+      lines(
+        '375px viewport → team-portrait-640.webp',
+        '1280px viewport → team-landscape-1600.webp',
+        'picture chooses composition by media condition; srcset would only choose resolution',
+      ),
+    ],
+    [
+      lines(
+        '<picture>',
+        '  <source type="image/avif" srcset="/images/hero.avif">',
+        '  <source type="image/webp" srcset="/images/hero.webp">',
+        '  <img src="/images/hero.jpg" width="1200" height="675" alt="订单系统架构示意图">',
+        '</picture>',
+      ),
+      lines(
+        'Modern browser request: /images/hero.avif 200 image/avif',
+        'WebP-only browser request: /images/hero.webp 200 image/webp',
+        'Legacy browser fallback: /images/hero.jpg 200 image/jpeg',
+      ),
+    ],
+    [
+      lines(
+        '<figure id="orders-chart">',
+        '  <img src="/images/orders-2026.svg" width="800" height="420" alt="2026 年订单量按季度持续增长">',
+        '  <figcaption>图 1：2026 年订单量趋势，数据截至 11 月。</figcaption>',
+        '</figure>',
+        '<p>正文引用 <a href="#orders-chart">图 1</a> 说明增长来源。</p>',
+      ),
+      lines(
+        'Figure role: figure',
+        'Accessible name from figcaption: 图 1：2026 年订单量趋势，数据截至 11 月。',
+        'Figure is referenced by the article and remains meaningful when moved out of flow',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/logo-320.png" srcset="/logo-320.png 320w, /logo-640.png 640w" sizes="160px"',
+        '     width="320" height="80" alt="星图科技">',
+        '<picture><source type="image/avif" srcset="/hero.avif"><img src="/hero.jpg" alt="首页工作场景"></picture>',
+      ),
+      lines(
+        'Logo path: srcset + sizes, composition unchanged',
+        'Hero path: picture + type fallback, format changes',
+        'Resolution belongs to srcset; different composition or format belongs to picture',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS -o /dev/null -w "avif=%{http_code} %{content_type}\\n" http://127.0.0.1:8100/images/hero.avif',
+        'curl -sS -o /dev/null -w "webp=%{http_code} %{content_type}\\n" http://127.0.0.1:8100/images/hero.webp',
+        'npx --yes playwright@1.50.0 test tests/figure.spec.ts --reporter=line',
+      ),
+      lines(
+        'avif=200 image/avif',
+        'webp=200 image/webp',
+        '1 passed (2.4s)',
+        '格式回退与 figure/figcaption 语义分别验证，不把两类问题混在一起',
+      ),
+    ],
+  ],
+  'video、audio、track 与字幕': [
+    [
+      lines(
+        '<video controls muted autoplay playsinline width="960" height="540"',
+        '       poster="/media/product-poster.webp">',
+        '  <source src="/media/product.mp4" type="video/mp4">',
+        '</video>',
+      ),
+      lines(
+        'video.muted = true',
+        'video.playsInline = true',
+        'Mobile playback stays inside the page instead of forcing fullscreen',
+        '带声音的 autoplay 会被浏览器拦截，muted 与 playsinline 是移动端前提',
+      ),
+    ],
+    [
+      lines(
+        '<video controls width="960" height="540">',
+        '  <source src="/media/release.mp4" type="video/mp4">',
+        '  <track kind="captions" src="/media/release.zh.vtt" srclang="zh" label="中文字幕" default>',
+        '  <track kind="captions" src="/media/release.en.vtt" srclang="en" label="English">',
+        '</video>',
+      ),
+      lines(
+        'Text tracks: 中文字幕 (default), English',
+        'Mode: showing',
+        'captions.vtt cues synchronized with video timeline',
+        'track 提供字幕和重要声音信息，不是仅供翻译的可选附件',
+      ),
+    ],
+    [
+      lines(
+        '<video controls width="960" height="540" poster="/media/demo-poster.webp">',
+        '  <source src="/media/demo.webm" type="video/webm">',
+        '  <source src="/media/demo.mp4" type="video/mp4">',
+        '  当前浏览器不支持视频，请<a href="/media/demo.mp4">下载 MP4</a>。',
+        '</video>',
+      ),
+      lines(
+        'Safari request: /media/demo.mp4 206 video/mp4',
+        'Chrome request: /media/demo.webm 206 video/webm',
+        'Unsupported browser fallback link: MP4 download',
+      ),
+    ],
+    [
+      lines(
+        '<video controls preload="metadata" poster="/media/guide-poster.webp" width="960" height="540">',
+        '  <source src="/media/guide.mp4" type="video/mp4">',
+        '</video>',
+        '<audio controls preload="none" src="/media/interview.mp3"></audio>',
+      ),
+      lines(
+        'Network: guide.mp4 range request 0-1023, content-type video/mp4',
+        'Network: interview.mp3 0 bytes until play is pressed',
+        'preload=metadata 只拿时长与尺寸，preload=none 避免未播放音频自动耗流量',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/media-keyboard.spec.ts --reporter=line',
+        'python3 - <<\'PY\'',
+        'checks={"tab_to_video":True,"space_play_pause":True,"captions_visible":True}',
+        'print(checks)',
+        'PY',
+        'rg -n "WEBVTT|cue" /srv/media/release.zh.vtt | head -4',
+      ),
+      lines(
+        '1 passed (4.3s)',
+        '{"tab_to_video": true, "space_play_pause": true, "captions_visible": true}',
+        '1:WEBVTT',
+        '3:00:00.000 --> 00:00.003 Hello',
+        '键盘播放、字幕显示与 VTT 内容都留下验证证据',
+      ),
+    ],
+  ],
+  'table、caption、th 与数据关系': [
+    [
+      lines(
+        '<table><caption>2026 年季度收入</caption>',
+        '<thead><tr><th scope="col">季度</th><th scope="col">收入（万元）</th></tr></thead>',
+        '<tbody><tr><th scope="row">Q1</th><td>120</td></tr><tr><th scope="row">Q2</th><td>168</td></tr></tbody></table>',
+      ),
+      lines(
+        'Caption: 2026 年季度收入',
+        'Column header: 季度, 收入（万元）',
+        'Row header: Q1, Q2',
+        'Caption names the table before row and header content is read',
+      ),
+    ],
+    [
+      lines(
+        '<table><caption>地区销售</caption><thead><tr><th scope="col">地区</th><th scope="col">订单</th><th scope="col">金额</th></tr></thead>',
+        '<tbody><tr><th scope="row">华东</th><td>420</td><td>86000</td></tr><tr><th scope="row">华南</th><td>310</td><td>62000</td></tr></tbody></table>',
+      ),
+      lines(
+        'Cell (华东, 金额) announced as row=华东 column=金额 value=86000',
+        'Each data cell has an accessible row and column context',
+        'scope makes the header relationship explicit instead of relying on visual position',
+      ),
+    ],
+    [
+      lines(
+        '<table><caption>预算执行</caption><thead><tr><th scope="col">部门</th><th scope="col">计划</th></tr></thead>',
+        '<tbody><tr><th scope="row">研发</th><td>200</td></tr></tbody>',
+        '<tfoot><tr><th scope="row">合计</th><td>200</td></tr></tfoot></table>',
+      ),
+      lines(
+        'Table structure: caption → thead → tbody → tfoot',
+        'Footer total cell: 合计 / 200',
+        'thead/tbody/tfoot separate header, data and summary roles',
+      ),
+    ],
+    [
+      lines(
+        '<table><caption>年度收入</caption><thead><tr><th id="year" scope="col">年份</th><th id="amount" scope="col">金额</th></tr></thead>',
+        '<tbody><tr><td headers="year">2025</td><td headers="amount">1200</td></tr><tr><td headers="year">2026</td><td headers="amount">1480</td></tr></tbody></table>',
+      ),
+      lines(
+        'Cell headers: year → 年份, amount → 金额',
+        'Accessible name for 1480 includes 金额 and 2026',
+        'headers attribute explicitly links cells when table structure cannot express relations',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'from bs4 import BeautifulSoup',
+        's=BeautifulSoup(open("table.html").read(),"html.parser"); t=s.table',
+        'print("caption",t.caption.get_text(strip=True)); print("scoped_th",len(t.find_all("th",attrs={"scope":True}))); print("rows",len(t.find_all("tr")))',
+        'PY',
+      ),
+      lines(
+        'caption 2026 年季度收入',
+        'scoped_th 4',
+        'rows 3',
+        'Caption、header scope 与行数都有结构化证据，表格关系可被读屏还原',
+      ),
+      'python',
+    ],
+  ],
+  'meta、Open Graph 与结构化数据': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
+        '<title>企业订单平台 | 星图科技</title>',
+        '<meta name="description" content="统一订单、库存与履约流程的企业平台，支持可靠交付与审计。"></head><body><h1>企业订单平台</h1></body></html>',
+      ),
+      lines(
+        'document.characterSet = UTF-8',
+        'viewport width = device-width',
+        'title = 企业订单平台 | 星图科技',
+        'description length = 31 Chinese characters',
+      ),
+    ],
+    [
+      lines(
+        '<meta name="description" content="统一订单、库存与履约流程的企业平台，提供审计、回滚和可靠交付能力。">',
+        '<meta property="og:title" content="企业订单平台">',
+        '<meta property="og:description" content="统一订单、库存与履约流程。">',
+        '<meta property="og:type" content="website">',
+        '<meta property="og:url" content="https://example.test/products/orders">',
+      ),
+      lines(
+        'Search snippet description: 统一订单、库存与履约流程的企业平台…',
+        'Open Graph preview: 企业订单平台 / 统一订单、库存与履约流程。',
+        'description 服务搜索结果，Open Graph 服务分享卡片',
+      ),
+    ],
+    [
+      lines(
+        '<meta property="og:title" content="企业订单平台">',
+        '<meta property="og:description" content="统一订单、库存与履约流程。">',
+        '<meta property="og:image" content="https://example.test/social/orders-1200x630.png">',
+        '<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">',
+        '<meta name="twitter:card" content="summary_large_image">',
+      ),
+      lines(
+        'Preview title: 企业订单平台',
+        'Preview image: orders-1200x630.png (200 image/png)',
+        'Card type: summary_large_image',
+        '分享抓取器所需的标题、描述、图片与尺寸完整',
+      ),
+    ],
+    [
+      lines(
+        '<script type="application/ld+json">',
+        '{"@context":"https://schema.org","@type":"SoftwareApplication","name":"企业订单平台",',
+        ' "applicationCategory":"BusinessApplication","operatingSystem":"Web",',
+        ' "offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"}}',
+        '</script>',
+        '<script type="application/ld+json">',
+        '{"@context":"https://schema.org","@type":"Organization","name":"星图科技","url":"https://example.test/"}',
+        '</script>',
+      ),
+      lines(
+        'JSON-LD 1: SoftwareApplication 企业订单平台',
+        'JSON-LD 2: Organization 星图科技',
+        'Both blocks parse as valid JSON and match visible page content',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes structured-data-testing-tool@6 --url https://example.test/products/orders',
+        'curl -sS https://example.test/social/orders-1200x630.png -o /tmp/og.png',
+        'file /tmp/og.png',
+        'python3 -c "from PIL import Image; im=Image.open(\'/tmp/og.png\'); print(im.size,im.format)"',
+      ),
+      lines(
+        'Schema.org SoftwareApplication: passed',
+        'Schema.org Organization: passed',
+        '/tmp/og.png: PNG image data, 1200 x 630',
+        '(1200, 630) PNG',
+        '结构化数据与社交图片都用真实检查器验证，不止写标签',
+      ),
+    ],
+  ],
+  '媒体与富内容企业页面': [
+    [
+      lines(
+        '<video poster="/media/hero-poster.webp" autoplay muted playsinline preload="metadata" width="1600" height="900">',
+        '  <source src="/media/hero-720.mp4" type="video/mp4" media="(max-width: 900px)">',
+        '  <source src="/media/hero-1600.mp4" type="video/mp4">',
+        '</video>',
+        '<link rel="preload" as="image" href="/media/hero-poster.webp" fetchpriority="high">',
+      ),
+      lines(
+        'LCP candidate: hero-poster.webp 168 kB',
+        'Mobile download: hero-720.mp4 metadata only',
+        'hero-poster preload priority: High',
+        '首屏媒体以最小静态海报承担 LCP，视频只加载元数据',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/images/case.webp" width="800" height="450" loading="lazy" decoding="async"',
+        '     alt="制造业客户订单看板">',
+        '<iframe src="/demo/orders" title="订单看板交互演示" width="960" height="540" loading="lazy"></iframe>',
+      ),
+      lines(
+        'Initial network: case.webp not requested',
+        'Scroll to 600px: case.webp 200 image/webp',
+        'iframe loading=lazy starts near viewport',
+        '屏外图片和 iframe 延后下载，首屏带宽留给关键资源',
+      ),
+    ],
+    [
+      lines(
+        '<table><caption>客户上线结果</caption><thead><tr><th scope="col">客户</th><th scope="col">上线周期</th><th scope="col">错误率</th></tr></thead>',
+        '<tbody><tr><th scope="row">甲制造</th><td>6 周</td><td>0.12%</td></tr><tr><th scope="row">乙零售</th><td>4 周</td><td>0.08%</td></tr></tbody></table>',
+      ),
+      lines(
+        'Caption: 客户上线结果',
+        'Rows: 2 data rows',
+        'Header relation: 客户 / 上线周期 / 错误率',
+        '数据表有 caption 与 scope，视觉与读屏都保留行列关系',
+      ),
+    ],
+    [
+      lines(
+        '<meta property="og:title" content="制造业订单平台案例">',
+        '<meta property="og:description" content="六周上线，订单错误率降至 0.12%。">',
+        '<meta property="og:image" content="/media/case-og-1200x630.webp">',
+        '<script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"制造业订单平台案例"}</script>',
+      ),
+      lines(
+        'Open Graph: title, description and 1200×630 image present',
+        'JSON-LD: Article headline matches visible h1',
+        '分享与富结果元数据逐页配置，而不是只给首页一份通用卡片',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes lighthouse@12 https://example.test/case --only-categories=performance,accessibility,seo --output=json --output-path=/tmp/lh.json',
+        'jq "{performance:.categories.performance.score,accessibility:.categories.accessibility.score,seo:.categories.seo.score}" /tmp/lh.json',
+        'npx --yes playwright@1.50.0 test tests/media-rich.spec.ts --reporter=line',
+      ),
+      lines(
+        '{"performance":0.94,"accessibility":1.0,"seo":1.0}',
+        '2 passed (7.8s)',
+        '性能、可访问性、SEO 与交互回归共同作为富内容页面验收',
+      ),
+    ],
+  ],
+  '键盘路径、焦点顺序与跳转链接': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><header><nav><a href="/a">产品</a><a href="/b">方案</a></nav></header>',
+        '<main><h1>首页</h1><a href="/start">开始使用</a></main></body></html>',
+      ),
+      lines(
+        'Tab 1: 产品',
+        'Tab 2: 方案',
+        'Tab 3: 开始使用',
+        'Focus advances in DOM document order',
+      ),
+    ],
+    [
+      lines(
+        '<button id="open">打开详情</button><div id="dialog" role="dialog" aria-modal="true">',
+        '<button id="close" tabindex="0">关闭</button></div><button id="outside" tabindex="-1">脚本焦点目标</button>',
+      ),
+      lines(
+        'Tab path: 打开详情 → 关闭',
+        'outside.tabIndex = -1',
+        'Positive tabindex avoids reordering; only 0 and -1 are used',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><a class="skip" href="#main">跳到主内容</a><header><nav>',
+        '<a href="/products">产品</a><a href="/pricing">价格</a></nav></header><main id="main" tabindex="-1"><h1>正文</h1></main></body></html>',
+      ),
+      lines(
+        'Tab 1: 跳到主内容',
+        'Enter → document.activeElement.id = main',
+        'Page scroll target: #main',
+        'Skip link is first in DOM and moves both focus and viewport to main content',
+      ),
+    ],
+    [
+      lines(
+        '<style>a:focus-visible,button:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}</style>',
+        '<button>键盘可见焦点</button><button tabindex="-1">仅在脚本聚焦时显示轮廓提示</button>',
+        '<script>document.querySelector("button").focus()</script>',
+      ),
+      lines(
+        'Keyboard focus: outline 3px solid rgb(11, 87, 208)',
+        'Mouse click: no focus-visible ring',
+        'Focus indication remains high contrast and is never removed',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/keyboard-path.spec.ts --reporter=line',
+        'python3 - <<\'PY\'',
+        'stops=["跳到主内容","产品","价格","开始使用","提交"]',
+        'print("tab_stops",len(stops),"unique",len(set(stops))==len(stops),"first",stops[0])',
+        'PY',
+      ),
+      lines(
+        '1 passed (4.6s)',
+        'tab_stops 5 unique True first 跳到主内容',
+        '自动化逐次按键记录焦点落点，不依赖鼠标点击推断键盘路径',
+      ),
+    ],
+  ],
+  'ARIA 的角色、名称和状态': [
+    [
+      lines(
+        '<button id="details" aria-expanded="false" aria-controls="panel">配送说明</button>',
+        '<div id="panel" hidden>预计 3 个工作日送达。</div>',
+        '<script>details.onclick=()=>{const open=details.getAttribute("aria-expanded")==="true";details.setAttribute("aria-expanded",String(!open));panel.hidden=open}</script>',
+      ),
+      lines(
+        'Accessible role: button',
+        'Accessible name: 配送说明',
+        'Expanded: false → true after click',
+        'Panel hidden state changes in sync with aria-expanded',
+      ),
+    ],
+    [
+      lines(
+        '<button type="button">提交订单</button>',
+        '<div role="button" tabindex="0">错误示例（缺少键盘行为）</div>',
+        '<select aria-label="配送地区"><option>上海</option><option>杭州</option></select>',
+      ),
+      lines(
+        'Native button: role button, keyboard Enter/Space handled',
+        'div[role=button]: role exists but keyboard activation is not automatic',
+        'Native select: popup and keyboard behavior supplied by browser',
+      ),
+    ],
+    [
+      lines(
+        '<button aria-label="关闭对话框">×</button>',
+        '<button aria-labelledby="save-title"><span id="save-title">保存草稿</span></button>',
+        '<img src="/chart.svg" alt="订单增长 18%" role="img">',
+      ),
+      lines(
+        'Button 1 name: 关闭对话框',
+        'Button 2 name: 保存草稿',
+        'Image name: 订单增长 18%',
+        'Icon-only controls use aria-label; visible text controls keep their visible name',
+      ),
+    ],
+    [
+      lines(
+        '<button id="switch" role="switch" aria-checked="false">自动续费</button>',
+        '<script>switch.onclick=()=>{const on=switch.getAttribute("aria-checked")==="true";switch.setAttribute("aria-checked",String(!on))}</script>',
+        '<button id="save" aria-disabled="true">保存</button>',
+      ),
+      lines(
+        'Switch role: switch',
+        'Checked: false → true',
+        'Save button disabled state announced: true',
+        'State attributes change with visual state and are read by assistive technology',
+      ),
+    ],
+    [
+      lines(
+        '<p id="status" role="status" aria-live="polite"></p>',
+        '<script>setTimeout(()=>status.textContent="已保存 3 条修改",500);</script>',
+        '<p role="alert">连接已断开，正在重试。</p>',
+      ),
+      lines(
+        '500ms → announce: 已保存 3 条修改',
+        'Immediate announcement: 连接已断开，正在重试。',
+        'Live region exists before content changes; alert is reserved for urgent interruption',
+      ),
+    ],
+  ],
+  '对比度、缩放与动效偏好': [
+    [
+      lines(
+        '<style>.body-text{color:#595959;background:#fff;font-size:16px}.large-text{color:#767676;background:#fff;font-size:24px}</style>',
+        '<p class="body-text">正文对比度检查</p><p class="large-text">大字对比度检查</p>',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8101 --exit',
+      ),
+      lines(
+        '.body-text contrast = 7.00:1 (passes AA)',
+        '.large-text contrast = 4.54:1 (passes 3:1 large text)',
+        'axe: 0 accessibility violations',
+      ),
+    ],
+    [
+      lines(
+        '<p class="error">邮箱格式错误</p><input aria-invalid="true" aria-describedby="err">',
+        '<style>.error{color:#b3261e}.error::before{content:"⚠ ";font-weight:700}</style>',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8102 --exit',
+      ),
+      lines(
+        'Error is conveyed by text, icon and aria-invalid',
+        'Grayscale remains readable: 邮箱格式错误',
+        'Color is a redundant channel, not the only carrier of meaning',
+      ),
+    ],
+    [
+      lines(
+        '<style>body{font-size:1rem}.toolbar{display:flex;flex-wrap:wrap;gap:.75rem}button{min-height:44px;padding:.5rem 1rem}</style>',
+        '<main class="toolbar"><button>保存</button><button>取消</button><button>导出全部订单</button></main>',
+        'npx --yes playwright@1.50.0 screenshot --device="Desktop Chrome" http://127.0.0.1:8103 zoom200.png',
+      ),
+      lines(
+        'Browser zoom: 200%',
+        'toolbar wraps into multiple rows',
+        'All three buttons remain visible and clickable',
+        'Relative units and wrapping preserve function when text doubles',
+      ),
+    ],
+    [
+      lines(
+        '<style>@media (prefers-reduced-motion: reduce){.hero{animation:none}.spinner{animation-duration:2.4s}}</style>',
+        '<section class="hero">首屏内容</section><div class="spinner" role="status">加载中</div>',
+        'python3 - <<\'PY\'',
+        'print("hero animation disabled","spinner still communicates loading")',
+        'PY',
+      ),
+      lines(
+        'prefers-reduced-motion: reduce matched',
+        'hero animation: none',
+        'spinner: slower but still visible',
+        '装饰动画降级，功能性加载反馈保留',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8104 --exit',
+        'npx --yes playwright@1.50.0 test tests/zoom.spec.ts --reporter=line',
+        'python3 -c "print(\'contrast=pass zoom=pass reduced_motion=pass\')"',
+      ),
+      lines(
+        '0 accessibility violations',
+        '1 passed (3.9s)',
+        'contrast=pass zoom=pass reduced_motion=pass',
+        '量化扫描、200% 缩放与动效偏好三项联合验收',
+      ),
+    ],
+  ],
+  'SEO、canonical 与 robots': [
+    [
+      lines(
+        '<link rel="canonical" href="https://example.test/products/orders">',
+        '<meta property="og:url" content="https://example.test/products/orders">',
+        'curl -sS https://example.test/products/orders?sort=price | grep -o \'<link rel="canonical"[^>]*>\'',
+      ),
+      lines(
+        '<link rel="canonical" href="https://example.test/products/orders">',
+        'Sort and filter variants point to the same canonical URL',
+        'Canonical target returns 200 and never points back to a duplicate variant',
+      ),
+    ],
+    [
+      lines(
+        'printf "User-agent: *\\nAllow: /\\nDisallow: /admin/\\nDisallow: /search?\\nSitemap: https://example.test/sitemap.xml\\n" > robots.txt',
+        'curl -sS https://example.test/robots.txt',
+        'curl -sS -o /dev/null -w "robots=%{http_code} type=%{content_type}\\n" https://example.test/robots.txt',
+      ),
+      lines(
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /admin/',
+        'Disallow: /search?',
+        'robots=200 type=text/plain',
+      ),
+    ],
+    [
+      lines(
+        '<meta name="robots" content="noindex,follow">',
+        '<link rel="canonical" href="https://example.test/thank-you">',
+        'curl -sS https://example.test/thank-you | grep -E "meta name=\\"robots\\"|rel=\\"canonical\\""',
+      ),
+      lines(
+        '<meta name="robots" content="noindex,follow">',
+        '<link rel="canonical" href="https://example.test/thank-you">',
+        'noindex keeps the page out of results while follow allows link discovery',
+      ),
+    ],
+    [
+      lines(
+        '<a href="https://sponsor.example.test" rel="sponsored nofollow">赞助商</a>',
+        '<a href="/community/post/42" rel="ugc nofollow">用户评论来源</a>',
+        'curl -sS https://example.test/articles/42 | grep -o \'rel="[^"]*nofollow[^"]*"\'',
+      ),
+      lines(
+        'rel="sponsored nofollow"',
+        'rel="ugc nofollow"',
+        'Paid and user-generated links declare they are not editorial endorsements',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS https://example.test/sitemap.xml | sed -n "1,12p"',
+        'python3 - <<\'PY\'',
+        'pages=["https://example.test/","https://example.test/products/orders","https://example.test/pricing"]',
+        'print("unique_titles",len(set(pages))==len(pages),"entries",len(pages))',
+        'PY',
+        'curl -sS https://example.test/products/orders | grep -o "<title>[^<]*</title>"',
+      ),
+      lines(
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        '<url><loc>https://example.test/</loc></url>',
+        'unique_titles True entries 3',
+        '<title>企业订单平台 | 星图科技</title>',
+        'Sitemap 地址与实际页面一致，页面标题保持唯一',
+      ),
+    ],
+  ],
+  '语言、方向与本地化结构': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><body><main><h1>订单帮助</h1><p>支付成功后三个工作日内发货。</p>',
+        '<p lang="en">Shipping within three business days.</p></main></body></html>',
+      ),
+      lines(
+        'document.documentElement.lang = zh-CN',
+        'Chinese paragraph voice: Chinese',
+        'English paragraph voice: English',
+        'Local lang override keeps mixed-language pronunciation correct',
+      ),
+    ],
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="ar" dir="rtl"><body><main><h1>الطلبات</h1><p>يمكنك متابعة حالة الطلب.</p>',
+        '<button>متابعة</button></main></body></html>',
+      ),
+      lines(
+        'document.documentElement.dir = rtl',
+        'Reading start edge: right',
+        'Text alignment and list markers mirror along the inline axis',
+        'Layout uses logical inline properties so direction changes do not break spacing',
+      ),
+    ],
+    [
+      lines(
+        '<link rel="alternate" hreflang="zh-CN" href="https://example.test/zh/orders">',
+        '<link rel="alternate" hreflang="en" href="https://example.test/en/orders">',
+        '<link rel="alternate" hreflang="ja" href="https://example.test/ja/orders">',
+        '<link rel="alternate" hreflang="x-default" href="https://example.test/orders">',
+      ),
+      lines(
+        'zh-CN target links to en, ja and x-default',
+        'en target links back to zh-CN and others',
+        'Hreflang cluster is reciprocal and each URL returns 200',
+      ),
+    ],
+    [
+      lines(
+        '<style>.button{min-width:max-content;max-width:100%;padding-inline:1rem;white-space:normal}</style>',
+        '<button class="button">Jetzt bestellen</button><button class="button">立即订购</button>',
+        'python3 - <<\'PY\'',
+        'locales={"zh":"立即订购","de":"Jetzt bestellen","ru":"Заказать сейчас"}',
+        'print([(k,len(v)) for k,v in locales.items()])',
+        'PY',
+      ),
+      lines(
+        "[('zh', 4), ('de', 15), ('ru', 16)]",
+        'Button expands with translated text and wraps instead of clipping',
+        'Flexible width and pseudo-localization expose length differences early',
+      ),
+    ],
+    [
+      lines(
+        'node - <<\'JS\'',
+        'for (const locale of ["zh-CN","en-US","de-DE"]) {',
+        '  console.log(locale,new Intl.DateTimeFormat(locale).format(new Date("2026-11-24")),new Intl.NumberFormat(locale).format(1234567.89));',
+        '}',
+        'JS',
+      ),
+      lines(
+        'zh-CN 2026/11/24 1,234,567.89',
+        'en-US 11/24/2026 1,234,567.89',
+        'de-DE 24.11.2026 1.234.567,89',
+        'Intl 按 locale 输出日期和数字，不使用手写字符串拼接',
+      ),
+    ],
+  ],
+  '无障碍与 SEO 联合验收': [
+    [
+      lines(
+        'npx --yes playwright@1.50.0 codegen http://127.0.0.1:8105',
+        'printf "keyboard_path=skip→nav→search→product→cart→checkout\\n" > artifacts/keyboard-audit.txt',
+        'cat artifacts/keyboard-audit.txt',
+      ),
+      lines(
+        'Keyboard path captured',
+        'keyboard_path=skip→nav→search→product→cart→checkout',
+        '每个关键交互都能只靠键盘到达与触发',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes lighthouse@12 http://127.0.0.1:8105 --only-categories=accessibility,seo --output=json --output-path=/tmp/lh.json',
+        'jq "{accessibility:.categories.accessibility.score,seo:.categories.seo.score}" /tmp/lh.json',
+        'npx --yes @axe-core/cli@4 http://127.0.0.1:8105 --exit',
+      ),
+      lines(
+        '{"accessibility":0.96,"seo":1.0}',
+        'axe: 0 accessibility violations',
+        '自动扫描覆盖确定性缺陷，键盘与语义体验仍需人工复核',
+      ),
+    ],
+    [
+      lines(
+        'eval=$(node -e "const h=require(\'fs\').readFileSync(\'index.html\',\'utf8\'); console.log((h.match(/<h1/g)||[]).length,(h.match(/<img(?![^>]*alt=)/g)||[]).length)")',
+        'echo "$eval"',
+        'npx --yes html-validate@9 index.html',
+      ),
+      lines(
+        '1 0',
+        'html-validate: 0 errors, 0 warnings',
+        'H1 唯一且图片均有 alt，标题结构与图片替代文本同时服务读屏和搜索',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS https://example.test/robots.txt | sed -n "1,8p"',
+        'curl -sS https://example.test/sitemap.xml | grep -c "<url>"',
+        'curl -sS https://example.test | grep -o \'<link rel="canonical"[^>]*>\'',
+        'npx --yes structured-data-testing-tool@6 --url https://example.test',
+      ),
+      lines(
+        'User-agent: *',
+        'Allow: /',
+        '18',
+        '<link rel="canonical" href="https://example.test/">',
+        'Structured data checks passed',
+        'robots、sitemap、canonical 与结构化数据逐项验收',
+      ),
+    ],
+    [
+      lines(
+        'npm pkg set scripts.a11y:gate="axe http://127.0.0.1:8105 --exit && playwright test tests/keyboard.spec.ts"',
+        'npm run a11y:gate',
+        'printf "release=2026-11-24 a11y=pass seo=pass keyboard=pass\\n" > artifacts/release-gate.txt',
+        'cat artifacts/release-gate.txt',
+      ),
+      lines(
+        '0 accessibility violations',
+        '1 passed (4.9s)',
+        'release=2026-11-24 a11y=pass seo=pass keyboard=pass',
+        '自动扫描与人工键盘回归进入同一发布门禁并留下审计记录',
+      ),
+    ],
+  ],
+  '关键 HTML、CSS、字体与脚本': [
+    [
+      lines(
+        '<!doctype html>',
+        '<html lang="zh-CN"><head><link rel="stylesheet" href="/critical.css">',
+        '<script>console.log("parser-blocking")</script></head>',
+        '<body><h1>首屏内容</h1></body></html>',
+        'curl -sS -o /dev/null -w "css=%{time_starttransfer} doc=%{time_total}\\n" https://example.test/',
+      ),
+      lines(
+        'css=0.182 doc=0.420',
+        'Performance: Parse HTML waits for inline script at head',
+        'CSSOM completed before first paint at 420ms',
+        '同步 head 脚本与阻塞 CSS 都会推迟首次绘制',
+      ),
+    ],
+    [
+      lines(
+        '<script src="/analytics.js" async></script>',
+        '<script src="/app.js" defer></script>',
+        '<script src="/widget.js" defer></script>',
+        'python3 - <<\'PY\'',
+        'order=["app.js","widget.js"]',
+        'print("defer order",order,"async order not guaranteed")',
+        'PY',
+      ),
+      lines(
+        'defer order [\'app.js\', \'widget.js\']',
+        'async order not guaranteed',
+        'defer 保序并等待 DOM 解析，async 下载完即执行，适合独立统计脚本',
+      ),
+    ],
+    [
+      lines(
+        '<style>@font-face{font-family:"Brand";src:url("/fonts/brand.woff2") format("woff2");font-display:swap}</style>',
+        '<p style="font-family:Brand,sans-serif">订单平台在字体到达前先用回退字体显示。</p>',
+        'curl -sS -o /dev/null -w "font=%{http_code} size=%{size_download} time=%{time_total}\\n" https://example.test/fonts/brand.woff2',
+      ),
+      lines(
+        'font=200 size=28412 time=0.312',
+        'font-display: swap',
+        'Text rendered immediately with fallback, then swapped when font arrives',
+        '避免 FOIT 长时间空白，同时接受一次可控的字体切换',
+      ),
+    ],
+    [
+      lines(
+        '<link rel="preload" href="/critical.css" as="style">',
+        '<link rel="preload" href="/fonts/brand.woff2" as="font" type="font/woff2" crossorigin>',
+        '<link rel="stylesheet" href="/critical.css">',
+        '<script src="/app.js" defer></script>',
+      ),
+      lines(
+        'High priority: critical.css',
+        'High priority: brand.woff2',
+        'DOMContentLoaded after app.js executes',
+        'CSS 与字体提前发现，脚本延后执行，关键链更短',
+      ),
+    ],
+    [
+      lines(
+        'npx --yes playwright@1.50.0 test tests/performance.spec.ts --reporter=line',
+        'npx --yes lighthouse@12 https://example.test --only-categories=performance --output=json --output-path=/tmp/lh.json',
+        'jq "{LCP:.audits[\'largest-contentful-paint\'].numericValue,blocking:.audits[\'render-blocking-resources\'].details.items|length}" /tmp/lh.json',
+      ),
+      lines(
+        '1 passed (5.2s)',
+        '{"LCP":1840.72,"blocking":0}',
+        'LCP 降到 1.84 秒且无渲染阻塞资源，性能面板结果与优化目标一致',
+      ),
+    ],
+  ],
+  '预加载、懒加载与资源提示': [
+    [
+      lines(
+        '<link rel="preload" href="/fonts/brand.woff2" as="font" type="font/woff2" crossorigin>',
+        '<link rel="preload" href="/images/hero-1200.webp" as="image" fetchpriority="high">',
+        '<style>@font-face{font-family:Brand;src:url("/fonts/brand.woff2") format("woff2")}</style>',
+      ),
+      lines(
+        'Network priority: font High, image High',
+        'hero-1200.webp starts before CSS parsing completes',
+        'Font is requested once because crossorigin matches the @font-face fetch mode',
+      ),
+    ],
+    [
+      lines(
+        '<link rel="prefetch" href="/pricing.html">',
+        '<link rel="prefetch" href="/images/pricing-hero.webp">',
+        '<a href="/pricing.html">查看价格</a>',
+        'curl -sS -o /dev/null -w "pricing=%{http_code}\\n" https://example.test/pricing.html',
+      ),
+      lines(
+        'Idle time: pricing.html downloaded at Low priority',
+        'Idle time: pricing-hero.webp stored in HTTP cache',
+        'pricing=200',
+        'Prefetch uses idle bandwidth for the likely next navigation',
+      ),
+    ],
+    [
+      lines(
+        '<link rel="preconnect" href="https://fonts.example.test" crossorigin>',
+        '<link rel="dns-prefetch" href="https://cdn.example.test">',
+        '<link rel="stylesheet" href="https://fonts.example.test/brand.css">',
+        'curl -sS -o /dev/null -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect}\\n" https://fonts.example.test/brand.css',
+      ),
+      lines(
+        'dns=0.0012 connect=0.0180 tls=0.0410',
+        'Preconnect covers DNS, TCP and TLS for the known font host',
+        'dns-prefetch only resolves the less certain CDN host',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/images/feature-1.webp" loading="lazy" decoding="async" width="800" height="450" alt="订单能力一">',
+        '<img src="/images/feature-2.webp" loading="lazy" decoding="async" width="800" height="450" alt="订单能力二">',
+        '<img src="/images/feature-3.webp" loading="lazy" decoding="async" width="800" height="450" alt="订单能力三">',
+      ),
+      lines(
+        'Initial viewport: 0 of 3 feature images requested',
+        'Scroll near features: one image requested',
+        'loading=lazy delays offscreen downloads without changing image dimensions',
+      ),
+    ],
+    [
+      lines(
+        '<img src="/images/hero-1200.webp" width="1200" height="675" fetchpriority="high"',
+        '     alt="订单平台首屏工作台">',
+        '<img src="/images/detail.webp" loading="lazy" width="1200" height="675" alt="订单详情面板">',
+        'npx --yes lighthouse@12 https://example.test --only-categories=performance --output=json --output-path=/tmp/lh.json',
+      ),
+      lines(
+        'Hero priority: High',
+        'Detail priority: Low, requested after scroll',
+        'LCP element: hero-1200.webp',
+        '首屏图抢带宽，屏外图等待，资源优先级按真实紧迫程度排列',
+      ),
+    ],
+  ],
+  '第三方脚本、CSP 与隐私边界': [
+    [
+      lines(
+        'curl -sS -o /dev/null -w "script=%{size_download} start=%{time_starttransfer} total=%{time_total}\\n" https://cdn.vendor.test/widget.js',
+        'python3 - <<\'PY\'',
+        'bytes_=148000; seconds=0.46',
+        'print("transfer_ms",round(seconds*1000),"speed_kbps",round(bytes_/seconds/1024))',
+        'PY',
+      ),
+      lines(
+        'script=148000 start=0.214 total=0.460',
+        'transfer_ms 460 speed_kbps 314',
+        '第三方脚本体积与阻塞时长都有真实测量，标签接入前可评估性能代价',
+      ),
+    ],
+    [
+      lines(
+        '<script src="https://cdn.vendor.test/widget.js" integrity="sha384-BASE64HASH" crossorigin="anonymous"></script>',
+        'curl -sS https://cdn.vendor.test/widget.js | openssl dgst -sha384 -binary | openssl base64 -A',
+        'printf "\\n"',
+      ),
+      lines(
+        'sha384-BASE64HASH',
+        'integrity attribute matches downloaded bytes',
+        '浏览器在哈希不匹配时拒绝执行，降低 CDN 被篡改的风险',
+      ),
+    ],
+    [
+      lines(
+        'Content-Security-Policy: default-src \'self\'; script-src \'self\' \'nonce-r4nd0m\' https://cdn.vendor.test; object-src \'none\'; base-uri \'self\'',
+        '<script nonce="r4nd0m" src="https://cdn.vendor.test/widget.js"></script>',
+        '<script>alert("inline blocked without nonce")</script>',
+        'curl -sSI https://example.test | grep -i "^content-security-policy:"',
+      ),
+      lines(
+        'content-security-policy: default-src \'self\'; script-src \'self\' \'nonce-r4nd0m\' https://cdn.vendor.test',
+        'Vendor script executes with matching nonce',
+        'Inline script without nonce is blocked and reported',
+      ),
+    ],
+    [
+      lines(
+        '<script src="https://cdn.vendor.test/lib@2.4.1.js"',
+        '        integrity="sha384-EXPECTEDHASH" crossorigin="anonymous"></script>',
+        'printf "tampered bytes" > /tmp/lib@2.4.1.js',
+        'openssl dgst -sha384 -binary /tmp/lib@2.4.1.js | openssl base64 -A',
+      ),
+      lines(
+        'sha384-DIFFERENTHASH',
+        'Browser error: Failed to find a valid digest in the integrity attribute',
+        'Resource execution refused after hash mismatch',
+      ),
+    ],
+    [
+      lines(
+        'Set-Cookie: analytics_id=abc123; Path=/; SameSite=Lax; Secure; HttpOnly',
+        'curl -sSI -X POST https://example.test/api/consent | grep -i "^set-cookie:"',
+        'curl -sSI https://example.test | grep -i "^permissions-policy:"',
+      ),
+      lines(
+        'Set-Cookie: analytics_id=abc123; Path=/; SameSite=Lax; Secure; HttpOnly',
+        'permissions-policy: geolocation=(), camera=(), microphone=()',
+        'Cookie scope, consent and browser feature permissions constrain third-party reach',
+      ),
+    ],
+  ],
+  '缓存、压缩与 CDN 静态发布': [
+    [
+      lines(
+        'Cache-Control: public, max-age=31536000, immutable',
+        'Cache-Control: no-cache',
+        'curl -sSI https://example.test/assets/app.a18f0c2.js | grep -i "^cache-control:"',
+        'curl -sSI https://example.test/index.html | grep -i "^cache-control:"',
+      ),
+      lines(
+        'cache-control: public, max-age=31536000, immutable',
+        'cache-control: no-cache',
+        '带哈希资源可长缓存，HTML 入口每次协商以尽快拿到新版本',
+      ),
+    ],
+    [
+      lines(
+        'printf "console.log(\'v1\');\\n" > app.js',
+        'hash=$(sha256sum app.js | cut -c1-8)',
+        'mv app.js "app.$hash.js"',
+        'printf "asset=/assets/app.%s.js\\n" "$hash"',
+        'curl -sSI "https://example.test/assets/app.$hash.js" | grep -Ei "^(HTTP|cache-control|etag):"',
+      ),
+      lines(
+        'asset=/assets/app.5d41402a.js',
+        'HTTP/2 200',
+        'cache-control: public, max-age=31536000, immutable',
+        'etag: "5d41402a"',
+      ),
+    ],
+    [
+      lines(
+        'python3 -c "open(\'/tmp/site.js\',\'w\').write(\'const value=42;\\n\'*1200)"',
+        'gzip -9 -c /tmp/site.js > /tmp/site.js.gz',
+        'brotli -q 11 -c /tmp/site.js > /tmp/site.js.br',
+        'wc -c /tmp/site.js /tmp/site.js.gz /tmp/site.js.br',
+      ),
+      lines(
+        '20400 /tmp/site.js',
+        '412 /tmp/site.js.gz',
+        '322 /tmp/site.js.br',
+        '文本预压缩显著减小传输体积，brotli 在本例再优于 gzip',
+      ),
+    ],
+    [
+      lines(
+        'curl -sSI https://cdn.example.test/assets/app.a18f0c2.js | grep -Ei "^(HTTP|cache-control|age|x-cache|cf-cache-status):"',
+        'curl -sS -o /dev/null -w "first=%{time_total}s second=%{time_total}s\\n" https://cdn.example.test/assets/app.a18f0c2.js https://cdn.example.test/assets/app.a18f0c2.js',
+        'curl -sSI https://origin.example.test/assets/app.a18f0c2.js | grep -Ei "^(cache-control|server):"',
+      ),
+      lines(
+        'HTTP/2 200',
+        'cache-control: public, max-age=31536000, immutable',
+        'age: 182',
+        'x-cache: HIT',
+        'first=0.008s second=0.006s',
+        '边缘命中后请求不回到源站，缓存键按路径与资源版本稳定',
+      ),
+    ],
+    [
+      lines(
+        'curl -sSI https://cdn.example.test/assets/app.a18f0c2.js | grep -Ei "^(cache-control|age|x-cache):"',
+        'printf "stale-while-revalidate=60\\n"',
+        'python3 - <<\'PY\'',
+        'ttl=3600; jitter=73',
+        'print("ttl",ttl,"jitter",jitter,"expires_in",ttl+jitter)',
+        'PY',
+        'curl -sS -o /dev/null -w "origin_requests=%{num_connects}\\n" https://cdn.example.test/assets/app.a18f0c2.js',
+      ),
+      lines(
+        'cache-control: public, max-age=31536000, immutable',
+        'age: 59',
+        'x-cache: STALE',
+        'ttl 3600 jitter 73 expires_in 3673',
+        'origin_requests=0',
+      ),
+    ],
+  ],
+  'Web Vitals、真实用户监控与回归': [
+    [
+      lines(
+        'npx --yes lighthouse@12 https://example.test --only-categories=performance --output=json --output-path=/tmp/lh.json',
+        'jq "{LCP:.audits[\'largest-contentful-paint\'].numericValue,element:.audits[\'largest-contentful-paint-element\'].details.items[0].node.snippet}" /tmp/lh.json',
+        'npx --yes playwright@1.50.0 screenshot --device="Desktop Chrome" https://example.test lcp.png',
+      ),
+      lines(
+        '{"LCP":2180.4,"element":"<img src=\\"/images/hero.webp\\" width=\\"1200\\" height=\\"675\\">"}',
+        'Screenshot saved to lcp.png',
+        'LCP 2.18 秒达标，定位到首屏 hero 图片并保留元素证据',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'samples=[{"shift":0.02,"node":"hero-image"},{"shift":0.06,"node":"cookie-banner"},{"shift":0.03,"node":"late-ad"}]',
+        'total=sum(x["shift"] for x in samples); print("CLS",round(total,2),"largest",max(samples,key=lambda x:x["shift"]))',
+        'PY',
+        'npx --yes playwright@1.50.0 test tests/cls.spec.ts --reporter=line',
+      ),
+      lines(
+        'CLS 0.11 largest {\'shift\': 0.06, \'node\': \'cookie-banner\'}',
+        '1 passed (3.8s)',
+        '累计偏移超过 0.1，最大贡献来自未预留空间的 Cookie 横幅',
+      ),
+    ],
+    [
+      lines(
+        'python3 - <<\'PY\'',
+        'interactions=[{"action":"click-buy","delay":120},{"action":"open-menu","delay":340},{"action":"filter","delay":80}]',
+        'p98=sorted(x["delay"] for x in interactions)[-1]; print("p98",p98,"slowest",max(interactions,key=lambda x:x["delay"]))',
+        'PY',
+        '<button>加入购物车</button><script>document.querySelector("button").onclick=()=>performance.mark("interaction-start")</script>',
+      ),
+      lines(
+        'p98 340 slowest {\'action\': \'open-menu\', \'delay\': 340}',
+        'open-menu exceeds the 200ms good threshold',
+        '菜单点击后的长任务阻塞主线程，应拆分或延后非紧急工作',
+      ),
+    ],
+    [
+      lines(
+        'curl -sS https://example.test/rum/vitals | jq \'{p75_lcp,p75_inp,p75_cls,samples}\'',
+        'npx --yes lighthouse@12 https://example.test --only-categories=performance --output=json --output-path=/tmp/lab.json',
+        'jq \'{lab_lcp:.audits[\'largest-contentful-paint\'].numericValue}\' /tmp/lab.json',
+      ),
+      lines(
+        '{"p75_lcp":2380,"p75_inp":186,"p75_cls":0.07,"samples":12840}',
+        '{"lab_lcp":1840.72}',
+        '实验室 LCP 1.84 秒，真实用户 P75 为 2.38 秒，低端设备差距需要 RUM 才能看见',
+      ),
+    ],
+    [
+      lines(
+        'printf "LCP<=2500\\nINP<=200\\nCLS<=0.1\\nJS_KB<=250\\n" > /tmp/performance-budget.txt',
+        'cat /tmp/performance-budget.txt',
+        'npx --yes lighthouse@12 https://example.test --only-categories=performance --output=json --output-path=/tmp/lh.json',
+        'jq -r \'.audits | [.\'largest-contentful-paint\'.numericValue,.\'total-blocking-time\'.numericValue] | @tsv\' /tmp/lh.json',
+      ),
+      lines(
+        'LCP<=2500',
+        'INP<=200',
+        'CLS<=0.1',
+        'JS_KB<=250',
+        '2180.4\t110.2',
+        '预算文件与 CI 检查共同守住性能回归防线',
+      ),
+    ],
+  ],
+  '企业官网毕业项目与运行手册': [
+    [
+      lines(
+        'npx --yes html-validate@9 "dist/**/*.html"',
+        'npx --yes @axe-core/cli@4 https://staging.example.test --exit',
+        'npx --yes lighthouse@12 https://staging.example.test --only-categories=performance,accessibility,seo --output=json --output-path=/tmp/release.json',
+        'jq "{perf:.categories.performance.score,a11y:.categories.accessibility.score,seo:.categories.seo.score}" /tmp/release.json',
+      ),
+      lines(
+        'html-validate: 0 errors',
+        'axe: 0 violations',
+        '{"perf":0.93,"a11y":1.0,"seo":1.0}',
+        '整站结构、可访问性、SEO 与核心性能在预发环境逐项通过',
+      ),
+    ],
+    [
+      lines(
+        'printf "5%% -> observe 10m\\n25%% -> observe 15m\\n100%% -> observe 30m\\nstop if error_rate>1%% or p95>500ms\\n" > canary-plan.txt',
+        'cat canary-plan.txt',
+        'curl -sS https://staging.example.test/rum/summary | jq \'{error_rate,p95_ms,samples}\'',
+      ),
+      lines(
+        '5% -> observe 10m',
+        '25% -> observe 15m',
+        '100% -> observe 30m',
+        '{"error_rate":0.0021,"p95_ms":238,"samples":842}',
+        '真实指标低于退出阈值后才逐步扩大流量',
+      ),
+    ],
+    [
+      lines(
+        'kubectl rollout history deployment/web --revision=12',
+        'kubectl rollout undo deployment/web --to-revision=11',
+        'kubectl rollout status deployment/web --timeout=90s',
+        'curl -fsS https://staging.example.test/health && echo previous-release-healthy',
+      ),
+      lines(
+        'deployment.apps/web with revision #11',
+        'deployment.apps/web rolled back',
+        'deployment "web" successfully rolled out',
+        'previous-release-healthy',
+        '回滚到上一不可变版本并通过健康检查才宣告恢复',
+      ),
+    ],
+    [
+      lines(
+        'rg -n "架构|证书|回滚|故障|联系人" RUNBOOK.md',
+        'openssl s_client -connect staging.example.test:443 -servername staging.example.test </dev/null 2>/dev/null | openssl x509 -noout -enddate',
+        'kubectl get deploy web -o jsonpath="{.status.readyReplicas}/{.spec.replicas}"',
+      ),
+      lines(
+        'RUNBOOK.md:3:## 架构',
+        'RUNBOOK.md:8:## 证书',
+        'RUNBOOK.md:14:## 回滚',
+        'notAfter=Feb 15 23:59:59 2027 GMT',
+        '3/3',
+        '运行手册包含架构、证书、回滚、故障与联系人，并附当前可验证状态',
+      ),
+    ],
+    [
+      lines(
+        'curl -fsS https://staging.example.test/health',
+        'curl -sS https://staging.example.test/rum/summary | jq \'{p75_lcp,p75_inp,error_rate}\'',
+        'printf "alert=site-unavailable expr=probe_success==0 for=2m runbook=#incident\\n" > alert.rules',
+        'cat alert.rules',
+      ),
+      lines(
+        '{"status":"ok","version":"2026.11.24"}',
+        '{"p75_lcp":2380,"p75_inp":186,"error_rate":0.0021}',
+        'alert=site-unavailable expr=probe_success==0 for=2m runbook=#incident',
+        '拨测、真实用户指标和可执行告警共同接入值班流程',
+      ),
+    ],
+  ],
+};
+
+const BODY_COMPLETIONS: Readonly<Record<string, string>> = {
+  '远程开发的延迟与状态要单独看待': '，远程命令的耗时也要与本地基线分开记录。',
+  '计时实验要控制变量': '，预热后固定数据重复七轮，并同时记录中位数与极值。',
+  '用增长曲线验证而不是记忆': '，至少覆盖三个规模，并把 n 与耗时画在同一坐标系。',
+  '数组连续存放支持 O(1) 按下标访问': '，随机访问前先预留容量，避免扩容干扰基准。',
+  '链表靠指针串联插入灵活': '，按位置访问时用计数器验证实际经过的节点数。',
+  '用基准而非直觉做选择': '，分别测量下标读取、尾插和中间插入三组操作。',
+  '哈希函数把键映射到有限个桶': '，先输出键的哈希值与桶号，再核对分布是否均匀。',
+  '冲突不可避免需要解决策略': '，记录每次冲突与桶链长度，比较两种冲突处理策略。',
+  '负载因子触发扩容并重新哈希': '，在扩容前后打印容量、负载因子与每个键的新桶号。',
+  '坏哈希会让所有键挤进一个桶': '，用固定坏哈希和随机哈希各跑一次并比较最大链长。',
+  '用冲突与扩容记录验证': '，保留扩容前后的容量、最大链长和查找次数三类证据。',
+  '稳定性决定相同键的相对次序': '，用相同主键、不同副键的记录验证原始次序是否保持。',
+  '用比较次数与内存占用验证': '，同时记录比较次数、输入是否被修改与峰值额外内存。',
+  '图用邻接表或邻接矩阵表示': '，用同一张图生成两种表示并比较边查询与空间占用。',
+  'BFS 按层展开用队列': '，输出每个顶点的首次访问层数并核对到起点最少边数。',
+  '带权图要用 Dijkstra 而非 BFS': '，用一条边数少但权重高的路径验证 BFS 会误判。',
+  '选型先看约束再谈算法': '，把稳定性、可修改性和内存上限先写成可检查的约束表。',
+  '基准要控制变量': '，固定随机种子、输入规模、运行时版本与运行命令后再比较。',
+  '连接池复用已建立的连接': '，比较首次连接与复用连接的握手耗时并核对池内空闲数。',
+  '重试预算防止故障放大': '，把退避、抖动和最大次数相加，预算不得超过上游超时。',
+  '用最坏耗时反推参数是否合理': '，逐项累加连接、读取、退避与重试，再与上游截止时间比较。',
+  '用竞争指标与队列长度验证': '，同时记录锁等待、活跃线程数、队列长度和请求延迟。',
+  '外键把表之间的关系交给数据库保证': '，插入不存在的父键并保留数据库返回的约束名与错误详情。',
+  '规范化消除重复更新异常': '，修改客户地址后核对所有订单查询都读到同一份新值。',
+  '索引要随查询模式调整': '，定期统计索引扫描次数，删除长期零使用且只增加写成本的索引。',
+  '回填分批进行避免长事务': '，按主键区间提交小批事务，并记录每批行数和锁等待时间。',
+  '收窄阶段确认无旧版本依赖': '，先检查旧代码访问计数和活跃连接，再删除旧列或加非空约束。',
+  '用锁等待与耗时指标验证': '，迁移期间持续采样锁等待、复制延迟和慢查询耗时。',
+  '全量备份给出基线增量备份记录变化': '，分别记录全量大小、增量链长度和最近一次恢复耗时。',
+  '一致性校验覆盖数据与结构': '，恢复后核对行数、约束、索引和关键字段摘要值。',
+  '端到端测试从用户视角走完整链路': '，只保留登录、下单、支付等最关键路径并记录真实浏览器耗时。',
+  '最小复现是定位的一半': '，把用例缩到仍能触发问题的最短输入并附上失败输出。',
+  '失败要显式传递而不是静默吞掉': '，至少记录错误码、请求标识和 cause 链，再向上返回。',
+  '故障注入主动验证韧性': '，用固定种子注入超时、坏数据和断连，并保存每次降级结果。',
+  '用降级结果与重试次数验收': '，核对用户看到的内容、总重试次数和最终退出条件。',
+  '信任边界在服务端而非客户端': '，伪造用户标识与角色字段后确认服务端仍按会话身份拒绝。',
+  '锁文件与来源校验防篡改': '，安装时同时核对锁文件哈希与包的完整性摘要。',
+  '秘密不进源码与历史': '，扫描工作区与提交历史，发现泄露后立即轮换而不是只补忽略规则。',
+  '用构建产物核对实际依赖': '，从最终镜像生成 SBOM，并与构建机的锁文件版本逐项对照。',
+  '门禁是自动化的准入条件': '，把类型检查、测试与安全扫描设为合并前不可跳过的必过项。',
+  '快速反馈与全面检查分层': '，本地只跑秒级检查，完整测试与扫描留给合并前流水线。',
+  '安全回归要有已知漏洞用例': '，把越权、注入和坏输入的原触发请求固化成长期测试。',
+  '门禁结果要可追溯': '，保存提交哈希、检查名称、退出码与日志摘要供事后审计。',
+  '绝对路径包含完整协议与域名': '，站内资源优先用相对路径，外部链接才写完整域名。',
+  '先规划站点结构再写代码': '，先列出页面、公共导航与资源目录，再开始写第一份 HTML。',
+  '相对路径保证整站可迁移': '，整站目录移动后逐页检查链接、样式与图片请求是否仍为 200。',
+  '用 Tab 与大纲工具验证': '，记录每一个 Tab 停靠点，再与标题大纲的阅读顺序逐项对照。',
+  '用结构化的收益反推标签': '，把列表、引用、代码与时间分别交给机器读取，检查语义是否完整。',
+  '信息架构按用户任务组织': '，从找产品、查价格、联系销售等任务出发记录到达所需点击数。',
+  '控制层级深度与宽度': '，核心任务页面控制在两层以内，导航项按任务分组而不是堆平。',
+  '全局与局部导航各司其职': '，全局导航负责跨域切换，局部导航只展示当前产品的子页面。',
+  '用用户测试验证找路效率': '，让测试者不发问完成三个核心任务，并记录路径与停顿点。',
+  '一次只改一类语义': '，先改页面区域标签，验证通过后再改列表或表单，避免问题混在一起。',
+  '回归清单覆盖多种访问方式': '，同时检查键盘、读屏、无图模式、窄屏和 HTML 验证器结果。',
+  '保留重构前的对照': '，保存旧版截图、标题大纲、焦点顺序和请求列表用于逐项比较。',
+  '把检查固化成流程': '，把验证器、可访问性扫描和键盘走查接入每次合并前的门禁。',
+  '用点击与读屏验证关联': '，点击标签文字应聚焦字段，读屏应读出同一字段名与控件类型。',
+  '在真机上验证键盘体验': '，逐字段检查键盘类型、自动填充与提交键，不能只靠桌面模拟。',
+  '服务端校验不可省略': '，直接向接口提交绕过前端约束的数据，确认服务端独立拒绝。',
+  '错误提示要告诉用户怎么改': '，提示中写出期望格式、出错位置和一条可执行修复建议。',
+  '加载状态给用户明确反馈': '，按钮应显示进行中文案并禁用，同时保留取消或重试入口。',
+  '前端禁用挡不住重复请求': '，用相同幂等键发送两次请求，并核对服务端只产生一条业务记录。',
+  '焦点在出错时要引导到问题处': '，提交失败后把焦点移到首个无效字段，并立即播报其错误。',
+  '用真实辅助技术验收': '，用真实读屏走完填写、报错、修正与成功反馈整个流程。',
+};
+
+const withFoundationExamples = (
+  courses: readonly ProgrammingCourseSeed[],
+  language: string,
+): readonly ProgrammingCourseSeed[] => courses.map((course) => {
+  const topic = course.name.split('：').at(-1);
+  const examples = topic ? FOUNDATION_EXAMPLES[topic] : undefined;
+  if (!examples || examples.length !== course.steps.length) {
+    throw new Error(`编程通识示例缺失或数量不匹配：${course.name}`);
+  }
+  return {
+    ...course,
+    steps: course.steps.map((step, index) => {
+      const completion = BODY_COMPLETIONS[step[0]] ?? '';
+      return [
+        step[0],
+        `${step[1]}${completion}`,
+        step[2],
+        foundationExample(step[0], language, examples[index]),
+      ] as const;
+    }),
+  };
+});
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES_BASE,
+  'bash',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F1_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_F1_COURSES_BASE,
+  'python',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F2_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_F2_COURSES_BASE,
+  'bash',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F3_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_F3_COURSES_BASE,
+  'sql',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F4_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_F4_COURSES_BASE,
+  'bash',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_F5_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_F5_COURSES_BASE,
+  'bash',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES_BASE,
+  'html',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES_BASE,
+  'html',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES_BASE,
+  'html',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES_BASE,
+  'html',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES_BASE,
+  'html',
+);
+
+export const HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES = withFoundationExamples(
+  HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES_BASE,
+  'html',
+);
