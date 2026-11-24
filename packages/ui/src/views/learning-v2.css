@@ -1242,17 +1242,89 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-library-detail > button { min-height: 38px; margin-top: 12px; padding: 7px 11px; border: 0; border-radius: 7px; background: var(--lv2-accent); color: #fff; font-size: 9px; font-weight: 700; }
 .lv2-library-detail > p { color: var(--lv2-muted); font-size: 10px; line-height: 1.7; }
 .lv2-mobile-topbar {
-  position: sticky; z-index: 12; top: 0; display: flex; min-height: 60px; align-items: center;
-  justify-content: space-between; gap: 12px; padding: 9px 12px;
+  position: sticky; z-index: 12; top: 0; display: flex; height: 60px; min-height: 60px; align-items: center;
+  justify-content: space-between; gap: 8px; padding: 8px 12px; box-sizing: border-box; overflow: visible;
   border-bottom: 1px solid var(--lv2-line);
   background: color-mix(in srgb, var(--skin-panel-bg-strong, #fbfcfb) 60%, transparent);
   backdrop-filter: blur(16px) saturate(112%);
   -webkit-backdrop-filter: blur(16px) saturate(112%);
 }
 .lv2-mobile-subject {
-  display: inline-flex; min-height: 44px; align-items: center; gap: 6px; padding: 7px 3px;
+  display: inline-flex; flex: 0 0 auto; min-height: 44px; min-width: 0; align-items: center; gap: 6px; padding: 7px 3px;
   border: 0; background: transparent; color: inherit; font-family: Georgia, "Songti SC", serif;
-  font-size: 22px; font-weight: 700;
+  font-size: 20px; font-weight: 700; line-height: 1.1; white-space: nowrap;
+}
+.lv2-mobile-subject span {
+  display: block;
+  white-space: nowrap;
+}
+.lv2-mobile-topbar > .lv2-topbar-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+.lv2-mobile-topbar .lv2-speech {
+  flex: 0 0 44px;
+}
+.lv2-mobile-more {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--lv2-line);
+  border-radius: 8px;
+  background: var(--lv2-surface);
+  color: var(--color-text, #17211e);
+  cursor: pointer;
+}
+.lv2-mobile-more:hover,
+.lv2-mobile-more[aria-expanded="true"] {
+  border-color: var(--lv2-accent);
+  color: var(--lv2-accent);
+}
+.lv2-mobile-more:focus-visible,
+.lv2-mobile-more-menu button:focus-visible {
+  outline: 2px solid var(--lv2-accent);
+  outline-offset: 2px;
+}
+.lv2-mobile-more-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 12px;
+  display: grid;
+  width: min(236px, calc(100vw - 24px));
+  max-height: min(360px, calc(100dvh - 140px));
+  gap: 2px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--lv2-line);
+  border-radius: 10px;
+  background: var(--lv2-surface, #fff);
+  box-shadow: 0 14px 34px rgba(26, 36, 31, .18);
+}
+.lv2-mobile-more-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text, #17211e);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.lv2-mobile-more-menu button:hover {
+  background: var(--lv2-tint);
+  color: var(--lv2-accent);
 }
 .lv2-mobile-pagebar {
   display: flex; min-height: 46px; align-items: center; justify-content: space-between;

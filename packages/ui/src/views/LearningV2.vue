@@ -9,7 +9,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   BookOpen, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck,
-  Library, ListChecks, NotebookPen, PackageOpen, Play, Sparkles, Wrench, X,
+  Ellipsis, Library, ListChecks, NotebookPen, PackageOpen, Play, Sparkles, Wrench, X,
 } from 'lucide-vue-next';
 import {
   LEARNING_V2_PAGES,
@@ -172,6 +172,7 @@ const libraryOpen = ref(false);
 const readerOpen = ref(false);
 const readerBook = ref<LearningV2ReaderBook | null>(null);
 const mobileSubjectsOpen = ref(false);
+const mobileMoreOpen = ref(false);
 const learningAiInput = ref<{
   fillInput: (text: string) => void;
   fillAndSend: (text: string) => Promise<void>;
@@ -179,6 +180,8 @@ const learningAiInput = ref<{
 const libraryPage = ref<HTMLElement | null>(null);
 const workspaceRoot = ref<HTMLElement | null>(null);
 const mobileSubjectSheet = ref<HTMLElement | null>(null);
+const mobileMoreButton = ref<HTMLButtonElement | null>(null);
+const mobileMoreMenu = ref<HTMLElement | null>(null);
 const lessonRoot = ref<HTMLElement | null>(null);
 const specializedStudyRoot = ref<HTMLElement | null>(null);
 const studioRoot = ref<HTMLElement | null>(null);
@@ -685,17 +688,34 @@ const aiQuickPrompts = computed(() => [
   },
 ]);
 const narrationText = computed(() => {
-  const pageText: Record<LearningV2PageKey, string> = {
-    overview: `${subject.value.name}。${subject.value.line}。当前课程：${selectedCourseName.value}。`,
-    roadmap: `${subject.value.name}课程地图。零基础到进阶。当前课程：${selectedCourseName.value}。`,
-    books: `${subject.value.book.title}。${subject.value.book.unit}。原文：${subject.value.book.original}。来源：${subject.value.book.source}。`,
-    lesson: `${coursePlan.value.title}。${currentLessonStep.value?.title || ''}。${currentLessonStep.value?.body || ''}。本步练习：${currentLessonStep.value?.practice || ''}。完成检查：${currentLessonStep.value?.checkpoint || ''}。${currentLessonStep.value?.note || ''}。`,
-    studio: `${studios.value.studio.title}。${studios.value.task}。操作边界：${studios.value.boundary}。`,
-    practice: `练习测评 · ${selectedCourseName.value}。${currentQuiz.value.prompt}。选项：${currentQuiz.value.options.join('；')}。`,
-    review: `复习巩固。${subject.value.review.items.join('；')}。`,
-    coach: `${subject.value.coach.opening}。${subject.value.coach.prompts.join('；')}。`,
-  };
-  return pageText[activePage.value];
+  if (activePage.value === 'overview') {
+    return `${subject.value.name}。${subject.value.line}。当前课程：${selectedCourseName.value}。`;
+  }
+  if (activePage.value === 'roadmap') {
+    return `${subject.value.name}课程地图。零基础到进阶。当前课程：${selectedCourseName.value}。`;
+  }
+  if (activePage.value === 'books') {
+    const book = subject.value.book;
+    return `${book?.title || subject.value.name}。${book?.unit || ''}。原文：${book?.original || ''}。来源：${book?.source || ''}。`;
+  }
+  if (activePage.value === 'lesson') {
+    return `${coursePlan.value.title}。${currentLessonStep.value?.title || ''}。${currentLessonStep.value?.body || ''}。本步练习：${currentLessonStep.value?.practice || ''}。完成检查：${currentLessonStep.value?.checkpoint || ''}。${currentLessonStep.value?.note || ''}。`;
+  }
+  if (activePage.value === 'studio') {
+    return `${studios.value.studio.title}。${studios.value.task}。操作边界：${studios.value.boundary}。`;
+  }
+  if (activePage.value === 'practice') {
+    const quiz = currentQuiz.value;
+    return `练习测评 · ${selectedCourseName.value}。${quiz?.prompt || ''}。选项：${(quiz?.options ?? []).join('；')}。`;
+  }
+  if (activePage.value === 'review') {
+    return `复习巩固。${(subject.value.review?.items ?? []).join('；')}。`;
+  }
+  if (activePage.value === 'coach') {
+    const coach = subject.value.coach;
+    return `${coach?.opening || ''}。${(coach?.prompts ?? []).join('；')}。`;
+  }
+  return '学习';
 });
 function saveSession() {
   try {
@@ -845,6 +865,7 @@ function openProgrammingLesson(courseName: string): void {
 }
 
 function selectPage(page: LearningV2PageKey) {
+  mobileMoreOpen.value = false;
   if (page === 'lesson' && !courseReady(selectedCourseName.value)) {
     activePage.value = 'overview';
     return;
@@ -1047,7 +1068,49 @@ function closeLibrary() {
   libraryOpen.value = false;
 }
 
+type MobileLearningAction = 'studio' | 'practice' | 'coach' | 'content' | 'library';
+
+function closeMobileMore(restoreFocus = false): void {
+  mobileMoreOpen.value = false;
+  if (restoreFocus) mobileMoreButton.value?.focus();
+}
+
+function toggleMobileMore(): void {
+  mobileMoreOpen.value = !mobileMoreOpen.value;
+}
+
+function openMobileSubjects(): void {
+  closeMobileMore();
+  mobileSubjectsOpen.value = true;
+}
+
+function runMobileLearningAction(action: MobileLearningAction): void {
+  mobileMoreOpen.value = false;
+  if (action === 'studio') selectPage('studio');
+  if (action === 'practice') selectPage('practice');
+  if (action === 'coach') selectPage('coach');
+  if (action === 'content') contentManagerOpen.value = true;
+  if (action === 'library') libraryOpen.value = true;
+}
+
+function onMobileMoreOutside(event: PointerEvent): void {
+  if (!mobileMoreOpen.value) return;
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (mobileMoreButton.value?.contains(target) || mobileMoreMenu.value?.contains(target)) return;
+  closeMobileMore();
+}
+
+function stopMobileMoreOutsideListener(): void {
+  document.removeEventListener('pointerdown', onMobileMoreOutside, true);
+}
+
 function onKeydown(event: KeyboardEvent) {
+  if (mobileMoreOpen.value && event.key === 'Escape') {
+    event.preventDefault();
+    closeMobileMore(true);
+    return;
+  }
   if (mobileSubjectsOpen.value && event.key === 'Escape') {
     mobileSubjectsOpen.value = false;
     return;
@@ -1124,13 +1187,25 @@ watch(activePage, async (page, previous) => {
   if (page !== previous && !(isStudyPage(page) && isStudyPage(previous)) && workspaceRoot.value) {
     workspaceRoot.value.scrollTop = 0;
   }
-  if (isStudyPage(page) && mineOpen.value) mineOpen.value = false;
+  if (isStudyPage(page)) {
+    if (mineOpen.value) mineOpen.value = false;
+    closeMobileMore();
+  }
   await nextTick();
   if (page === 'lesson') (specializedStudyRoot.value || lessonRoot.value)?.focus();
   if (page === 'studio') studioRoot.value?.focus();
 });
+watch(mobileMoreOpen, async (open) => {
+  stopMobileMoreOutsideListener();
+  if (open) {
+    document.addEventListener('pointerdown', onMobileMoreOutside, true);
+    await nextTick();
+    mobileMoreMenu.value?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }
+});
 watch(mobileSubjectsOpen, async (open) => {
   if (open) {
+    mobileMoreOpen.value = false;
     mobileSheetBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     await nextTick();
@@ -1169,6 +1244,7 @@ onBeforeUnmount(() => {
   compactMediaQuery = null;
   compactMediaListener = null;
   stopStudyRailResize();
+  stopMobileMoreOutsideListener();
   if (mobileSubjectsOpen.value) document.body.style.overflow = mobileSheetBodyOverflow;
 });
 </script>
@@ -1474,21 +1550,50 @@ onBeforeUnmount(() => {
           class="lv2-mobile-subject"
           aria-label="切换学习科目"
           :aria-expanded="mobileSubjectsOpen"
-          @click="mobileSubjectsOpen = true"
+          @click="openMobileSubjects"
         >
           <span>{{ subject.name }}</span><ChevronDown :size="16" />
         </button>
         <div class="lv2-topbar-actions">
           <LearningSpeechButton :text="narrationText" :compact="true" />
-          <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
-          <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
-          <button class="lv2-tool-chip" type="button" @click="selectPage('coach')">陪练</button>
-          <button class="lv2-library-button" type="button" aria-label="管理科目数据" @click="contentManagerOpen = true">
-            <PackageOpen :size="17" /><span>科目数据</span>
+          <button
+            ref="mobileMoreButton"
+            class="lv2-mobile-more"
+            type="button"
+            aria-label="更多学习工具"
+            aria-haspopup="menu"
+            aria-controls="lv2-mobile-more-menu"
+            :aria-expanded="mobileMoreOpen"
+            data-mobile-more-trigger
+            @click="toggleMobileMore"
+          >
+            <Ellipsis :size="20" />
           </button>
-          <button class="lv2-library-button" type="button" aria-label="打开公共图书馆" @click="libraryOpen = true">
-            <Library :size="17" /><span>图书馆</span>
-          </button>
+          <section
+            v-if="mobileMoreOpen"
+            id="lv2-mobile-more-menu"
+            ref="mobileMoreMenu"
+            class="lv2-mobile-more-menu"
+            role="menu"
+            aria-label="更多学习工具"
+            data-mobile-more-menu
+          >
+            <button type="button" role="menuitem" data-mobile-action="studio" @click="runMobileLearningAction('studio')">
+              <Wrench :size="17" /><span>实践</span>
+            </button>
+            <button type="button" role="menuitem" data-mobile-action="practice" @click="runMobileLearningAction('practice')">
+              <ClipboardCheck :size="17" /><span>练习</span>
+            </button>
+            <button type="button" role="menuitem" data-mobile-action="coach" @click="runMobileLearningAction('coach')">
+              <NotebookPen :size="17" /><span>陪练</span>
+            </button>
+            <button type="button" role="menuitem" data-mobile-action="content" @click="runMobileLearningAction('content')">
+              <PackageOpen :size="17" /><span>科目数据</span>
+            </button>
+            <button type="button" role="menuitem" data-mobile-action="library" @click="runMobileLearningAction('library')">
+              <Library :size="17" /><span>图书馆</span>
+            </button>
+          </section>
         </div>
       </header>
 

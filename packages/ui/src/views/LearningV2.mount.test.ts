@@ -1354,6 +1354,77 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2-session-coach-surface')).toBeTruthy();
   });
 
+  it('keeps the mobile learning topbar compact and moves secondary actions into a 44px menu', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query.includes('max-width: 900px'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    const host = await mountPage();
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+
+    expect(host.querySelector('.lv2-mobile-topbar')).toBeTruthy();
+    expect(host.querySelector('.lv2-mobile-subject')?.textContent).toContain('党史');
+    expect(host.querySelector('.lv2-mobile-topbar .lv2-library-button')).toBeNull();
+    expect(host.querySelectorAll('.lv2-mobile-topbar .lv2-tool-chip')).toHaveLength(0);
+    expect(host.querySelector('[data-mobile-more-trigger]')).toBeTruthy();
+
+    expect(css).toMatch(/\.lv2-mobile-topbar \{[^}]*height: 60px;[^}]*min-height: 60px;/s);
+    expect(css).toMatch(/\.lv2-mobile-subject \{[^}]*flex: 0 0 auto;[^}]*white-space: nowrap;/s);
+    expect(css).toMatch(/\.lv2-mobile-more \{[^}]*width: 44px;[^}]*height: 44px;/s);
+    expect(css).toMatch(/\.lv2-mobile-more-menu button \{[^}]*min-height: 44px;/s);
+
+    const more = host.querySelector('[data-mobile-more-trigger]') as HTMLButtonElement;
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    more.click();
+    await nextTick();
+    await nextTick();
+
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    const menu = host.querySelector('[data-mobile-more-menu]') as HTMLElement;
+    expect(menu?.getAttribute('role')).toBe('menu');
+    const labels = [...menu.querySelectorAll('[role="menuitem"]')]
+      .map((item) => item.textContent?.trim());
+    expect(labels).toEqual(['实践', '练习', '陪练', '科目数据', '图书馆']);
+    expect(document.activeElement).toBe(menu.querySelector('[role="menuitem"]'));
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('[data-mobile-more-menu]')).toBeNull();
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(more);
+
+    more.click();
+    await nextTick();
+    await nextTick();
+    (host.querySelector('[data-mobile-action="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('[data-learning-session][data-stage="practice"]')).toBeTruthy();
+    expect(host.querySelector('.lv2-mobile-topbar')).toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.lv2-mobile-topbar')).toBeTruthy();
+  });
+
+  it('builds narration lazily and tolerates missing optional arrays', () => {
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+
+    expect(view).toContain("if (activePage.value === 'practice')");
+    expect(view).toContain("(quiz?.options ?? []).join('；')");
+    expect(view).toContain("(subject.value.review?.items ?? []).join('；')");
+    expect(view).toContain("(coach?.prompts ?? []).join('；')");
+    expect(view).not.toContain('const pageText: Record<LearningV2PageKey, string>');
+  });
+
   it('keeps the full-window learning shell while moving between lesson, practice and studio', async () => {
     const host = await mountPage();
     (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
