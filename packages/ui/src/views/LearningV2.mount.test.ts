@@ -8,8 +8,8 @@ import LearningV2 from './LearningV2.vue';
 import { setLead, setMode } from '../stores/mode';
 
 const apiState = vi.hoisted(() => ({
-  get: vi.fn(async (): Promise<{ data: { lessonIds: string[] } }> => ({ data: { lessonIds: [] } })),
-  post: vi.fn(async () => ({ data: { ok: true } })),
+  get: vi.fn(async (_url: string): Promise<any> => ({ data: { lessonIds: [] } })),
+  post: vi.fn(async (_url: string, _body?: unknown): Promise<any> => ({ data: { ok: true } })),
 }));
 
 vi.mock('../api/client', () => ({
@@ -59,8 +59,51 @@ beforeEach(() => {
   document.body.style.overflow = '';
   apiState.get.mockClear();
   apiState.post.mockClear();
-  apiState.get.mockResolvedValue({ data: { lessonIds: [] } });
-  apiState.post.mockResolvedValue({ data: { ok: true } });
+  apiState.get.mockImplementation(async (url: string) => {
+    if (url === '/env/code-runtimes') {
+      return {
+        data: [
+          {
+            id: 'javascript',
+            label: 'JavaScript / Node.js',
+            available: true,
+            version: '24.18.1',
+            detail: '应用内置 Node.js',
+            bundled: true,
+          },
+          {
+            id: 'java',
+            label: 'Java',
+            available: true,
+            version: '21.0.4',
+            detail: 'C:/jdk-21/bin/java.exe',
+            bundled: false,
+          },
+        ],
+      };
+    }
+    return { data: { lessonIds: [] } };
+  });
+  apiState.post.mockImplementation(async (url: string) => {
+    if (url === '/env/detect') {
+      return {
+        data: {
+          suggested: {},
+          tools: [
+            {
+              id: 'java',
+              label: 'Java (JDK)',
+              path: 'C:/jdk-21',
+              version: '21.0.4',
+              ok: true,
+              error: '',
+            },
+          ],
+        },
+      };
+    }
+    return { data: { ok: true } };
+  });
 });
 
 async function mountPage(): Promise<HTMLElement> {
@@ -95,6 +138,8 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2 \{[^}]*height: 100%;[^}]*min-height: 0;/);
     expect(appSource).toContain("'has-statusbar': showStatusBar");
     expect(appSource).toMatch(/\.app-shell\.has-statusbar \{ --app-statusbar-h: 26px; \}/);
+    expect(appSource).toMatch(/html\.yz-learning-study \.tab-bar \{ display: none !important; \}/);
+    expect(appSource).toMatch(/html\.yz-learning-study \.platform-mobile \.main-content,[\s\S]*?padding-bottom: 0 !important;/);
     for (const selector of ['.lv2-lesson', '.lv2-specialized-study', '.lv2-studio-immersive']) {
       expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*position: fixed;[^}]*inset: 0;`));
       expect(css).toMatch(new RegExp(`${selector.replace('.', '\\.')} \\{[^}]*height: 100dvh;`));
@@ -108,6 +153,9 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2-subject-list \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
     expect(css).toMatch(/\.lv2-main \{[^}]*min-height: 0;[^}]*display: flex;/);
     expect(css).toMatch(/\.lv2-workspace \{[^}]*min-height: 0;[^}]*flex: 1;[^}]*overflow-y: auto;/);
+    expect(css).toMatch(/\.lv2\.study-full \.lv2-workspace\.is-study-surface \{[^}]*width: 100%;[^}]*max-width: none;[^}]*margin: 0;/);
+    expect(css).toMatch(/\.lv2\.study-full \.learning-session \{[^}]*border: 0;[^}]*border-radius: 0;/);
+    expect(css).toMatch(/\.lv2\.study-full:not\(\.study-lesson\) \.lv2-content \{[^}]*padding: 0;/);
     expect(css).toMatch(/\.lv2-studio-immersive \{[^}]*position: fixed;[^}]*inset: 0;[^}]*overflow: hidden;/);
     expect(css).toMatch(/\.lv2-studio-immersive-body \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
     expect(css).toMatch(/\.lv2-specialized-study \{[^}]*background: var\(--skin-panel-bg-strong/);
@@ -119,6 +167,7 @@ describe('LearningV2', () => {
     // 学习态（尤其移动端）隐藏滚动条，保留滚动能力但不显示亮色轨道
     expect(css).toMatch(/html\.yz-learning-study \.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
     expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
+    expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2-lesson-body > \.rpane \{ display: none; \}/);
     // 深色皮肤下实践/练习页必须整组覆盖组件令牌，避免灰底灰字
     expect(css).toMatch(/html\[data-skin="on"\] \.lv2\.study-full:not\(\.study-lesson\)[\s\S]*?--lv2-note-ink: #30433a/);
     // 2026-11-23 实报：图书馆皮肤补丁曾把背景刷成深色 --skin-surface，但深字 color:#17211e 未配对 → 深字压深底。
@@ -159,6 +208,37 @@ describe('LearningV2', () => {
     expect(css).toMatch(/\.lv2-lesson > nav button\.active \{ background: #edf3ef; color: #18231f; \}/);
     expect(libraryCss).toMatch(/\.ll-nav nav button\.active \{[^}]*background: #f1f4f2;[^}]*color: #26352f;/);
     expect(libraryCss).toMatch(/\.ll-detail-actions button:last-child[^{]*\{[^}]*background: #17211e;/);
+  });
+
+  it('uses an underline learning tab bar with readable skin-mode selection colors', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+
+    expect(css).toMatch(/\.lv2-pages button\.active \{[^}]*background: transparent;[^}]*color: var\(--lv2-accent\);/);
+    expect(css).not.toMatch(/\.lv2-pages button\.active \{[^}]*background: #17211e;/);
+    expect(css).toMatch(/\.lv2-pages button\.active::after \{[^}]*background: currentColor;/);
+    expect(css).toMatch(/html\[data-skin="on"\] \.lv2 \.lv2-pages button\.active \{[^}]*color: var\(--lv2-accent\);/);
+    expect(css).toMatch(/\.lv2-session-practice-layout \{[^}]*grid-template-columns: 240px minmax\(0, 1fr\);/);
+    expect(css).toMatch(/\.lv2-session-stage-rail \{[^}]*overflow-y: auto;[^}]*border: 1px solid #d7ddd7;/);
+    expect(css).toMatch(/\.lv2-lesson-notes > header \{[^}]*padding: 0 0 10px 32px;/);
+  });
+
+  it('keeps lesson speech and note actions on the same aligned control row', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+
+    expect(view).toContain('class="lv2-lesson-note-action"');
+    expect(css).toMatch(/\.lv2-lesson-actions > \.lv2-speech \{[^}]*flex: 0 0 108px;[^}]*width: 108px;[^}]*align-items: stretch;/s);
+    expect(css).toMatch(/\.lv2-lesson-actions > \.lv2-speech :deep\(\.lv2-speech-button\),\s*\.lv2-lesson-body > article \.lv2-lesson-actions > \.lv2-lesson-note-action \{[^}]*width: 108px;[^}]*height: 38px;[^}]*min-height: 38px;[^}]*margin-top: 0;[^}]*justify-content: center;[^}]*font-size: 10px;/s);
+  });
+
+  it('keeps desktop lesson side panes independently scrollable with hidden scrollbars', () => {
+    const pane = readFileSync(
+      resolve(__dirname, '../components/learning/v2/ResizablePane.vue'),
+      'utf8',
+    );
+
+    expect(pane).toMatch(/\.rpane-content \{[^}]*overflow-y: auto;[^}]*scrollbar-width: none;/);
+    expect(pane).toMatch(/\.rpane-content::-webkit-scrollbar \{[^}]*display: none;[^}]*width: 0;/);
   });
 
   it('keeps horizontal course rails on a themed thin scrollbar instead of a native white bar', () => {
@@ -222,8 +302,53 @@ describe('LearningV2', () => {
     await nextTick();
 
     expect(host.querySelector('.lv2-lesson')).toBeTruthy();
-    expect(host.querySelector('.lv2-lesson > header b')?.textContent).toContain(title);
+    expect(host.querySelector('[data-learning-session-course]')?.textContent).toContain(title);
     expect(host.querySelector('[data-page="lesson"]')).toBeNull();
+  });
+
+  it('keeps one learning session shell while moving through learn, practice and apply', async () => {
+    const host = await mountPage();
+    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
+    await nextTick();
+
+    const shell = host.querySelector('[data-learning-session]') as HTMLElement | null;
+    expect(shell).toBeTruthy();
+    expect([...shell!.querySelectorAll('[data-session-stage] .session-stage-name')].map((item) => item.textContent?.trim()))
+      .toEqual(['学习', '练习', '实践']);
+    expect(shell!.querySelector('[data-session-stage="learn"]')?.getAttribute('aria-current')).toBe('step');
+
+    (shell!.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('[data-learning-session]')).toBe(shell);
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
+    expect(host.querySelector('.lv2-session-practice-side.lv2-session-stage-rail')).toBeTruthy();
+    expect(host.querySelector('.lv2-quiz-picker')).toBeNull();
+    expect(host.querySelector('.lv2-subview-bar')).toBeNull();
+    expect(shell!.querySelector('[data-session-stage="practice"]')?.getAttribute('aria-current')).toBe('step');
+
+    (shell!.querySelector('[data-session-stage="apply"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+
+    expect(host.querySelector('[data-learning-session]')).toBe(shell);
+    expect(host.querySelector('.lv2-studio-immersive')).toBeTruthy();
+    expect(host.querySelector('.lv2-studio-immersive')?.textContent).toContain('本课实践 ·');
+    expect(host.querySelector('.lv2-session-apply-rail')?.textContent).toContain('验收产出');
+  });
+
+  it('pins practice to the current course instead of exposing a second course context', async () => {
+    const host = await mountPage();
+    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
+    await nextTick();
+    const courseName = host.querySelector('[data-learning-session-course] b')?.textContent?.trim() || '';
+
+    (host.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('[data-learning-session-course]')?.textContent).toContain(courseName);
+    expect(host.querySelector('.lv2-quiz-checkpoints header b')?.textContent).toContain(courseName);
+    expect(host.querySelector('.lv2-quiz-course-select')).toBeNull();
   });
 
   it('offers practice or next-course choices in place instead of jumping to the practice page on finish', async () => {
@@ -242,86 +367,84 @@ describe('LearningV2', () => {
     const done = host.querySelector('.lv2-lesson-done') as HTMLElement | null;
     expect(done).toBeTruthy();
     expect(done?.textContent).toContain('本课已完成');
-    expect(done?.textContent).toContain('做本课练习');
+    expect(done?.textContent).toContain('继续练习');
     expect(done?.textContent).toContain('下一课');
-    // 未自动跳练习页：沉浸课程台仍在原处，由学习者自行选择去向
-    expect(host.querySelector('.lv2-lesson')).toBeTruthy();
+    expect(host.querySelector('[data-learning-session] [aria-label^="下一课："]')).toBeTruthy();
     // 顶部进度仍标记本课未看完的入口，完成状态由进度接口记录
     expect(apiState.post).toHaveBeenCalledWith('/learning/lesson-progress', expect.anything());
 
-    // 2026-11-22：做本课练习在课程内开练习层，不跳出沉浸页；收起回到完成面板
+    // 同一会话壳内进入练习阶段，不再在课程页尾展开另一套练习卡
     (done?.querySelector('.lv2-lesson-done-actions button:first-child') as HTMLButtonElement).click();
     await nextTick();
-    expect(host.querySelector('.lv2-lesson-quiz')).toBeTruthy();
-    expect(host.querySelector('.lv2-lesson-quiz-bar')?.textContent).toContain('本课练习');
-    expect(host.querySelector('.lv2-lesson')).toBeTruthy();
-    (host.querySelector('.lv2-lesson-quiz-close') as HTMLButtonElement).click();
-    await nextTick();
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
     expect(host.querySelector('.lv2-lesson-quiz')).toBeNull();
-    expect(host.querySelector('.lv2-lesson-done')).toBeTruthy();
+    expect(host.querySelector('[data-learning-session]')).toBeTruthy();
   });
 
-  it('advances to the next course from the finish panel and resets the step flow', async () => {
+  it('keeps the current course and session identity when moving from finish into practice', async () => {
     const host = await mountPage();
     (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
     await nextTick();
-    const before = host.querySelector('.lv2-lesson > header b')?.textContent || '';
+    const before = host.querySelector('[data-learning-session-course] b')?.textContent || '';
+    const shell = host.querySelector('[data-learning-session]');
 
     const footer = () => host.querySelector('.lv2-lesson > footer') as HTMLElement | null;
     for (let i = 0; i < 12 && footer(); i += 1) {
       (footer()?.querySelector('button:last-child') as HTMLButtonElement).click();
       await nextTick();
     }
-    const nextButton = [...(host.querySelectorAll('.lv2-lesson-done-actions button') || [])]
-      .find((item) => item.textContent?.includes('下一课')) as HTMLButtonElement;
-    expect(nextButton).toBeTruthy();
-    nextButton.click();
-    await nextTick();
-
-    expect(host.querySelector('.lv2-lesson-done')).toBeNull();
-    expect(host.querySelector('.lv2-lesson > footer')).toBeTruthy();
-    expect(host.querySelector('.lv2-lesson > header b')?.textContent).not.toBe(before);
-  });
-
-  it('closes the in-course practice layer when advancing to the next course', async () => {
-    const host = await mountPage();
-    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
-    await nextTick();
-
-    const footer = () => host.querySelector('.lv2-lesson > footer') as HTMLElement | null;
-    for (let i = 0; i < 12 && footer(); i += 1) {
-      (footer()?.querySelector('button:last-child') as HTMLButtonElement).click();
-      await nextTick();
-    }
-
-    // 打开本课练习，再点「下一课」——上一课的练习层必须随换课关闭，不能留在页尾
     (host.querySelector('.lv2-lesson-done-actions button:first-child') as HTMLButtonElement).click();
     await nextTick();
-    expect(host.querySelector('.lv2-lesson-quiz')).toBeTruthy();
 
-    // 回归（2026-11-22）：沉浸台 Teleport 到 body 后脱离 .lv2 根，必须在根节点注入 accent，
-    // 否则 var(--lv2-accent) 无定义 → 「下一步」按钮透明底白字隐形
-    const lessonRoot = document.body.querySelector('.lv2-lesson') as HTMLElement;
-    expect(lessonRoot?.style.getPropertyValue('--lv2-accent')).toBeTruthy();
-    // 自测题型必须有作答框（本地草稿），选择题题型为选项按钮
-    const answerBox = host.querySelector('.lv2-lesson-quiz-answer') as HTMLTextAreaElement | null;
-    if (answerBox) {
-      answerBox.value = '签名让调用方不关心实现';
-      answerBox.dispatchEvent(new Event('input'));
+    expect(host.querySelector('[data-learning-session]')).toBe(shell);
+    expect(host.querySelector('[data-learning-session-course] b')?.textContent).toBe(before);
+    expect(host.querySelector('[data-session-stage="practice"]')?.getAttribute('aria-current')).toBe('step');
+  });
+
+  it('keeps a next-course action in the shared shell across practice and apply', async () => {
+    const host = await mountPage();
+    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
+    await nextTick();
+    const before = host.querySelector('[data-learning-session-course] b')?.textContent || '';
+
+    const footer = () => host.querySelector('.lv2-lesson > footer') as HTMLElement | null;
+    for (let i = 0; i < 12 && footer(); i += 1) {
+      (footer()?.querySelector('button:last-child') as HTMLButtonElement).click();
       await nextTick();
-      expect(answerBox.value).toBe('签名让调用方不关心实现');
-    } else {
-      expect(host.querySelector('.lv2-lesson-quiz .lv2-quiz-actions')).toBeTruthy();
     }
 
-    const nextButton = [...(host.querySelectorAll('.lv2-lesson-done-actions button') || [])]
-      .find((item) => item.textContent?.includes('下一课')) as HTMLButtonElement;
-    nextButton.click();
+    (host.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    const next = host.querySelector('[data-learning-session] [aria-label^="下一课："]') as HTMLButtonElement;
+    expect(next).toBeTruthy();
+    next.click();
+    await nextTick();
+
+    expect(host.querySelector('[data-learning-session-course] b')?.textContent).not.toBe(before);
+    expect(host.querySelector('[data-session-stage="learn"]')?.getAttribute('aria-current')).toBe('step');
+  });
+
+  it('restores the completed lesson state when navigating back from practice', async () => {
+    const host = await mountPage();
+    (host.querySelector('.lv2-upnext button') as HTMLButtonElement).click();
+    await nextTick();
+
+    const footer = () => host.querySelector('.lv2-lesson > footer') as HTMLElement | null;
+    for (let i = 0; i < 12 && footer(); i += 1) {
+      (footer()?.querySelector('button:last-child') as HTMLButtonElement).click();
+      await nextTick();
+    }
+
+    (host.querySelector('.lv2-lesson-done-actions button:first-child') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
+
+    (host.querySelector('[data-session-stage="learn"]') as HTMLButtonElement).click();
     await nextTick();
 
     expect(host.querySelector('.lv2-lesson-quiz')).toBeNull();
-    expect(host.querySelector('.lv2-lesson-done')).toBeNull();
-    expect(host.querySelector('.lv2-lesson > footer')).toBeTruthy();
+    expect(host.querySelector('.lv2-lesson-done')).toBeTruthy();
+    expect(host.querySelector('.lv2-lesson > footer')).toBeNull();
   });
 
   it('numbers the current course and every upcoming course so order is unambiguous', async () => {
@@ -331,10 +454,33 @@ describe('LearningV2', () => {
     const orders = [...host.querySelectorAll('.lv2-upnext .lv2-course-order')]
       .map((item) => item.textContent?.trim());
     expect(orders).toEqual(['第 01 课', '第 03 课', '第 04 课', '第 05 课']);
+    expect([...host.querySelectorAll('.lv2-upnext button')]
+      .map((item) => item.getAttribute('data-course-relation')))
+      .toEqual(['previous', 'next', 'later', 'later']);
+    expect(host.querySelector('.lv2-upnext .is-previous .lv2-course-relation')?.textContent?.trim())
+      .toBe('上一课');
+    expect(host.querySelector('.lv2-upnext .is-next .lv2-course-relation')?.textContent?.trim())
+      .toBe('下一课 · 默认');
 
     (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-roadmap .lv2-course-order')?.textContent?.trim()).toBe('第 01 课');
+  });
+
+  it('opens subject content management for export, import and package selection', async () => {
+    const host = await mountPage();
+    const trigger = host.querySelector('[aria-label="管理科目数据"]') as HTMLButtonElement;
+    expect(trigger).toBeTruthy();
+    trigger.click();
+    await nextTick();
+
+    const dialog = document.body.querySelector('[data-learning-content-manager]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.querySelector('#lcm-title')?.textContent).toContain('导出、导入与打包选择');
+    expect(dialog?.querySelectorAll('.lcm-list article')).toHaveLength(22);
+    expect(dialog?.textContent).toContain('导入内容包');
+    expect(dialog?.textContent).toContain('生成打包清单');
+    expect(dialog?.querySelector('input[type="file"]')).toBeTruthy();
   });
 
   it('collapses and restores the desktop subject sidebar from a persistent preference', async () => {
@@ -376,7 +522,7 @@ describe('LearningV2', () => {
 
   it('renders all 22 zero-base subjects and eight surfaces', async () => {
     const host = await mountPage();
-    expect(host.querySelectorAll('[data-subject]')).toHaveLength(22);
+    expect(host.querySelectorAll('[data-subject], [data-programming-subject-package]')).toHaveLength(38);
     expect(host.querySelectorAll('[data-page]')).toHaveLength(8);
     expect(host.textContent).toContain('党史');
     expect(host.textContent).toContain('编程');
@@ -447,7 +593,7 @@ describe('LearningV2', () => {
     await nextTick();
 
     expect(host.textContent).toContain('Web 漏洞与攻击防御');
-    expect(host.textContent).toContain('卡/NFC安全');
+    expect(host.textContent).toContain('NFC');
     expect(host.textContent).toContain('仅限授权靶场');
   });
 
@@ -483,22 +629,19 @@ describe('LearningV2', () => {
     draft.click();
     await nextTick();
     expect(host.querySelector('[data-specialized-security]')).toBeTruthy();
-    expect(host.querySelector('.lv2-specialized-study-bar')?.textContent).toContain('多语言安全编码');
+    expect(host.querySelector('[data-learning-session-course]')?.textContent).toContain('多语言安全编码');
   });
 
   it('opens the programming course center and enters the Java zero-base lesson', async () => {
     const host = await mountPage();
-    (host.querySelector('[data-subject="programming"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
     await nextTick();
     // 2026-11-21：总览不再渲染课程 Hub（与课程地图页签重复），先切到课程地图
     (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
     await nextTick();
 
-    const javaCourse = host.querySelector('[data-programming-course="java-enterprise"]') as HTMLButtonElement;
-    expect(javaCourse).toBeTruthy();
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Java');
     expect(host.textContent).toContain('中间件源码');
-    javaCourse.click();
-    await nextTick();
 
     expect(host.querySelectorAll('[data-programming-stage]')).toHaveLength(12);
     const firstLesson = host.querySelector('[data-programming-lesson-status="ready"]') as HTMLButtonElement;
@@ -515,9 +658,118 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2-lesson-sources')?.textContent).toContain('https://');
   });
 
+  it('shows handwritten command examples and runs Java code in practice and apply', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Java');
+    (host.querySelector('[data-programming-lesson-status="ready"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-step-example')?.textContent).toContain('javac -version');
+    expect(host.querySelector('.lv2-step-example pre')?.textContent).toContain('where.exe java');
+
+    (host.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.learning-code-lab[data-learning-code-lab="practice"]')).toBeTruthy();
+    expect(host.textContent).toContain('JDK、Main.java 与真实运行');
+
+    (host.querySelector('[data-session-stage="apply"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.learning-code-lab[data-learning-code-lab="apply"]')).toBeTruthy();
+    expect(host.textContent).toContain('独立实践：完成你的环境卡程序');
+  });
+
+  it('uses the same runnable lab pattern in the first algorithm lesson', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-subject="algorithms"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-algorithm-lesson="a0-01"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    (host.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.learning-code-lab[data-learning-code-lab="practice"]')).toBeTruthy();
+    expect(host.textContent).toContain('把操作次数跑出来');
+
+    (host.querySelector('[data-session-stage="apply"]') as HTMLButtonElement).click();
+    await nextTick();
+    await nextTick();
+    expect(host.querySelector('.learning-code-lab[data-learning-code-lab="apply"]')).toBeTruthy();
+    expect(host.textContent).toContain('独立实践：比较两种计数口径');
+  });
+
+  it('groups subjects by course category and shows programming packages instead of flat lessons', async () => {
+    const host = await mountPage();
+    const groups = [...host.querySelectorAll('.lv2-subject-group-head b')]
+      .map((item) => item.textContent?.trim());
+    expect(groups).toEqual(['人文社科', '语言文学', '数理医学', '艺术思维', '编程算法', '职业安全', '易学民俗']);
+
+    const technology = [...host.querySelectorAll('.lv2-subject-group-head')]
+      .find((item) => item.textContent?.includes('编程算法')) as HTMLButtonElement;
+    technology.click();
+    await nextTick();
+    expect(host.querySelectorAll('[data-programming-subject-package]')).toHaveLength(17);
+    expect(host.querySelector('[data-subject="programming"]')).toBeNull();
+    (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Java');
+  });
+
+  it('splits every programming package into its own subject entry', async () => {
+    const host = await mountPage();
+    const technology = [...host.querySelectorAll('.lv2-subject-group-head')]
+      .find((item) => item.textContent?.includes('编程算法')) as HTMLButtonElement;
+    technology.click();
+    await nextTick();
+
+    expect(host.querySelector('[data-programming-subject-package]')).toBeTruthy();
+    expect(host.querySelectorAll('[data-programming-subject-package]')).toHaveLength(17);
+    expect(host.querySelector('[data-subject="programming"]')).toBeNull();
+    expect(host.querySelector('[data-subject="algorithms"]')).toBeTruthy();
+    expect(technology.querySelector('small')?.textContent).toBe('18');
+    expect(host.textContent).toContain('Java 企业级后端');
+    expect(host.textContent).toContain('Python');
+    expect(host.textContent).toContain('C++');
+
+    (host.querySelector('[data-programming-subject-package="python-enterprise"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Python');
+    expect(host.querySelector('[data-programming-subject-package="python-enterprise"]')?.classList.contains('active')).toBe(true);
+  });
+
+  it('uses the same split programming entries in the mobile subject sheet', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query.includes('max-width: 900px'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    const host = await mountPage();
+
+    (host.querySelector('.lv2-mobile-subject') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelectorAll('[data-mobile-programming-package]')).toHaveLength(17);
+    expect(host.querySelector('[data-mobile-programming-package="go-cloud"]')?.textContent).toContain('Go');
+
+    (host.querySelector('[data-mobile-programming-package="go-cloud"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Go');
+  });
+
   it('opens a project-training phase as the same immersive single-step lesson', async () => {
     const host = await mountPage();
-    (host.querySelector('[data-subject="programming"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
     await nextTick();
     (host.querySelector('[data-page="roadmap"]') as HTMLButtonElement).click();
     await nextTick();
@@ -540,31 +792,84 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('Studio 企业官网');
   });
 
-  it('runs the per-course quiz bank with chapter picker, sequential answers and score', async () => {
+  it('runs every question in the current course as one continuous quiz session', async () => {
     const host = await mountPage();
-    (host.querySelector('[data-subject="programming"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
     await nextTick();
     // 2026-11-22：编程总览必须渲染通用内容（此前 Hub 移走后整页空白）
+    (host.querySelector('[data-page="overview"]') as HTMLButtonElement).click();
+    await nextTick();
     expect(host.querySelector('.lv2-continue')).toBeTruthy();
     (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
     await nextTick();
 
-    // 章节选择器存在，默认当前课程挂载了 5 题题库
-    expect(host.querySelector('.lv2-quiz-course-select')).toBeTruthy();
-    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 1 / 5 题');
+    // 练习固定使用当前课程，不再暴露第二个章节选择上下文
+    expect(host.querySelector('.lv2-quiz-course-select')).toBeNull();
+    expect(host.querySelector('[data-learning-session-course]')?.textContent).toContain('编程');
+    expect(host.querySelector('.lv2-session-practice-layout')).toBeTruthy();
+    expect(host.querySelector('.lv2-session-practice-main .lv2-quiz')).toBeTruthy();
+    expect(host.querySelector('.lv2-session-practice-side .lv2-quiz-checkpoints')).toBeTruthy();
+    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 1 / 4 题');
+    const bank = host.querySelector('[data-quiz-bank]') as HTMLElement;
+    const bankToggle = host.querySelector('.lv2-quiz-bank-toggle') as HTMLButtonElement;
+    expect(bank).toBeTruthy();
+    expect(bank.getAttribute('data-quiz-course')).toBe(
+      host.querySelector('[data-learning-session-course] b')?.textContent?.trim(),
+    );
+    expect(bank.style.display).toBe('none');
+    expect(bankToggle.getAttribute('aria-expanded')).toBe('false');
+
+    bankToggle.click();
+    await nextTick();
+    expect(bank.style.display).not.toBe('none');
+    expect(host.querySelectorAll('[data-quiz-bank-item]')).toHaveLength(4);
+    expect(bankToggle.getAttribute('aria-expanded')).toBe('true');
+    bankToggle.click();
+    await nextTick();
+    expect(bank.style.display).toBe('none');
 
     // 作答 → 提交 → 解析可见 → 下一题
     const firstOption = host.querySelector('.lv2-quiz > button') as HTMLButtonElement;
     firstOption.click();
     await nextTick();
+    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('已得 0 分');
+    expect((host.querySelector('.lv2-quiz-nav') as HTMLButtonElement).disabled).toBe(true);
     (host.querySelector('.lv2-quiz-submit') as HTMLButtonElement).click();
     await nextTick();
-    expect(host.querySelector('.lv2-quiz > p')).toBeTruthy();
+    expect(host.querySelector('[data-quiz-feedback]')?.textContent).toMatch(/回答正确|需要复习/);
     expect(host.querySelector('.lv2-quiz-score')).toBeNull();
+    expect((host.querySelector('.lv2-quiz-nav') as HTMLButtonElement).disabled).toBe(true);
 
     (host.querySelector('.lv2-quiz-submit') as HTMLButtonElement).click();
     await nextTick();
-    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 2 / 5 题');
+    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 2 / 4 题');
+    expect((host.querySelector('.lv2-quiz-nav') as HTMLButtonElement).disabled).toBe(false);
+
+    for (let question = 2; question <= 4; question += 1) {
+      (host.querySelector('.lv2-quiz > button') as HTMLButtonElement).click();
+      await nextTick();
+      (host.querySelector('.lv2-quiz-submit') as HTMLButtonElement).click();
+      await nextTick();
+      if (question < 4) {
+        (host.querySelector('.lv2-quiz-submit') as HTMLButtonElement).click();
+        await nextTick();
+      }
+    }
+
+    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 4 / 4 题');
+    expect(bank.style.display).not.toBe('none');
+    expect(bankToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(bank.textContent).toContain('4 / 4 已完成');
+    expect(host.querySelectorAll('[data-quiz-bank-status]').length).toBe(4);
+    for (const status of host.querySelectorAll('[data-quiz-bank-status]')) {
+      expect(['正确', '错误']).toContain(status.textContent?.trim());
+    }
+
+    (host.querySelector('[data-quiz-bank-item="2"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-quiz-meta')?.textContent).toContain('第 3 / 4 题');
+    expect(bank.style.display).toBe('none');
+    expect(bankToggle.getAttribute('aria-expanded')).toBe('false');
 
     // 自测清单来自课程步骤 checkpoint
     expect(host.querySelector('.lv2-quiz-checkpoints')?.textContent).toContain('本课自测清单');
@@ -754,7 +1059,9 @@ describe('LearningV2', () => {
     }));
     const host = await mountPage();
 
-    expect(host.querySelector('.lv2-lesson > header span')?.textContent).toContain('3/5');
+    expect(
+      host.querySelector('[data-session-stage="learn"] .session-stage-copy small')?.textContent,
+    ).toContain('3/5');
   });
 
   it('exits the immersive lesson with Escape and restores the overview', async () => {
@@ -789,10 +1096,9 @@ describe('LearningV2', () => {
     expect(root.querySelector('.lv2-subjects')).toBeNull();
     expect(root.querySelector('.lv2-pages')).toBeNull();
     expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
-    const tools = [...lesson.querySelectorAll('.lv2-lesson-head-tools .lv2-tool-chip')]
-      .map((button) => button.textContent?.trim());
-    expect(tools).toContain('实践');
-    expect(tools).toContain('练习');
+    const stages = [...root.querySelectorAll('[data-session-stage] .session-stage-name')]
+      .map((item) => item.textContent?.trim());
+    expect(stages).toEqual(['学习', '练习', '实践']);
 
     const last = lesson.querySelector('footer button:last-child') as HTMLButtonElement;
     last.focus();
@@ -804,18 +1110,18 @@ describe('LearningV2', () => {
     expect(document.documentElement.classList.contains('yz-learning-study')).toBe(false);
   });
 
-  it('exits the immersive lesson from both header controls', async () => {
+  it('exits the immersive lesson from both session controls', async () => {
     const host = await mountPage();
     (host.querySelector('.lv2-pages [data-page="lesson"]') as HTMLButtonElement).click();
     await nextTick();
 
-    (host.querySelector('.lv2-lesson [data-action="exit-lesson"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-learning-session] [aria-label="返回教材"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-lesson')).toBeNull();
 
     (host.querySelector('.lv2-pages [data-page="lesson"]') as HTMLButtonElement).click();
     await nextTick();
-    (host.querySelector('.lv2-lesson [aria-label="关闭课程"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-learning-session] [aria-label="退出本课"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-lesson')).toBeNull();
   });
@@ -833,8 +1139,8 @@ describe('LearningV2', () => {
 
     (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
     await nextTick();
-    // 练习页已是整窗学习态，返回教材走页内「返回教材」而不是隐藏的 legacy 导航
-    (host.querySelector('.lv2-subview-exit') as HTMLButtonElement).click();
+    // 练习与课程共用会话头，返回教材走统一入口
+    (host.querySelector('[data-learning-session] [aria-label="返回教材"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-continue')).toBeTruthy();
   });
@@ -924,7 +1230,7 @@ describe('LearningV2', () => {
     expect(host.textContent).toContain('权限矩阵');
     expect(host.textContent).toContain('修复与回归');
 
-    (host.querySelector('[data-action="exit-studio"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-learning-session] [aria-label="返回教材"]') as HTMLButtonElement).click();
     await nextTick();
     (host.querySelector('[data-subject="zhouyi"]') as HTMLButtonElement).click();
     await nextTick();
@@ -1038,29 +1344,50 @@ describe('LearningV2', () => {
     await nextTick();
     expect(host.querySelector('.lv2-studio-immersive')).toBeTruthy();
 
-    const practiceChip = [...host.querySelectorAll('.lv2-studio-immersive-bar .lv2-tool-chip')]
-      .find((button) => button.textContent?.trim() === '练习') as HTMLButtonElement;
-    practiceChip.click();
+    (host.querySelector('[data-session-stage="practice"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-quiz')).toBeTruthy();
-    expect(host.querySelector('.lv2-subview-bar')).toBeTruthy();
+    expect(host.querySelector('.lv2-subview-bar')).toBeNull();
+
+    (host.querySelector('[data-learning-session] .session-action') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-session-coach-surface')).toBeTruthy();
   });
 
   it('keeps the full-window learning shell while moving between lesson, practice and studio', async () => {
     const host = await mountPage();
-    const practiceChip = [...host.querySelectorAll('.lv2-topbar-actions .lv2-tool-chip')]
-      .find((button) => button.textContent?.trim() === '练习') as HTMLButtonElement;
-    practiceChip.click();
+    (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-quiz')).toBeTruthy();
     expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
     expect(host.querySelector('.lv2-subjects')).toBeNull();
-    expect(host.querySelector('.lv2-subview-bar .lv2-subview-exit')).toBeTruthy();
+    expect(host.querySelector('[data-learning-session]')).toBeTruthy();
 
-    (host.querySelector('.lv2-subview-bar button:nth-child(2)') as HTMLButtonElement).click();
+    (host.querySelector('[data-session-stage="learn"]') as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-lesson.inline')).toBeTruthy();
     expect(document.documentElement.classList.contains('yz-learning-study')).toBe(true);
+  });
+
+  it('exits practice and coach through the shared session escape path', async () => {
+    const host = await mountPage();
+    (host.querySelector('[data-page="practice"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-quiz')).toBeTruthy();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(host.querySelector('[data-learning-session]')).toBeNull();
+    expect(host.querySelector('.lv2-continue')).toBeTruthy();
+
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+    (host.querySelector('[data-learning-session] .session-action') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.lv2-session-coach-surface')).toBeTruthy();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(host.querySelector('[data-learning-session]')).toBeNull();
   });
 
   it('renders a textbook TOC on the overview and quick-navigation panes inside the lesson', async () => {
