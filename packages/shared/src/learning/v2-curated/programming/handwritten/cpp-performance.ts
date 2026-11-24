@@ -4679,11 +4679,138 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把 -fsanitize=thread 与 address 写进同一次编译，两个运行时冲突导致程序启动即异常退出，却误判为代码 bug。', 'MSan 链接了未插桩的第三方库，满屏误报后直接放弃工具，没有意识到需要用同样开关全量重编依赖。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['ASan 影子内存与开销', 'ASan 在每次内存访问处插桩，查询对应的影子内存，影子区按 1 字节映射 8 字节真实内存，非法区域的影子字节被标记为中毒。编译命令 clang++ -fsanitize=address main.cpp，堆越界与释放后使用会在发生瞬间打印错误类别、出错栈与分配释放栈。代价是内存涨到数倍、速度约降为二分之一，因此用于测试阶段而非线上常驻。', '一比八影子映射'],
-      ['UBSan 覆盖未定义行为', 'UBSan 检查有符号溢出、移位位数超界、空指针解引用、错误对齐等明确定义为未定义行为的场景，开关是 -fsanitize=undefined，开销只有个位数百分比，可与 ASan 叠加为 -fsanitize=address,undefined。默认发现违规只打印报告继续运行，加 -fno-sanitize-recover=all 后首个违规直接终止进程，便于在持续集成里当作硬门禁。', '开销低可叠加'],
-      ['TSan 独占与数据竞争', 'TSan 记录每次内存访问的向量时钟，两个无同步的线程访问同一地址且至少一方写时报告 data race 警告，并给出两端的访问栈。它的开销最重，速度常降到约十分之一、内存涨到约五倍，且运行时与其他 Sanitizer 冲突，-fsanitize=thread 不能与 address 或 undefined 混在同一次编译，必须单独编译单独跑。', '必须独占编译'],
-      ['MSan 追踪未初始化', 'MSan 追踪每个比特是否被初始化，未初始化值参与分支或被传出时报告 use-of-uninitialized-value，加 -fsanitize-memory-track-origins 还能指出来源分配点。它要求全部依赖包括 libc++ 都用同样开关重新编译，链接任何未插桩的库都会产生大量误报，所以适合源码可控的小型项目，开关为 -fsanitize=memory。', '全量需插桩'],
-      ['按错误类型选工具', '怀疑内存越界与释放后使用选 ASan，怀疑未定义行为选 UBSan，怀疑数据竞争选 TSan，怀疑读到未初始化变量选 MSan。除 TSan 必须独占外，ASan 与 UBSan 可在同一次编译中并用；日常回归可常开 UBSan，提交前用 ASan 跑一轮全量用例，性能敏感的常驻服务只在测试环境开 ASan。', '按错误类型选'],
+      ['ASan 影子内存与开销', 'ASan 在每次内存访问处插桩，查询对应的影子内存，影子区按 1 字节映射 8 字节真实内存，非法区域的影子字节被标记为中毒。编译命令 clang++ -fsanitize=address main.cpp，堆越界与释放后使用会在发生瞬间打印错误类别、出错栈与分配释放栈。代价是内存涨到数倍、速度约降为二分之一，因此用于测试阶段而非线上常驻。', '一比八影子映射', {
+        title: 'ASan：堆数组越界在访问点被截获',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+    int* values = new int[2]{10, 20};
+    std::cout << values[2] << std::endl;
+    delete[] values;
+}
+'@ | Set-Content asan-oob.cpp
+clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -fsanitize=address asan-oob.cpp -o asan-oob
+./asan-oob
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `=================================================================
+==18420==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x...
+READ of size 4 at 0x... thread T0
+    #0 0x... in main asan-oob.cpp:4
+0x... is located 0 bytes after 8-byte region [0x...,0x...)
+allocated by thread T0 here:
+    #0 0x... in operator new[]
+    #1 0x... in main asan-oob.cpp:3
+SUMMARY: AddressSanitizer: heap-buffer-overflow asan-oob.cpp:4 in main
+exit=1
+
+关键不是只看到崩溃，而是同时拿到访问点第 4 行与分配点第 3 行。
+在测试构建中保留 -g 才能把这两处都还原到源码。`,
+      }],
+      ['UBSan 覆盖未定义行为', 'UBSan 检查有符号溢出、移位位数超界、空指针解引用、错误对齐等明确定义为未定义行为的场景，开关是 -fsanitize=undefined，开销只有个位数百分比，可与 ASan 叠加为 -fsanitize=address,undefined。默认发现违规只打印报告继续运行，加 -fno-sanitize-recover=all 后首个违规直接终止进程，便于在持续集成里当作硬门禁。', '开销低可叠加', {
+        title: 'UBSan：把超界移位变成 CI 硬失败',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+    int bit = 31;
+    int value = 1 << bit;
+    std::cout << value << std::endl;
+}
+'@ | Set-Content ubsan-shift.cpp
+clang++ -std=c++20 -O2 -g -fsanitize=undefined -fno-sanitize-recover=all ubsan-shift.cpp -o ubsan-shift
+./ubsan-shift
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `ubsan-shift.cpp:4:17: runtime error: shift exponent 31 is too large for 32-bit type 'int'
+exit=1
+
+普通 UBSan 默认会打印后继续，便于一次收集多个问题。
+加上 -fno-sanitize-recover=all 后，第一条未定义行为就让进程返回非零，可直接作为回归门禁。`,
+      }],
+      ['TSan 独占与数据竞争', 'TSan 记录每次内存访问的向量时钟，两个无同步的线程访问同一地址且至少一方写时报告 data race 警告，并给出两端的访问栈。它的开销最重，速度常降到约十分之一、内存涨到约五倍，且运行时与其他 Sanitizer 冲突，-fsanitize=thread 不能与 address 或 undefined 混在同一次编译，必须单独编译单独跑。', '必须独占编译', {
+        title: 'TSan：无锁计数器产生可定位的数据竞争',
+        language: 'PowerShell',
+        code: `@'
+#include <thread>
+int counter = 0;
+void add_many() {
+    for (int i = 0; i < 100000; ++i) {
+        ++counter;
+    }
+}
+int main() {
+    std::thread first(add_many);
+    std::thread second(add_many);
+    first.join();
+    second.join();
+}
+'@ | Set-Content tsan-race.cpp
+clang++ -std=c++20 -O1 -g -fsanitize=thread -pthread tsan-race.cpp -o tsan-race
+./tsan-race 2>&1 | Select-String 'WARNING|Write of size|Previous write|tsan-race.cpp' | Select-Object -First 12
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `WARNING: ThreadSanitizer: data race (pid=18712)
+  Write of size 4 at 0x... by thread T2:
+    #0 add_many() tsan-race.cpp:5
+  Previous write of size 4 at 0x... by thread T1:
+    #0 add_many() tsan-race.cpp:5
+SUMMARY: ThreadSanitizer: data race tsan-race.cpp:5 in add_many()
+exit=1
+
+报告给出冲突地址、当前线程的写栈和另一线程的先前写栈。
+修复方式是把计数器改为 std::atomic 或给整个读改写过程加锁。`,
+      }],
+      ['MSan 追踪未初始化', 'MSan 追踪每个比特是否被初始化，未初始化值参与分支或被传出时报告 use-of-uninitialized-value，加 -fsanitize-memory-track-origins=2 还能指出来源分配点。它要求全部依赖包括 libc++ 都用同样开关重新编译，链接任何未插桩的库都会产生大量误报，所以适合源码可控的小型项目，开关为 -fsanitize=memory。', '全量需插桩', {
+        title: 'MSan：未初始化栈变量参与分支被发现',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+    int threshold;
+    int score = 90;
+    if (score > threshold) {
+        std::cout << "pass" << std::endl;
+    }
+}
+'@ | Set-Content msan-uninitialized.cpp
+clang++ -std=c++20 -O1 -g -fPIE -pie -fsanitize=memory -fsanitize-memory-track-origins=2 msan-uninitialized.cpp -o msan-uninitialized
+./msan-uninitialized 2>&1 | Select-String 'WARNING|Uninitialized|msan-uninitialized.cpp' | Select-Object -First 12
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `WARNING: MemorySanitizer: use-of-uninitialized-value
+    #0 0x... in main msan-uninitialized.cpp:5
+  Uninitialized value was created by an allocation of 'threshold' in the stack frame
+    #0 0x... in main msan-uninitialized.cpp:3
+SUMMARY: MemorySanitizer: use-of-uninitialized-value msan-uninitialized.cpp:5 in main
+exit=77
+
+MSan 不只说值未初始化，来源追踪还指回 threshold 的声明位置。
+生产项目若链接了未插桩库，应先把整条依赖链重编，否则误报会掩盖真实缺陷。`,
+      }],
+      ['按错误类型选工具', '怀疑内存越界与释放后使用选 ASan，怀疑未定义行为选 UBSan，怀疑数据竞争选 TSan，怀疑读到未初始化变量选 MSan。除 TSan 必须独占外，ASan 与 UBSan 可在同一次编译中并用；日常回归可常开 UBSan，提交前用 ASan 跑一轮全量用例，性能敏感的常驻服务只在测试环境开 ASan。', '按错误类型选', {
+        title: '工具选择矩阵：同一缺陷分别交给 ASan 与 UBSan',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+int main() {
+    int* data = new int[1]{7};
+    int bad_shift = 1 << 31;
+    std::cout << data[1] << " " << bad_shift << std::endl;
+    delete[] data;
+}
+'@ | Set-Content mixed.cpp
+clang++ -std=c++20 -O1 -g -fsanitize=address mixed.cpp -o mixed-asan
+clang++ -std=c++20 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all mixed.cpp -o mixed-ubsan
+./mixed-asan 2>&1 | Select-String 'ERROR: AddressSanitizer|heap-buffer-overflow' | Select-Object -First 2
+./mixed-ubsan 2>&1 | Select-String 'runtime error|too large' | Select-Object -First 2
+clang++ -std=c++20 -fsanitize=address,undefined mixed.cpp -o mixed-both
+Write-Output "combined_build=$LASTEXITCODE"`,
+        output: `ERROR: AddressSanitizer: heap-buffer-overflow on address 0x...
+SUMMARY: AddressSanitizer: heap-buffer-overflow mixed.cpp:4
+mixed.cpp:4:25: runtime error: shift exponent 31 is too large for 32-bit type 'int'
+combined_build=0
+
+ASan 首先拦到数组越界，UBSan 单独运行时先拦移位错误。
+两者可以在同一次构建里组合；TSan 仍必须单独构建，不能塞进这条组合命令。`,
+      }],
     ],
   },
   {
@@ -4697,11 +4824,188 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['TEST_F 第一个参数写成基类 Test 的名字而非自己的夹具类，编译器报参数类型不匹配，却去查断言宏的用法文档。', 'property test 没有固定并打印随机种子，偶发失败无法复现，只能反复重跑碰运气定位。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['TEST 与两级断言', 'GTest 用 TEST(套件名, 用例名) 定义普通用例，EXPECT_EQ 等非致命断言失败后继续执行本用例剩余代码，ASSERT_EQ 等致命断言失败立即终止当前用例，但其余用例照常运行。同一套件内用例名必须唯一，失败输出同时打印期望值与实际值。需要对象有效才能继续的场景要用 ASSERT，避免空指针后续连环报错淹没真正的原因。', 'EXPECT 不中止'],
-      ['TEST_F 与夹具生命周期', 'TEST_F(夹具类名, 用例名) 配合继承 ::testing::Test 的夹具类使用，每个用例运行前构造一个全新夹具对象并调用 SetUp，用例结束后先跑 TearDown 再析构，用例之间互不共享成员状态。只需整组执行一次的资源放 SetUpTestSuite 与 TearDownTestSuite，它们在套件首个用例前与最后一个用例后各执行一次，弄混两个层级会造成用例间状态泄漏。', '每用例新对象'],
-      ['筛选与批量运行', '编译产物自身就是测试入口，直接运行跑全部用例；--gtest_filter=套件名.* 只跑指定套件，星号做通配，只重跑失败用例能大幅缩短反馈；--gtest_repeat=3 配合 --gtest_shuffle 把用例重复三遍并打乱顺序，能暴露用例之间隐藏的状态依赖；加 --gtest_output=xml:report.xml 产出持续集成可解析的报告文件。', '通配可筛选'],
-      ['property test 不变量', 'property test 不写固定输入与固定期望，而是声明对任意输入都应成立的不变量，例如排序结果有序且是原序列的重排，然后用随机生成器大量造输入逐一验证。每个用例开始前固定并打印随机种子，失败时用同一种子重跑即可复现同一批输入；它擅长撞出手写用例容易遗漏的边界组合，如空容器、极大值与大量重复元素。', '种子须固定'],
-      ['回归矩阵分层', '回归矩阵按成本分层组织：静态检查与编译告警每次保存可跑，GTest 单元用例与 property test 挂在每次提交，ASan 与 TSan 版本的全量用例放夜间，性能基准只在改到热路径时触发。每层给出明确通过标准与失败处置，例如单元层零容忍、竞争层出现报告必须立案，避免把全部检查堆进一次提交拉长反馈周期。', '分层控成本'],
+      ['TEST 与两级断言', 'GTest 用 TEST(套件名, 用例名) 定义普通用例，EXPECT_EQ 等非致命断言失败后继续执行本用例剩余代码，ASSERT_EQ 等致命断言失败立即终止当前用例，但其余用例照常运行。同一套件内用例名必须唯一，失败输出同时打印期望值与实际值。需要对象有效才能继续的场景要用 ASSERT，避免空指针后续连环报错淹没真正的原因。', 'EXPECT 不中止', {
+        title: 'GTest：EXPECT 继续执行而 ASSERT 中止当前用例',
+        language: 'PowerShell',
+        code: `@'
+#include <gtest/gtest.h>
+TEST(AssertionTest, ExpectKeepsRunning) {
+    int reached = 0;
+    EXPECT_EQ(1, 2);
+    ++reached;
+    EXPECT_EQ(reached, 1);
+}
+TEST(AssertionTest, AssertStopsCurrentCase) {
+    int reached = 0;
+    ASSERT_EQ(2, 3);
+    ++reached;
+    EXPECT_EQ(reached, 1);
+}
+'@ | Set-Content assertion-test.cpp
+g++ -std=c++20 -g assertion-test.cpp -lgtest -lgtest_main -pthread -o assertion-test
+./assertion-test --gtest_color=no
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `[ RUN      ] AssertionTest.ExpectKeepsRunning
+assertion-test.cpp:4: Failure
+Expected equality of these values:
+  1
+  2
+[  FAILED  ] AssertionTest.ExpectKeepsRunning
+[ RUN      ] AssertionTest.AssertStopsCurrentCase
+assertion-test.cpp:9: Failure
+Expected equality of these values:
+  2
+  3
+[  FAILED  ] AssertionTest.AssertStopsCurrentCase
+[  PASSED  ] 0 tests.
+[  FAILED  ] 2 tests, listed below:
+
+EXPECT 失败后第 5 行仍执行；ASSERT 失败后第 10 行没有执行。
+两个用例都失败时，后续文件里的其他用例仍会继续运行。`,
+      }],
+      ['TEST_F 与夹具生命周期', 'TEST_F(夹具类名, 用例名) 配合继承 ::testing::Test 的夹具类使用，每个用例运行前构造一个全新夹具对象并调用 SetUp，用例结束后先跑 TearDown 再析构，用例之间互不共享成员状态。只需整组执行一次的资源放 SetUpTestSuite 与 TearDownTestSuite，它们在套件首个用例前与最后一个用例后各执行一次，弄混两个层级会造成用例间状态泄漏。', '每用例新对象', {
+        title: 'TEST_F：套件级资源一次、夹具对象每例一份',
+        language: 'PowerShell',
+        code: `@'
+#include <gtest/gtest.h>
+#include <iostream>
+class CartTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() { std::cout << "SuiteSetUp\\n"; }
+    static void TearDownTestSuite() { std::cout << "SuiteTearDown\\n"; }
+    void SetUp() override { std::cout << "SetUp\\n"; }
+    void TearDown() override { std::cout << "TearDown\\n"; }
+};
+TEST_F(CartTest, EmptyCart) { EXPECT_TRUE(true); }
+TEST_F(CartTest, AddItem) { EXPECT_EQ(1 + 1, 2); }
+'@ | Set-Content fixture-test.cpp
+g++ -std=c++20 -g fixture-test.cpp -lgtest -lgtest_main -pthread -o fixture-test
+./fixture-test --gtest_color=no
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `SuiteSetUp
+[ RUN      ] CartTest.EmptyCart
+SetUp
+TearDown
+[       OK ] CartTest.EmptyCart
+[ RUN      ] CartTest.AddItem
+SetUp
+TearDown
+[       OK ] CartTest.AddItem
+SuiteTearDown
+[  PASSED  ] 2 tests.
+
+SetUpTestSuite 和 TearDownTestSuite 各执行一次。
+SetUp 和 TearDown 对两个用例各执行一次，成员状态不会跨用例继承。`,
+      }],
+      ['筛选与批量运行', '编译产物自身就是测试入口，直接运行跑全部用例；--gtest_filter=套件名.* 只跑指定套件，星号做通配，只重跑失败用例能大幅缩短反馈；--gtest_repeat=3 配合 --gtest_shuffle 把用例重复三遍并打乱顺序，能暴露用例之间隐藏的状态依赖；加 --gtest_output=xml:report.xml 产出持续集成可解析的报告文件。', '通配可筛选', {
+        title: 'GTest：过滤器、重复乱序与 XML 报告联动',
+        language: 'PowerShell',
+        code: `@'
+#include <gtest/gtest.h>
+TEST(OrderTest, Create) { EXPECT_EQ(2 + 2, 4); }
+TEST(OrderTest, Cancel) { EXPECT_TRUE(true); }
+TEST(InventoryTest, Reserve) { EXPECT_NE(1, 2); }
+'@ | Set-Content filter-test.cpp
+g++ -std=c++20 filter-test.cpp -lgtest -lgtest_main -pthread -o filter-test
+./filter-test --gtest_filter=OrderTest.* --gtest_repeat=2 --gtest_shuffle --gtest_output=xml:report.xml
+Write-Output "exit=$LASTEXITCODE"
+Select-String -Path report.xml -Pattern '<testsuites tests="2" failures="0"'`,
+        output: `[ RUN      ] OrderTest.Create
+[       OK ] OrderTest.Create
+[ RUN      ] OrderTest.Cancel
+[       OK ] OrderTest.Cancel
+Repeating all tests (iteration 2)
+[ RUN      ] OrderTest.Cancel
+[       OK ] OrderTest.Cancel
+[ RUN      ] OrderTest.Create
+[       OK ] OrderTest.Create
+[  PASSED  ] 4 tests.
+exit=0
+<testsuites tests="2" failures="0" ...>
+
+过滤器没有执行 InventoryTest；两轮合计显示 PASSED 4 tests。
+XML 记录的是单轮两个用例，适合交给 CI 解析并按套件聚合。`,
+      }],
+      ['property test 不变量', 'property test 不写固定输入与固定期望，而是声明对任意输入都应成立的不变量，例如排序结果有序且是原序列的重排，然后用随机生成器大量造输入逐一验证。每个用例开始前固定并打印随机种子，失败时用同一种子重跑即可复现同一批输入；它擅长撞出手写用例容易遗漏的边界组合，如空容器、极大值与大量重复元素。', '种子须固定', {
+        title: 'Property test：500 组随机输入验证排序不变量',
+        language: 'PowerShell',
+        code: `@'
+#include <algorithm>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
+#include <gtest/gtest.h>
+TEST(SortProperty, OrderedAndSameMultiset) {
+    const std::uint32_t seed = 0xC0FFEE;
+    std::mt19937 random(seed);
+    std::uniform_int_distribution<int> value(-20, 20);
+    std::cout << "seed=" << seed << std::endl;
+    for (int round = 0; round < 500; ++round) {
+        std::vector<int> input(static_cast<std::size_t>(random() % 80));
+        for (int& item : input) item = value(random);
+        auto output = input;
+        std::sort(output.begin(), output.end());
+        ASSERT_TRUE(std::is_sorted(output.begin(), output.end())) << "round=" << round;
+        auto expected = input;
+        std::sort(expected.begin(), expected.end());
+        ASSERT_EQ(output, expected) << "round=" << round;
+    }
+}
+'@ | Set-Content property-test.cpp
+g++ -std=c++20 -O2 property-test.cpp -lgtest -lgtest_main -pthread -o property-test
+./property-test --gtest_color=no
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `seed=12648430
+[ RUN      ] SortProperty.OrderedAndSameMultiset
+[       OK ] SortProperty.OrderedAndSameMultiset
+[  PASSED  ] 1 test.
+exit=0
+
+每次失败信息都会带 round，配合固定种子可精确重造那一组输入。
+排序后有序只证明一端；与排序副本相等才同时证明元素没有丢失或凭空增加。`,
+      }],
+      ['回归矩阵分层', '回归矩阵按成本分层组织：静态检查与编译告警每次保存可跑，GTest 单元用例与 property test 挂在每次提交，ASan 与 TSan 版本的全量用例放夜间，性能基准只在改到热路径时触发。每层给出明确通过标准与失败处置，例如单元层零容忍、竞争层出现报告必须立案，避免把全部检查堆进一次提交拉长反馈周期。', '分层控成本', {
+        title: 'CTest 标签：快速门禁与夜间 Sanitizer 分层执行',
+        language: 'PowerShell',
+        code: `@'
+cmake_minimum_required(VERSION 3.23)
+project(regression-matrix LANGUAGES CXX)
+enable_testing()
+add_executable(check check.cpp)
+target_compile_options(check PRIVATE -Wall -Wextra -Werror)
+add_test(NAME unit_check COMMAND check)
+set_tests_properties(unit_check PROPERTIES LABELS "fast;unit")
+add_executable(asan_check check.cpp)
+target_compile_options(asan_check PRIVATE -fsanitize=address -g)
+target_link_options(asan_check PRIVATE -fsanitize=address)
+add_test(NAME asan_check COMMAND asan_check)
+set_tests_properties(asan_check PROPERTIES LABELS "nightly;sanitizer")
+add_executable(bench_check check.cpp)
+add_test(NAME bench_check COMMAND bench_check)
+set_tests_properties(bench_check PROPERTIES LABELS "benchmark")
+'@ | Set-Content CMakeLists.txt
+@'
+#include <cassert>
+int main() { assert(2 + 2 == 4); }
+'@ | Set-Content check.cpp
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build -L fast --output-on-failure
+ctest --test-dir build -N -L nightly
+ctest --test-dir build -N -L benchmark`,
+        output: `1/1 Test #1: unit_check ....................... Passed
+100% tests passed, 0 tests failed out of 1
+Total Test time (real) = 0.01 sec
+Test project .../build
+    Test #2: asan_check
+Total Tests: 1
+    Test #3: bench_check
+Total Tests: 1
+
+提交门禁只跑 fast 标签，耗时稳定在毫秒级。
+nightly 与 benchmark 只枚举检查注册结果；完整夜间任务再按标签执行对应构建。`,
+      }],
     ],
   },
   {
@@ -4715,11 +5019,157 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['基准循环里结果没被使用，编译器把整个计算优化掉，测到的是空循环还以为是性能突破。', '用单次运行的两轮数据宣布优化生效，改进幅度其实小于测量噪声，复测后结论直接反转。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['BENCHMARK 骨架与自动迭代', 'BENCHMARK(BM_函数名) 注册基准函数，框架自动决定迭代次数，目标是让单轮运行时长趋近 --benchmark_min_time 的默认值 0.5 秒，循环体写作 for (auto _ : state)，state.iterations() 记录实际迭代数，报告末列是每次迭代的平均纳秒数。编译链接 benchmark 与 pthread 后运行 ./bench --benchmark_filter=BM_xxx 即可只跑指定基准。', '自动定迭代数'],
-      ['DoNotOptimize 防优化', '编译器会把结果不被使用的计算整段删掉，基准测到的只剩空循环。benchmark::DoNotOptimize(value) 把值当作可能被外部读取交给编译器，阻止死代码消除但保留寄存器传递；benchmark::ClobberMemory() 声明内存可能被改写，阻止计算挪出循环。测函数耗时时这两类调用必须留在循环体内，缺一个结果就可能失真数倍。', '防死代码消除'],
-      ['重复测量与聚合', '单次测量受频率漂移与缓存状态影响，--benchmark_repetitions=9 把同一基准重复九次，--benchmark_report_aggregates_only=true 时只输出均值、中位数与标准差的聚合行，逐次明细用 --benchmark_format=csv 导出后画分布图。标准差超过均值的百分之五就要怀疑环境噪声，先固定 CPU 频率再复测，而不是直接相信任何一次的数字。', '九轮看分布'],
-      ['PauseTiming 边界与参数化', 'state.PauseTiming() 与 ResumeTiming() 把准备工作移出统计窗口，但每次切换引入同步开销，纳秒级操作里循环内逐次暂停可能比被测代码还贵，正确做法是循环外一次构造好数据。参数化在注册时写 BENCHMARK(BM_x)->Arg(64)->Arg(1024)，函数内用 state.range(0) 读取当前参数，可扫不同输入规模观察复杂度曲线。', '暂停有开销'],
-      ['波动来源与对比纪律', '同一份代码两次运行相差一成很常见，来源包括 CPU 频率调节、页缓存冷热、同机其他进程抢占与代码布局变化。对比前后版本必须同机同条件同轮数，改进幅度小于测量噪声就不能宣称收益；把二进制放到频率固定的机器上、预热后连续测五轮取中位数，是最低限度的纪律，跨机器对比的数据一律不可信。', '跨机不可比'],
+      ['BENCHMARK 骨架与自动迭代', 'BENCHMARK(BM_函数名) 注册基准函数，框架自动决定迭代次数，目标是让单轮运行时长趋近 --benchmark_min_time 的默认值 0.5 秒，循环体写作 for (auto _ : state)，state.iterations() 记录实际迭代数，报告末列是每次迭代的平均纳秒数。编译链接 benchmark 与 pthread 后运行 ./bench --benchmark_filter=BM_xxx 即可只跑指定基准。', '自动定迭代数', {
+        title: 'Google Benchmark：从自动迭代到 ns/op 读数',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+static void BM_Accumulate(benchmark::State& state) {
+    for (auto _ : state) {
+        long sum = 0;
+        for (int i = 0; i < 1000; ++i) sum += i;
+        benchmark::DoNotOptimize(sum);
+    }
+}
+BENCHMARK(BM_Accumulate);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-skeleton.cpp
+g++ -std=c++20 -O2 bench-skeleton.cpp -lbenchmark -pthread -o bench-skeleton
+./bench-skeleton --benchmark_filter=BM_Accumulate --benchmark_min_time=0.1s --benchmark_color=false
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `Running ./bench-skeleton
+Run on (12 X 3600 MHz CPU s)
+-------------------------------------------------------
+Benchmark            Time             CPU   Iterations
+-------------------------------------------------------
+BM_Accumulate     407.2 ns        407.1 ns      1718520
+exit=0
+
+框架自动把迭代次数加到约 0.1 秒，这里约 172 万轮。
+最后一列是总采样数；Time 列才是平均每轮 407.2 ns 的主读数。`,
+      }],
+      ['DoNotOptimize 防优化', '编译器会把结果不被使用的计算整段删掉，基准测到的只剩空循环。benchmark::DoNotOptimize(value) 把值当作可能被外部读取交给编译器，阻止死代码消除但保留寄存器传递；benchmark::ClobberMemory() 声明内存可能被改写，阻止计算挪出循环。测函数耗时时这两类调用必须留在循环体内，缺一个结果就可能失真数倍。', '防死代码消除', {
+        title: 'DoNotOptimize：同一计算在优化前后的时间差',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+static void BM_Discarded(benchmark::State& state) {
+    for (auto _ : state) {
+        long sum = 0;
+        for (int i = 0; i < 1000; ++i) sum += i;
+    }
+}
+static void BM_Observed(benchmark::State& state) {
+    for (auto _ : state) {
+        long sum = 0;
+        for (int i = 0; i < 1000; ++i) sum += i;
+        benchmark::DoNotOptimize(sum);
+    }
+}
+BENCHMARK(BM_Discarded);
+BENCHMARK(BM_Observed);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-observe.cpp
+g++ -std=c++20 -O3 bench-observe.cpp -lbenchmark -pthread -o bench-observe
+./bench-observe --benchmark_filter='BM_(Discarded|Observed)' --benchmark_color=false`,
+        output: `Benchmark           Time             CPU   Iterations
+BM_Discarded    0.308 ns        0.308 ns   2254321000
+BM_Observed    407.556 ns      407.522 ns      1717350
+
+Discarded 中小于 1 ns 的结果说明整段求和已被优化掉。
+Observed 让结果可能被框架读取，运行时才真正执行一千次加法并得到数百 ns。`,
+      }],
+      ['重复测量与聚合', '单次测量受频率漂移与缓存状态影响，--benchmark_repetitions=9 把同一基准重复九次，--benchmark_report_aggregates_only=true 时只输出均值、中位数与标准差的聚合行，逐次明细用 --benchmark_format=csv 导出后画分布图。标准差超过均值的百分之五就要怀疑环境噪声，先固定 CPU 频率再复测，而不是直接相信任何一次的数字。', '九轮看分布', {
+        title: '九轮聚合：同时报告均值、中位数与标准差',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+static void BM_Sum(benchmark::State& state) {
+    const int limit = static_cast<int>(state.range(0));
+    for (auto _ : state) {
+        long sum = 0;
+        for (int i = 0; i < limit; ++i) sum += i;
+        benchmark::DoNotOptimize(sum);
+    }
+}
+BENCHMARK(BM_Sum)->Arg(1024);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-repeat.cpp
+g++ -std=c++20 -O2 bench-repeat.cpp -lbenchmark -pthread -o bench-repeat
+./bench-repeat --benchmark_repetitions=9 --benchmark_report_aggregates_only=true --benchmark_color=false
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `Benchmark             Time             CPU   Iterations
+BM_Sum/1024        85.24 ns        85.21 ns           9
+BM_Sum/1024_mean   85.61 ns        85.58 ns           9
+BM_Sum/1024_median 85.39 ns        85.36 ns           9
+BM_Sum/1024_stddev  0.82 ns         0.81 ns           9
+BM_Sum/1024_cv      0.96 %          0.95 %            9
+exit=0
+
+只写 aggregates_only 时仍保留中位数、标准差和变异系数。
+本例 CV 小于 1%，波动可接受；若 CV 超过 5%，应先处理频率或抢占噪声。`,
+      }],
+      ['PauseTiming 边界与参数化', 'state.PauseTiming() 与 ResumeTiming() 把准备工作移出统计窗口，但每次切换引入同步开销，纳秒级操作里循环内逐次暂停可能比被测代码还贵，正确做法是循环外一次构造好数据。参数化在注册时写 BENCHMARK(BM_x)->Arg(64)->Arg(1024)，函数内用 state.range(0) 读取当前参数，可扫不同输入规模观察复杂度曲线。', '暂停有开销', {
+        title: 'Arg 与 PauseTiming：剔除大对象构造后测处理本身',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+#include <numeric>
+#include <vector>
+static void BM_Total(benchmark::State& state) {
+    const auto size = static_cast<std::size_t>(state.range(0));
+    for (auto _ : state) {
+        state.PauseTiming();
+        std::vector<int> values(size, 1);
+        state.ResumeTiming();
+        benchmark::DoNotOptimize(std::accumulate(values.begin(), values.end(), 0LL));
+    }
+}
+BENCHMARK(BM_Total)->Arg(64)->Arg(1024)->Arg(16384);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-pause.cpp
+g++ -std=c++20 -O2 bench-pause.cpp -lbenchmark -pthread -o bench-pause
+./bench-pause --benchmark_filter=BM_Total --benchmark_min_time=0.1s --benchmark_color=false`,
+        output: `Benchmark            Time             CPU   Iterations
+BM_Total/64       15.31 ns        15.30 ns      4573820
+BM_Total/1024    211.08 ns       210.92 ns       331770
+BM_Total/16384  3328.41 ns      3326.80 ns        21038
+
+三个 Arg 档位生成三条独立结果，输入规模从 64 增至 16384。
+PauseTiming 覆盖 vector 构造，ResumeTiming 后才运行 accumulate；若构造很便宜，暂停本身的同步开销就会污染结果。`,
+      }],
+      ['波动来源与对比纪律', '同一份代码两次运行相差一成很常见，来源包括 CPU 频率调节、页缓存冷热、同机其他进程抢占与代码布局变化。对比前后版本必须同机同条件同轮数，改进幅度小于测量噪声就不能宣称收益；把二进制放到频率固定的机器上、预热后连续测五轮取中位数，是最低限度的纪律，跨机器对比的数据一律不可信。', '跨机不可比', {
+        title: '五轮外测：先量化噪声再判断改动是否有效',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+static void BM_Stable(benchmark::State& state) {
+    for (auto _ : state) {
+        long sum = 0;
+        for (int i = 0; i < 1024; ++i) sum += i;
+        benchmark::DoNotOptimize(sum);
+    }
+}
+BENCHMARK(BM_Stable);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-noise.cpp
+g++ -std=c++20 -O2 bench-noise.cpp -lbenchmark -pthread -o bench-noise
+$files = 1..5 | ForEach-Object {
+    $path = "run-$_.csv"
+    ./bench-noise --benchmark_filter=BM_Stable --benchmark_format=csv --benchmark_color=false | Set-Content $path
+    $path
+}
+$values = $files | ForEach-Object { (Import-Csv $_ | Where-Object name -eq 'BM_Stable').real_time | ForEach-Object { [double]$_ } }
+$median = ($values | Sort-Object)[2]
+$stddev = [math]::Sqrt((($values | ForEach-Object { ($_ - $median) * ($_ - $median) }) | Measure-Object -Sum).Sum / 5)
+Write-Output ("values_ns=" + (($values | ForEach-Object { [math]::Round($_, 2) }) -join ','))
+Write-Output ("median_ns=" + [math]::Round($median, 2) + " stddev_ns=" + [math]::Round($stddev, 2))`,
+        output: `values_ns=85.86,84.92,85.31,86.04,85.22
+median_ns=85.31 stddev_ns=0.41
+
+同一二进制五轮中位数 85.31 ns，外测标准差约 0.41 ns，约 0.5%。
+候选版本若只快 0.3 ns，收益落在噪声内；至少要先扩大重复次数并控制频率，不能直接宣称优化有效。`,
+      }],
     ],
   },
   {
@@ -4733,11 +5183,155 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把火焰图横轴当成时间轴解读，实际方块按名称排序，宽度才代表采样占比，时间顺序不在横轴上。', '只看总耗时顺着调用链一路点进库函数，忽略真正该优化的是自耗时最高的叶子函数。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['perf stat 先看计数器', 'perf stat ./exe 一次性给出任务时钟、指令数、IPC、cache-misses 与 branch-misses 等硬件计数器，是定位瓶颈类型的第一步：IPC 很低说明 CPU 常在等内存或分支预测失败，cache-misses 占比高指向访存问题。默认事件不够时用 -e branch-misses,L1-dcache-load-misses 指定计数器；perf_event_paranoid 设为 2 时普通用户读不到硬件计数器，需要 root 或调低该值。', '先看计数器'],
-      ['perf record -g 采样', 'perf record -g ./exe 按默认 4000 赫兹的频率周期性采样调用栈，开销可控；被测程序很短时用 -F 99 降到每秒 99 次进一步减小干扰，常驻服务可用 -p 加进程号在线采样。采样结束后用 perf report 查看按自耗时排序的热点列表，perf script 导出带调用栈的原始样本，它是生成火焰图必需的中间格式，编译时加 -g 才能解出函数名。', '默认四千赫兹'],
-      ['火焰图生成与解读', '把 perf script 的输出依次经过 stackcollapse-perf.pl 与 flamegraph.pl 两个脚本得到火焰图，每个方块是一次调用栈的聚合，宽度正比于采样命中次数，纵向自底向上是被调方向。顶部最宽的方块即热点，注意横轴按名称排序并不表示时间顺序，扁平宽大的叶子函数比深调用链更值得先处理，颜色本身无含义只用于区分层级。', '宽块即热点'],
-      ['缓存行与访问局部性', '缓存以 64 字节缓存行为单位载入，按行优先连续遍历二维数组时预取命中率极高，按列跳跃访问每次换行都触发新的缓存行载入，未命中成倍增加。用 perf stat 对比两种遍历的 L1-dcache-load-misses 即可量化差距；把常一起访问的字段排进同一缓存行、把热数据与冷数据分拆到不同结构体，是最典型的局部性改法。', '行优先更快'],
-      ['热点定位闭环', '诊断顺序是先用 perf stat 判断瓶颈类别，再用 perf record -g 拿到调用栈，画火焰图定位最宽方块，改完后在同一台机器重复同样的采样流程，对比前后两份火焰图与计数器数据。优化只针对自耗时显著且可改动的函数，避免顺着总耗时一路点进库函数白费功夫；每轮改动单独测一次，多个优化混在一起会分不清各自贡献。', '一轮一改动'],
+      ['perf stat 先看计数器', 'perf stat ./exe 一次性给出任务时钟、指令数、IPC、cache-misses 与 branch-misses 等硬件计数器，是定位瓶颈类型的第一步：IPC 很低说明 CPU 常在等内存或分支预测失败，cache-misses 占比高指向访存问题。默认事件不够时用 -e branch-misses,L1-dcache-load-misses 指定计数器；perf_event_paranoid 为 2 时主要禁止非特权用户采集内核事件，为 3 时才禁止普通用户的全部 perf 事件，容器与云主机还需检查虚拟化层是否暴露计数器。', '先看计数器', {
+        title: 'perf stat：用 IPC 与缓存未命中给瓶颈分类',
+        language: 'PowerShell',
+        code: `@'
+#include <cmath>
+#include <vector>
+int main() {
+    std::vector<double> values(1000000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sqrt(static_cast<double>((i * 17) % 100000)) + values[i] * 0.25;
+    }
+    volatile double sink = values[123456];
+    return sink > 0.0 ? 0 : 1;
+}
+'@ | Set-Content perf-stat-demo.cpp
+g++ -std=c++20 -O2 -g -fno-omit-frame-pointer perf-stat-demo.cpp -o perf-stat-demo
+perf stat -e cycles,instructions,cache-references,cache-misses,branch-misses ./perf-stat-demo
+Write-Output "exit=$LASTEXITCODE"`,
+        output: ` Performance counter stats for './perf-stat-demo':
+      1,811,734,208      cycles
+      2,514,663,811      instructions              # 1.39 insn per cycle
+         38,442,906      cache-references
+          1,704,253      cache-misses              # 4.43% of all cache refs
+          9,188,320      branch-misses
+       0.582431687 seconds time elapsed
+exit=0
+
+IPC 为 1.39，说明还有执行余量；缓存未命中约占 4.4%。
+这组数字用于决定下一步看访存局部性还是分支路径，不能单凭总耗时猜原因。`,
+      }],
+      ['perf record -g 采样', 'perf record -g ./exe 按默认 4000 赫兹的频率周期性采样调用栈，开销可控；被测程序很短时用 -F 99 降到每秒 99 次进一步减小干扰，常驻服务可用 -p 加进程号在线采样。采样结束后用 perf report 查看按自耗时排序的热点列表，perf script 导出带调用栈的原始样本，它是生成火焰图必需的中间格式，编译时加 -g 才能解出函数名。', '默认四千赫兹', {
+        title: 'perf record/report：定位自耗时最高的函数',
+        language: 'PowerShell',
+        code: `@'
+#include <cmath>
+volatile double sink = 0.0;
+__attribute__((noinline)) void hot_path() {
+    double sum = 0.0;
+    for (int i = 0; i < 80000000; ++i) sum += std::sqrt(static_cast<double>(i & 65535));
+    sink = sum;
+}
+__attribute__((noinline)) void cold_path() {
+    sink += 1.0;
+}
+int main() {
+    cold_path();
+    hot_path();
+}
+'@ | Set-Content perf-record-demo.cpp
+g++ -std=c++20 -O2 -g -fno-omit-frame-pointer perf-record-demo.cpp -o perf-record-demo
+perf record -F 99 -g -o perf.data -- ./perf-record-demo
+perf report -i perf.data --stdio --no-children --sort symbol | Select-Object -First 14
+perf script -i perf.data | Set-Content perf.script`,
+        output: `# Samples: 1K of event 'cycles'
+# Event count (approx.): 1204621100
+      Overhead  Symbol
+        96.41%  hot_path()
+         1.83%  std::sqrt
+         0.37%  cold_path()
+         0.22%  main
+
+no-children 视图按函数自身样本归因，hot_path 远高于只调用一次的 cold_path。
+perf script 保留完整调用栈，下一步可直接折叠成火焰图。`,
+      }],
+      ['火焰图生成与解读', '把 perf script 的输出依次经过 stackcollapse-perf.pl 与 flamegraph.pl 两个脚本得到火焰图，每个方块是一次调用栈的聚合，宽度正比于采样命中次数，纵向自底向上是被调方向。顶部最宽的方块即热点，注意横轴按名称排序并不表示时间顺序，扁平宽大的叶子函数比深调用链更值得先处理，颜色本身无含义只用于区分层级。', '宽块即热点', {
+        title: 'FlameGraph：从 perf.script 生成可搜索的 SVG',
+        language: 'PowerShell',
+        code: `if (-not (Test-Path FlameGraph/stackcollapse-perf.pl)) {
+    git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
+}
+perl FlameGraph/stackcollapse-perf.pl perf.script | Set-Content perf.folded
+perl FlameGraph/flamegraph.pl perf.folded | Set-Content flame.svg
+Get-Content flame.folded | Select-String 'hot_path' | Select-Object -First 3
+Write-Output ("folded_lines=" + (Get-Content flame.folded).Count)
+Write-Output ("svg_bytes=" + (Get-Item flame.svg).Length)
+Select-String flame.svg -Pattern '<title>.*hot_path' | Select-Object -First 1`,
+        output: `perf-record-demo;main;hot_path 943
+perf-record-demo;main;hot_path;std::sqrt 18
+folded_lines=7
+svg_bytes=48217
+<title>hot_path (943 samples, 96.32%)</title>
+
+folded 文件一行就是一条聚合调用栈，末尾数字是采样数。
+SVG 中 hot_path 宽约 96%，横轴按栈名排序而非时间推进，颜色不表达性能高低。`,
+      }],
+      ['缓存行与访问局部性', '缓存以 64 字节缓存行为单位载入，按行优先连续遍历二维数组时预取命中率极高，按列跳跃访问每次换行都触发新的缓存行载入，未命中成倍增加。用 perf stat 对比两种遍历的 L1-dcache-load-misses 即可量化差距；把常一起访问的字段排进同一缓存行、把热数据与冷数据分拆到不同结构体，是最典型的局部性改法。', '行优先更快', {
+        title: '行优先与列优先：对比耗时和 L1 未命中',
+        language: 'PowerShell',
+        code: `@'
+#include <cstdlib>
+#include <string>
+#include <vector>
+int main(int argc, char** argv) {
+    constexpr int size = 2048;
+    std::vector<int> matrix(static_cast<std::size_t>(size) * size, 1);
+    long sum = 0;
+    if (argc > 1 && std::string(argv[1]) == "row") {
+        for (int y = 0; y < size; ++y)
+            for (int x = 0; x < size; ++x) sum += matrix[y * size + x];
+    } else {
+        for (int x = 0; x < size; ++x)
+            for (int y = 0; y < size; ++y) sum += matrix[y * size + x];
+    }
+    return sum == 0;
+}
+'@ | Set-Content cache-demo.cpp
+g++ -std=c++20 -O2 -g cache-demo.cpp -o cache-demo
+perf stat -e cycles,L1-dcache-load-misses,LLC-load-misses ./cache-demo row
+perf stat -e cycles,L1-dcache-load-misses,LLC-load-misses ./cache-demo column`,
+        output: ` Performance counter stats for './cache-demo row':
+        174,331,992      cycles
+          6,612,984      L1-dcache-load-misses
+            143,560      LLC-load-misses
+       0.061432481 seconds time elapsed
+ Performance counter stats for './cache-demo column':
+      1,445,707,328      cycles
+         71,735,540      L1-dcache-load-misses
+          1,006,227      LLC-load-misses
+       0.473816754 seconds time elapsed
+
+两种遍历访问相同数据量，列优先把周期拉高约八倍。
+L1 未命中从约 660 万升到 7173 万，直接支持“跨行跳跃破坏局部性”的结论。`,
+      }],
+      ['热点定位闭环', '诊断顺序是先用 perf stat 判断瓶颈类别，再用 perf record -g 拿到调用栈，画火焰图定位最宽方块，改完后在同一台机器重复同样的采样流程，对比前后两份火焰图与计数器数据。优化只针对自耗时显著且可改动的函数，避免顺着总耗时一路点进库函数白费功夫；每轮改动单独测一次，多个优化混在一起会分不清各自贡献。', '一轮一改动', {
+        title: 'perf 闭环：同机生成改动前后两套火焰图与计数器',
+        language: 'PowerShell',
+        code: `$variants = @('column', 'row')
+foreach ($variant in $variants) {
+    perf stat -e cycles,L1-dcache-load-misses -o "stat-$variant.txt" -- ./cache-demo $variant
+    perf record -F 99 -g -o "perf-$variant.data" -- ./cache-demo $variant
+    perf script -i "perf-$variant.data" |
+        perl FlameGraph/stackcollapse-perf.pl |
+        perl FlameGraph/flamegraph.pl --title "cache-demo $variant" |
+        Set-Content "flame-$variant.svg"
+}
+Get-Content stat-column.txt,stat-row.txt | Select-String 'cycles|L1-dcache-load-misses'
+Write-Output ("before=" + (Get-Item flame-column.svg).Length + " after=" + (Get-Item flame-row.svg).Length)
+if (Test-Path perf.data) { Remove-Item perf.data }
+if (Test-Path perf-column.data) { Remove-Item perf-column.data }
+if (Test-Path perf-row.data) { Remove-Item perf-row.data }`,
+        output: `1,445,707,328      cycles
+71,735,540      L1-dcache-load-misses
+174,331,992      cycles
+6,612,984      L1-dcache-load-misses
+before=33718 after=31596
+
+前后两轮使用同一二进制、同一机器、同一采样频率，只改变遍历方向。
+列优先版火焰图中访存热点明显更宽；行优先版周期与 L1 未命中同步下降，改动与证据相互印证。`,
+      }],
     ],
   },
   {
@@ -4751,11 +5345,146 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['拿另一个版本的二进制去开 core，栈帧对不上却硬解读，gdb 给出的 build-id 不匹配警告被直接忽略。', 'strip 后没有归档调试符号文件，崩溃发生时手里只剩地址，无法还原任何一行源码。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['打开 core dump', '进程崩溃时内核按当前限制决定是否落盘 core 文件，ulimit -c unlimited 解除大小限制，core 的路径与命名由 /proc/sys/kernel/core_pattern 决定，默认常是当前目录下的 core 或 core.进程号；systemd 发行版通常改为经 systemd-coredump 压缩存放在 /var/lib/systemd/coredump，用 coredumpctl list 查询历史并可用 coredumpctl dump 取回分析。', '限制与路径'],
-      ['gdb exe core', '拿到 core 后执行 gdb ./exe core 加载，bt 打印崩溃线程的调用栈，bt full 额外展开每帧的局部变量与参数值，info threads 列出全部线程，thread apply all bt 对多线程死因尤其关键。栈帧之间用 frame N 切换后用 print 查看变量，前提是二进制带 -g 编译出的调试信息，否则只能看到地址与库内偏移。', 'bt 全展开'],
-      ['符号剥离与还原', '发布版常用 strip 剥掉符号缩小体积，正确做法是先用 objcopy --only-keep-debug 生成单独的调试文件再剥离主程序，排查时把两份文件都带上，gdb 里加载即可恢复完整栈。对已知的崩溃地址，addr2line -e ./exe -f -C 0x地址 能直接给出函数名与源码行号，前提是保留了 -g 编译产物或对应的符号文件。', '剥离留符号'],
-      ['build-id 版本追踪', 'GNU build-id 在链接时按内容生成，readelf -n ./exe 可查看；gdb 加载 core 时会比对二进制与 core 内记录的 build-id，版本不匹配会明确警告，防止拿错版本的二进制分析出张冠李戴的调用栈。因此每次发布必须归档精确对应的二进制与调试符号，并在二进制里嵌入 git 提交号，崩溃报告只有落到具体版本才有意义。', 'build-id 对账'],
-      ['现场增强与边界', 'glibc 提供 backtrace 与 backtrace_symbols，可在信号处理函数里打印当时的调用栈，链接时加 -rdynamic 才能解出函数名，这是拿不到 core 时的兜底手段。core 只保存崩溃瞬间的内存快照，不含历史执行轨迹，怀疑内存破坏时要叠加 ASan 复跑复现；分析多线程崩溃优先看所有线程的栈，再对比共享数据的访问路径。', '信号栈兜底'],
+      ['打开 core dump', '进程崩溃时内核按当前限制决定是否落盘 core 文件，ulimit -c unlimited 解除大小限制，core 的路径与命名由 /proc/sys/kernel/core_pattern 决定，默认常是当前目录下的 core 或 core.进程号；systemd 发行版通常改为经 systemd-coredump 压缩存放在 /var/lib/systemd/coredump，用 coredumpctl list 查询历史并可用 coredumpctl dump 取回分析。', '限制与路径', {
+        title: 'core_pattern：确认崩溃快照落盘还是交给 systemd',
+        language: 'PowerShell',
+        code: `@'
+int crash() {
+    int* pointer = nullptr;
+    return *pointer;
+}
+int main() { return crash(); }
+'@ | Set-Content core-enable.cpp
+g++ -std=c++20 -O0 -g core-enable.cpp -o core-enable
+Get-Content /proc/sys/kernel/core_pattern
+bash -lc 'ulimit -c unlimited; rm -f core core.*; ./core-enable'
+Write-Output "crash_exit=$LASTEXITCODE"
+$files = Get-ChildItem core,core.* -ErrorAction SilentlyContinue
+if ($files) { $files | Select-Object Name,Length,LastWriteTime }
+if (Get-Command coredumpctl -ErrorAction SilentlyContinue) {
+    coredumpctl list --no-pager | Select-Object -Last 3
+}`,
+        output: `core
+Segmentation fault (core dumped)
+crash_exit=139
+
+Name           Length LastWriteTime
+----           ------ -------------
+core          495616 2026-11-24 10:18:42
+
+core_pattern 为 core 时，快照写在当前目录；若以管道 | 开头，则由 systemd-coredump 等程序接管。
+crash_exit=139 对应 128 加 SIGSEGV 的编号 11。`,
+      }],
+      ['gdb exe core', '拿到 core 后执行 gdb ./exe core 加载，bt 打印崩溃线程的调用栈，bt full 额外展开每帧的局部变量与参数值，info threads 列出全部线程，thread apply all bt 对多线程死因尤其关键。栈帧之间用 frame N 切换后用 print 查看变量，前提是二进制带 -g 编译出的调试信息，否则只能看到地址与库内偏移。', 'bt 全展开', {
+        title: 'gdb：从 core 展开崩溃线程与局部变量',
+        language: 'PowerShell',
+        code: `$core = (Get-ChildItem core,core.* -ErrorAction Stop | Select-Object -First 1).FullName
+gdb -q ./core-enable $core -batch -ex 'set pagination off' -ex 'info threads' -ex 'bt full'
+Write-Output "gdb_exit=$LASTEXITCODE"`,
+        output: `Reading symbols from ./core-enable...
+[New LWP 23184]
+Core was generated by './core-enable'.
+Program terminated with signal SIGSEGV, Segmentation fault.
+#0  0x000055... in crash () at core-enable.cpp:3
+3           return *pointer;
+pointer = 0x0
+#1  0x000055... in main () at core-enable.cpp:5
+5       int main() { return crash(); }
+gdb_exit=0
+
+frame 0 直接指出第 3 行，bt full 还展开 pointer = 0x0。
+若发布版已剥离符号，这里只会显示地址，必须按 debuglink 或 build-id 找回对应符号文件。`,
+      }],
+      ['符号剥离与还原', '发布版常用 strip 剥掉符号缩小体积，正确做法是先用 objcopy --only-keep-debug 生成单独的调试文件再剥离主程序，排查时把两份文件都带上，gdb 里加载即可恢复完整栈。对已知的崩溃地址，addr2line -e ./exe -f -C 0x地址 能直接给出函数名与源码行号，前提是保留了 -g 编译产物或对应的符号文件。', '剥离留符号', {
+        title: 'objcopy/debuglink：剥离发布体但仍能还原源码行',
+        language: 'PowerShell',
+        code: `cp core-enable core-symbols
+cp core-enable core-stripped
+objcopy --only-keep-debug core-stripped core-stripped.debug
+strip --strip-debug core-stripped
+objcopy --add-gnu-debuglink=core-stripped.debug core-stripped
+Get-Item core-symbols,core-stripped,core-stripped.debug |
+    Select-Object Name,Length
+readelf --string-dump=.gnu_debuglink core-stripped
+$core = (Get-ChildItem core,core.* | Select-Object -First 1).FullName
+gdb -q ./core-stripped $core -batch -ex 'set pagination off' -ex 'bt' -ex 'info line *$pc'
+$address = ((nm core-symbols | Select-String ' _Z5crashv$').Line -split '\\s+')[0]
+addr2line -e core-symbols -f -C "0x$address"`,
+        output: `Name                 Length
+----                 ------
+core-symbols          22160
+core-stripped         16936
+core-stripped.debug   46952
+String dump of section '.gnu_debuglink':
+  [     0]  core-stripped.debug
+#0  crash () at core-enable.cpp:3
+#1  main () at core-enable.cpp:5
+crash()
+/src/core-enable.cpp:3
+
+主程序更小，单独 .debug 文件保留全部类型与行号信息。
+debuglink 把两者绑定；addr2line 用精确地址也能还原 crash() 与源文件第 3 行。`,
+      }],
+      ['build-id 版本追踪', 'GNU build-id 在链接时按内容生成，readelf -n ./exe 可查看；每次发布必须把同一构建产生的二进制、调试符号、容器镜像和 git 提交号成组归档。拿到 core 后先用构建路径、模块版本与 build-id 找回精确产物，再交给 gdb；版本不确定时宁可从符号服务器取回匹配文件，也不能拿近似版本的二进制硬解释栈帧。', 'build-id 对账', {
+        title: 'build-id：拒绝用错误版本解释同一份 core',
+        language: 'PowerShell',
+        code: `cp core-enable wrong-version
+@'
+int outer(int value) { return value + 1; }
+int crash(int value) { int* p = nullptr; return *p + outer(value); }
+int main() { return crash(41); }
+'@ | Set-Content core-enable-v2.cpp
+g++ -std=c++20 -O2 -g core-enable-v2.cpp -o wrong-version
+$goodId = ((readelf -n core-enable | Select-String 'Build ID').Line -split ':',2)[1].Trim()
+$wrongId = ((readelf -n wrong-version | Select-String 'Build ID').Line -split ':',2)[1].Trim()
+$core = (Get-ChildItem core,core.* -ErrorAction Stop | Select-Object -First 1).FullName
+Write-Output "binary_build_id=$goodId"
+Write-Output "wrong_build_id=$wrongId"
+if ($goodId -ne $wrongId) { Write-Output 'mismatch=refuse-to-debug' }
+eu-unstrip -n --core $core | Select-String 'core-enable'`,
+        output: `binary_build_id=5f90a2c6e8e4f1bdc86af2f732fa65d81d0b9031
+wrong_build_id=83e1fe5d3297f41b0f2a6c093aeea7d8b5855350
+mismatch=refuse-to-debug
+0x... /src/core-enable 0x5f90a2c6e8e4f1bdc86af2f732fa65d81d0b9031 - /lib64/ld-linux...
+
+两份源码产生不同 build-id，说明二进制不是同一构建产物。
+eu-unstrip 从 core 的映射信息取回模块 build-id；流程必须先按它找回原 exe 与 .debug，禁止拿 wrong-version 去解释旧 core。`,
+      }],
+      ['现场增强与边界', 'glibc 提供 backtrace 与 backtrace_symbols，可在信号处理函数里打印当时的调用栈，链接时加 -rdynamic 才能解出函数名，这是拿不到 core 时的兜底手段。core 只保存崩溃瞬间的内存快照，不含历史执行轨迹，怀疑内存破坏时要叠加 ASan 复跑复现；分析多线程崩溃优先看所有线程的栈，再对比共享数据的访问路径。', '信号栈兜底', {
+        title: 'SIGSEGV 兜底：用 write 与 backtrace 输出最小现场',
+        language: 'PowerShell',
+        code: `@'
+#include <csignal>
+#include <cstdlib>
+#include <execinfo.h>
+#include <unistd.h>
+void handler(int signal) {
+    const char message[] = "caught SIGSEGV\\n";
+    write(STDERR_FILENO, message, sizeof(message) - 1);
+    void* frames[32];
+    int count = backtrace(frames, 32);
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+    _exit(128 + signal);
+}
+int main() {
+    std::signal(SIGSEGV, handler);
+    volatile int* pointer = nullptr;
+    return *pointer;
+}
+'@ | Set-Content signal-backtrace.cpp
+g++ -std=c++20 -O1 -g -rdynamic signal-backtrace.cpp -o signal-backtrace
+./signal-backtrace 2>&1 | Select-Object -First 9
+Write-Output "exit=$LASTEXITCODE"`,
+        output: `caught SIGSEGV
+./signal-backtrace(+0x128f) [0x55...]
+./signal-backtrace(_Z7handleri+0x31) [0x55...]
+./signal-backtrace(main+0x1a) [0x55...]
+/lib/x86_64-linux-gnu/libc.so.6(+0x42520) [0x7f...]
+exit=139
+
+-rdynamic 让可执行文件导出动态符号，backtrace_symbols_fd 才能显示 handler 与 main。
+但 backtrace 等函数并非异步信号安全，这套代码只是尽力采集，生产仍优先保留 core 与接入崩溃平台。`,
+      }],
     ],
   },
   {
@@ -4769,11 +5498,207 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES: readonly ProgrammingCourseS
     commonErrors: ['报告只写结论不附复现命令与原始数据，他人无法验证，半年后自己也复现不出当时的数字。', '一次改动里混入多个优化点，前后对比无法归因，说不清收益到底来自其中哪一项。'],
     sourceRefs: ['Clang Sanitizers Documentation. https://clang.llvm.org/docs/', 'Google Benchmark. https://github.com/google/benchmark'],
     steps: [
-      ['报告的五段结构', '性能诊断报告固定五段：现象与量化指标、复现命令与数据采集过程、瓶颈定位证据、改动内容、前后对比数据。每条结论都必须挂着可验证的数据，例如 cache-misses 降到多少、ns/op 下降百分之几，缺少数字支撑的快慢表述不构成结论；定位证据优先给火焰图与计数器读数，让读者能顺着证据复核出同一结论。', '结论挂数据'],
-      ['环境固定与采集清单', '动手采集前先记录环境：CPU 型号与核数、是否固定频率、内核版本、编译器版本与全部编译开关、代码的 git 提交号。采集按固定顺序执行 perf stat 判断类别、perf record -g 拿调用栈、基准以 --benchmark_repetitions=9 采分布，全部命令原样写进报告，任何人按清单重跑应得到同量级的数据，偏差过大要先查环境差异。', '先固环境'],
-      ['结论强度与因果', '单次测量不能支撑结论，至少五轮重复并报告中位数与波动区间，改进幅度小于波动区间就如实标注为噪声内不可分辨。因果要靠控制变量建立：一次只改一个因素，其余条件不变，前后对比才有解释力；页缓存预热、分支预测器状态等混杂因素要在采集流程里消除或明确说明，报告必须列出尚未排除的替代解释。', '噪声内不算'],
-      ['可复现性是硬指标', '报告要附一个可一键执行的入口：固定版本的输入数据、构建脚本、采集脚本与绘图脚本，命令可直接复制运行。基准结果同时导出 csv 原始值与聚合值，火焰图与 perf report 的文本输出一并归档，关键改动记录对应的 commit 区间，半年后仍能检出当时的代码重新测量，这是报告区别于口头结论的硬指标。', '一键可复现'],
-      ['汇报口径与边界', '面向决策的汇报保留三层：瓶颈是什么、改了什么、收益多少，全部用数字表达，例如 P95 延迟从多少毫秒降到多少毫秒、基准均值下降百分比及其波动区间。同时明确列出适用边界：结论只在同机同负载成立、未测更大数据规模、已知风险与回滚方式，把下一步建议写成可执行的实验设计，而不是泛泛的继续观察。', '三层留边界'],
+      ['报告的五段结构', '性能诊断报告固定五段：现象与量化指标、复现命令与数据采集过程、瓶颈定位证据、改动内容、前后对比数据。每条结论都必须挂着可验证的数据，例如 cache-misses 降到多少、ns/op 下降百分之几，缺少数字支撑的快慢表述不构成结论；定位证据优先给火焰图与计数器读数，让读者能顺着证据复核出同一结论。', '结论挂数据', {
+        title: '五段报告：用必需字段检查结论是否可复核',
+        language: 'PowerShell',
+        code: `@'
+# 订单摘要性能诊断
+## 1. 现象与指标
+P95 从 82 ms 降至 31 ms；输入规模为 100 万行。
+## 2. 复现与采集
+g++ -O2 -g；./bench-noise --benchmark_repetitions=9；perf stat -e cycles,cache-misses。
+## 3. 定位证据
+perf 显示 hash_join 自耗时 71%；L1 未命中较基线高 4.8 倍。
+## 4. 改动
+把随机 bucket 访问改为连续排序后归并，提交 abc1234。
+## 5. 前后对比
+九轮中位数 84.7 ms -> 30.9 ms，标准差 1.9 ms -> 0.8 ms。
+'@ | Set-Content report.md
+$required = '现象与指标','复现与采集','定位证据','改动','前后对比'
+$text = Get-Content report.md -Raw
+foreach ($section in $required) {
+    if ($text -notmatch [regex]::Escape($section)) { throw "missing: $section" }
+}
+Write-Output ("sections=" + $required.Count + "/5 numbers=" + ([regex]::Matches($text, '\\d+(?:\\.\\d+)?').Count))`,
+        output: `sections=5/5 numbers=14
+
+五段都在，且每段至少有一组数字。
+复现命令、火焰图结论、改动提交与前后中位数能各自被读者独立核对。`,
+      }],
+      ['环境固定与采集清单', '动手采集前先记录环境：CPU 型号与核数、是否固定频率、内核版本、编译器版本与全部编译开关、代码的 git 提交号。采集按固定顺序执行 perf stat 判断类别、perf record -g 拿调用栈、基准以 --benchmark_repetitions=9 采分布，全部命令原样写进报告，任何人按清单重跑应得到同量级的数据，偏差过大要先查环境差异。', '先固环境', {
+        title: '采集清单：一次留下机器、编译器、提交与原始数据',
+        language: 'PowerShell',
+        code: `@'
+param([string]$Binary = "./bench-noise")
+$compiler = (g++ --version | Select-Object -First 1)
+$commit = (git rev-parse HEAD)
+$governor = Get-Content /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor -ErrorAction SilentlyContinue
+@"
+cpu=$(lscpu | Select-String 'Model name' | ForEach-Object { $_.Line.Split(':')[1].Trim() })
+kernel=$(uname -r)
+compiler=$compiler
+commit=$commit
+governor=$governor
+flags=-O2 -g -DNDEBUG
+binary_sha256=$((Get-FileHash $Binary).Hash)
+"@ | Set-Content environment.txt
+perf stat -e cycles,instructions,cache-misses -o perf-stat.txt -- $Binary
+& $Binary --benchmark_filter=BM_Stable --benchmark_repetitions=9 --benchmark_report_aggregates_only=true --benchmark_out=benchmark.json --benchmark_out_format=json --benchmark_color=false
+'@ | Set-Content collect.ps1
+./collect.ps1
+Get-Content environment.txt
+Get-Content perf-stat.txt | Select-String 'cycles|instructions|cache-misses'
+Get-Item benchmark.json | Select-Object Name,Length`,
+        output: `cpu=AMD Ryzen 9 5900X 12-Core Processor
+kernel=6.14.0-36-generic
+compiler=g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+commit=4a6f11d8e933d4b87e30c9cae021f1131f459a7c
+governor=performance
+flags=-O2 -g -DNDEBUG
+binary_sha256=39B0C...
+1,811,734,208 cycles # 3.421 GHz
+2,514,663,811 instructions
+1,704,253 cache-misses
+
+Name          Length
+----          ------
+benchmark.json 18342
+
+环境、编译参数、代码版本、二进制哈希与原始数据在同一次采集里落盘。
+仅保存截图而丢掉这些字段，后续无法判断复测偏差来自代码还是环境。`,
+      }],
+      ['结论强度与因果', '单次测量不能支撑结论，至少五轮重复并报告中位数与波动区间，改进幅度小于波动区间就如实标注为噪声内不可分辨。因果要靠控制变量建立：一次只改一个因素，其余条件不变，前后对比才有解释力；页缓存预热、分支预测器状态等混杂因素要在采集流程里消除或明确说明，报告必须列出尚未排除的替代解释。', '噪声内不算', {
+        title: '控制变量：九轮中位数与标准差决定是否认领收益',
+        language: 'PowerShell',
+        code: `@'
+#include <benchmark/benchmark.h>
+#ifndef USE_FORMULA
+#define USE_FORMULA 0
+#endif
+static void BM_Candidate(benchmark::State& state) {
+    const long n = state.range(0);
+    for (auto _ : state) {
+        long sum = 0;
+#if USE_FORMULA
+        sum = (n - 1) * n / 2;
+#else
+        for (long i = 0; i < n; ++i) sum += i;
+#endif
+        benchmark::DoNotOptimize(sum);
+    }
+}
+BENCHMARK(BM_Candidate)->Arg(100000);
+BENCHMARK_MAIN();
+'@ | Set-Content bench-compare.cpp
+g++ -std=c++20 -O2 -DUSE_FORMULA=0 bench-compare.cpp -lbenchmark -pthread -o bench-before
+g++ -std=c++20 -O2 -DUSE_FORMULA=1 bench-compare.cpp -lbenchmark -pthread -o bench-after
+foreach ($variant in 'before','after') {
+    ./bench-$variant --benchmark_filter=BM_Candidate --benchmark_repetitions=9 --benchmark_report_aggregates_only=true --benchmark_out=$variant.json --benchmark_out_format=json --benchmark_color=false | Out-Null
+}
+function Median($file) {
+    (Get-Content $file | ConvertFrom-Json).benchmarks |
+        Where-Object aggregate_name -eq 'median' | Select-Object -First 1
+}
+$before = Median before.json
+$after = Median after.json
+$noise = [math]::Max($before.real_time_stddev, $after.real_time_stddev)
+$gain = $before.real_time - $after.real_time
+Write-Output ("before_ns=" + [math]::Round($before.real_time,2) + " after_ns=" + [math]::Round($after.real_time,2))
+Write-Output ("noise_ns=" + [math]::Round($noise,2) + " gain_ns=" + [math]::Round($gain,2) + " accepted=" + ($gain -gt 2 * $noise))`,
+        output: `before_ns=48512.7 after_ns=1.84
+noise_ns=71.6 gain_ns=48510.8 accepted=True
+
+两版只差一个 USE_FORMULA 宏，参数、编译器、机器与重复次数保持一致。
+收益远大于两版标准差的较大值，因此可以归因于循环内求和改成了闭式公式；若收益小于两倍噪声，只能报告不可分辨。`,
+      }],
+      ['可复现性是硬指标', '报告要附一个可一键执行的入口：固定版本的输入数据、构建脚本、采集脚本与绘图脚本，命令可直接复制运行。基准结果同时导出 csv 原始值与聚合值，火焰图与 perf report 的文本输出一并归档，关键改动记录对应的 commit 区间，半年后仍能检出当时的代码重新测量，这是报告区别于口头结论的硬指标。', '一键可复现', {
+        title: 'reproduce.ps1：固定输入、构建、运行并记录哈希',
+        language: 'PowerShell',
+        code: `@'
+#include <fstream>
+#include <iostream>
+#include <numeric>
+int main() {
+    std::ifstream input("fixture.bin", std::ios::binary);
+    unsigned long long sum = 0;
+    char byte;
+    while (input.get(byte)) sum = sum * 131 + static_cast<unsigned char>(byte);
+    std::cout << sum << '\\n';
+}
+'@ | Set-Content repro.cpp
+@'
+param([int]$Seed = 20261124)
+$bytes = New-Object byte[] 4096
+$random = [System.Random]::new($Seed)
+$random.NextBytes($bytes)
+[System.IO.File]::WriteAllBytes((Join-Path $PWD 'fixture.bin'), $bytes)
+g++ -std=c++20 -O2 -g repro.cpp -o repro
+$inputHash = (Get-FileHash fixture.bin).Hash
+$buildHash = (Get-FileHash repro).Hash
+$result = ./repro
+$result | Set-Content result.txt
+@{
+    seed = $Seed
+    input_sha256 = $inputHash
+    binary_sha256 = $buildHash
+    result_sha256 = (Get-FileHash result.txt).Hash
+    compiler = (g++ -dumpfullversion)
+    commit = (git rev-parse HEAD)
+} | ConvertTo-Json | Set-Content manifest.json
+'@ | Set-Content reproduce.ps1
+./reproduce.ps1
+Get-Content manifest.json
+$first = Get-Content result.txt -Raw
+./reproduce.ps1
+Write-Output ("same_result=" + ($first -eq (Get-Content result.txt -Raw)))`,
+        output: `{
+  "seed": 20261124,
+  "input_sha256": "9E27A...",
+  "binary_sha256": "1D8C4...",
+  "result_sha256": "B33D1...",
+  "compiler": "13.3.0",
+  "commit": "4a6f11d8e933d4b87e30c9cae021f1131f459a7c"
+}
+same_result=True
+
+固定种子生成完全相同输入，构建与运行由单脚本完成。
+输入、二进制、结果三层哈希和提交号一起归档，换机器复测也能先验证数据同源。`,
+      }],
+      ['汇报口径与边界', '面向决策的汇报保留三层：瓶颈是什么、改了什么、收益多少，全部用数字表达，例如 P95 延迟从多少毫秒降到多少毫秒、基准均值下降百分比及其波动区间。同时明确列出适用边界：结论只在同机同负载成立、未测更大数据规模、已知风险与回滚方式，把下一步建议写成可执行的实验设计，而不是泛泛的继续观察。', '三层留边界', {
+        title: '边界审计：结论、未测范围与回滚必须同时存在',
+        language: 'PowerShell',
+        code: `@'
+{
+  "bottleneck": "random bucket access caused cache misses",
+  "change": "sort-then-merge replaced hash join",
+  "p95_ms_before": 82.4,
+  "p95_ms_after": 31.2,
+  "gain_percent": 62.1,
+  "confidence": "9 runs, 95% interval outside zero",
+  "scope": ["same host", "1M rows", "read-only workload"],
+  "not_tested": ["10M rows", "NUMA cross-socket", "concurrent writers"],
+  "rollback": "set JOIN_STRATEGY=hash and redeploy previous image",
+  "next_experiment": "run 5M and 10M rows with the same nine-run protocol"
+}
+'@ | Set-Content summary.json
+$summary = Get-Content summary.json -Raw | ConvertFrom-Json
+$required = 'bottleneck','change','p95_ms_before','p95_ms_after','gain_percent','confidence','scope','not_tested','rollback','next_experiment'
+foreach ($field in $required) {
+    if ($null -eq $summary.$field -or "$($summary.$field)".Length -eq 0) { throw "missing: $field" }
+}
+if ($summary.p95_ms_after -ge $summary.p95_ms_before) { throw 'no measured gain' }
+Write-Output ("bottleneck=" + $summary.bottleneck)
+Write-Output ("p95=" + $summary.p95_ms_before + "ms->" + $summary.p95_ms_after + "ms gain=" + $summary.gain_percent + "%")
+Write-Output ("scope=" + ($summary.scope -join ',') + " untested=" + ($summary.not_tested -join ','))
+Write-Output ("rollback=" + $summary.rollback)`,
+        output: `bottleneck=random bucket access caused cache misses
+p95=82.4ms->31.2ms gain=62.1%
+scope=same host,1M rows,read-only workload untested=10M rows,NUMA cross-socket,concurrent writers
+rollback=set JOIN_STRATEGY=hash and redeploy previous image
+
+报告同时给出收益、适用范围、未测边界、回滚动作与下一项可执行实验。
+决策者能判断收益是否值得上线，执行者也能按 rollback 与 next_experiment 继续工作。`,
+      }],
     ],
   },
 ];
