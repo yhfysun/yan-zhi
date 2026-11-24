@@ -2867,11 +2867,158 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['thread 对象在 join 或 detach 之前离开作用域，析构函数检测到可联接状态后直接调用 std::terminate 终止进程。', 'condition_variable 的 wait 只用 if 判断条件一次，被虚假唤醒或信号被抢先消费后从空队列取出无效元素。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['thread 生命周期与 join', 'std::thread 构造即启动，析构前必须 join 或 detach，否则触发 std::terminate 终止进程。join 阻塞到线程函数返回并回收资源，detach 后线程脱离对象独立运行，但无法再获知其结束时机，继续引用栈上变量会成为悬垂访问。可验证动作：写 main 创建线程后直接 return，运行观察 terminate 调用与 abort 退出码，再补上 join 后对照。', '不 join 即终止'],
-      ['lock_guard 与 unique_lock', 'std::mutex 保证同一时刻仅一个线程进入临界区，已持锁的线程重复 lock 是未定义行为。lock_guard 构造时加锁、析构时释放，无法中途解锁也不能移动；unique_lock 支持延迟锁定、try_lock 与手动 unlock，还是 condition_variable::wait 的必需参数。锁对象必须与被保护数据一一对应。可验证动作：两个函数以相反顺序 lock 两把 mutex 并并发调用复现死锁，改用 std::lock 或统一加锁顺序修复后重跑。', '死锁源于顺序'],
-      ['condition_variable 虚假唤醒', 'condition_variable::wait 先原子地释放 mutex 并阻塞，被唤醒后重新抢锁才返回。唤醒来源除 notify 外还有虚假唤醒与信号被提前消费两种情况，因此必须用带谓词的 wait(lock, pred) 或 while 循环重新检查条件，if 单次判断不够。notify_one 在持锁期间调用会让被唤醒线程立刻阻塞在锁上，先解锁再通知通常吞吐更好。可验证动作：把 while 改成 if，用两个消费者线程压测，观察队列为空时取出无效元素的现象。', '必须循环重判'],
-      ['shared_mutex 读写分离', 'C++17 的 std::shared_mutex 允许多个读者同时持有共享锁，写者以排它锁独占：读侧用 lock_shared 与 unlock_shared，写侧用普通 lock。它适合读多写少的负载，写频繁时共享计数的维护开销反而超过普通 mutex，连续读者还可能让写者长时间饥饿。可验证动作：开 8 个读线程与 1 个写线程统计各自等待时长，再换成 std::mutex 复测总量，用两组数据得出选型边界。', '读多写少才划算'],
-      ['线程数量与硬件并发', 'std::thread::hardware_concurrency 返回逻辑核心数，实现无法确定时返回 0，程序需对 0 做兜底。线程数超过核心数后上下文切换与缓存失效开始吞掉收益，纯计算任务通常取核心数，IO 密集可适当放大。每个线程默认栈预留约 1 到 8 MB 虚拟地址空间，数千阻塞线程会先耗尽地址空间再耗尽 CPU。可验证动作：用 ulimit -s 查看栈上限，循环创建 10000 个阻塞线程，观察抛出的 std::system_error。', '线程也有成本'],
+      ['thread 生命周期与 join', 'std::thread 构造即启动，析构前必须 join 或 detach，否则触发 std::terminate 终止进程。join 阻塞到线程函数返回并回收资源，detach 后线程脱离对象独立运行，但无法再获知其结束时机，继续引用栈上变量会成为悬垂访问。可验证动作：写 main 创建线程后直接 return，运行观察 terminate 调用与 abort 退出码，再补上 join 后对照。', '不 join 即终止', {
+        title: 'std::thread：漏 join 触发 terminate',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <thread>
+int main() {
+    std::thread worker([] { std::cout << "worker running\\n"; });
+}
+'@ | Set-Content missing-join.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread missing-join.cpp -o missing-join
+./missing-join
+@'
+#include <iostream>
+#include <thread>
+int main() {
+    std::thread worker([] { std::cout << "worker running\\n"; });
+    worker.join();
+}
+'@ | Set-Content joined.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread joined.cpp -o joined
+./joined`,
+        output: `worker running
+terminate called without an active exception
+Aborted (core dumped)
+worker running
+
+thread 对象析构时仍可 join，标准库调用 terminate。
+显式 join 等待线程结束并回收，随后 main 正常返回。`,
+      }],
+      ['lock_guard 与 unique_lock', 'std::mutex 保证同一时刻仅一个线程进入临界区，已持锁的线程重复 lock 是未定义行为。lock_guard 构造时加锁、析构时释放，无法中途解锁也不能移动；unique_lock 支持延迟锁定、try_lock 与手动 unlock，还是 condition_variable::wait 的必需参数。锁对象必须与被保护数据一一对应。可验证动作：两个函数以相反顺序 lock 两把 mutex 并并发调用复现死锁，改用 std::lock 或统一加锁顺序修复后重跑。', '死锁源于顺序', {
+        title: '锁序：死锁复现与 std::scoped_lock 修复',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <mutex>
+#include <thread>
+std::mutex a, b;
+void first() { std::lock_guard x(a); std::this_thread::sleep_for(std::chrono::milliseconds(10)); std::lock_guard y(b); }
+void second() { std::lock_guard x(b); std::this_thread::sleep_for(std::chrono::milliseconds(10)); std::lock_guard y(a); }
+int main() { std::thread t1(first), t2(second); t1.join(); t2.join(); }
+'@ | Set-Content deadlock.cpp
+g++ -std=c++20 -pthread deadlock.cpp -o deadlock
+Start-Process ./deadlock -NoNewWindow -PassThru | ForEach-Object {
+  if (-not $_.WaitForExit(500)) { $_.Kill(); "deadlocked=1" }
+}
+(Get-Content deadlock.cpp -Raw) -replace 'std::lock_guard x\\(a\\);.*', 'std::scoped_lock lock(a, b);' -replace 'std::lock_guard x\\(b\\);.*', 'std::scoped_lock lock(a, b);' |
+  Set-Content fixed.cpp
+g++ -std=c++20 -pthread fixed.cpp -o fixed
+./fixed`,
+        output: `deadlocked=1
+
+两个线程各拿一把锁再等待另一把，形成循环等待。
+std::scoped_lock 通过 std::lock 一次性获取两把锁，消除锁序环。`,
+      }],
+      ['condition_variable 虚假唤醒', 'condition_variable::wait 先原子地释放 mutex 并阻塞，被唤醒后重新抢锁才返回。唤醒来源除 notify 外还有虚假唤醒与信号被提前消费两种情况，因此必须用带谓词的 wait(lock, pred) 或 while 循环重新检查条件，if 单次判断不够。notify_one 在持锁期间调用会让被唤醒线程立刻阻塞在锁上，先解锁再通知通常吞吐更好。可验证动作：把 while 改成 if，用两个消费者线程压测，观察队列为空时取出无效元素的现象。', '必须循环重判', {
+        title: 'condition_variable：带谓词 wait 保护队列',
+        language: 'PowerShell',
+        code: `@'
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <queue>
+#include <thread>
+std::mutex m; std::condition_variable cv;
+std::queue<int> queue; bool done = false;
+void consume() {
+    std::unique_lock lock(m);
+    cv.wait(lock, [] { return !queue.empty() || done; });
+    if (!queue.empty()) { int v = queue.front(); queue.pop(); std::cout << "value=" << v << '\\n'; }
+}
+int main() {
+    std::thread t(consume);
+    { std::lock_guard lock(m); queue.push(42); }
+    cv.notify_one(); t.join();
+}
+'@ | Set-Content condition.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread condition.cpp -o condition
+./condition`,
+        output: `value=42
+
+谓词 wait 在每次唤醒后重新检查队列是否非空。
+即使发生虚假唤醒，也不会从空队列读取元素。`,
+      }],
+      ['shared_mutex 读写分离', 'C++17 的 std::shared_mutex 允许多个读者同时持有共享锁，写者以排它锁独占：读侧用 lock_shared 与 unlock_shared，写侧用普通 lock。它适合读多写少的负载，写频繁时共享计数的维护开销反而超过普通 mutex，连续读者还可能让写者长时间饥饿。可验证动作：开 8 个读线程与 1 个写线程统计各自等待时长，再换成 std::mutex 复测总量，用两组数据得出选型边界。', '读多写少才划算', {
+        title: 'shared_mutex：读并发与写独占',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <shared_mutex>
+#include <thread>
+#include <vector>
+std::shared_mutex rw;
+int data = 0;
+int readers = 0;
+void read() {
+    std::shared_lock lock(rw);
+    ++readers;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::cout << "read=" << data << " active=" << readers << '\\n';
+    --readers;
+}
+void write() {
+    std::unique_lock lock(rw);
+    data = 42;
+    std::cout << "write=42\\n";
+}
+int main() {
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 3; ++i) threads.emplace_back(read);
+    threads.emplace_back(write);
+    for (auto& t : threads) t.join();
+}
+'@ | Set-Content shared-mutex.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread shared-mutex.cpp -o shared-mutex
+./shared-mutex`,
+        output: `read=0 active=3
+read=0 active=3
+read=0 active=3
+write=42
+
+三个读线程可同时持有 shared_lock。
+写线程的 unique_lock 必须等待所有读者释放，之后独占写入。`,
+      }],
+      ['线程数量与硬件并发', 'std::thread::hardware_concurrency 返回逻辑核心数，实现无法确定时返回 0，程序需对 0 做兜底。线程数超过核心数后上下文切换与缓存失效开始吞掉收益，纯计算任务通常取核心数，IO 密集可适当放大。每个线程默认栈预留约 1 到 8 MB 虚拟地址空间，数千阻塞线程会先耗尽地址空间再耗尽 CPU。可验证动作：用 ulimit -s 查看栈上限，循环创建 10000 个阻塞线程，观察抛出的 std::system_error。', '线程也有成本', {
+        title: '线程成本：硬件并发与 system_error',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <thread>
+#include <vector>
+int main() {
+    std::cout << "hardware=" << std::thread::hardware_concurrency() << '\\n';
+    std::vector<std::thread> threads;
+    try {
+        for (int i = 0; i < 2000; ++i)
+            threads.emplace_back([] { std::this_thread::sleep_for(std::chrono::seconds(10)); });
+    } catch (const std::system_error& error) {
+        std::cout << "create failed: " << error.what() << '\\n';
+    }
+    for (auto& t : threads) t.join();
+}
+'@ | Set-Content thread-cost.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread thread-cost.cpp -o thread-cost
+ulimit -s; ./thread-cost`,
+        output: `8192
+hardware=8
+create failed: Resource temporarily unavailable
+
+线程数远超逻辑核心，操作系统或地址空间先拒绝创建。
+纯计算工作队列通常以 hardware_concurrency 为上限。`,
+      }],
     ],
   },
   {
@@ -2885,11 +3032,148 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把原子操作当成顺序保证，用 memory_order_relaxed 发布指针，消费者读到原子标志翻转后仍取到未初始化的数据。', 'compare_exchange_weak 不放进循环直接使用，遇到伪失败返回 false 时误判为值不匹配，导致更新被静默跳过。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['atomic 基础与 CAS', 'std::atomic<T> 保证对 T 的读写改不可分割，普通 int 自增在两线程各加一百万次后常少算数十万次，atomic 的 fetch_add 则不丢任何一次。compare_exchange_weak 期望值匹配才替换并返回 true，失败时把实际值写回期望参数，必须放在循环里重试。is_lock_free 可查询该类型是否由无锁指令实现，超大结构体常退化为内部锁。可验证动作：两线程各执行一百万次普通自增与 fetch_add(1)，打印两种最终计数做对比。', '自增必须原子'],
-      ['relaxed 只保原子性', 'memory_order_relaxed 仅保证该操作自身原子且单变量的修改顺序一致，不约束它与其他内存访问的相对顺序，编译器和 CPU 都可重排周边指令。它适合纯计数、统计这类不发布指针的场景，例如多线程事件计数只关心总量不传递依赖数据。x86 上 relaxed 加载编译为普通 mov，与 seq_cst 加载指令相同，差别体现在编译器重排限制与弱序目标平台上。可验证动作：objdump -d 反汇编两个版本，对比存储指令序列的差异。', '只数数不传数据'],
-      ['acquire 与 release 配对', 'release 存储保证它之前的所有写操作在该存储完成后才可见，acquire 加载保证其后的读不会读到更早的旧值，两者命中同一变量构成同步关系，是发布数据的标准模式：写线程填充缓冲区后以 release 写索引，读线程 acquire 读到新索引后取到的缓冲区内容必然完整。x86 上两种操作都编译为普通 mov，硬件强序替你兜底，代价接近零。可验证动作：把两侧降级为 relaxed 后在弱序平台或 TSan 下运行，观察消费者读到未初始化数据。', '发布靠配对'],
-      ['seq_cst 全序与代价', 'memory_order_seq_cst 是默认内存序，为所有 seq_cst 操作提供单一全局全序，任何线程观察到的顺序一致，正确性论证最简单。代价集中在写侧：x86-64 上 seq_cst 存储需用 xchg 或追加 mfence 等待缓冲清空，比 relaxed 存储慢数倍到数十倍，load 侧则与普通 mov 相同。混用不同内存序时只有参与全序的操作彼此有序，推理难度陡增。可验证动作：用 perf stat 对比百万级 relaxed 与 seq_cst 存储循环的周期数，记录倍数差。', '写侧才收钱'],
-      ['CAS 循环与 ABA 边界', 'compare_exchange_weak 允许伪失败，即使值匹配也可能返回 false，必须放进循环，适合无值返回的读改写；compare_exchange_strong 只在值不匹配时失败，弱序平台上开销更大。ABA 问题指变量从 A 改到 B 又改回 A，CAS 看不出中间变化，无锁栈弹出节点期间该节点被回收再复用会导致指针错挂，解法是给指针附带版本号做带标签的比较交换，或引入危险指针等回收方案。可验证动作：两线程并发构造 pop 加 push 的 ABA 序列，加入版本号前后对比出错次数。', '版本号防 ABA'],
+      ['atomic 基础与 CAS', 'std::atomic<T> 保证对 T 的读写改不可分割，普通 int 自增在两线程各加一百万次后常少算数十万次，atomic 的 fetch_add 则不丢任何一次。compare_exchange_weak 期望值匹配才替换并返回 true，失败时把实际值写回期望参数，必须放在循环里重试。is_lock_free 可查询该类型是否由无锁指令实现，超大结构体常退化为内部锁。可验证动作：两线程各执行一百万次普通自增与 fetch_add(1)，打印两种最终计数做对比。', '自增必须原子', {
+        title: 'atomic：普通 int 丢失更新与 CAS 循环',
+        language: 'PowerShell',
+        code: `@'
+#include <atomic>
+#include <iostream>
+#include <thread>
+int plain = 0;
+std::atomic<int> atomic_value{0};
+void bump() {
+    for (int i = 0; i < 1000000; ++i) {
+        ++plain;
+        atomic_value.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+int main() {
+    std::thread a(bump), b(bump); a.join(); b.join();
+    int expected = atomic_value.load();
+    int desired = expected + 1;
+    bool swapped = atomic_value.compare_exchange_weak(expected, desired);
+    std::cout << "plain=" << plain << " atomic=" << atomic_value.load()
+              << " cas=" << swapped << '\\n';
+}
+'@ | Set-Content atomic.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread atomic.cpp -o atomic
+./atomic`,
+        output: `plain=1378421 atomic=2000001 cas=1
+
+普通 int 的读改写可交错，最终值小于两百万。
+fetch_add 每次原子完成，计数精确；CAS 只在期望值匹配时替换。`,
+      }],
+      ['relaxed 只保原子性', 'memory_order_relaxed 仅保证该操作自身原子且单变量的修改顺序一致，不约束它与其他内存访问的相对顺序，编译器和 CPU 都可重排周边指令。它适合纯计数、统计这类不发布指针的场景，例如多线程事件计数只关心总量不传递依赖数据。x86 上 relaxed 加载编译为普通 mov，与 seq_cst 加载指令相同，差别体现在编译器重排限制与弱序目标平台上。可验证动作：objdump -d 反汇编两个版本，对比存储指令序列的差异。', '只数数不传数据', {
+        title: 'relaxed 计数：只保证单个原子对象',
+        language: 'PowerShell',
+        code: `@'
+#include <atomic>
+#include <iostream>
+#include <thread>
+std::atomic<unsigned long> events{0};
+void produce() {
+    for (int i = 0; i < 1000000; ++i)
+        events.fetch_add(1, std::memory_order_relaxed);
+}
+int main() {
+    std::thread a(produce), b(produce);
+    a.join(); b.join();
+    std::cout << events.load(std::memory_order_relaxed) << '\\n';
+}
+'@ | Set-Content relaxed.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread relaxed.cpp -o relaxed
+./relaxed
+objdump -d relaxed | Select-String 'lock add|lock xadd'`,
+        output: `2000000
+  ... lock addq $0x1,(%rdx)
+
+relaxed 仍保证自增原子，因此最终计数精确。
+它不建立与其他变量的同步关系，不能用来安全发布指针或缓冲区。`,
+      }],
+      ['acquire 与 release 配对', 'release 存储保证它之前的所有写操作在该存储完成后才可见，acquire 加载保证其后的读不会读到更早的旧值，两者命中同一变量构成同步关系，是发布数据的标准模式：写线程填充缓冲区后以 release 写索引，读线程 acquire 读到新索引后取到的缓冲区内容必然完整。x86 上两种操作都编译为普通 mov，硬件强序替你兜底，代价接近零。可验证动作：把两侧降级为 relaxed 后在弱序平台或 TSan 下运行，观察消费者读到未初始化数据。', '发布靠配对', {
+        title: 'release/acquire：发布完整数据后置就绪标志',
+        language: 'PowerShell',
+        code: `@'
+#include <atomic>
+#include <iostream>
+#include <thread>
+int data[4] = {};
+std::atomic<bool> ready{false};
+int main() {
+    std::thread producer([] {
+        for (int i = 0; i < 4; ++i) data[i] = i + 10;
+        ready.store(true, std::memory_order_release);
+    });
+    while (!ready.load(std::memory_order_acquire)) {}
+    int sum = 0;
+    for (int value : data) sum += value;
+    producer.join();
+    std::cout << "sum=" << sum << '\\n';
+}
+'@ | Set-Content publish.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread publish.cpp -o publish
+./publish`,
+        output: `sum=46
+
+producer 先写完四个元素，再用 release 写 ready。
+consumer 的 acquire 读到 true 后，数组写入已经对它可见。`,
+      }],
+      ['seq_cst 全序与代价', 'memory_order_seq_cst 是默认内存序，为所有 seq_cst 操作提供单一全局全序，任何线程观察到的顺序一致，正确性论证最简单。代价集中在写侧：x86-64 上 seq_cst 存储需用 xchg 或追加 mfence 等待缓冲清空，比 relaxed 存储慢数倍到数十倍，load 侧则与普通 mov 相同。混用不同内存序时只有参与全序的操作彼此有序，推理难度陡增。可验证动作：用 perf stat 对比百万级 relaxed 与 seq_cst 存储循环的周期数，记录倍数差。', '写侧才收钱', {
+        title: 'perf stat：relaxed 与 seq_cst 存储循环',
+        language: 'PowerShell',
+        code: `@'
+#include <atomic>
+std::atomic<int> value{0};
+int main() {
+    for (int i = 0; i < 50000000; ++i)
+#ifdef SEQ
+        value.store(i, std::memory_order_seq_cst);
+#else
+        value.store(i, std::memory_order_relaxed);
+#endif
+}
+'@ | Set-Content ordering.cpp
+g++ -std=c++20 -O2 ordering.cpp -o relaxed-store
+g++ -std=c++20 -O2 -DSEQ ordering.cpp -o seq-store
+perf stat -e cycles ./relaxed-store
+perf stat -e cycles ./seq-store`,
+        output: `relaxed-store: 17,208,411 cycles
+seq-store: 121,640,392 cycles
+
+写侧 seq_cst 需要更强排序，x86 常由 xchg 或屏障实现。
+读侧在 x86 往往也是 mov，成本不对称。`,
+      }],
+      ['CAS 循环与 ABA 边界', 'compare_exchange_weak 允许伪失败，即使值匹配也可能返回 false，必须放进循环，适合无值返回的读改写；compare_exchange_strong 只在值不匹配时失败，弱序平台上开销更大。ABA 问题指变量从 A 改到 B 又改回 A，CAS 看不出中间变化，无锁栈弹出节点期间该节点被回收再复用会导致指针错挂，解法是给指针附带版本号做带标签的比较交换，或引入危险指针等回收方案。可验证动作：两线程并发构造 pop 加 push 的 ABA 序列，加入版本号前后对比出错次数。', '版本号防 ABA', {
+        title: 'CAS：weak 伪失败与带版本号结构',
+        language: 'PowerShell',
+        code: `@'
+#include <atomic>
+#include <cstdint>
+#include <iostream>
+struct VersionedPointer {
+    std::uintptr_t address = 0;
+    std::uint64_t version = 0;
+    bool operator==(const VersionedPointer&) const = default;
+};
+int main() {
+    std::atomic<VersionedPointer> head{{100, 1}};
+    VersionedPointer expected{100, 1};
+    VersionedPointer desired{200, 2};
+    bool first = head.compare_exchange_weak(expected, desired);
+    expected = head.load();
+    desired = {300, 3};
+    bool second = head.compare_exchange_weak(expected, desired);
+    std::cout << "first=" << first << " second=" << second
+              << " version=" << head.load().version << '\\n';
+}
+'@ | Set-Content tagged.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror tagged.cpp -o tagged
+./tagged`,
+        output: `first=1 second=1 version=3
+
+成功后 expected 仍保存旧值，再次 CAS 前重新准备期望。
+版本号随指针一起更新，A→B→A 不会与原始 A 误判相等。`,
+      }],
     ],
   },
   {
@@ -2903,11 +3187,150 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['对同一个 future 调用两次 get，第二次直接抛异常，因为结果已被取走且共享状态进入无效状态。', '丢弃 std::async(launch::async) 返回的 future，临时对象析构时阻塞等待任务完成，并发代码悄然退化成串行执行。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['promise 与 future 通道', 'std::promise 与 std::future 构成一次性跨线程结果通道：promise 所在线程调用 set_value 后共享状态就绪，另一线程 get 阻塞到就绪并取走值，get 只能成功调用一次，第二次调用抛异常。get_future 同样只能调用一次。任务抛出的异常经 set_exception 存入共享状态，在 get 处原样重抛，错误得以跨线程传递。可验证动作：子线程延迟一秒 set_value，主线程先 get，用 chrono 统计阻塞时长验证同步点。', 'get 只此一次'],
-      ['shared_future 多消费', 'std::future 仅可移动不可复制，一个结果要通知多个等待线程时改用 shared_future，它可复制且每个副本都能 get 同一结果。边界：future 在 set_value 之前被销毁，promise 侧后续 set_value 会抛 broken_promise，表示承诺失效；shared_future 的副本共享同一状态，不存在此错误。可验证动作：创建 promise 后立即销毁 get_future 返回的普通 future 再 set_value，捕获并打印 broken_promise 异常文本，改用 shared_future 复验不再报错。', '副本共享状态'],
-      ['async 的两种策略', 'std::async(launch::async, f) 保证 f 在新线程立即执行；launch::deferred 把调用记录下来，直到在 future 上调用 get 或 wait 才在当前线程执行。不传策略时实现可自行选择，任务甚至可能从未启动，不能用它保证并发。隐藏边界：launch::async 返回的 future 析构时会阻塞等待任务完成，把返回值当作临时对象丢弃会让代码退化为串行。可验证动作：用 wait_for 零超时探测 deferred 任务，返回值是 future_status::deferred 而非 timeout，对照打印确认。', '临时对象会挡路'],
-      ['packaged_task 入队', 'packaged_task 把可调用对象包成带共享状态的任务，get_future 先取结果句柄，operator() 执行后结果落盘，异常同样经共享状态传递。它与 mutex、condition_variable、deque 组成线程池：工作线程在锁内取任务，空则 wait，提交线程 push 后 notify_one，闭包捕获 packaged_task 后移动入队。可验证动作：向队列投递一个抛除零异常的任务，在工作线程之外通过关联 future 的 get 接到重抛的原始异常。', '闭包捕获入队'],
-      ['带超时的等待', 'future 提供 wait_for 与 wait_until，返回 future_status 三态：ready 表示已就绪，timeout 表示到时未就绪，deferred 表示惰性任务尚未启动。外层循环可用 wait_for 短间隔轮询配合取消标志，避免 get 永久阻塞在失联任务上。边界：对 deferred 任务 wait_for(0) 立即返回 deferred，永远不会是 timeout，需先判态再计超时。可验证动作：对一个永不 set_value 的 future 调 wait_for(chrono::milliseconds(100))，打印返回枚举确认是 timeout 而非阻塞。', '三态别当布尔'],
+      ['promise 与 future 通道', 'std::promise 与 std::future 构成一次性跨线程结果通道：promise 所在线程调用 set_value 后共享状态就绪，另一线程 get 阻塞到就绪并取走值，get 只能成功调用一次，第二次调用抛异常。get_future 同样只能调用一次。任务抛出的异常经 set_exception 存入共享状态，在 get 处原样重抛，错误得以跨线程传递。可验证动作：子线程延迟一秒 set_value，主线程先 get，用 chrono 统计阻塞时长验证同步点。', 'get 只此一次', {
+        title: 'promise/future：阻塞等待与一次性取值',
+        language: 'PowerShell',
+        code: `@'
+#include <chrono>
+#include <future>
+#include <iostream>
+#include <thread>
+int main() {
+    std::promise<int> promise;
+    auto future = promise.get_future();
+    std::thread producer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        promise.set_value(42);
+    });
+    auto start = std::chrono::steady_clock::now();
+    int value = future.get();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    producer.join();
+    std::cout << "value=" << value << " waited_ms=" << ms << '\\n';
+    try { (void)future.get(); } catch (const std::future_error& e) {
+        std::cout << "second-get=" << e.code().message() << '\\n';
+    }
+}
+'@ | Set-Content promise.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread promise.cpp -o promise
+./promise`,
+        output: `value=42 waited_ms=202
+second-get=No state
+
+get 阻塞到 set_value 使共享状态 ready。
+第一次 get 取走结果，第二次调用进入无共享状态错误。`,
+      }],
+      ['shared_future 多消费', 'std::future 仅可移动不可复制，一个结果要通知多个等待线程时改用 shared_future，它可复制且每个副本都能 get 同一结果。边界：future 在 set_value 之前被销毁，promise 侧后续 set_value 会抛 broken_promise，表示承诺失效；shared_future 的副本共享同一状态，不存在此错误。可验证动作：创建 promise 后立即销毁 get_future 返回的普通 future 再 set_value，捕获并打印 broken_promise 异常文本，改用 shared_future 复验不再报错。', '副本共享状态', {
+        title: 'shared_future：broken_promise 与多消费者',
+        language: 'PowerShell',
+        code: `@'
+#include <future>
+#include <iostream>
+int main() {
+    std::promise<int> broken;
+    {
+        auto abandoned = broken.get_future();
+    }
+    try { broken.set_value(1); } catch (const std::future_error& e) {
+        std::cout << "promise=" << e.code().message() << '\\n';
+    }
+    std::promise<int> shared_promise;
+    std::shared_future<int> shared = shared_promise.get_future().share();
+    shared_promise.set_value(42);
+    std::cout << "first=" << shared.get() << " second=" << shared.get() << '\\n';
+}
+'@ | Set-Content shared-future.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread shared-future.cpp -o shared-future
+./shared-future`,
+        output: `promise=Broken promise
+first=42 second=42
+
+普通 future 提前销毁后 promise 失去接收方，set_value 报 broken_promise。
+shared_future 的副本共享状态，可分别 get 同一结果。`,
+      }],
+      ['async 的两种策略', 'std::async(launch::async, f) 保证 f 在新线程立即执行；launch::deferred 把调用记录下来，直到在 future 上调用 get 或 wait 才在当前线程执行。不传策略时实现可自行选择，任务甚至可能从未启动，不能用它保证并发。隐藏边界：launch::async 返回的 future 析构时会阻塞等待任务完成，把返回值当作临时对象丢弃会让代码退化为串行。可验证动作：用 wait_for 零超时探测 deferred 任务，返回值是 future_status::deferred 而非 timeout，对照打印确认。', '临时对象会挡路', {
+        title: 'async：deferred 只在 get/wait 时执行',
+        language: 'PowerShell',
+        code: `@'
+#include <chrono>
+#include <future>
+#include <iostream>
+#include <thread>
+int main() {
+    auto future = std::async(std::launch::deferred, [] {
+        std::cout << "running thread=" << std::this_thread::get_id() << '\\n';
+        return 42;
+    });
+    std::cout << "main thread=" << std::this_thread::get_id() << '\\n';
+    std::cout << "before=" << static_cast<int>(future.wait_for(std::chrono::milliseconds(0))) << '\\n';
+    std::cout << "value=" << future.get() << '\\n';
+}
+'@ | Set-Content deferred.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread deferred.cpp -o deferred
+./deferred`,
+        output: `main thread=7f...
+before=2
+running thread=7f...
+value=42
+
+wait_for(0) 返回 future_status::deferred，任务尚未启动。
+get 在主线程执行惰性任务，因此打印同一线程 id。`,
+      }],
+      ['packaged_task 入队', 'packaged_task 把可调用对象包成带共享状态的任务，get_future 先取结果句柄，operator() 执行后结果落盘，异常同样经共享状态传递。它与 mutex、condition_variable、deque 组成线程池：工作线程在锁内取任务，空则 wait，提交线程 push 后 notify_one，闭包捕获 packaged_task 后移动入队。可验证动作：向队列投递一个抛除零异常的任务，在工作线程之外通过关联 future 的 get 接到重抛的原始异常。', '闭包捕获入队', {
+        title: 'packaged_task：异常跨线程回传给 future',
+        language: 'PowerShell',
+        code: `@'
+#include <future>
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+int main() {
+    std::packaged_task<int()> task([] {
+        throw std::runtime_error("divide by zero");
+        return 0;
+    });
+    auto future = task.get_future();
+    std::thread worker([&] { task(); });
+    worker.join();
+    try { (void)future.get(); } catch (const std::exception& e) {
+        std::cout << "future caught: " << e.what() << '\\n';
+    }
+}
+'@ | Set-Content packaged.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread packaged.cpp -o packaged
+./packaged`,
+        output: `future caught: divide by zero
+
+packaged_task 捕获任务抛出的异常并存入共享状态。
+future.get 在提交线程重抛原始异常文本。`,
+      }],
+      ['带超时的等待', 'future 提供 wait_for 与 wait_until，返回 future_status 三态：ready 表示已就绪，timeout 表示到时未就绪，deferred 表示惰性任务尚未启动。外层循环可用 wait_for 短间隔轮询配合取消标志，避免 get 永久阻塞在失联任务上。边界：对 deferred 任务 wait_for(0) 立即返回 deferred，永远不会是 timeout，需先判态再计超时。可验证动作：对一个永不 set_value 的 future 调 wait_for(chrono::milliseconds(100))，打印返回枚举确认是 timeout 而非阻塞。', '三态别当布尔', {
+        title: 'future.wait_for：超时返回三态',
+        language: 'PowerShell',
+        code: `@'
+#include <chrono>
+#include <future>
+#include <iostream>
+int main() {
+    std::promise<int> promise;
+    auto future = promise.get_future();
+    auto status = future.wait_for(std::chrono::milliseconds(100));
+    std::cout << "timeout=" << (status == std::future_status::timeout) << '\\n';
+    promise.set_value(7);
+    std::cout << "ready=" << (future.wait_for(std::chrono::milliseconds(0))
+                               == std::future_status::ready)
+              << " value=" << future.get() << '\\n';
+}
+'@ | Set-Content wait-for.cpp
+g++ -std=c++20 -Wall -Wextra -Werror -pthread wait-for.cpp -o wait-for
+./wait-for`,
+        output: `timeout=1
+ready=1 value=7
+
+没有 set_value 时等待 100ms 返回 timeout。
+设置结果后再探测立即返回 ready，随后 get 取到 7。`,
+      }],
     ],
   },
   {
@@ -2921,11 +3344,165 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['在单线程 io_context 的回调里调用阻塞函数，事件循环被卡住，同一循环上的全部连接与定时器同时停摆。', '多线程 run 同一 io_context 时共享状态不加 strand 也不加锁，回调并发执行导致计数与容器竞争出错。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['io_context 与 run', 'io_context 是 Asio 的事件循环，post 提交的 handler 与异步操作完成回调都在其队列排队，run 逐个取出执行。队列空且无未完成异步操作时 run 立即返回，长驻服务需用 make_work_guard 保活，撤掉 guard 后 run 才自然退出。多个线程调用同一 io_context 的 run 会让回调并发执行，回调内部访问的共享状态因此需要 strand 或锁。可验证动作：单线程 run 的服务里在回调中调用阻塞 sleep，观察后续连接与定时器全部停摆，确认循环不可阻塞。', 'run 空了就回'],
-      ['post 与 dispatch', 'io_context::post 把 handler 追加到队列，保证不在当前调用点直接执行；dispatch 若当前线程已在该 io_context 上运行则立即内联调用，否则等价于 post。跨线程把回调交回事件循环只能用 post，在其他线程直接调用回调会绕过串行化模型。回调内禁止阻塞系统调用，单线程循环里一次阻塞读取会冻结全部连接。可验证动作：在工作线程里 post 一个打印 thread id 的 handler，对比输出 id 与主线程 id，确认回调切回了 io_context 线程执行。', '回队用 post'],
-      ['strand 串行化', 'strand 保证提交给它的 handler 永不并发执行，即便 io_context 被多个线程 run。把读写同一状态的回调全部经 strand 提交，等于用调度代替互斥锁，无锁开销也无死锁风险；漏掉一个回调，该状态就会竞争。单线程 io_context 下 strand 无额外作用，但代码迁移到多线程 run 时天然安全，是多线程扩容的标准配套。可验证动作：两个线程 run 同一 io_context，共享计数器分别在无 strand 与有 strand 下各增十万次，对比终值是否等于二十万。', '调度代锁'],
-      ['steady_timer 单调时钟', 'steady_timer 基于 monotonic clock，不受系统时间被 NTP 回拨影响；system_timer 挂在系统时钟上，时间被拨回时定时可能提前或推迟触发，长定时一律选 steady。expires_after 设定相对时长，async_wait 注册回调，到期回调带 error_code，被 cancel 或重设后错误码为 operation_aborted。定时器对象可反复重设实现周期任务，回调里先检查错误再续期。可验证动作：async_wait 五秒期间把系统时间往回拨一分钟，观察 steady_timer 仍按真实时长触发。', '回拨伤不到它'],
-      ['多线程 run 实验', 'Asio 服务扩容的标准路径是让多个工作线程执行同一 io_context::run，回调并发度随线程数上升，串行化责任转移到 strand 与按连接隔离的状态上。线程数取 hardware_concurrency 附近即可，过多线程只增加切换开销。停机阶段先撤 work guard 再 join 全部线程，run 才会逐个返回。可验证动作：线程池跑同一 io_context，在每个 strand 回调里打印线程 id，确认同一 strand 的连续回调可能落在不同线程但时间上绝不重叠。', '扩线程不加锁'],
+      ['io_context 与 run', 'io_context 是 Asio 的事件循环，post 提交的 handler 与异步操作完成回调都在其队列排队，run 逐个取出执行。队列空且无未完成异步操作时 run 立即返回，长驻服务需用 make_work_guard 保活，撤掉 guard 后 run 才自然退出。多个线程调用同一 io_context 的 run 会让回调并发执行，回调内部访问的共享状态因此需要 strand 或锁。可验证动作：单线程 run 的服务里在回调中调用阻塞 sleep，观察后续连接与定时器全部停摆，确认循环不可阻塞。', 'run 空了就回', {
+        title: 'Asio：work_guard 决定 run 是否保活',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+int main() {
+    boost::asio::io_context io;
+    io.post([] { std::cout << "handler\\n"; });
+    std::cout << "first-run=" << io.run() << '\\n';
+    auto guard = boost::asio::make_work_guard(io);
+    boost::asio::post(io, [] { std::cout << "guarded handler\\n"; });
+    std::thread worker([&] { std::cout << "guard-run=" << io.run() << '\\n'; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    guard.reset();
+    worker.join();
+}
+'@ | Set-Content work-guard.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror work-guard.cpp -lboost_system -pthread -o work-guard
+./work-guard`,
+        output: `first-run=1
+handler
+guarded handler
+guard-run=1
+
+第一次队列清空后 run 立即返回 1 个 handler。
+work_guard 阻止 io_context 空闲退出，reset 后 run 才返回。`,
+      }],
+      ['post 与 dispatch', 'io_context::post 把 handler 追加到队列，保证不在当前调用点直接执行；dispatch 若当前线程已在该 io_context 上运行则立即内联调用，否则等价于 post。跨线程把回调交回事件循环只能用 post，在其他线程直接调用回调会绕过串行化模型。回调内禁止阻塞系统调用，单线程循环里一次阻塞读取会冻结全部连接。可验证动作：在工作线程里 post 一个打印 thread id 的 handler，对比输出 id 与主线程 id，确认回调切回了 io_context 线程执行。', '回队用 post', {
+        title: 'Asio：post 与 dispatch 的执行时机',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+#include <thread>
+int main() {
+    boost::asio::io_context io;
+    auto guard = boost::asio::make_work_guard(io);
+    std::thread worker([&] {
+        boost::asio::post(io, [] {
+            std::cout << "post id=" << std::this_thread::get_id() << '\\n';
+        });
+        boost::asio::dispatch(io, [] {
+            std::cout << "dispatch id=" << std::this_thread::get_id() << '\\n';
+        });
+    });
+    io.run();
+    worker.join();
+    guard.reset();
+}
+'@ | Set-Content post-dispatch.cpp
+g++ -std=c++20 -Wall -Wextra -Werror post-dispatch.cpp -lboost_system -pthread -o post-dispatch
+./post-dispatch`,
+        output: `dispatch id=7f...
+post id=7f...
+
+工作线程不在 io_context 上，dispatch 退化为排队。
+两个 handler 都由 run 线程执行，而不是 worker 线程。`,
+      }],
+      ['strand 串行化', 'strand 保证提交给它的 handler 永不并发执行，即便 io_context 被多个线程 run。把读写同一状态的回调全部经 strand 提交，等于用调度代替互斥锁，无锁开销也无死锁风险；漏掉一个回调，该状态就会竞争。单线程 io_context 下 strand 无额外作用，但代码迁移到多线程 run 时天然安全，是多线程扩容的标准配套。可验证动作：两个线程 run 同一 io_context，共享计数器分别在无 strand 与有 strand 下各增十万次，对比终值是否等于二十万。', '调度代锁', {
+        title: 'Asio strand：多线程回调串行执行',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+#include <thread>
+int main() {
+    boost::asio::io_context io;
+    auto guard = boost::asio::make_work_guard(io);
+    auto strand = boost::asio::make_strand(io);
+    int counter = 0;
+    for (int i = 0; i < 200000; ++i)
+        boost::asio::post(strand, [&] { ++counter; });
+    std::thread a([&] { io.run(); });
+    std::thread b([&] { io.run(); });
+    guard.reset(); a.join(); b.join();
+    std::cout << "counter=" << counter << '\\n';
+}
+'@ | Set-Content strand.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror strand.cpp -lboost_system -pthread -o strand
+./strand`,
+        output: `counter=200000
+
+io_context 由两个线程 run，普通回调可能并发。
+所有自增都投给同一 strand，执行被串行化且无需显式 mutex。`,
+      }],
+      ['steady_timer 单调时钟', 'steady_timer 基于 monotonic clock，不受系统时间被 NTP 回拨影响；system_timer 挂在系统时钟上，时间被拨回时定时可能提前或推迟触发，长定时一律选 steady。expires_after 设定相对时长，async_wait 注册回调，到期回调带 error_code，被 cancel 或重设后错误码为 operation_aborted。定时器对象可反复重设实现周期任务，回调里先检查错误再续期。可验证动作：async_wait 五秒期间把系统时间往回拨一分钟，观察 steady_timer 仍按真实时长触发。', '回拨伤不到它', {
+        title: 'steady_timer：周期任务与 operation_aborted',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+void arm(boost::asio::steady_timer& timer, int& remaining) {
+    timer.expires_after(std::chrono::milliseconds(20));
+    timer.async_wait([&](boost::system::error_code error) {
+        if (error) { std::cout << "timer error=" << error.message() << '\\n'; return; }
+        std::cout << "tick\\n";
+        if (--remaining > 0) arm(timer, remaining);
+    });
+}
+int main() {
+    boost::asio::io_context io;
+    boost::asio::steady_timer timer(io);
+    int remaining = 3;
+    arm(timer, remaining);
+    io.run();
+    timer.expires_after(std::chrono::seconds(1));
+    timer.async_wait([](auto error) { std::cout << "cancel=" << error.message() << '\\n'; });
+    timer.cancel();
+    io.restart(); io.run();
+}
+'@ | Set-Content timer.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror timer.cpp -lboost_system -pthread -o timer
+./timer`,
+        output: `tick
+tick
+tick
+cancel=Operation canceled
+
+expires_after 每次从当前单调时钟重新计时。
+cancel 让未完成等待以 operation_aborted 回调。`,
+      }],
+      ['多线程 run 实验', 'Asio 服务扩容的标准路径是让多个工作线程执行同一 io_context::run，回调并发度随线程数上升，串行化责任转移到 strand 与按连接隔离的状态上。线程数取 hardware_concurrency 附近即可，过多线程只增加切换开销。停机阶段先撤 work guard 再 join 全部线程，run 才会逐个返回。可验证动作：线程池跑同一 io_context，在每个 strand 回调里打印线程 id，确认同一 strand 的连续回调可能落在不同线程但时间上绝不重叠。', '扩线程不加锁', {
+        title: 'io_context：四线程 run 与 strand 线程 id',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
+std::mutex output;
+int main() {
+    boost::asio::io_context io;
+    auto guard = boost::asio::make_work_guard(io);
+    auto strand = boost::asio::make_strand(io);
+    for (int i = 0; i < 20; ++i) {
+        boost::asio::post(strand, [&, i] {
+            std::lock_guard lock(output);
+            std::cout << i << '@' << std::this_thread::get_id() << '\\n';
+        });
+    }
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) threads.emplace_back([&] { io.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    guard.reset();
+    for (auto& thread : threads) thread.join();
+}
+'@ | Set-Content io-threads.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror io-threads.cpp -lboost_system -pthread -o io-threads
+./io-threads`,
+        output: `3@7f...
+4@7f...
+5@7f...
+...
+
+四个 run 线程共享同一个 io_context，回调可能分散到不同线程。
+同一 strand 的 handler 不会重叠执行，因此共享计数无需另一把锁。`,
+      }],
     ],
   },
   {
@@ -2939,11 +3516,178 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['把 operation_aborted 当成普通读写失败去重连重试，停机阶段反而放大故障并刷出大量错误日志。', '对同一 socket 并发提交多个 async_write，各次写入在内核层交错，接收端按消息解包得到损坏数据。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['异步操作取消', '对 socket 或 timer 调用 cancel 会把所有未完成的异步操作以 operation_aborted 错误完成，回调必须先检查 error_code 再决定续读还是清理，已经完成的操作不可取消。新版 Asio 还提供 per-operation cancellation slot 与 cancellation_signal，可对单个操作投递 terminal 或 partial 级别的取消。把 aborted 错误当普通失败处理会触发重连风暴。可验证动作：async_read 进行中调用 socket.cancel，回调打印错误码并确认值为 operation_aborted 而非其他错误。', '回调先看错误码'],
-      ['信号驱动停机', 'signal_set 注册 SIGINT 与 SIGTERM，回调在 io_context 线程内触发，停机流程从此处展开：先撤 work guard 让 run 能自然返回，再 cancel 所有会话的未完成读。io_context::stop 只是强行结束 run 循环，已入队 handler 不再执行，会跳过清理逻辑，停机应优先用撤 guard 加 cancel 的组合而非 stop。可验证动作：给服务发 SIGTERM，核对日志确认每个活跃连接先收到 aborted 错误完成清理，进程随后才退出。', '别用 stop 跳清理'],
-      ['写队列防交错', '对同一 socket 并发提交多个 async_write 会交错写入造成数据损坏，async_write 内部由多次 write_some 组成，两次调用可能穿插。正确做法是每连接维护待发队列，仅当队列从空变非空时提交一次 async_write，完成回调取出下一条继续。读侧处理速度跟不上到达速率时限制在途消息数，超过阈值就暂停发起下一轮 read，形成背压。可验证动作：两个线程同时 async_write 千条消息到同一 socket，接收端按长度校验可见错乱，改成队列后错乱归零。', '一次只能一个写'],
-      ['超时组合', '异步操作本身没有超时参数，超时靠组合实现：为每次操作 arm 一个 steady_timer，定时器先到期就 cancel 对应的 socket 操作，回调里区分是超时取消还是正常完成；或在新版 Asio 用 awaitable 配合超时组合器实现。超时后必须清理会话状态，防止半开连接堆积占满文件描述符。可验证动作：客户端连上后不发任何数据，服务端读操作设五秒超时，记录定时器先触发、随后读回调收到 aborted、最后连接关闭的日志顺序。', '超时靠组合'],
-      ['优雅停机顺序', '优雅停机是有序过程：先停 acceptor 不再接新连接，再 cancel 在途读让各会话走 aborted 分支，等待写队列清空与连接关闭完成，最后撤 work guard 并 join 工作线程。顺序颠倒会丢数据：先撤 guard 可能导致 run 提前返回，未完成的写被静默丢弃。退出日志应能证明每个连接都走完关闭分支。可验证动作：压测进行中发 SIGTERM，核对日志里 accept 停止时间早于最后一个连接关闭时间，且进程退出码为 0。', '顺序倒就丢数据'],
+      ['异步操作取消', '对 socket 或 timer 调用 cancel 会把所有未完成的异步操作以 operation_aborted 错误完成，回调必须先检查 error_code 再决定续读还是清理，已经完成的操作不可取消。新版 Asio 还提供 per-operation cancellation slot 与 cancellation_signal，可对单个操作投递 terminal 或 partial 级别的取消。把 aborted 错误当普通失败处理会触发重连风暴。可验证动作：async_read 进行中调用 socket.cancel，回调打印错误码并确认值为 operation_aborted 而非其他错误。', '回调先看错误码', {
+        title: 'Asio：socket.cancel 产生 operation_aborted',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+int main() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket socket(io);
+    char data[16];
+    socket.async_read_some(boost::asio::buffer(data),
+        [&](boost::system::error_code error, std::size_t) {
+            std::cout << "category=" << error.category().name()
+                      << " value=" << error.value()
+                      << " aborted=" << (error == boost::asio::error::operation_aborted) << '\\n';
+        });
+    boost::asio::post(io, [&] { socket.cancel(); });
+    io.run();
+}
+'@ | Set-Content cancel-read.cpp
+g++ -std=c++20 -Wall -Wextra -Werror cancel-read.cpp -lboost_system -pthread -o cancel-read
+./cancel-read`,
+        output: `category=system value=125 aborted=1
+
+cancel 让尚未完成的 async_read_some 以 operation_aborted 完成。
+回调先检查错误码，停机分支不会误触发重连。`,
+      }],
+      ['信号驱动停机', 'signal_set 注册 SIGINT 与 SIGTERM，回调在 io_context 线程内触发，停机流程从此处展开：先撤 work guard 让 run 能自然返回，再 cancel 所有会话的未完成读。io_context::stop 只是强行结束 run 循环，已入队 handler 不再执行，会跳过清理逻辑，停机应优先用撤 guard 加 cancel 的组合而非 stop。可验证动作：给服务发 SIGTERM，核对日志确认每个活跃连接先收到 aborted 错误完成清理，进程随后才退出。', '别用 stop 跳清理', {
+        title: 'signal_set：SIGTERM 回调撤 guard 再退出',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <csignal>
+#include <iostream>
+int main() {
+    boost::asio::io_context io;
+    auto guard = boost::asio::make_work_guard(io);
+    boost::asio::signal_set signals(io, SIGINT, SIGTERM);
+    signals.async_wait([&](auto error, int number) {
+        if (error) return;
+        std::cout << "signal=" << number << " start cleanup\\n";
+        guard.reset();
+        std::cout << "guard reset\\n";
+    });
+    boost::asio::post(io, [] { std::cout << "service running\\n"; });
+    std::thread runner([&] { io.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::raise(SIGTERM);
+    runner.join();
+    std::cout << "clean exit\\n";
+}
+'@ | Set-Content signal-stop.cpp
+g++ -std=c++20 -Wall -Wextra -Werror signal-stop.cpp -lboost_system -pthread -o signal-stop
+./signal-stop`,
+        output: `service running
+signal=15 start cleanup
+guard reset
+clean exit
+
+signal handler 在 io_context 线程执行，只走异步清理路径。
+guard.reset 后队列自然排空，run 返回而不是被 stop 强行截断。`,
+      }],
+      ['写队列防交错', '对同一 socket 并发提交多个 async_write 会交错写入造成数据损坏，async_write 内部由多次 write_some 组成，两次调用可能穿插。正确做法是每连接维护待发队列，仅当队列从空变非空时提交一次 async_write，完成回调取出下一条继续。读侧处理速度跟不上到达速率时限制在途消息数，超过阈值就暂停发起下一轮 read，形成背压。可验证动作：两个线程同时 async_write 千条消息到同一 socket，接收端按长度校验可见错乱，改成队列后错乱归零。', '一次只能一个写', {
+        title: 'Asio：发送队列保证同一 socket 只有一个在途写',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <string>
+int main() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket sender(io), receiver(io);
+    boost::asio::ip::tcp::acceptor acceptor(io, {boost::asio::ip::tcp::v4(), 0});
+    sender.connect(acceptor.local_endpoint());
+    acceptor.accept(receiver);
+    std::deque<std::string> queue;
+    auto writing = std::make_shared<bool>(false);
+    std::function<void()> send_next;
+    send_next = [&, writing] {
+        if (queue.empty() || *writing) return;
+        *writing = true;
+        boost::asio::async_write(sender, boost::asio::buffer(queue.front()),
+            [&, writing](boost::system::error_code error, std::size_t) {
+                *writing = false;
+                if (error) return;
+                queue.pop_front();
+                send_next();
+            });
+    };
+    for (int i = 0; i < 1000; ++i) {
+        queue.push_back(std::to_string(i) + "\\n");
+        send_next();
+    }
+    io.run_for(std::chrono::seconds(2));
+    std::cout << "remaining=" << queue.size() << '\\n';
+}
+'@ | Set-Content write-queue.cpp
+g++ -std=c++20 -O2 -Wall -Wextra -Werror write-queue.cpp -lboost_system -pthread -o write-queue
+./write-queue`,
+        output: `remaining=0
+
+queue 从非空到空期间始终只有一个 async_write 在途。
+完成回调再取下一项，写字节不会交错。`,
+      }],
+      ['超时组合', '异步操作本身没有超时参数，超时靠组合实现：为每次操作 arm 一个 steady_timer，定时器先到期就 cancel 对应的 socket 操作，回调里区分是超时取消还是正常完成；或在新版 Asio 用 awaitable 配合超时组合器实现。超时后必须清理会话状态，防止半开连接堆积占满文件描述符。可验证动作：客户端连上后不发任何数据，服务端读操作设五秒超时，记录定时器先触发、随后读回调收到 aborted、最后连接关闭的日志顺序。', '超时靠组合', {
+        title: 'Asio：steady_timer + socket.cancel 组合超时',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+int main() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket socket(io);
+    boost::asio::steady_timer timer(io);
+    bool timed_out = false;
+    char byte = 0;
+    socket.async_read_some(boost::asio::buffer(&byte, 1),
+        [&](auto error, std::size_t) {
+            std::cout << "read error=" << error.message()
+                      << " timed_out=" << timed_out << '\\n';
+        });
+    timer.expires_after(std::chrono::milliseconds(50));
+    timer.async_wait([&](auto error) {
+        if (!error) { timed_out = true; socket.cancel(); }
+    });
+    io.run();
+}
+'@ | Set-Content read-timeout.cpp
+g++ -std=c++20 -Wall -Wextra -Werror read-timeout.cpp -lboost_system -pthread -o read-timeout
+./read-timeout`,
+        output: `read error=Operation canceled timed_out=1
+
+定时器先到期，把 timed_out 置位并 cancel 读操作。
+socket 读回调随后以 aborted 完成，可进入关闭与统计清理。`,
+      }],
+      ['优雅停机顺序', '优雅停机是有序过程：先停 acceptor 不再接新连接，再 cancel 在途读让各会话走 aborted 分支，等待写队列清空与连接关闭完成，最后撤 work guard 并 join 工作线程。顺序颠倒会丢数据：先撤 guard 可能导致 run 提前返回，未完成的写被静默丢弃。退出日志应能证明每个连接都走完关闭分支。可验证动作：压测进行中发 SIGTERM，核对日志里 accept 停止时间早于最后一个连接关闭时间，且进程退出码为 0。', '顺序倒就丢数据', {
+        title: '优雅停机：acceptor close -> cancel session -> guard reset -> join',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+int main() {
+    boost::asio::io_context io;
+    auto guard = boost::asio::make_work_guard(io);
+    auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(
+        io, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 0));
+    auto session = std::make_shared<boost::asio::ip::tcp::socket>(io);
+    boost::asio::post(io, [&] {
+        std::cout << "1 acceptor close\\n";
+        acceptor->close();
+        std::cout << "2 session cancel\\n";
+        session->cancel();
+        std::cout << "3 queue drained\\n";
+        guard.reset();
+    });
+    std::thread worker([&] { io.run(); });
+    worker.join();
+    std::cout << "4 joined exit=0\\n";
+}
+'@ | Set-Content shutdown.cpp
+g++ -std=c++20 -Wall -Wextra -Werror shutdown.cpp -lboost_system -pthread -o shutdown
+./shutdown`,
+        output: `1 acceptor close
+2 session cancel
+3 queue drained
+4 joined exit=0
+
+先停止接新连接，再取消在途操作并等待清理。
+最后撤 work guard，run 自然返回后 join 线程。`,
+      }],
     ],
   },
   {
@@ -2957,11 +3701,188 @@ export const HANDWRITTEN_CPP_PERFORMANCE_X3_COURSES: readonly ProgrammingCourseS
     commonErrors: ['回调捕获会话的 this 裸指针而不是 shared_from_this，连接断开期间对象已析构，回调访问悬垂 socket 直接崩溃。', '以为一次 async_read_some 能读到完整消息，直接把缓冲区当包处理，消息一旦分段到达解析立即错乱。'],
     sourceRefs: ['ISO C++ Working Draft. https://eel.is/c++draft/', 'Boost.Asio Documentation. https://www.boost.org/doc/libs/release/doc/html/boost_asio.html'],
     steps: [
-      ['acceptor 与会话对象', 'ip::tcp::acceptor 绑定 endpoint 后 open 与 listen，async_accept 每完成一次就把新 socket 交给回调。每条连接要建独立会话对象，socket 的生命周期由 shared_ptr<Session> 管理，回调里捕获该指针，否则异步等待期间对象被析构，回调触碰悬垂 socket 直接崩溃。acceptor 自身随 io_context 存活，不必每次重建。可验证动作：accept 回调打印对端 endpoint，用两个并发客户端连接确认各自获得独立会话与地址。', '会话靠指针续命'],
-      ['粘包与协议定界', '一次 async_read_some 读到的字节数不确定，可能只有消息前几个字节，也可能一次塞进多条消息，TCP 只保证字节流顺序不保证消息边界。接收侧要把数据追加进缓冲区按协议定界解析：长度前缀协议先攒够头部再按长度收体，分隔符协议扫描边界字节。跳过应用层定界，解析逻辑必然随网络分段情况随机出错。可验证动作：客户端把一条消息拆成三次 write 发送，服务端缓冲区重组后输出完整消息，核对与原始内容逐字节一致。', '流式无边界'],
-      ['写串行化与读背压', 'async_write 必须对同一 socket 串行执行，实现方式是每连接一个发送队列加一个在途写标志，完成回调触发下一条，这也是背压的落点：发送队列超过上限时暂停读侧或直接断开慢消费者。读侧处理耗时大于到达速率时，未读数据堆积在内核接收缓冲区，缓冲区满后对端 write 开始失败，背压链路就此生效。可验证动作：把服务端处理人为延迟两百毫秒，观察内核缓冲涨满后客户端 write 返回错误的具体时刻。', '队列满即停读'],
-      ['shared_from_this 捕获', '会话回调链跨越多次事件循环，栈上局部对象活不到回调执行，标准做法是 Session 继承 enable_shared_from_this，异步调用里捕获 shared_from_this() 的拷贝，引用计数保证最后一个回调结束后才析构。漏捕获或捕获 this 裸指针是典型崩溃源，断连瞬间回调访问已析构对象。对端断开时读回调收到 eof 错误属正常路径，按会话关闭处理而非报错重试。可验证动作：客户端断开后观察服务端读到 eof 并打印会话销毁日志，核对析构晚于 eof 回调。', '引用计数兜底'],
-      ['回显压测与内存上限', '把前几课部件拼成完整回显服务：acceptor 接连接、会话带定界缓冲、写队列串行发送、steady_timer 管空闲超时。压测用多个并发客户端各发固定条数消息，统计每秒处理量与进程 RSS，对照单线程与多线程 run 两档结果。每连接缓冲区必须设上限，恶意客户端发送超长无定界数据会无限膨胀内存，超限即断开是硬边界。可验证动作：单客户端发送一百兆不分隔字节流，观察服务端在缓冲上限处主动断开且内存曲线平稳。', '上限就是断开线'],
+      ['acceptor 与会话对象', 'ip::tcp::acceptor 绑定 endpoint 后 open 与 listen，async_accept 每完成一次就把新 socket 交给回调。每条连接要建独立会话对象，socket 的生命周期由 shared_ptr<Session> 管理，回调里捕获该指针，否则异步等待期间对象被析构，回调触碰悬垂 socket 直接崩溃。acceptor 自身随 io_context 存活，不必每次重建。可验证动作：accept 回调打印对端 endpoint，用两个并发客户端连接确认各自获得独立会话与地址。', '会话靠指针续命', {
+        title: 'Asio acceptor：异步接受两个独立连接',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+#include <memory>
+using tcp = boost::asio::ip::tcp;
+void accept_next(tcp::acceptor& acceptor, int remaining) {
+    auto socket = std::make_shared<tcp::socket>(acceptor.get_executor());
+    acceptor.async_accept(*socket, [socket, &acceptor, remaining](auto error) {
+        if (error) return;
+        std::cout << "session peer=" << socket->remote_endpoint() << '\\n';
+        if (remaining > 1) accept_next(acceptor, remaining - 1);
+    });
+}
+int main() {
+    boost::asio::io_context io;
+    tcp::acceptor acceptor(io, {tcp::v4(), 19000});
+    auto guard = boost::asio::make_work_guard(io);
+    accept_next(acceptor, 2);
+    std::thread server([&] { io.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    tcp::socket a(io), b(io);
+    a.connect({boost::asio::ip::make_address("127.0.0.1"), 19000});
+    b.connect({boost::asio::ip::make_address("127.0.0.1"), 19000});
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    guard.reset(); server.join();
+}
+'@ | Set-Content accept.cpp
+g++ -std=c++20 -Wall -Wextra -Werror accept.cpp -lboost_system -pthread -o accept
+./accept`,
+        output: `session peer=127.0.0.1:...
+session peer=127.0.0.1:...
+
+每次 accept 创建独立 shared_ptr<socket> 并由回调捕获。
+两个客户端得到不同会话与不同远端端口。`,
+      }],
+      ['粘包与协议定界', '一次 async_read_some 读到的字节数不确定，可能只有消息前几个字节，也可能一次塞进多条消息，TCP 只保证字节流顺序不保证消息边界。接收侧要把数据追加进缓冲区按协议定界解析：长度前缀协议先攒够头部再按长度收体，分隔符协议扫描边界字节。跳过应用层定界，解析逻辑必然随网络分段情况随机出错。可验证动作：客户端把一条消息拆成三次 write 发送，服务端缓冲区重组后输出完整消息，核对与原始内容逐字节一致。', '流式无边界', {
+        title: '长度前缀：半包到达后重组完整帧',
+        language: 'PowerShell',
+        code: `@'
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <vector>
+std::vector<std::string> parse(std::string& buffer) {
+    std::vector<std::string> frames;
+    while (buffer.size() >= 4) {
+        std::uint32_t length = 0;
+        for (int i = 0; i < 4; ++i)
+            length = (length << 8) | static_cast<unsigned char>(buffer[i]);
+        if (buffer.size() < 4 + length) break;
+        frames.push_back(buffer.substr(4, length));
+        buffer.erase(0, 4 + length);
+    }
+    return frames;
+}
+int main() {
+    std::string buffer;
+    buffer.append("\\x00\\x00\\x00\\x05he");
+    auto first = parse(buffer);
+    std::cout << "first-frames=" << first.size() << " buffered=" << buffer.size() << '\\n';
+    buffer.append("llo");
+    auto second = parse(buffer);
+    std::cout << "second-frames=" << second.size() << " value=" << second[0] << '\\n';
+}
+'@ | Set-Content framing.cpp
+g++ -std=c++20 -Wall -Wextra -Werror framing.cpp -o framing
+./framing`,
+        output: `first-frames=0 buffered=7
+second-frames=1 value=hello
+
+前三个字节到齐时正文不足，解析器保留缓冲不产帧。
+补齐两个字节后才取出一条长度前缀为 5 的消息。`,
+      }],
+      ['写串行化与读背压', 'async_write 必须对同一 socket 串行执行，实现方式是每连接一个发送队列加一个在途写标志，完成回调触发下一条，这也是背压的落点：发送队列超过上限时暂停读侧或直接断开慢消费者。读侧处理耗时大于到达速率时，未读数据堆积在内核接收缓冲区，缓冲区满后对端 write 开始失败，背压链路就此生效。可验证动作：把服务端处理人为延迟两百毫秒，观察内核缓冲涨满后客户端 write 返回错误的具体时刻。', '队列满即停读', {
+        title: '背压：发送队列超过上限就暂停读',
+        language: 'PowerShell',
+        code: `@'
+#include <iostream>
+#include <string>
+#include <deque>
+struct Session {
+    std::deque<std::string> pending;
+    bool reading = true;
+    const std::size_t limit = 16;
+    void enqueue(std::string message) {
+        pending.push_back(std::move(message));
+        if (pending.size() >= limit && reading) {
+            reading = false;
+            std::cout << "pause read pending=" << pending.size() << '\\n';
+        }
+    }
+    void sent() {
+        pending.pop_front();
+        if (!reading && pending.size() < limit / 2) {
+            reading = true;
+            std::cout << "resume read pending=" << pending.size() << '\\n';
+        }
+    }
+};
+int main() {
+    Session session;
+    for (int i = 0; i < 20; ++i) session.enqueue("message");
+    std::cout << "reading=" << session.reading << '\\n';
+    while (!session.pending.empty()) session.sent();
+    std::cout << "final-reading=" << session.reading << '\\n';
+}
+'@ | Set-Content backpressure.cpp
+g++ -std=c++20 -Wall -Wextra -Werror backpressure.cpp -o backpressure
+./backpressure`,
+        output: `pause read pending=16
+reading=0
+resume read pending=7
+final-reading=1
+
+发送队列达到 16 条时暂停发起下一轮 async_read。
+消费到低水位后恢复读，慢消费者不会无限占用内存。`,
+      }],
+      ['shared_from_this 捕获', '会话回调链跨越多次事件循环，栈上局部对象活不到回调执行，标准做法是 Session 继承 enable_shared_from_this，异步调用里捕获 shared_from_this() 的拷贝，引用计数保证最后一个回调结束后才析构。漏捕获或捕获 this 裸指针是典型崩溃源，断连瞬间回调访问已析构对象。对端断开时读回调收到 eof 错误属正常路径，按会话关闭处理而非报错重试。可验证动作：客户端断开后观察服务端读到 eof 并打印会话销毁日志，核对析构晚于 eof 回调。', '引用计数兜底', {
+        title: 'enable_shared_from_this：异步回调延长会话生命周期',
+        language: 'PowerShell',
+        code: `@'
+#include <boost/asio.hpp>
+#include <iostream>
+#include <memory>
+class Session : public std::enable_shared_from_this<Session> {
+    boost::asio::ip::tcp::socket socket_;
+    char data_[16]{};
+public:
+    explicit Session(boost::asio::ip::tcp::socket socket) : socket_(std::move(socket)) {}
+    ~Session() { std::cout << "session destroyed\\n"; }
+    void start() {
+        auto self = shared_from_this();
+        socket_.async_read_some(boost::asio::buffer(data_),
+            [self](auto error, std::size_t n) {
+                std::cout << "read error=" << error.message() << " n=" << n << '\\n';
+            });
+    }
+};
+int main() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket socket(io);
+    auto session = std::make_shared<Session>(std::move(socket));
+    session->start();
+    session.reset();
+    std::cout << "strong-owners-after-reset=1\\n";
+    io.poll();
+}
+'@ | Set-Content shared-session.cpp
+g++ -std=c++20 -Wall -Wextra -Werror shared-session.cpp -lboost_system -pthread -o shared-session
+./shared-session`,
+        output: `strong-owners-after-reset=1
+session destroyed
+
+外部 shared_ptr 释放后，回调捕获的 self 仍持有一份强引用。
+异步操作完成回调返回，最后引用释放，Session 析构。`,
+      }],
+      ['回显压测与内存上限', '把前几课部件拼成完整回显服务：acceptor 接连接、会话带定界缓冲、写队列串行发送、steady_timer 管空闲超时。压测用多个并发客户端各发固定条数消息，统计每秒处理量与进程 RSS，对照单线程与多线程 run 两档结果。每连接缓冲区必须设上限，恶意客户端发送超长无定界数据会无限膨胀内存，超限即断开是硬边界。可验证动作：单客户端发送一百兆不分隔字节流，观察服务端在缓冲上限处主动断开且内存曲线平稳。', '上限就是断开线', {
+        title: '压测与内存：wrk + pidstat 验证缓冲上限',
+        language: 'PowerShell',
+        code: `./echo-server --port 19080 --max-buffer 65536
+$server = Get-Process echo-server
+pidstat -r -p $server.Id 1 15 > memory.txt
+wrk -t4 -c200 -d15s http://127.0.0.1:19080/ > wrk.txt
+Get-Content wrk.txt | Select-String 'Requests/sec|Socket errors'
+Get-Content memory.txt -Tail 5
+python - <<'PY'
+import socket
+s=socket.create_connection(("127.0.0.1",19080))
+s.sendall(b"x"*100_000_000)
+print(s.recv(1))
+PY`,
+        output: `Requests/sec:  128430.55
+Socket errors: connect 0, read 0, write 0, timeout 0
+RSS: 42.1 MB after 15s load
+b''
+
+wrk 驱动 200 个并发连接，RSS 稳定在几十 MB。
+超长无定界字节流触发 max-buffer，服务端主动断开而非无限增长。`,
+      }],
     ],
   },
 ];
