@@ -239,6 +239,22 @@ describe('资讯中心', () => {
     });
   });
 
+  it('在资讯正文点击当前资讯 Tab 会回到资讯根页并恢复应用可访问性', async () => {
+    const host = await mountNews();
+    await vi.waitFor(() => expect(host.textContent).toContain('华强北的亚太创新新周期'));
+    host.querySelector<HTMLButtonElement>('.news-feed-story')?.click();
+    await vi.waitFor(() => expect(host.hasAttribute('inert')).toBe(true));
+
+    document.dispatchEvent(new CustomEvent('yz:mobile-tab-root', {
+      detail: { key: 'news' },
+    }));
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.news-mobile-reader')).toBeFalsy();
+      expect(host.hasAttribute('inert')).toBe(false);
+    });
+  });
+
   it('Android 返回手势先关闭资讯正文，不把页面带回上一路由', async () => {
     const host = await mountNews();
     await vi.waitFor(() => expect(host.textContent).toContain('华强北的亚太创新新周期'));

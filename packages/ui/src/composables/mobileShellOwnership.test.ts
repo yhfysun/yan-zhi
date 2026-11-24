@@ -64,6 +64,21 @@ describe('移动外壳归属：Capacitor 与 Web 手机视口共用', () => {
     expect(around).toContain('v-if="isMobile"');
   });
 
+  it('SideNav.vue：移动 TabBar 挂在 app-shell 外，二级层 inert 不能连带锁死导航', () => {
+    const teleportIndex = SIDE_NAV.indexOf('<Teleport to="body">');
+    const tabBarIndex = SIDE_NAV.indexOf('class="tab-bar"', teleportIndex);
+    expect(teleportIndex, '移动 TabBar 没有 Teleport 到 body').toBeGreaterThan(0);
+    expect(tabBarIndex, 'Teleport 未包住移动 TabBar').toBeGreaterThan(teleportIndex);
+    expect(SIDE_NAV.slice(teleportIndex, tabBarIndex), 'TabBar 容器仍在 app-shell 内')
+      .toContain('<Teleport to="body">');
+
+    const css = stripCssComments(SIDE_NAV);
+    expect(css, 'TabBar 被二级页覆盖后会截断指针事件')
+      .toMatch(/\.tab-bar\s*\{[\s\S]*?z-index:\s*5000;[\s\S]*?pointer-events:\s*auto;/);
+    expect(SIDE_NAV, '当前资讯 Tab 点击后未把页内二级层收回资讯根页')
+      .toMatch(/route\.path\.startsWith\('\/news'\)[\s\S]{0,100}requestMobileTabRoot\('news'\)/);
+  });
+
   it('Web 根组件：Web 手机视口隐藏桌面 WebTopBar，交给共享移动壳', () => {
     const WEB_APP = readFileSync(resolve(__dirname, '../../../../apps/web/src/App.vue'), 'utf8');
     expect(WEB_APP).toMatch(/WebTopBar\s+v-if="!isBareRoute\s*&&\s*!mobileShell"/);

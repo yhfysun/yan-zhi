@@ -98,7 +98,6 @@
         ref="mobileReaderRoot"
         class="news-mobile-reader"
         role="dialog"
-        aria-modal="true"
         :aria-label="`阅读：${selectedItem.title}`"
       >
         <NewsArticleReader
@@ -116,7 +115,6 @@
         v-if="activeQuote && !isWideLayout"
         class="news-quote-overlay"
         role="dialog"
-        aria-modal="true"
         :aria-label="`行情详情：${activeQuote.name}`"
       >
         <NewsQuoteDetail
@@ -154,6 +152,7 @@ import NewsArticleReader from '../components/news/NewsArticleReader.vue';
 import MarketPulse from '../components/news/MarketPulse.vue';
 import NewsQuoteDetail from '../components/news/NewsQuoteDetail.vue';
 import NewsSectorPanel from '../components/news/NewsSectorPanel.vue';
+import { listenMobileTabRoot } from '../composables/mobileTabRoot';
 
 type ApiResult<T> = { data: T } | { error: string };
 
@@ -207,6 +206,7 @@ let quoteRequestId = 0;
 let quoteHistoryDepth = 0;
 /** 原生返回链路手动 back() 消费 K 线层条目时，跳过随之而来的那次 popstate */
 let quoteIgnoreNextPop = false;
+let removeMobileTabRootListener: (() => void) | null = null;
 let shellLock: {
   element: HTMLElement;
   ariaHidden: string | null;
@@ -592,6 +592,14 @@ function onMobileBack(event: Event): void {
   dismissMobileReader();
 }
 
+function resetNewsToRoot(): void {
+  if (activeQuote.value) {
+    dismissMobileQuote();
+    return;
+  }
+  if (selectedItem.value && !isWideLayout.value) dismissMobileReader();
+}
+
 function lockApplicationShell(): void {
   if (shellLock || typeof document === 'undefined') return;
   const element = document.querySelector<HTMLElement>('.app-shell');
@@ -637,11 +645,14 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown);
   window.addEventListener('popstate', onPopState);
   document.addEventListener('yz:mobile-back', onMobileBack);
+  removeMobileTabRootListener = listenMobileTabRoot('news', resetNewsToRoot);
   void Promise.all([loadFeed('top'), loadMarket(), loadSector()]);
 });
 
 onUnmounted(() => {
   unlockApplicationShell();
+  removeMobileTabRootListener?.();
+  removeMobileTabRootListener = null;
   media?.removeEventListener('change', onWideLayoutChange);
   window.removeEventListener('keydown', onKeydown);
   window.removeEventListener('popstate', onPopState);

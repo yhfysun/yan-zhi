@@ -220,29 +220,33 @@
        超过就必然挤压文字或降级成纯图标。这里按「用户每天真正会点开的东西」收敛：
          工作（=当前模式主页面）/ 笔记 / 学习 / 资讯 / 我的。
        文件是任务侧栏里的二级工具，不再占用常驻位；配置管理统一收进「我的 → 设置」。 -->
-  <nav v-if="isMobile" class="tab-bar">
-    <template v-for="item in mobilePrimaryItems" :key="item.key">
-      <router-link
-        v-if="item.kind === 'route'"
-        :to="item.path"
-        class="tab-bar-item"
-        :class="{ active: item.active }"
-      >
-        <el-icon :size="21"><component :is="item.icon" /></el-icon>
-        <span class="tab-bar-label">{{ item.label }}</span>
-      </router-link>
-      <button
-        v-else
-        type="button"
-        class="tab-bar-item"
-        :class="{ active: item.active }"
-        @click="item.run?.()"
-      >
-        <el-icon :size="21"><component :is="item.icon" /></el-icon>
-        <span class="tab-bar-label">{{ item.label }}</span>
-      </button>
-    </template>
-  </nav>
+  <!-- 移动 TabBar 必须挂在 app-shell 之外：资讯正文/行情等二级层会给 app-shell
+       加 inert，若导航仍留在壳内，视觉上虽可见但点击会被浏览器整体拦截。 -->
+  <Teleport to="body">
+    <nav v-if="isMobile" class="tab-bar">
+      <template v-for="item in mobilePrimaryItems" :key="item.key">
+        <router-link
+          v-if="item.kind === 'route'"
+          :to="item.path"
+          class="tab-bar-item"
+          :class="{ active: item.active }"
+        >
+          <el-icon :size="21"><component :is="item.icon" /></el-icon>
+          <span class="tab-bar-label">{{ item.label }}</span>
+        </router-link>
+        <button
+          v-else
+          type="button"
+          class="tab-bar-item"
+          :class="{ active: item.active }"
+          @click="item.run?.()"
+        >
+          <el-icon :size="21"><component :is="item.icon" /></el-icon>
+          <span class="tab-bar-label">{{ item.label }}</span>
+        </button>
+      </template>
+    </nav>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
@@ -257,6 +261,7 @@ import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
 import { visibleModeDefs, isModeLicensed, activeMode, setMode, modeRoute } from '../stores/mode';
+import { requestMobileTabRoot } from '../composables/mobileTabRoot';
 
 /** 触屏（无 hover 能力）禁用 tooltip：tap 后气泡残留遮挡内容（2026-11-15 真机实报） */
 const isTouchLike = (() => {
@@ -410,10 +415,18 @@ function openCurrentWork(): void {
 }
 
 function openNotes(): void {
+  if (route.path.startsWith('/notes')) {
+    requestMobileTabRoot('notes');
+    return;
+  }
   void router.push('/notes').catch(() => {});
 }
 
 function openNews(): void {
+  if (route.path.startsWith('/news')) {
+    requestMobileTabRoot('news');
+    return;
+  }
   void router.push('/news').catch(() => {});
 }
 
@@ -734,11 +747,12 @@ function toggleTheme() {
   background: var(--color-surface);
   border-top: 1px solid var(--color-border);
   box-shadow: 0 -6px 22px rgba(22, 31, 39, 0.06);
-  z-index: 100;
+  z-index: 5000;
   justify-content: space-around;
   align-items: center;
   padding-top: 5px;
   gap: 2px;
+  pointer-events: auto;
 }
 
 .tab-bar-item {

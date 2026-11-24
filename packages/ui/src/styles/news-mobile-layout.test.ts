@@ -16,4 +16,19 @@ describe('移动端资讯页滚动容器', () => {
     expect(pageRule).not.toContain('height: auto;');
     expect(pageRule).not.toContain('overflow: visible;');
   });
+
+  it('资讯正文与行情二级页使用同一套 TabBar 底部预留', () => {
+    const rules = (selector: string) => [...css.matchAll(
+      new RegExp(`${selector.replace('.', '\\.')}\\s*\\{([\\s\\S]*?)\\}`, 'g'),
+    )].map((match) => match[1]);
+    const reserve = 'calc(var(--mobile-tabbar-h, 60px) + env(safe-area-inset-bottom, 0px))';
+    const reader = rules('.news-mobile-reader')
+      .find((rule) => rule.includes('position: fixed')) || '';
+    const quote = rules('.news-quote-overlay')
+      .find((rule) => rule.includes('position: fixed')) || '';
+
+    expect(reader).toContain(`inset: 0 0 ${reserve} 0;`);
+    expect(quote).toContain(`inset: 0 0 ${reserve} 0;`);
+    expect(reader).toMatch(/overflow:\s*hidden;/);
+  });
 });

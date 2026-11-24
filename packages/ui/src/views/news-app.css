@@ -870,7 +870,8 @@
 
 .news-mobile-reader {
   position: fixed;
-  inset: 0;
+  /* 与行情详情同口径：二级页给全局 TabBar 留出可点击的独立底栏区。 */
+  inset: 0 0 calc(var(--mobile-tabbar-h, 60px) + env(safe-area-inset-bottom, 0px)) 0;
   z-index: 3000;
   overflow: hidden;
   background: var(--color-surface);
