@@ -1,0 +1,2193 @@
+{
+  "generatedAt": "2026-11-24T08:56:36.302Z",
+  "baseUrl": "http://127.0.0.1:5174",
+  "viewports": [
+    {
+      "name": "390x844",
+      "width": 390,
+      "height": 844
+    },
+    {
+      "name": "375x812",
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "totals": {
+    "cases": 22,
+    "pass": 22,
+    "fail": 0
+  },
+  "results": [
+    {
+      "viewport": "390x844",
+      "name": "工作",
+      "route": "/chat",
+      "startedAt": "2026-11-24T08:55:31.613Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 22"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 22,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": true,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-工作-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:37.009Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "笔记",
+      "route": "/notes",
+      "startedAt": "2026-11-24T08:55:37.152Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 156"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "资讯: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":238,\"right\":309}}"
+        },
+        {
+          "step": "资讯: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/news",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":238,\"right\":309}},\"hash\":\"#/news\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 156,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 72,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-笔记-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:40.323Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "学习总览",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:55:40.442Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 409"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "学习总览: 移动顶栏不挤压换行",
+          "ok": true,
+          "expected": "学习顶栏高度 <= 72px，含文字操作保持单行或进入折叠菜单",
+          "actual": "{\"bar\":{\"text\":\"党史\",\"width\":390,\"height\":60},\"subject\":{\"text\":\"党史\",\"width\":56,\"height\":44},\"textButtons\":[]}"
+        },
+        {
+          "step": "学习总览: 更多菜单与触摸目标",
+          "ok": true,
+          "expected": "更多菜单包含五个二级入口，触发器与菜单项均 >=44px",
+          "actual": "{\"expanded\":\"true\",\"triggerSize\":{\"width\":44,\"height\":44},\"labels\":[\"实践\",\"练习\",\"陪练\",\"科目数据\",\"图书馆\"],\"heights\":[44,44,44,44,44],\"focusedAction\":\"studio\"}"
+        },
+        {
+          "step": "学习总览: Escape 关闭更多菜单并恢复焦点",
+          "ok": true,
+          "expected": "Escape 关闭菜单，焦点回到更多按钮",
+          "actual": "focusRestored=true"
+        },
+        {
+          "step": "学习总览：更多菜单进入练习: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "学习总览: 更多菜单进入练习后可退出",
+          "ok": true,
+          "expected": "五入口菜单中的“练习”可进入沉浸态，返回教材后恢复总览",
+          "actual": "#/learning-v2"
+        },
+        {
+          "step": "资讯: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":238,\"right\":309}}"
+        },
+        {
+          "step": "资讯: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/news",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":238,\"right\":309}},\"hash\":\"#/news\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 72,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-学习总览-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-学习总览-更多菜单.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:42.920Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "课程详情",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:55:43.028Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "课程详情：打开",
+          "ok": true,
+          "expected": "课程详情标题非空",
+          "actual": "编程通识与计算机基础"
+        },
+        {
+          "step": "课程详情: 移动顶栏不挤压换行",
+          "ok": true,
+          "expected": "学习顶栏高度 <= 72px，含文字操作保持单行或进入折叠菜单",
+          "actual": "{\"bar\":{\"text\":\"编程\",\"width\":390,\"height\":60},\"subject\":{\"text\":\"编程\",\"width\":56,\"height\":44},\"textButtons\":[]}"
+        },
+        {
+          "step": "课程详情: 更多菜单与触摸目标",
+          "ok": true,
+          "expected": "更多菜单包含五个二级入口，触发器与菜单项均 >=44px",
+          "actual": "{\"expanded\":\"true\",\"triggerSize\":{\"width\":44,\"height\":44},\"labels\":[\"实践\",\"练习\",\"陪练\",\"科目数据\",\"图书馆\"],\"heights\":[44,44,44,44,44],\"focusedAction\":\"studio\"}"
+        },
+        {
+          "step": "课程详情: Escape 关闭更多菜单并恢复焦点",
+          "ok": true,
+          "expected": "Escape 关闭菜单，焦点回到更多按钮",
+          "actual": "focusRestored=true"
+        },
+        {
+          "step": "课程详情: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "课程详情：返回全部课程",
+          "ok": true,
+          "expected": "返回课程列表",
+          "actual": "courseHeadCount=0"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 2510,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-课程详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-课程详情-已打开.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-课程详情-更多菜单.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:46.419Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "学习练习实践",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:55:46.538Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "学习阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "学习阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 489"
+        },
+        {
+          "step": "学习阶段：被全局导航污染",
+          "ok": true,
+          "expected": "沉浸学习保留当前 hash，隐藏应用顶栏和 TabBar",
+          "actual": "{\"sessionHash\":\"#/learning-v2\",\"mobileTopbarVisible\":false,\"tabBarVisible\":false}"
+        },
+        {
+          "step": "练习阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "练习阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 566"
+        },
+        {
+          "step": "实践阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "实践阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 932"
+        },
+        {
+          "step": "退出学习：恢复全局 TabBar",
+          "ok": true,
+          "expected": "返回教材后 TabBar 恢复可点",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-学习练习实践-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-学习阶段.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-练习阶段.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-实践阶段.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:49.575Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "资讯首页",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:55:49.677Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 4032"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-资讯首页-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:51.850Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "资讯分类",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:55:51.964Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "切换资讯分类「国内」",
+          "ok": true,
+          "expected": "国内分类激活且资讯列表非空",
+          "actual": "{\"activeText\":\"国内\",\"storyCount\":30}"
+        },
+        {
+          "step": "资讯分类: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 1611,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-资讯分类-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-资讯分类-国内.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:53.975Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "新闻详情",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:55:54.078Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "新闻详情: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 5319"
+        },
+        {
+          "step": "新闻详情：底部菜单可见可点",
+          "ok": true,
+          "expected": "新闻详情打开后仍可直接切换底部菜单",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        },
+        {
+          "step": "新闻详情：返回资讯",
+          "ok": true,
+          "expected": "返回按钮关闭新闻详情并保留资讯路由",
+          "actual": "{\"readerCount\":0,\"hash\":\"#/news\"}"
+        },
+        {
+          "step": "新闻详情：点击「笔记」切换",
+          "ok": true,
+          "expected": "从新闻详情直接切换 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 156,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-新闻详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-新闻详情-已打开.png"
+      ],
+      "finishedAt": "2026-11-24T08:55:56.371Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "股票详情",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:55:56.483Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "股票详情: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 4192"
+        },
+        {
+          "step": "股票详情：行情数据到达",
+          "ok": true,
+          "expected": "显示真实行情快照或 K 线，而不是永久加载",
+          "actual": "已显示 .news-quote-price"
+        },
+        {
+          "step": "股票详情：底部菜单可见可点",
+          "ok": true,
+          "expected": "股票详情打开后仍可直接切换底部菜单",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        },
+        {
+          "step": "股票详情：返回资讯",
+          "ok": true,
+          "expected": "返回按钮关闭股票详情并保留资讯路由",
+          "actual": "{\"quoteOverlayCount\":0,\"hash\":\"#/news\"}"
+        },
+        {
+          "step": "股票详情：点击「笔记」切换",
+          "ok": true,
+          "expected": "从股票详情直接切换 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-股票详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-股票详情-已打开.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:01.555Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "资讯滚动后切页",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:01.678Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "滚动后切换 TabBar",
+          "ok": true,
+          "expected": "页面滚动后点击「笔记」仍到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-资讯滚动后切页-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:04.221Z"
+    },
+    {
+      "viewport": "390x844",
+      "name": "我的",
+      "route": "/settings",
+      "startedAt": "2026-11-24T08:56:04.347Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 284"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 391px",
+          "actual": "{\"docScrollWidth\":390,\"bodyScrollWidth\":390,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":792,\"bottom\":842,\"left\":81,\"right\":152}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 284,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "docScrollWidth": 390,
+        "bodyScrollWidth": 390,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 784,
+            "bottom": 844,
+            "left": 0,
+            "right": 390,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\390x844-我的-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:06.586Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "工作",
+      "route": "/chat",
+      "startedAt": "2026-11-24T08:56:06.704Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 533"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 533,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-工作-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:08.967Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "笔记",
+      "route": "/notes",
+      "startedAt": "2026-11-24T08:56:09.088Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 156"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "资讯: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":229,\"right\":297}}"
+        },
+        {
+          "step": "资讯: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/news",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":229,\"right\":297}},\"hash\":\"#/news\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 156,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4029,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-笔记-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:11.430Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "学习总览",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:56:11.544Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 409"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "学习总览: 移动顶栏不挤压换行",
+          "ok": true,
+          "expected": "学习顶栏高度 <= 72px，含文字操作保持单行或进入折叠菜单",
+          "actual": "{\"bar\":{\"text\":\"党史\",\"width\":375,\"height\":60},\"subject\":{\"text\":\"党史\",\"width\":56,\"height\":44},\"textButtons\":[]}"
+        },
+        {
+          "step": "学习总览: 更多菜单与触摸目标",
+          "ok": true,
+          "expected": "更多菜单包含五个二级入口，触发器与菜单项均 >=44px",
+          "actual": "{\"expanded\":\"true\",\"triggerSize\":{\"width\":44,\"height\":44},\"labels\":[\"实践\",\"练习\",\"陪练\",\"科目数据\",\"图书馆\"],\"heights\":[44,44,44,44,44],\"focusedAction\":\"studio\"}"
+        },
+        {
+          "step": "学习总览: Escape 关闭更多菜单并恢复焦点",
+          "ok": true,
+          "expected": "Escape 关闭菜单，焦点回到更多按钮",
+          "actual": "focusRestored=true"
+        },
+        {
+          "step": "学习总览：更多菜单进入练习: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "学习总览: 更多菜单进入练习后可退出",
+          "ok": true,
+          "expected": "五入口菜单中的“练习”可进入沉浸态，返回教材后恢复总览",
+          "actual": "#/learning-v2"
+        },
+        {
+          "step": "资讯: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":229,\"right\":297}}"
+        },
+        {
+          "step": "资讯: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/news",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":229,\"right\":297}},\"hash\":\"#/news\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4029,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-学习总览-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-学习总览-更多菜单.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:14.133Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "课程详情",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:56:14.247Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "课程详情：打开",
+          "ok": true,
+          "expected": "课程详情标题非空",
+          "actual": "编程通识与计算机基础"
+        },
+        {
+          "step": "课程详情: 移动顶栏不挤压换行",
+          "ok": true,
+          "expected": "学习顶栏高度 <= 72px，含文字操作保持单行或进入折叠菜单",
+          "actual": "{\"bar\":{\"text\":\"编程\",\"width\":375,\"height\":60},\"subject\":{\"text\":\"编程\",\"width\":56,\"height\":44},\"textButtons\":[]}"
+        },
+        {
+          "step": "课程详情: 更多菜单与触摸目标",
+          "ok": true,
+          "expected": "更多菜单包含五个二级入口，触发器与菜单项均 >=44px",
+          "actual": "{\"expanded\":\"true\",\"triggerSize\":{\"width\":44,\"height\":44},\"labels\":[\"实践\",\"练习\",\"陪练\",\"科目数据\",\"图书馆\"],\"heights\":[44,44,44,44,44],\"focusedAction\":\"studio\"}"
+        },
+        {
+          "step": "课程详情: Escape 关闭更多菜单并恢复焦点",
+          "ok": true,
+          "expected": "Escape 关闭菜单，焦点回到更多按钮",
+          "actual": "focusRestored=true"
+        },
+        {
+          "step": "课程详情: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "课程详情：返回全部课程",
+          "ok": true,
+          "expected": "返回课程列表",
+          "actual": "courseHeadCount=0"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 2510,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-课程详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-课程详情-已打开.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-课程详情-更多菜单.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:17.703Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "学习练习实践",
+      "route": "/learning-v2",
+      "startedAt": "2026-11-24T08:56:17.826Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "学习阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "学习阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 489"
+        },
+        {
+          "step": "学习阶段：被全局导航污染",
+          "ok": true,
+          "expected": "沉浸学习保留当前 hash，隐藏应用顶栏和 TabBar",
+          "actual": "{\"sessionHash\":\"#/learning-v2\",\"mobileTopbarVisible\":false,\"tabBarVisible\":false}"
+        },
+        {
+          "step": "练习阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "练习阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 566"
+        },
+        {
+          "step": "实践阶段: global TabBar hidden",
+          "ok": true,
+          "expected": "沉浸学习态隐藏全局 TabBar",
+          "actual": "{\"exists\":true,\"visible\":false,\"rect\":{\"top\":0,\"bottom\":0,\"left\":0,\"right\":0,\"height\":0},\"hitTestAtCenter\":false,\"shellInert\":false}"
+        },
+        {
+          "step": "实践阶段: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 932"
+        },
+        {
+          "step": "退出学习：恢复全局 TabBar",
+          "ok": true,
+          "expected": "返回教材后 TabBar 恢复可点",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 409,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-学习练习实践-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-学习阶段.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-练习阶段.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-实践阶段.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:20.793Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "资讯首页",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:20.902Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 4032"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 156,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-资讯首页-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:23.101Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "资讯分类",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:23.213Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "切换资讯分类「国内」",
+          "ok": true,
+          "expected": "国内分类激活且资讯列表非空",
+          "actual": "{\"activeText\":\"国内\",\"storyCount\":30}"
+        },
+        {
+          "step": "资讯分类: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 1611,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-资讯分类-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-资讯分类-国内.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:25.228Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "新闻详情",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:25.338Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "新闻详情: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 5319"
+        },
+        {
+          "step": "新闻详情：底部菜单可见可点",
+          "ok": true,
+          "expected": "新闻详情打开后仍可直接切换底部菜单",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        },
+        {
+          "step": "新闻详情：返回资讯",
+          "ok": true,
+          "expected": "返回按钮关闭新闻详情并保留资讯路由",
+          "actual": "{\"readerCount\":0,\"hash\":\"#/news\"}"
+        },
+        {
+          "step": "新闻详情：点击「笔记」切换",
+          "ok": true,
+          "expected": "从新闻详情直接切换 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-新闻详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-新闻详情-已打开.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:27.548Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "股票详情",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:27.673Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "股票详情: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 4192"
+        },
+        {
+          "step": "股票详情：行情数据到达",
+          "ok": true,
+          "expected": "显示真实行情快照或 K 线，而不是永久加载",
+          "actual": "已显示 .news-quote-price"
+        },
+        {
+          "step": "股票详情：底部菜单可见可点",
+          "ok": true,
+          "expected": "股票详情打开后仍可直接切换底部菜单",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        },
+        {
+          "step": "股票详情：返回资讯",
+          "ok": true,
+          "expected": "返回按钮关闭股票详情并保留资讯路由",
+          "actual": "{\"quoteOverlayCount\":0,\"hash\":\"#/news\"}"
+        },
+        {
+          "step": "股票详情：点击「笔记」切换",
+          "ok": true,
+          "expected": "从股票详情直接切换 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-股票详情-初始.png",
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-股票详情-已打开.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:30.952Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "资讯滚动后切页",
+      "route": "/news",
+      "startedAt": "2026-11-24T08:56:31.069Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "滚动后切换 TabBar",
+          "ok": true,
+          "expected": "页面滚动后点击「笔记」仍到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 4032,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-资讯滚动后切页-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:33.585Z"
+    },
+    {
+      "viewport": "375x812",
+      "name": "我的",
+      "route": "/settings",
+      "startedAt": "2026-11-24T08:56:33.709Z",
+      "status": "pass",
+      "steps": [
+        {
+          "step": "page-loaded",
+          "ok": true
+        },
+        {
+          "step": "页面: non-empty",
+          "ok": true,
+          "expected": "页面正文长度 > 20",
+          "actual": "正文长度 284"
+        },
+        {
+          "step": "页面: no horizontal overflow",
+          "ok": true,
+          "expected": "scrollWidth <= 376px",
+          "actual": "{\"docScrollWidth\":375,\"bodyScrollWidth\":375,\"overflowing\":[]}"
+        },
+        {
+          "step": "笔记: hit-testable before retry",
+          "ok": true,
+          "expected": "TabBar 项可见、未被 inert/浮层阻挡",
+          "actual": "{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}}"
+        },
+        {
+          "step": "笔记: click navigates",
+          "ok": true,
+          "expected": "点击后到 #/notes",
+          "actual": "{\"ok\":true,\"state\":{\"exists\":true,\"visible\":true,\"hitTest\":true,\"hitTarget\":\"\",\"inertAncestor\":false,\"rect\":{\"top\":760,\"bottom\":810,\"left\":78,\"right\":146}},\"hash\":\"#/notes\"}"
+        }
+      ],
+      "console": [],
+      "initialLayout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 284,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "layout": {
+        "viewportWidth": 375,
+        "viewportHeight": 812,
+        "docScrollWidth": 375,
+        "bodyScrollWidth": 375,
+        "bodyTextLength": 125,
+        "tabBar": {
+          "exists": true,
+          "visible": true,
+          "rect": {
+            "top": 752,
+            "bottom": 812,
+            "left": 0,
+            "right": 375,
+            "height": 60
+          },
+          "hitTestAtCenter": true,
+          "shellInert": false
+        },
+        "globalNavigation": {
+          "appMobileTopbarVisible": false,
+          "webTopbarVisible": false,
+          "globalTabBarVisible": true
+        },
+        "overflowing": []
+      },
+      "screenshots": [
+        "C:\\Users\\yhfys\\Desktop\\ai-assistant\\artifacts\\mobile-audit-2026-11-24\\375x812-我的-初始.png"
+      ],
+      "finishedAt": "2026-11-24T08:56:35.952Z"
+    }
+  ]
+}
