@@ -20,6 +20,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { collectRuntimeSpecifiers } = require('./lib/runtime-imports.cjs');
 
 // __dirname = <root>/apps/mobile/scripts
 // ROOT 需要回到仓库根：scripts -> mobile -> apps -> root
@@ -339,14 +340,8 @@ log('=== 步骤 3.6: 裸包导入核对（硬闸） ===');
       if (st.isDirectory()) { scanOne(full); continue; }
       if (!name.endsWith('.js') || name.endsWith('.map')) continue;
       const code = fs.readFileSync(full, 'utf8');
-      // ★ 形态收窄（首版误报实锤）：① lookbehind 要求 from/import/require 前是非标识符
-      //   字符（排除 playFrom / myImport( 这类子串与 .from 属性链）；② specifier 不含
-      //   空白 —— 真包名永远无空格，源码字符串/正则字面量里 `from '...'` 大段内容
-      //   （含换行的生成代码模板）全部排除。
-      const re = /(?<![A-Za-z0-9_.$])(?:from|import\s*\(|require\s*\()\s*['"]([^'"\s]+)['"]/g;
-      let m;
-      while ((m = re.exec(code))) {
-        const spec = m[1];
+      // AST 只收真实 import/export/dynamic import/require；课程里的示例源码只是字符串内容。
+      for (const spec of collectRuntimeSpecifiers(code, full)) {
         if (!isBare(spec)) continue;
         const pkg = rootOf(spec);
         if (nodeBuiltins.has(pkg) || nodeBuiltins.has(spec) || OPTIONAL.has(pkg)) continue;
