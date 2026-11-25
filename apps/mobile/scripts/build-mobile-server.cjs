@@ -20,6 +20,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const ts = require('typescript');
 const { collectRuntimeSpecifiers } = require('./lib/runtime-imports.cjs');
 
 // __dirname = <root>/apps/mobile/scripts
@@ -31,9 +32,141 @@ const MOBILE_DIR = path.join(ROOT, 'apps', 'mobile');
 const NODEJS_DIR = path.join(MOBILE_DIR, 'nodejs');
 const NODEJS_DIST = path.join(NODEJS_DIR, 'dist');
 const WEB_DIST = path.join(MOBILE_DIR, 'dist');
+const PLUGIN_CATALOG = path.join(ROOT, 'build', 'plugins.catalog.json');
 
 function log(msg) { console.log('[build-mobile-server]', msg); }
 function error(msg) { console.error('[build-mobile-server][ERROR]', msg); }
+
+const PLUGIN_KEEP = (() => {
+  const raw = String(process.env.YZ_BUILD_PLUGIN_KEEP || '').trim();
+  return raw ? new Set(raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) : null;
+})();
+
+function staticRelativeSpecifiers(code, fileName) {
+  const source = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const out = [];
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier)
+      && node.moduleSpecifier.text.startsWith('.')
+    ) {
+      out.push(node.moduleSpecifier.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return out;
+}
+
+function resolveCompiledImport(fromFile, specifier) {
+  if (!specifier.startsWith('.')) return null;
+  const base = path.resolve(path.dirname(fromFile), specifier);
+  for (const candidate of [base, `${base}.js`, path.join(base, 'index.js')]) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  }
+  return null;
+}
+
+/**
+ * 遍历编译产物的静态相对依赖；动态 import 故意不收。
+ *
+ * 精简移动包里的未选模式由 index.js 在运行期动态 import，且被
+ * YZ_BUILD_PLUGINS_EXCLUDED 提前拦截。只有按“静态依赖”计算可达集，
+ * 才能安全删除这些模式的入口与专属 services/routes，同时保留 core 共用的基座文件。
+ */
+function staticDependencyClosure(roots, stopFiles = new Set()) {
+  const seen = new Set();
+  const stack = roots.filter((file) => fs.existsSync(file));
+  while (stack.length) {
+    const file = stack.pop();
+    const normalized = path.resolve(file);
+    if (stopFiles.has(normalized) || seen.has(normalized)) continue;
+    if (!fs.existsSync(normalized) || !fs.statSync(normalized).isFile()) continue;
+    seen.add(normalized);
+    const code = fs.readFileSync(normalized, 'utf8');
+    for (const specifier of staticRelativeSpecifiers(code, normalized)) {
+      const dep = resolveCompiledImport(normalized, specifier);
+      if (dep && !seen.has(dep)) stack.push(dep);
+    }
+  }
+  return seen;
+}
+
+function pruneExcludedModeSources() {
+  if (!PLUGIN_KEEP) return;
+  const catalog = JSON.parse(fs.readFileSync(PLUGIN_CATALOG, 'utf8'));
+  const serverSrc = path.join(NODEJS_DIST, 'apps', 'server', 'src');
+  const indexEntry = path.join(serverSrc, 'index.js');
+  const keepRoots = [indexEntry];
+  const excludedModes = [];
+
+  for (const [id, plugin] of Object.entries(catalog.plugins || {})) {
+    if (plugin.kind !== 'mode' || !plugin.backendEntry) continue;
+    const compiled = path.join(
+      NODEJS_DIST,
+      plugin.backendEntry.replace(/\.ts$/, '.js').replace(/\//g, path.sep),
+    );
+    if (PLUGIN_KEEP.has(id)) keepRoots.push(compiled);
+    else excludedModes.push({ id, root: compiled });
+  }
+
+  const reachableFromBase = staticDependencyClosure(keepRoots, new Set(excludedModes.map((p) => p.root)));
+  const removed = new Set();
+  const removeCompiled = (file) => {
+    if (reachableFromBase.has(file)) return;
+    for (const candidate of [file, `${file}.map`, file.replace(/\.js$/, '.d.ts')]) {
+      if (!fs.existsSync(candidate)) continue;
+      fs.rmSync(candidate, { force: true });
+      removed.add(path.relative(NODEJS_DIST, candidate));
+    }
+  };
+
+  for (const { id, root } of excludedModes) {
+    const closure = staticDependencyClosure([root]);
+    for (const file of closure) removeCompiled(file);
+
+    // 剪辑路由的 services/mcp 依赖是运行时拼接加载，静态图看不到。
+    // 这些路径只服务 clip-mode，未选时必须一并物理删除。
+    if (id === 'clip-mode') {
+      const clipPatterns = [
+        /^routes[\\/]clip\.js(?:\.map)?$/i,
+        /^services[\\/]clip-[^\\/]+\.js(?:\.map)?$/i,
+        /^services[\\/]sfx-library\.js(?:\.map)?$/i,
+        /^mcp[\\/](?:ffmpeg-runtime|whisper-runtime|subtitle-style)\.js(?:\.map)?$/i,
+      ];
+      const scan = (dir) => {
+        if (!fs.existsSync(dir)) return;
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scan(full);
+            continue;
+          }
+          const rel = path.relative(serverSrc, full);
+          if (clipPatterns.some((re) => re.test(rel))) removeCompiled(full);
+        }
+      };
+      scan(path.join(serverSrc, 'routes'));
+      scan(path.join(serverSrc, 'services'));
+      scan(path.join(serverSrc, 'mcp'));
+    }
+
+    const sideDir = root.replace(/\.js$/, '');
+    if (fs.existsSync(sideDir)) {
+      fs.rmSync(sideDir, { recursive: true, force: true });
+    }
+  }
+
+  for (const { root } of excludedModes) {
+    if (fs.existsSync(root)) {
+      error('未选模式的静态入口未裁干净: ' + path.relative(NODEJS_DIST, root));
+      process.exit(1);
+    }
+  }
+  log(`后端模式物理裁剪完成：移出 ${removed.size} 个编译文件（含 sourcemap）`);
+}
 
 function copyRecursive(src, dest, skip = null) {
   const stat = fs.statSync(src);
@@ -121,6 +254,7 @@ if (!okServer) {
 if (!okCore || !okShared) {
   log('提示: core/shared 产物不完整，workspace import 可能解析失败');
 }
+pruneExcludedModeSources();
 
 // ── 步骤 2.5：内置插件包（mode-pluginization P1）──
 // apps/server/plugins/builtin/<id>/ 由 apps/desktop/scripts/build-plugins.mjs 生成
@@ -153,11 +287,8 @@ if (!okCore || !okShared) {
 }
 {
   const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
-  const keepRaw = String(process.env.YZ_BUILD_PLUGIN_KEEP || '').trim();
   if (fs.existsSync(builtinSrc)) {
-    const keep = keepRaw
-      ? new Set(keepRaw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))
-      : null;
+    const keep = PLUGIN_KEEP;
     const destDir = path.join(NODEJS_DIST, 'plugins', 'builtin');
     if (!keep) {
       copyRecursive(builtinSrc, destDir);

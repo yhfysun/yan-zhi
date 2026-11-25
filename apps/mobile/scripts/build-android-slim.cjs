@@ -130,6 +130,46 @@ function ensureAbiFilterBlock() {
   log('已在 android/app/build.gradle 铺设 ABI 过滤块（幂等）');
 }
 
+function verifySlimBackend() {
+  const serverSrc = path.join(MOBILE_DIR, 'dist', 'nodejs', 'dist', 'apps', 'server', 'src');
+  const builtin = path.join(MOBILE_DIR, 'dist', 'nodejs', 'dist', 'plugins', 'builtin');
+  const excludedModes = ['dev-mode', 'wf-mode', 'rpa-mode', 'clip-mode'];
+  const leaked = [];
+
+  for (const id of excludedModes) {
+    for (const rel of [`plugins/${id}.js`, `plugins/${id}.js.map`]) {
+      const file = path.join(serverSrc, ...rel.split('/'));
+      if (fs.existsSync(file)) leaked.push(path.relative(MOBILE_DIR, file));
+    }
+    const builtinDir = path.join(builtin, id);
+    if (fs.existsSync(builtinDir)) leaked.push(path.relative(MOBILE_DIR, builtinDir));
+  }
+
+  const forbidden = [
+    /[\\/]routes[\\/]clip\.js(?:\.map)?$/i,
+  ];
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (forbidden.some((re) => re.test(full))) leaked.push(path.relative(MOBILE_DIR, full));
+    }
+  };
+  walk(serverSrc);
+
+  if (fs.existsSync(builtin)) {
+    for (const name of fs.readdirSync(builtin)) {
+      if (!SLIM_PLUGINS.includes(name)) leaked.push(path.relative(MOBILE_DIR, path.join(builtin, name)));
+    }
+  }
+
+  if (leaked.length) {
+    throw new Error(`精简后端仍含未选模式代码:\n  ${leaked.join('\n  ')}`);
+  }
+  log('后端裁剪校验通过：dev/wf/rpa/clip 入口、种子、插件包与剪辑专属路由均未进入移动产物');
+}
+
 /** 移动端各构建步骤（顺序照搬 package.json 的 build:android，只在需要处插入裁剪）。 */
 function buildAll() {
   const pkg = path.join(MOBILE_DIR, 'package.json');
@@ -155,6 +195,7 @@ function buildAll() {
         // 后端裁剪：未选插件不随包 + 内嵌后端跳过注册
         env: { YZ_BUILD_PLUGIN_KEEP: SLIM_PLUGINS.join(',') },
       });
+      verifySlimBackend();
       continue;
     }
     if (/^node scripts\/assemble-debug\.cjs/.test(step)) {

@@ -143,12 +143,6 @@ import { shopOpsManifest, shopOpsModule } from './plugins/shop-ops.js';
 import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
 import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
-// 剪辑模式（P4）：工程/素材/字幕/音效接口以插件包形态提供，路由挂 /api/plugin/clip-mode
-import { clipModeManifest, clipModeModule } from './plugins/clip-mode.js';
-// 开发/工作流模式（P4）：纯视图模式插件 —— 只贡献模式元数据与路由（引擎/工具留基座）
-import { devModeManifest, devModeModule } from './plugins/dev-mode.js';
-import { wfModeManifest, wfModeModule } from './plugins/wf-mode.js';
-import { rpaModeManifest, rpaModeModule } from './plugins/rpa-mode.js';
 import { learningModeManifest, learningModeModule } from './plugins/learning-mode.js';
 import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
@@ -1142,12 +1136,26 @@ try {
     }
     // 剪辑模式（P4）：后端接口 + /clip 路由 + 模式元数据都随插件；桌面与移动端都注册
     // （剪辑不需要桌面专属能力，手机端同样可用）。
-    await registerPkgOrSource('clip-mode', () => mgr.registerBuiltin(clipModeManifest, clipModeModule));
+    // ★ 这里必须动态导入：移动精简包会在编译后物理删除整组剪辑源码；
+    //   若保留静态 import，Node 会在加载 index.js 时先解析已删除模块而直接启动失败。
+    await registerPkgOrSource('clip-mode', async () => {
+      const { clipModeManifest, clipModeModule } = await import('./plugins/clip-mode.js');
+      await mgr.registerBuiltin(clipModeManifest, clipModeModule);
+    });
     // 开发 / 工作流模式（P4）：纯视图插件，贡献模式元数据与 /code、/workflow 路由。
     // 引擎与工具留基座，停用只让入口消失（会话/工程数据不动）。
-    await registerPkgOrSource('dev-mode', () => mgr.registerBuiltin(devModeManifest, devModeModule));
-    await registerPkgOrSource('wf-mode', () => mgr.registerBuiltin(wfModeManifest, wfModeModule));
-    await registerPkgOrSource('rpa-mode', () => mgr.registerBuiltin(rpaModeManifest, rpaModeModule));
+    await registerPkgOrSource('dev-mode', async () => {
+      const { devModeManifest, devModeModule } = await import('./plugins/dev-mode.js');
+      await mgr.registerBuiltin(devModeManifest, devModeModule);
+    });
+    await registerPkgOrSource('wf-mode', async () => {
+      const { wfModeManifest, wfModeModule } = await import('./plugins/wf-mode.js');
+      await mgr.registerBuiltin(wfModeManifest, wfModeModule);
+    });
+    await registerPkgOrSource('rpa-mode', async () => {
+      const { rpaModeManifest, rpaModeModule } = await import('./plugins/rpa-mode.js');
+      await mgr.registerBuiltin(rpaModeManifest, rpaModeModule);
+    });
     // 学习模式（Pro）：纯视图插件，页面入口随插件选择集裁剪；学习数据与 API 留在基座。
     await registerPkgOrSource('learning-mode', () => mgr.registerBuiltin(learningModeManifest, learningModeModule));
     // 移动端一级模式包含运维 / 安全 / 店铺，因此这三个插件的后端模块必须与前端页面

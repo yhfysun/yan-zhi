@@ -51,6 +51,17 @@ const expectedAbis = String(process.env.YZ_EXPECTED_ABIS || defaultAbis.join(','
   .map((s) => s.trim())
   .filter(Boolean);
 const minSizeMb = profile === 'slim' ? 140 : 300;
+const forbiddenSlimEntries = [
+  'assets/public/nodejs/dist/apps/server/src/plugins/dev-mode.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/wf-mode.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/rpa-mode.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/clip-mode.js',
+  'assets/public/nodejs/dist/apps/server/src/routes/clip.js',
+  'assets/public/nodejs/dist/plugins/builtin/dev-mode/',
+  'assets/public/nodejs/dist/plugins/builtin/wf-mode/',
+  'assets/public/nodejs/dist/plugins/builtin/rpa-mode/',
+  'assets/public/nodejs/dist/plugins/builtin/clip-mode/',
+];
 
 function assertCompleteApk(apkPath) {
   try {
@@ -72,14 +83,23 @@ function assertCompleteApk(apkPath) {
       `lib/${abi}/libc++_shared.so`,
     ]).concat('assets/public/nodejs/dist/apps/server/src/index.js');
     const missing = required.filter((name) => !buf.includes(name));
+    const leaked = profile === 'slim'
+      ? forbiddenSlimEntries.filter((name) => buf.includes(name))
+      : [];
     const minSize = minSizeMb * 1024 * 1024;
-    if (missing.length || size < minSize) {
+    if (missing.length || leaked.length || size < minSize) {
       const sizeMb = (size / 1024 / 1024).toFixed(2);
       console.error(`[copy-apk] ✗ 闪退包拦截：${path.basename(apkPath)}（${sizeMb} MB）`);
       for (const name of missing) console.error(`[copy-apk]   缺少 ${name}`);
+      for (const name of leaked) console.error(`[copy-apk]   精简包误带未选模式 ${name}`);
       if (size < minSize) console.error(`[copy-apk]   ${profile} 包小于 ${minSizeMb}MB，疑似退回了缺原生库/内嵌资源的残缺产物`);
-      console.error('[copy-apk]   这份 APK 启动必崩（UnsatisfiedLinkError），禁止分发/安装。');
-      console.error('[copy-apk]   请检查 capacitor.settings.gradle 的 nodejs 短路径补丁与 nodejs-mobile 构建是否成功。');
+      if (missing.length) {
+        console.error('[copy-apk]   这份 APK 启动必崩（UnsatisfiedLinkError），禁止分发/安装。');
+        console.error('[copy-apk]   请检查 capacitor.settings.gradle 的 nodejs 短路径补丁与 nodejs-mobile 构建是否成功。');
+      }
+      if (leaked.length) {
+        console.error('[copy-apk]   请检查 build-mobile-server.cjs 的后端模式物理裁剪。');
+      }
       process.exit(3);
     }
   } finally {

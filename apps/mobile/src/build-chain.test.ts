@@ -129,6 +129,27 @@ describe('Android 打包链接线', () => {
     expect(slim).toContain("'--dirs=apps/mobile/dist'");
   });
 
+  it('★ 精简包必须物理删除未选模式的后端入口与专属实现', () => {
+    const slim = read('scripts/build-android-slim.cjs');
+    const serverBuild = read('scripts/build-mobile-server.cjs');
+    const copyApk = read('scripts/copy-apk.cjs');
+    const serverIndex = readFileSync(resolve(REPO_ROOT, 'apps/server/src/index.ts'), 'utf8');
+
+    expect(slim).toContain('verifySlimBackend');
+    expect(slim).toContain("const excludedModes = ['dev-mode', 'wf-mode', 'rpa-mode', 'clip-mode']");
+    expect(serverBuild).toContain('pruneExcludedModeSources');
+    expect(serverBuild).toContain('staticDependencyClosure');
+    expect(serverBuild).toContain('YZ_BUILD_PLUGIN_KEEP');
+    expect(copyApk).toContain('forbiddenSlimEntries');
+    for (const mode of ['dev-mode', 'wf-mode', 'rpa-mode', 'clip-mode']) {
+      expect(copyApk).toContain(`plugins/${mode}.js`);
+      expect(serverIndex).toContain(`await import('./plugins/${mode}.js')`);
+    }
+    expect(serverIndex).not.toMatch(
+      /^import\s*\{[^}]+\}\s*from\s*'\.\/plugins\/(?:dev|wf|rpa|clip)-mode\.js';/m,
+    );
+  });
+
   it('★ GitHub 移动打包先构建 Web 入口，再生成 Android 工程', () => {
     const workflow = readFileSync(resolve(REPO_ROOT, '.github/workflows/build-mobile.yml'), 'utf8');
     const vite = workflow.indexOf('pnpm --filter @yan-zhi/mobile exec vite build');
