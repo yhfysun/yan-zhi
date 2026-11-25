@@ -252,7 +252,35 @@
     </el-dialog>
 
     <!-- 电脑使用：操作审计 -->
-    <el-dialog v-model="auditOpen" title="电脑使用 · 操作记录" width="620">
+    <el-dialog v-model="auditOpen" title="电脑使用 · 操作记录" width="680">
+      <template v-if="auditPluginId === 'computer-use'">
+        <div class="pm-control-summary">
+          <div class="pm-control-heading">
+            <span>控制会话</span>
+            <el-button size="small" text bg :disabled="!controlSessions.length" @click="endAllControlSessions">结束全部</el-button>
+          </div>
+          <div v-if="controlSessions.length" class="pm-control-sessions">
+            <div v-for="s in controlSessions" :key="s.id" class="pm-control-session">
+              <span class="pm-control-phase">{{ s.phase }}</span>
+              <span class="pm-control-target">{{ s.window?.title || s.deviceId }}</span>
+            </div>
+          </div>
+          <div v-else class="pm-control-empty">当前没有活动控制会话</div>
+
+          <div class="pm-control-heading pm-control-apps-heading">
+            <span>已授权应用</span>
+            <span class="pm-control-count">{{ controlApps.length }}</span>
+          </div>
+          <div v-if="controlApps.length" class="pm-control-apps">
+            <div v-for="app in controlApps" :key="app.appId" class="pm-control-app">
+              <span class="pm-control-app-name">{{ app.displayName }}</span>
+              <span class="pm-control-app-id">{{ app.appId }}</span>
+              <el-button size="small" text type="danger" @click="revokeControlApp(app.appId)">撤销</el-button>
+            </div>
+          </div>
+          <div v-else class="pm-control-empty">尚未授权任何应用</div>
+        </div>
+      </template>
       <el-table :data="auditList" size="small" max-height="420">
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ new Date(row.t).toLocaleString('zh-CN') }}</template>
@@ -678,14 +706,59 @@ function gotoRcSetup() {
 const auditOpen = ref(false);
 const auditList = ref<Array<{ t: number; op: string; detail?: Record<string, unknown> }>>([]);
 const auditPanic = ref(false);
+const auditPluginId = ref('');
+const controlSessions = ref<Array<{ id: string; deviceId: string; phase: string; window?: { title?: string } }>>([]);
+const controlApps = ref<Array<{ appId: string; displayName: string; updatedAt: number }>>([]);
+
+async function loadComputerControlSummary() {
+  if (auditPluginId.value !== 'computer-use') return;
+  const [status, apps] = await Promise.all([
+    api.get<{ sessions: Array<{ id: string; deviceId: string; phase: string; window?: { title?: string } }> }>(
+      '/plugin/computer-use/control-status',
+    ),
+    api.get<{ apps: Array<{ appId: string; displayName: string; updatedAt: number }> }>(
+      '/plugin/computer-use/control-apps?deviceId=local',
+    ),
+  ]);
+  controlSessions.value = 'error' in status ? [] : status.data.sessions || [];
+  controlApps.value = 'error' in apps ? [] : apps.data.apps || [];
+}
+
+async function endAllControlSessions() {
+  try {
+    await ElMessageBox.confirm('立即结束全部 AI 桌面控制会话，并移除控制边框？', '结束控制', { type: 'warning' });
+    const res = await api.post<{ ok: boolean; ended: number }>('/plugin/computer-use/control-end', {});
+    if ('error' in res) {
+      ElMessage.error(res.error);
+      return;
+    }
+    controlSessions.value = [];
+    ElMessage.success(`已结束 ${res.data.ended} 个控制会话`);
+  } catch { /* user cancelled */ }
+}
+
+async function revokeControlApp(appId: string) {
+  const res = await api.post<{ ok: boolean }>('/plugin/computer-use/control-apps', {
+    action: 'revoke',
+    deviceId: 'local',
+    appId,
+  });
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    return;
+  }
+  await loadComputerControlSummary();
+}
 
 async function onAudit(p: PluginInfo) {
+  auditPluginId.value = p.manifest.id;
   const res = await api.get<{ panic: boolean; ops: Array<{ t: number; op: string; detail?: Record<string, unknown> }> }>(
     `/plugin/${p.manifest.id}/audit`,
   );
   if ('error' in res) { ElMessage.error(res.error); return; }
   auditPanic.value = !!res.data.panic;
   auditList.value = (res.data.ops || []).slice().reverse();
+  await loadComputerControlSummary();
   auditOpen.value = true;
 }
 
@@ -1229,6 +1302,76 @@ onMounted(() => {
 .install-no-perm {
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+.pm-control-summary {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.pm-control-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pm-control-apps-heading {
+  margin-top: 10px;
+}
+.pm-control-count {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.pm-control-sessions,
+.pm-control-apps {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+}
+.pm-control-session,
+.pm-control-app {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+.pm-control-session:last-child,
+.pm-control-app:last-child {
+  border-bottom: 0;
+}
+.pm-control-phase {
+  min-width: 76px;
+  color: #9b7500;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.pm-control-target,
+.pm-control-app-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.pm-control-app-id {
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.pm-control-empty {
+  margin-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 </style>
 

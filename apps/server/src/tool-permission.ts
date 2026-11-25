@@ -41,6 +41,8 @@ const WRITE_TOOLS = new Set([
   'computer_mouse_move', 'computer_mouse_drag', 'computer_scroll',
   'computer_type', 'computer_press_key', 'computer_open_app',
   'computer_activate_window',
+  'computer_control_act', 'computer_control_handoff', 'computer_control_end',
+  'computer_control_app_approval',
   'plugin_computer-use__computer_click_element',
   'plugin_computer-use__computer_set_value',
   'plugin_computer-use__computer_mouse_click',
@@ -51,6 +53,10 @@ const WRITE_TOOLS = new Set([
   'plugin_computer-use__computer_press_key',
   'plugin_computer-use__computer_open_app',
   'plugin_computer-use__computer_activate_window',
+  'plugin_computer-use__computer_control_act',
+  'plugin_computer-use__computer_control_handoff',
+  'plugin_computer-use__computer_control_end',
+  'plugin_computer-use__computer_control_app_approval',
   // 控制统一后台任务（暂停/恢复/取消）会改变真实进程/下载状态。
   'job_control',
   // 脚本与确定性循环都能点击/输入/改页面，按写操作授权
@@ -455,6 +461,8 @@ export function parseToolAuthResult(raw: string): 'allow' | 'deny' {
 const READONLY_SAFE_TOOLS = new Set([
   // 文件/代码：只读
   'file_read', 'file_list', 'file_grep', 'code_search', 'code_outline',
+  'computer_screenshot', 'computer_get_ui_tree', 'computer_list_windows',
+  'computer_control_start', 'computer_control_observe',
   // 静态诊断：只跑编译器/linter 读项目，不写任何文件
   'code_diagnostics',
   // 模型与多媒体理解（不产生文件）

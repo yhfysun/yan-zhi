@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      pointer-events: none;
+    }
+
+    .computer-control-frame {
+      position: fixed;
+      inset: 0;
+      box-sizing: border-box;
+      border: 2px solid #ffd400;
+      box-shadow:
+        inset 0 0 0 1px rgba(94, 71, 0, 0.38),
+        inset 0 0 18px rgba(255, 212, 0, 0.08);
+    }
+
+    .control-status {
+      position: fixed;
+      top: 8px;
+      right: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 24px;
+      padding: 0 9px;
+      border: 1px solid rgba(255, 212, 0, 0.62);
+      border-radius: 6px;
+      background: rgba(24, 24, 20, 0.82);
+      color: #fff7cf;
+      font: 12px/24px "Microsoft YaHei UI", sans-serif;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+      pointer-events: auto;
+    }
+
+    .control-status::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #ffd400;
+    }
+
+    .control-status kbd {
+      color: #ffd400;
+      font: inherit;
+      font-weight: 600;
+    }
+
+    .control-status .control-action {
+      max-width: 110px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #d9c86f;
+      font-size: 11px;
+    }
+
+    .control-status button {
+      border: 0;
+      padding: 0 4px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .control-status button:hover,
+    .control-status button:focus-visible {
+      color: #ffd400;
+      outline: none;
+    }
+
+    html[data-paused="1"] .control-status::before {
+      background: #8d96a3;
+    }
+
+    html[data-preview="0"] .control-status {
+      display: none;
+    }
+
+    .ai-cursor {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 16px;
+      height: 16px;
+      display: none;
+      transform: translate(-50%, -50%);
+      border: 2px solid #ffd400;
+      border-radius: 50%;
+      background: rgba(24, 24, 20, 0.42);
+      box-shadow: 0 0 0 3px rgba(255, 212, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.3);
+      transition: left 80ms linear, top 80ms linear, transform 80ms ease;
+    }
+
+    .ai-cursor::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #ffd400;
+      transform: translate(-50%, -50%);
+    }
+
+    .ai-cursor.click {
+      transform: translate(-50%, -50%) scale(0.65);
+    }
+  </style>
+</head>
+<body>
+  <div class="computer-control-frame" aria-hidden="true"></div>
+  <div class="control-status" aria-hidden="true">
+    <span class="control-status-label">AI 正在控制</span>
+    <span class="control-action"></span>
+    <button type="button" data-action="pause" title="暂停并交给用户操作">接管</button>
+    <button type="button" data-action="cancel" title="立即结束控制">取消</button>
+    <kbd>Esc</kbd>
+  </div>
+  <div class="ai-cursor" aria-hidden="true"></div>
+  <script>
+    document.documentElement.dataset.preview =
+      new URLSearchParams(location.search).get('preview') === '0' ? '0' : '1';
+    const cursor = document.querySelector('.ai-cursor');
+    window.__setControlCursor = ({ x, y, click }) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      cursor.style.display = 'block';
+      cursor.style.left = `${x}px`;
+      cursor.style.top = `${y}px`;
+      cursor.classList.toggle('click', click === true);
+      if (click) setTimeout(() => cursor.classList.remove('click'), 160);
+    };
+    window.__setControlPaused = (paused) => {
+      document.documentElement.dataset.paused = paused ? '1' : '0';
+      document.querySelector('.control-status-label').textContent =
+        paused ? '已由用户接管' : 'AI 正在控制';
+    };
+    const actionLabels = {
+      computer_screenshot: '截屏',
+      computer_get_ui_tree: '读取界面',
+      computer_mouse_click: '点击',
+      computer_mouse_move: '移动',
+      computer_mouse_drag: '拖拽',
+      computer_scroll: '滚动',
+      computer_type: '输入',
+      computer_press_key: '按键',
+      computer_control_observe: '观察',
+      computer_control_act: '执行动作',
+    };
+    window.__setControlAction = (toolName) => {
+      document.querySelector('.control-action').textContent = actionLabels[toolName] || '';
+    };
+    document.querySelector('[data-action="pause"]').addEventListener('click', () => {
+      window.computerControl?.pause();
+    });
+    document.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+      window.computerControl?.cancel();
+    });
+  </script>
+</body>
+</html>

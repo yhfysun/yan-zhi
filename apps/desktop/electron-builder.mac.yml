@@ -31,6 +31,11 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  # 电脑控制会话 overlay + 本机能力桥：main.cjs 顶层 require，且 overlay 页面通过绝对路径加载。
+  - computer-control-overlay.cjs
+  - computer-control-overlay.html
+  - computer-control-preload.cjs
+  - computer-control-bridge.cjs
   # ★★ 启动加载壳（2026-10-12）：健康检查期间显示，漏登记 = 打包版 splash 加载失败（白屏壳）
   - splash.html
   - splash-preload.cjs
@@ -122,6 +127,9 @@ extraResources:
       - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
+    filter:
+      - '**/*'
+      - '!learning-content/ondemand/**'
   # ★★ 内置插件包（mode-pluginization P1）：electron-build.cjs 先经 build-plugins.mjs 生成
   #   apps/server/plugins/builtin/<id>/，这里整体拷进包（与 full.yml 逐行一致）。
   - from: ../server/plugins/builtin

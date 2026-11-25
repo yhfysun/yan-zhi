@@ -14,7 +14,7 @@ const course = (phase: string, minutes: number, goal: string, steps: readonly [s
   minutes,
   prerequisite: '完成 TypeScript 或 Go 项目，理解 CLI、包管理、语义版本和 CI 发布。',
   goal,
-  guidedPractice: '在 Windows、macOS/Linux 至少两种环境中执行当前阶段任务，记录 stdout、stderr、退出码、制品和兼容结果。',
+  guidedPractice: `在 Windows、macOS/Linux 至少两种环境中执行“${phase}”：${steps[0][1]} 记录 stdout、stderr、退出码、制品和兼容结果。`,
   independentPractice: '交付阶段产物，并验证正常命令、错误命令、非交互模式、升级和回滚路径。',
   commonErrors: ['把日志当数据输出，破坏 --json 自动化。', '开发机路径和退出码进入用户可见契约。'],
   sourceRefs: sources,
@@ -1186,11 +1186,12 @@ function withDevKitExamples(
   return courses.map((item) => ({
     ...item,
     steps: item.steps.map((step) => {
-      const body = step[1].length >= 100
-        ? step[1]
-        : `${step[1]} 并同时保存“${step[2]}”对应的平台、退出码、命令输出、制品摘要、安装结果和恢复证据，供自动化回归。`;
       const example = DEVKIT_EXAMPLES[step[0]];
       if (!example) throw new Error(`Missing DevKit example: ${step[0]}`);
+      const evidence = (example.output || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+      const body = step[1].length >= 100
+        ? step[1]
+        : `${step[1]} 运行痕迹：${evidence}`;
       return [step[0], body, step[2], example] as const;
     }),
   }));

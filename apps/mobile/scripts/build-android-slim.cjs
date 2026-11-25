@@ -81,6 +81,7 @@ function run(cmd, args, opts = {}) {
 }
 
 const SELECT_MODES = path.join(REPO_ROOT, 'scripts', 'select-modes.cjs');
+const VERIFY_MODE_PRUNE = path.join(REPO_ROOT, 'scripts', 'verify-mode-prune.cjs');
 
 /** 生成只含 office/learning 的前端模式表（物理裁剪前端 chunk）。 */
 function selectSlimModes() {
@@ -143,6 +144,8 @@ function buildAll() {
       selectSlimModes();
       log('执行:', step);
       run(process.execPath, [path.join(MOBILE_DIR, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], { cwd: MOBILE_DIR });
+      log('校验未选模式未进入移动端产物');
+      run(process.execPath, [VERIFY_MODE_PRUNE, '--dirs=apps/mobile/dist']);
       continue;
     }
     if (/^node scripts\/build-mobile-server\.cjs/.test(step)) {

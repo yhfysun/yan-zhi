@@ -56,6 +56,7 @@ beforeEach(() => {
   setMode('learning');
   setLead('learning', 'human');
   localStorage.clear();
+  window.history.replaceState({}, '', window.location.href);
   document.body.style.overflow = '';
   apiState.get.mockClear();
   apiState.post.mockClear();
@@ -131,6 +132,7 @@ afterEach(() => {
   setMode('office');
   app?.unmount();
   app = null;
+  vi.restoreAllMocks();
   localStorage.clear();
   document.body.style.overflow = '';
   document.body.innerHTML = '';
@@ -176,6 +178,8 @@ describe('LearningV2', () => {
     expect(css).toMatch(/html\.yz-learning-study \.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
     expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2 \*::-webkit-scrollbar \{[^}]*display: none/);
     expect(css).toMatch(/@media \(max-width: 900px\) \{[\s\S]*?\.lv2-lesson-body > \.rpane \{ display: none; \}/);
+    expect(css).toMatch(/:global\(\.lv2-ai-select-popper\.el-popper\) \{[\s\S]*?max-width: calc\(100vw - 24px\);/);
+    expect(css).toMatch(/:global\(\.lv2-ai-select-popper \.el-select-dropdown__item\) \{[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;/);
     // 深色皮肤下实践/练习页必须整组覆盖组件令牌，避免灰底灰字
     expect(css).toMatch(/html\[data-skin="on"\] \.lv2\.study-full:not\(\.study-lesson\)[\s\S]*?--lv2-note-ink: #30433a/);
     // 2026-11-23 实报：图书馆皮肤补丁曾把背景刷成深色 --skin-surface，但深字 color:#17211e 未配对 → 深字压深底。
@@ -622,6 +626,12 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2-lesson')?.textContent).toContain('常见错误');
   });
 
+  it('uses the real review status for the quality badge', () => {
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+    expect(view).toContain("coursePlan.reviewStatus === 'reviewed'");
+    expect(view).toContain("'完整教案 · 系统整理'");
+  });
+
   it('opens a generated completion plan instead of leaving the course under construction', async () => {
     const host = await mountPage();
     (host.querySelector('[data-subject="security"]') as HTMLButtonElement).click();
@@ -664,6 +674,10 @@ describe('LearningV2', () => {
     (stepButtons[stepButtons.length - 1] as HTMLButtonElement).click();
     await nextTick();
     expect(host.querySelector('.lv2-lesson-sources')?.textContent).toContain('https://');
+
+    (host.querySelector('.session-back') as HTMLButtonElement).click();
+    await nextTick();
+    expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Java');
   });
 
   it('shows handwritten command examples and runs Java code in practice and apply', async () => {
@@ -775,6 +789,22 @@ describe('LearningV2', () => {
     expect(host.querySelector('.programming-course-head h1')?.textContent).toContain('Go');
   });
 
+  it('renders the mobile subject sheet above the global tab bar', () => {
+    const learningCss = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+    const sideNav = readFileSync(resolve(__dirname, '../components/SideNav.vue'), 'utf8');
+    const zIndexOf = (css: string, selector: string): number => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const source = css.replace(/\/\*[\s\S]*?\*\//g, '');
+      const blocks = [...source.matchAll(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`, 'g'))];
+      return Math.max(0, ...blocks.map((block) =>
+        Number(block[1].match(/z-index:\s*(\d+)/)?.[1] || 0),
+      ));
+    };
+
+    expect(zIndexOf(learningCss, '.lv2-mobile-sheet-mask'))
+      .toBeGreaterThan(zIndexOf(sideNav, '.tab-bar'));
+  });
+
   it('opens a project-training phase as the same immersive single-step lesson', async () => {
     const host = await mountPage();
     (host.querySelector('[data-programming-subject-package="java-enterprise"]') as HTMLButtonElement).click();
@@ -797,6 +827,7 @@ describe('LearningV2', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await nextTick();
     expect(host.querySelector('.lv2-lesson')).toBeNull();
+    expect(host.querySelector('.programming-project-detail-head')).toBeTruthy();
     expect(host.textContent).toContain('Studio 企业官网');
   });
 
@@ -1094,6 +1125,42 @@ describe('LearningV2', () => {
 
     expect(host.querySelector('.lv2-lesson')).toBeNull();
     expect(host.textContent).toContain('继续学习');
+  });
+
+  it('uses a same-route history sentinel so system swipe exits the lesson only', async () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(window.history.state).toMatchObject({ yzLearningStudy: true });
+    const nativeBack = new CustomEvent('yz:mobile-back', { cancelable: true });
+    const dispatchResult = document.dispatchEvent(nativeBack);
+    await nextTick();
+    await nextTick();
+
+    expect(dispatchResult).toBe(false);
+    expect(nativeBack.defaultPrevented).toBe(true);
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+    expect(host.textContent).toContain('继续学习');
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('exits the lesson on browser popstate without stepping back out of learning', async () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    const host = await mountPage();
+    (host.querySelector('[data-page="lesson"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(window.history.state).toMatchObject({ yzLearningStudy: true });
+    window.history.replaceState({}, '', window.location.href);
+    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+    await nextTick();
+    await nextTick();
+
+    expect(host.querySelector('.lv2-lesson')).toBeNull();
+    expect(host.textContent).toContain('继续学习');
+    expect(back).not.toHaveBeenCalled();
   });
 
   it('takes over the whole app while studying and keeps practice tools reachable', async () => {

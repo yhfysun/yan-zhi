@@ -14,7 +14,7 @@ const course = (phase: string, minutes: number, goal: string, steps: readonly [s
   minutes,
   prerequisite: '完成一个全栈项目，理解 OIDC、对象授权、浏览器存储和密钥管理基础。',
   goal,
-  guidedPractice: '用两个租户、多个角色和攻击样本验证当前阶段，记录身份、权限、密文、nonce、审计和恢复证据。',
+  guidedPractice: `用两个租户、多个角色和攻击样本验证“${phase}”：${steps[0][1]} 记录身份、权限、密文、nonce、审计和恢复证据。`,
   independentPractice: '交付阶段产物，并证明正常用户可用、越权被拒绝、密钥或服务故障后不会泄露敏感数据。',
   commonErrors: ['只检查 URL 或前端按钮权限，没有对象级授权。', '把明文、令牌或客户端密钥写入日志和备份。'],
   sourceRefs: sources,

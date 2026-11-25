@@ -36,6 +36,11 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  # 电脑控制会话 overlay + 本机能力桥：main.cjs 顶层 require，且 overlay 页面通过绝对路径加载。
+  - computer-control-overlay.cjs
+  - computer-control-overlay.html
+  - computer-control-preload.cjs
+  - computer-control-bridge.cjs
   # ★★ 启动加载壳（2026-10-12）：健康检查期间显示，漏登记 = 打包版 splash 加载失败（白屏壳）
   - splash.html
   - splash-preload.cjs
@@ -142,6 +147,9 @@ extraResources:
       - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
+    filter:
+      - '**/*'
+      - '!learning-content/ondemand/**'
   # ★★ 内置插件包（mode-pluginization P1）：build-all-editions 先经 build-plugins.mjs 生成
   #   apps/server/plugins/builtin/<id>/，这里整体拷进包。运行时由 builtin-packages.ts 扫描
   #   resources/server/dist/plugins/builtin 装载（包优先、源码兜底）。
@@ -214,8 +222,6 @@ nsis:
   shortcutName: 言智
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
-  # 产物名带版本档后缀（lite / basic / pro），由 scripts/set-edition.cjs → electron-build.cjs
-  # 以环境变量注入。三档共用本文件，靠 edition.json 区分，避免三份 yml 逐行漂移。
-  # 注：${env.X} 在变量缺失时 electron-builder 会直接报错而非忽略，故 electron-build.cjs
-  # 里做了 '-basic' 兜底，不会出现未定义的情况。
-  artifactName: ${productName}-Setup-${version}-${arch}${env.YZ_ARTIFACT_SUFFIX}.${ext}
+  # 交付文件名固定，不带 lite / basic / pro / 自定义名称等后缀。
+  # 档位与模式选择仍由 edition.json 固化，输出目录也按档位隔离，互不覆盖。
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}

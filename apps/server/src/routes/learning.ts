@@ -43,10 +43,29 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const router = Router();
 router.use(authMiddleware);
 const bookSourceService = createBookSourceService();
+
+function resolveLearningContentSelectionManifest(): string | null {
+  const start = path.dirname(fileURLToPath(import.meta.url));
+  let current = start;
+  for (let depth = 0; depth < 12; depth += 1) {
+    const candidate = path.join(
+      current,
+      'assets',
+      'learning-content',
+      'selection.manifest.json',
+    );
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
 
 function builtInSource(sourceId: string): LearningV2BookSource | null {
   return getLearningV2BookSources().find((source) => source.id === sourceId) || null;
@@ -830,6 +849,33 @@ router.post('/voice', async (req, res) => {
 });
 
 // ── 课时进度入库（§4.6 P1：跨端备份；P0 的 localStorage 仍是主记录，本表只备份不读回） ──
+
+// GET /api/learning/content-distribution —— 当前安装包携带的科目白名单
+router.get('/content-distribution', (_req, res) => {
+  try {
+    const manifestPath = resolveLearningContentSelectionManifest();
+    if (!manifestPath) {
+      res.json({ data: { manifest: false, bundledSubjects: null } });
+      return;
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      entries?: Array<{ subjectKey?: unknown; distribution?: unknown }>;
+    };
+    const bundledSubjects = (manifest.entries || [])
+      .filter((entry) => entry.distribution === 'bundled' && typeof entry.subjectKey === 'string')
+      .map((entry) => entry.subjectKey as string);
+    res.json({
+      data: {
+        manifest: true,
+        bundledSubjects,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
 
 // GET /api/learning/lesson-progress?subject= —— 某科目的已完成课时 id 清单（按完成时间升序）
 router.get('/lesson-progress', (req, res) => {

@@ -148,6 +148,7 @@ const initialSubjectCategory = SUBJECT_CATEGORY_DEFS.find((category) =>
 const openSubjectCategoryKeys = ref<string[]>(initialSubjectCategory ? [initialSubjectCategory] : []);
 const openTrackNames = ref<string[]>([]);
 const activePage = ref<LearningV2PageKey>('overview');
+const sessionReturnPage = ref<LearningV2PageKey>('overview');
 const lessonStep = ref(0);
 /* 完成本课后的就地选择状态：做练习 / 下一课 / 留在复习（声明提前供 immediate watch 复位） */
 const lessonFinished = ref(false);
@@ -174,6 +175,7 @@ const readerOpen = ref(false);
 const readerBook = ref<LearningV2ReaderBook | null>(null);
 const mobileSubjectsOpen = ref(false);
 const mobileMoreOpen = ref(false);
+const mobileSubjectButton = ref<HTMLButtonElement | null>(null);
 const learningAiInput = ref<{
   fillInput: (text: string) => void;
   fillAndSend: (text: string) => Promise<void>;
@@ -191,10 +193,14 @@ const noteTitle = ref('');
 const noteContent = ref('');
 const studyRailWidth = ref(STUDY_RAIL_DEFAULT_WIDTH);
 const studyRailCollapsed = ref(false);
+const denseRailExpanded = ref(false);
 const legacySecurityPathId = ref('');
 const programmingPackageId = ref('');
 const isCompactLayout = ref(
   typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 900px)')?.matches,
+);
+const isDenseLayout = ref(
+  typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 1360px)')?.matches,
 );
 const usesEmbeddedStudioPractice = computed(() =>
   ['zhouyi', 'divination', 'culture', 'medicine', 'music'].includes(selectedSubjectKey.value),
@@ -205,9 +211,13 @@ const usesSpecializedLessonWorkbench = computed(() =>
 let progressRequestId = 0;
 let compactMediaQuery: MediaQueryList | null = null;
 let compactMediaListener: ((event: MediaQueryListEvent) => void) | null = null;
+let denseMediaQuery: MediaQueryList | null = null;
+let denseMediaListener: ((event: MediaQueryListEvent) => void) | null = null;
 let mobileSheetBodyOverflow = '';
 let railResizeStartX = 0;
 let railResizeStartWidth = STUDY_RAIL_DEFAULT_WIDTH;
+let studyHistoryPushed = false;
+let studyIgnoreNextPop = false;
 
 const subject = computed(() => getLearningV2Subject(selectedSubjectKey.value) || subjects.value[0]);
 const lead = computed<LeadMode>(() => leadOf(activeMode.value));
@@ -421,6 +431,11 @@ function selectMobileSubjectEntry(entry: (typeof mobileSubjectEntries.value)[num
   if (entry.kind === 'programming') selectProgrammingPackage(entry.key);
   else selectSubject(entry.key);
   mobileSubjectsOpen.value = false;
+  void nextTick(() => mobileSubjectButton.value?.focus());
+}
+function closeMobileSubjects(restoreFocus = false): void {
+  mobileSubjectsOpen.value = false;
+  if (restoreFocus) void nextTick(() => mobileSubjectButton.value?.focus());
 }
 const selectedCourse = computed(() =>
   courses.value.find((course) =>
@@ -543,8 +558,17 @@ function expertNotesMarkdown(title: string, notes: readonly LearningV2ExpertNote
 const currentPageLabel = computed(() =>
   LEARNING_V2_PAGES.find((page) => page.key === activePage.value)?.label || '学习',
 );
+const effectiveStudyRailCollapsed = computed(() =>
+  isDenseLayout.value
+    ? !denseRailExpanded.value
+    : studyRailCollapsed.value,
+);
 const studyRailWidthCss = computed(() =>
-  studyRailCollapsed.value ? `${STUDY_RAIL_COLLAPSED_WIDTH}px` : `${studyRailWidth.value}px`,
+  effectiveStudyRailCollapsed.value
+    ? `${STUDY_RAIL_COLLAPSED_WIDTH}px`
+    : isDenseLayout.value
+      ? '280px'
+      : `${studyRailWidth.value}px`,
 );
 const studios = computed(() => {
   const base = practice.value;
@@ -753,6 +777,10 @@ function restoreStudyRailPreferences() {
 }
 
 function toggleStudyRail() {
+  if (isDenseLayout.value) {
+    denseRailExpanded.value = !denseRailExpanded.value;
+    return;
+  }
   studyRailCollapsed.value = !studyRailCollapsed.value;
   saveStudyRailPreferences();
 }
@@ -773,7 +801,7 @@ function stopStudyRailResize() {
 }
 
 function startStudyRailResize(event: PointerEvent) {
-  if (studyRailCollapsed.value || event.button !== 0) return;
+  if (effectiveStudyRailCollapsed.value || isDenseLayout.value || event.button !== 0) return;
   event.preventDefault();
   railResizeStartX = event.clientX;
   railResizeStartWidth = studyRailWidth.value;
@@ -829,6 +857,7 @@ function selectSubject(key: string) {
     || next.tracks[0]?.name
     || '';
   openTrackNames.value = currentTrack ? [currentTrack] : [];
+  sessionReturnPage.value = 'overview';
   lessonStep.value = 0;
   resetQuizProgress();
 }
@@ -867,6 +896,9 @@ function openProgrammingLesson(courseName: string): void {
 
 function selectPage(page: LearningV2PageKey) {
   mobileMoreOpen.value = false;
+  if (isStudyPage(page) && !isStudyPage(activePage.value)) {
+    sessionReturnPage.value = activePage.value;
+  }
   if (page === 'lesson' && !courseReady(selectedCourseName.value)) {
     activePage.value = 'overview';
     return;
@@ -881,7 +913,71 @@ function handleSessionStageChange(stage: 'learn' | 'practice' | 'apply'): void {
 }
 
 function handleSessionExit(): void {
-  selectPage('overview');
+  const destination = isStudyPage(sessionReturnPage.value)
+    ? 'overview'
+    : sessionReturnPage.value;
+  selectPage(destination);
+}
+
+function studyHistoryState(): Record<string, unknown> {
+  const state = typeof window === 'undefined' ? null : window.history.state;
+  return state && typeof state === 'object' ? { ...state } : {};
+}
+
+function pushStudyHistory(): void {
+  if (typeof window === 'undefined' || studyHistoryPushed) return;
+  window.history.pushState(
+    { ...studyHistoryState(), yzLearningStudy: true },
+    '',
+    window.location.href,
+  );
+  studyHistoryPushed = true;
+}
+
+function clearStudyHistoryMarker(): void {
+  if (typeof window === 'undefined' || !studyHistoryPushed) return;
+  const { yzLearningStudy: _study, ...state } = studyHistoryState();
+  window.history.replaceState(state, '', window.location.href);
+  studyHistoryPushed = false;
+}
+
+/** 系统侧滑/浏览器后退先退出当前课时，不离开学习总览。 */
+function onStudyPopState(): void {
+  if (studyIgnoreNextPop) {
+    studyIgnoreNextPop = false;
+    return;
+  }
+  if (!studyHistoryPushed || !isStudySurface.value) return;
+  studyHistoryPushed = false;
+  handleSessionExit();
+}
+
+/** Android 原生返回与预测返回共用入口；先关最上层页内界面。 */
+function onMobileBack(event: Event): void {
+  if (contentManagerOpen.value) {
+    event.preventDefault();
+    contentManagerOpen.value = false;
+    return;
+  }
+  if (libraryOpen.value) {
+    event.preventDefault();
+    closeLibrary();
+    return;
+  }
+  if (mobileSubjectsOpen.value) {
+    event.preventDefault();
+    closeMobileSubjects(true);
+    return;
+  }
+  if (mobileMoreOpen.value) {
+    event.preventDefault();
+    closeMobileMore(true);
+    return;
+  }
+  if (isStudySurface.value) {
+    event.preventDefault();
+    handleSessionExit();
+  }
 }
 
 function handleSessionCoach(): void {
@@ -1113,7 +1209,8 @@ function onKeydown(event: KeyboardEvent) {
     return;
   }
   if (mobileSubjectsOpen.value && event.key === 'Escape') {
-    mobileSubjectsOpen.value = false;
+    event.preventDefault();
+    closeMobileSubjects(true);
     return;
   }
   if (libraryOpen.value && event.key === 'Escape') {
@@ -1161,9 +1258,19 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 // 学习态让整个应用让位给学习面板：隐藏 Web 顶栏与底部状态栏，学习区占满整个视口。
-watch(isStudySurface, (active) => {
+// 同时压入同路由历史哨兵，让系统侧滑/浏览器后退只退出当前课时。
+watch(isStudySurface, (active, previous) => {
   if (typeof document === 'undefined') return;
   document.documentElement.classList.toggle('yz-learning-study', active);
+  if (active && !previous) {
+    pushStudyHistory();
+    return;
+  }
+  if (!active && previous && studyHistoryPushed) {
+    studyHistoryPushed = false;
+    studyIgnoreNextPop = true;
+    window.history.back();
+  }
 }, { immediate: true });
 watch([selectedSubjectKey, selectedCourseName, activePage, lessonStep], saveSession);
 watch(selectedSubjectKey, () => void loadProgress());
@@ -1223,11 +1330,22 @@ onMounted(async () => {
   subjectsCollapsed.value = localStorage.getItem(SUBJECTS_COLLAPSED_KEY) === '1';
   openTrackNames.value = currentTrackName.value ? [currentTrackName.value] : [];
   window.addEventListener('keydown', onKeydown);
+  window.addEventListener('popstate', onStudyPopState);
+  document.addEventListener('yz:mobile-back', onMobileBack);
   compactMediaQuery = window.matchMedia?.('(max-width: 900px)') || null;
   if (compactMediaQuery) {
     compactMediaListener = (event: MediaQueryListEvent) => { isCompactLayout.value = event.matches; };
     compactMediaQuery.addEventListener?.('change', compactMediaListener);
     compactMediaQuery.addListener?.(compactMediaListener);
+  }
+  denseMediaQuery = window.matchMedia?.('(max-width: 1360px)') || null;
+  if (denseMediaQuery) {
+    denseMediaListener = (event: MediaQueryListEvent) => {
+      isDenseLayout.value = event.matches;
+      if (!event.matches) denseRailExpanded.value = false;
+    };
+    denseMediaQuery.addEventListener?.('change', denseMediaListener);
+    denseMediaQuery.addListener?.(denseMediaListener);
   }
   try {
     await initializeLearningContent();
@@ -1247,12 +1365,21 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('yz-learning-study');
   window.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('popstate', onStudyPopState);
+  document.removeEventListener('yz:mobile-back', onMobileBack);
+  clearStudyHistoryMarker();
   if (compactMediaQuery && compactMediaListener) {
     compactMediaQuery.removeEventListener?.('change', compactMediaListener);
     compactMediaQuery.removeListener?.(compactMediaListener);
   }
+  if (denseMediaQuery && denseMediaListener) {
+    denseMediaQuery.removeEventListener?.('change', denseMediaListener);
+    denseMediaQuery.removeListener?.(denseMediaListener);
+  }
   compactMediaQuery = null;
   compactMediaListener = null;
+  denseMediaQuery = null;
+  denseMediaListener = null;
   stopStudyRailResize();
   stopMobileMoreOutsideListener();
   if (mobileSubjectsOpen.value) document.body.style.overflow = mobileSheetBodyOverflow;
@@ -1263,7 +1390,7 @@ onBeforeUnmount(() => {
   <div
     v-if="subject"
     class="lv2"
-    :class="{ 'study-full': isStudySurface, 'study-lesson': activePage === 'lesson', 'subjects-collapsed': subjectsCollapsed, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
+    :class="{ 'study-full': isStudySurface, 'study-lesson': activePage === 'lesson', 'subjects-collapsed': subjectsCollapsed, 'dense-layout': isDenseLayout, 'is-learning-ai': lead === 'ai', 'is-library-open': libraryOpen }"
     :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }"
     :data-yz-annotate-id="activePage === 'lesson' ? 'learning-v2-lesson' : `learning-v2-${activePage}`"
     data-yz-annotate-label="学习"
@@ -1546,10 +1673,10 @@ onBeforeUnmount(() => {
           <button class="lv2-tool-chip" type="button" @click="selectPage('studio')">实践</button>
           <button class="lv2-tool-chip" type="button" @click="selectPage('practice')">练习</button>
           <button class="lv2-tool-chip" type="button" @click="selectPage('coach')">陪练</button>
-          <button class="lv2-library-button" type="button" aria-label="管理科目数据" @click="contentManagerOpen = true">
+          <button class="lv2-library-button" type="button" title="管理科目数据" aria-label="管理科目数据" @click="contentManagerOpen = true">
             <PackageOpen :size="17" /><span>科目数据</span>
           </button>
-          <button class="lv2-library-button" type="button" aria-label="打开公共图书馆" @click="libraryOpen = true">
+          <button class="lv2-library-button" type="button" title="打开公共图书馆" aria-label="打开公共图书馆" @click="libraryOpen = true">
             <Library :size="17" /><span>图书馆</span>
           </button>
         </div>
@@ -1557,6 +1684,7 @@ onBeforeUnmount(() => {
 
       <header v-else-if="!isStudySurface" class="lv2-mobile-topbar">
         <button
+          ref="mobileSubjectButton"
           type="button"
           class="lv2-mobile-subject"
           aria-label="切换学习科目"
@@ -1989,7 +2117,7 @@ onBeforeUnmount(() => {
             <article>
               <span>{{ coursePlan.trackName }} · {{ subject.lesson.labels[lessonStep] }}</span>
               <em class="lv2-quality">
-                {{ coursePlan.qualityStatus === 'curated' ? '完整教案 · 人工审校' : '完整教案 · 系统整理' }}
+                {{ coursePlan.reviewStatus === 'reviewed' ? '完整教案 · 人工审校' : '完整教案 · 系统整理' }}
               </em>
               <h1>{{ currentLessonStep?.title }}</h1>
               <p class="lv2-goal">课程目标：{{ coursePlan.plainLanguageGoal }}</p>
@@ -2358,20 +2486,20 @@ onBeforeUnmount(() => {
       <aside
         v-if="!isCompactLayout && !isStudySurface"
         class="lv2-study-rail"
-        :class="{ collapsed: studyRailCollapsed }"
+        :class="{ collapsed: effectiveStudyRailCollapsed }"
         aria-label="今日学习概览"
       >
         <button
           class="lv2-rail-collapse"
           type="button"
-          :aria-label="studyRailCollapsed ? '展开今日学习侧栏' : '收起今日学习侧栏'"
-          :aria-expanded="!studyRailCollapsed"
+          :aria-label="effectiveStudyRailCollapsed ? '展开今日学习侧栏' : '收起今日学习侧栏'"
+          :aria-expanded="!effectiveStudyRailCollapsed"
           @click="toggleStudyRail"
         >
-          <ChevronLeft v-if="studyRailCollapsed" :size="14" />
+          <ChevronLeft v-if="effectiveStudyRailCollapsed" :size="14" />
           <ChevronRight v-else :size="14" />
         </button>
-        <div v-if="!studyRailCollapsed" class="lv2-rail-content">
+        <div v-if="!effectiveStudyRailCollapsed" class="lv2-rail-content">
         <section>
           <header><h2>今天</h2></header>
           <div class="lv2-rail-goal">
@@ -2413,7 +2541,7 @@ onBeforeUnmount(() => {
           <b>{{ courseProgressPercent }}%</b>
         </div>
         <button
-          v-if="!studyRailCollapsed"
+          v-if="!effectiveStudyRailCollapsed && !isDenseLayout"
           class="lv2-rail-resize"
           type="button"
           role="separator"
@@ -2440,11 +2568,11 @@ onBeforeUnmount(() => {
     </Teleport>
 
     <Teleport to="body">
-      <div v-if="mobileSubjectsOpen" class="lv2-mobile-sheet-mask" :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }" @click.self="mobileSubjectsOpen = false">
+      <div v-if="mobileSubjectsOpen" class="lv2-mobile-sheet-mask" :style="{ '--lv2-accent': subject.accent, '--lv2-tint': subject.tint }" @click.self="closeMobileSubjects(true)">
         <section ref="mobileSubjectSheet" class="lv2-mobile-subject-sheet" role="dialog" aria-modal="true" aria-labelledby="lv2-mobile-subject-title">
           <header>
             <div><span>学习科目</span><h2 id="lv2-mobile-subject-title">选择一门课</h2></div>
-            <button type="button" aria-label="关闭科目选择" @click="mobileSubjectsOpen = false"><X :size="17" /></button>
+            <button type="button" aria-label="关闭科目选择" @click="closeMobileSubjects(true)"><X :size="17" /></button>
           </header>
           <div>
             <button

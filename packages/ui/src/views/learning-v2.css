@@ -1411,19 +1411,22 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-mobile-review-preview i { width: 6px; height: 6px; border-radius: 50%; background: var(--lv2-accent); }
 .lv2-mobile-review-preview span { font-size: 10px; }
 .lv2-mobile-sheet-mask {
-  position: fixed; inset: 0; z-index: 4100; display: flex; align-items: flex-end;
+  /* 科目抽屉是模态层，必须高于全局 TabBar(5000)。否则列表最底部几项
+     会被底栏图标盖住，点击命中的是导航而不是科目按钮。 */
+  position: fixed; inset: 0; z-index: 5200; display: flex; align-items: flex-end;
   background: rgba(16,24,20,.42);
 }
 .lv2-mobile-subject-sheet {
-  width: 100%; max-height: min(78vh, 680px); padding: 14px 12px max(16px, env(safe-area-inset-bottom));
+  display: flex; width: 100%; height: min(78vh, 680px); max-height: 100%; flex-direction: column;
+  padding: 14px 12px max(16px, env(safe-area-inset-bottom)); overflow: hidden;
   border-radius: 14px 14px 0 0; background: var(--lv2-surface);
   box-shadow: 0 -16px 48px rgba(18, 28, 23, .2);
 }
-.lv2-mobile-subject-sheet > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 0 4px 10px; }
+.lv2-mobile-subject-sheet > header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 0 4px 10px; }
 .lv2-mobile-subject-sheet > header span { color: var(--lv2-accent); font-size: 9px; }
 .lv2-mobile-subject-sheet h2 { margin: 3px 0 0; font-size: 18px; }
 .lv2-mobile-subject-sheet > header button { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
-.lv2-mobile-subject-sheet > div { max-height: calc(78vh - 80px); overflow-y: auto; }
+.lv2-mobile-subject-sheet > div { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
 .lv2-mobile-subject-sheet > div button {
   display: grid; width: 100%; min-height: 54px; grid-template-columns: 30px minmax(0, 1fr) 18px;
   gap: 10px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px;
@@ -1641,42 +1644,60 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
   font-weight: 600;
 }
 
-.lv2-ai-select-popper.el-popper {
+:global(.lv2-ai-select-popper.el-popper) {
+  --lv2-line: var(--color-border, #dbe3df);
+  --lv2-muted: var(--color-text-tertiary, #748078);
+  --lv2-surface: var(--color-surface, #fff);
+  --lv2-ink: var(--color-text, #17211e);
+  --lv2-tint: var(--color-primary-light-9, #edf7f2);
   min-width: 220px;
-  max-width: min(340px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
   overflow: hidden;
+  box-sizing: border-box;
   border: 1px solid var(--lv2-line);
   border-radius: 8px;
-  background: var(--lv2-surface);
+  background: var(--lv2-surface, #fff);
   box-shadow: 0 14px 36px rgba(16, 30, 24, .18);
 }
 
-.lv2-ai-select-popper .el-select-dropdown__wrap {
+:global(.lv2-ai-select-popper .el-select-dropdown) {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: var(--lv2-surface, #fff);
+}
+
+:global(.lv2-ai-select-popper .el-select-dropdown__wrap) {
+  max-width: 100%;
   max-height: min(420px, 56vh);
 }
 
-.lv2-ai-select-popper .el-select-group__title {
+:global(.lv2-ai-select-popper .el-select-group__title) {
   padding: 9px 12px 5px;
   color: var(--lv2-muted);
   font-size: 10px;
   font-weight: 700;
 }
 
-.lv2-ai-select-popper .el-select-dropdown__item {
+:global(.lv2-ai-select-popper .el-select-dropdown__item) {
   min-height: 34px;
   padding: 0 12px;
+  overflow: hidden;
   color: var(--lv2-ink);
   font-size: 12px;
   line-height: 34px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.lv2-ai-select-popper .el-select-dropdown__item.is-selected {
+:global(.lv2-ai-select-popper .el-select-dropdown__item.is-selected) {
   background: var(--lv2-tint);
   color: var(--lv2-accent);
   font-weight: 700;
 }
 
-.lv2-ai-select-popper .el-select-dropdown__item.is-disabled {
+:global(.lv2-ai-select-popper .el-select-dropdown__item.is-disabled) {
   color: var(--lv2-muted);
   opacity: .55;
 }
@@ -1700,6 +1721,93 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-mine-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .lv2-mine-actions button { min-height: 36px; padding: 7px 13px; border: 1px solid var(--lv2-line); border-radius: 999px; background: var(--lv2-surface); color: var(--lv2-muted); font-size: 10px; cursor: pointer; }
 .lv2-mine-actions button:hover { border-color: var(--lv2-accent); color: var(--lv2-accent); }
+
+/* 中等桌面宽度：保留教材目录，但把今日概览收成可展开的窄轨。
+   1105px / 1024px 下旧三栏会把正文压到 450px 左右，课程卡被迫逐字换行。 */
+@media (min-width: 901px) and (max-width: 1360px) {
+  .lv2:not(.is-learning-ai):not(.is-library-open):not(.study-full) {
+    grid-template-columns: 196px minmax(0, 1fr);
+  }
+  .lv2.subjects-collapsed:not(.is-learning-ai):not(.is-library-open):not(.study-full) {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+  .lv2-topbar {
+    gap: 10px;
+    padding: 8px 14px;
+  }
+  .lv2-topbar-actions {
+    gap: 5px;
+  }
+  .lv2-subject-trigger {
+    min-width: 0;
+  }
+  .lv2-subject-trigger span {
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lv2-library-button {
+    width: 38px;
+    min-width: 38px;
+    justify-content: center;
+    padding: 0;
+  }
+  .lv2-library-button span {
+    display: none;
+  }
+  .lv2-content {
+    padding: 20px 18px 44px;
+  }
+  .lv2-workspace.has-textbook-toc {
+    grid-template-columns: auto minmax(0, 1fr) 42px;
+    overflow-x: hidden;
+  }
+  .lv2-workspace.has-textbook-toc > .lv2-study-rail {
+    width: 42px;
+    margin: 18px 8px 0 0;
+  }
+  .lv2-workspace.has-textbook-toc > .lv2-study-rail:not(.collapsed) {
+    position: absolute;
+    z-index: 24;
+    top: 12px;
+    right: 12px;
+    width: min(286px, calc(100% - 24px));
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+    margin: 0;
+    padding: 14px 12px 18px;
+    border: 1px solid var(--lv2-line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--skin-panel-bg-strong, var(--color-surface, #fff)) 94%, transparent);
+    box-shadow: 0 18px 48px rgba(20, 34, 28, .18);
+    backdrop-filter: blur(18px) saturate(112%);
+    -webkit-backdrop-filter: blur(18px) saturate(112%);
+  }
+  .lv2-upnext {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .lv2-upnext button {
+    min-height: 124px;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1100px) {
+  .lv2:not(.is-learning-ai):not(.is-library-open):not(.study-full) {
+    grid-template-columns: 184px minmax(0, 1fr);
+  }
+  .lv2.subjects-collapsed:not(.is-learning-ai):not(.is-library-open):not(.study-full) {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+  .lv2-workspace.has-textbook-toc > .rpane:first-child:not(.rpane-collapsed) {
+    width: 180px !important;
+  }
+  .lv2-content {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
 .lv2-textbook-toc, .lv2-lesson-toc, .lv2-lesson-notes { min-width: 0; overflow: hidden; padding: 9px 6px; }
 .lv2-textbook-toc header, .lv2-lesson-toc header, .lv2-lesson-notes header { display: flex; justify-content: space-between; gap: 6px; padding: 0 8px 7px; border-bottom: 1px solid var(--lv2-line); }
 .lv2-textbook-toc header b, .lv2-lesson-toc header b, .lv2-lesson-notes header b { font-size: 10px; }

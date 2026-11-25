@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   ArrowLeft,
   BookOpen,
@@ -23,9 +23,11 @@ import ProgrammingProjectHub from './ProgrammingProjectHub.vue';
 const props = defineProps<{
   courses: readonly ProgrammingCoursePackage[];
   projects: readonly ProgrammingProject[];
+  initialCourseId?: string;
 }>();
 const emit = defineEmits<{
   openLesson: [courseName: string];
+  selectCourse: [courseId: string];
 }>();
 
 const COURSE_STATE_KEY = 'yz.learning.programming.course.v1';
@@ -36,9 +38,17 @@ const restoredCourse = (() => {
       courseId?: string;
       stageId?: string;
     };
-    const course = props.courses.find((item) => item.id === saved.courseId);
+    const requestedCourse = props.initialCourseId
+      ? props.courses.find((item) => item.id === props.initialCourseId)
+      : null;
+    const course = requestedCourse || props.courses.find((item) => item.id === saved.courseId);
     return course
-      ? { courseId: course.id, stageId: course.stages.some((stage) => stage.id === saved.stageId) ? saved.stageId || '' : course.stages[0]?.id || '' }
+      ? {
+          courseId: course.id,
+          stageId: course.stages.some((stage) => stage.id === saved.stageId)
+            ? saved.stageId || ''
+            : course.stages[0]?.id || '',
+        }
       : { courseId: '', stageId: '' };
   } catch {
     return { courseId: '', stageId: '' };
@@ -101,6 +111,7 @@ function openCourse(courseId: string): void {
   selectedCourseId.value = courseId;
   expandedStageId.value = props.courses.find((course) => course.id === courseId)?.stages[0]?.id || '';
   saveCourseState();
+  emit('selectCourse', courseId);
 }
 
 function closeCourse(): void {
@@ -140,6 +151,11 @@ function scrollToPhase(phaseId: string): void {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   target.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
 }
+
+watch(() => props.initialCourseId, (courseId) => {
+  if (!courseId || courseId === selectedCourseId.value) return;
+  if (props.courses.some((course) => course.id === courseId)) openCourse(courseId);
+});
 </script>
 
 <template>
@@ -243,22 +259,36 @@ function scrollToPhase(phaseId: string): void {
 
     <template v-else>
       <header class="programming-course-head">
-        <button type="button" class="programming-back" @click="closeCourse">
-          <ArrowLeft :size="16" />全部课程
-        </button>
-        <div>
-          <span v-if="selectedCoursePosition">{{ selectedCoursePosition.phase.title }} · 第 {{ selectedCoursePosition.course.order }} 门 · 完整课程</span>
-          <span v-else>{{ categoryLabel(selectedCourse.category) }} · {{ selectedCourse.status === 'ready' ? '完整课程' : '课程大纲' }}</span>
-          <h1>{{ selectedCourse.title }}</h1>
+        <div class="programming-course-toolbar">
+          <button type="button" class="programming-back" @click="closeCourse">
+            <ArrowLeft :size="16" />全部课程
+          </button>
+          <span class="programming-course-breadcrumb">
+            <template v-if="selectedCoursePosition">
+              {{ selectedCoursePosition.phase.title }} · 第 {{ selectedCoursePosition.course.order }} 门
+            </template>
+            <template v-else>{{ categoryLabel(selectedCourse.category) }}</template>
+          </span>
+          <div class="programming-course-progress" data-programming-course-progress>
+            <b>{{ selectedCourse.readyLessons }} / {{ selectedCourse.totalLessons }}</b>
+            <small>课时开放</small>
+          </div>
         </div>
-        <dl>
-          <div><dt>前置</dt><dd>{{ selectedCourse.prerequisite }}</dd></div>
+        <div class="programming-course-title-block">
+          <div class="programming-course-eyebrow">
+            <span>{{ categoryLabel(selectedCourse.category) }}</span>
+            <span>{{ selectedCourse.status === 'ready' ? '完整课程' : '课程大纲' }}</span>
+          </div>
+          <h1 :title="selectedCourse.title">{{ selectedCourse.title }}</h1>
+          <p data-programming-course-summary>{{ selectedCourse.summary }}</p>
+        </div>
+        <dl class="programming-course-facts">
+          <div><dt>前置知识</dt><dd>{{ selectedCourse.prerequisite }}</dd></div>
           <div><dt>目标岗位</dt><dd>{{ selectedCourse.targetRole }}</dd></div>
           <div><dt>运行环境</dt><dd>{{ selectedCourse.runtime }}</dd></div>
           <div><dt>工具链</dt><dd>{{ selectedCourse.toolchain }}</dd></div>
-          <div><dt>框架</dt><dd>{{ selectedCourse.frameworks }}</dd></div>
+          <div><dt>框架与依赖</dt><dd>{{ selectedCourse.frameworks }}</dd></div>
           <div><dt>毕业项目</dt><dd>{{ selectedCourse.capstone }}</dd></div>
-          <div><dt>开放进度</dt><dd>{{ selectedCourse.readyLessons }} / {{ selectedCourse.totalLessons }} 课时已开放</dd></div>
         </dl>
       </header>
 
@@ -390,17 +420,10 @@ function scrollToPhase(phaseId: string): void {
   background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
   color: var(--color-primary);
 }
-.programming-course-head > div > span {
-  color: var(--color-primary);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .06em;
-}
 .programming-course-head h1 {
   margin: 0;
   font-family: Georgia, "Songti SC", serif;
-  line-height: 1.3;
-  font-size: 20px;
+  line-height: 1.35;
 }
 .programming-route-strip {
   display: flex;
@@ -574,19 +597,111 @@ function scrollToPhase(phaseId: string): void {
 .programming-course-side > svg { margin-top: 20px; }
 .programming-course-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, .62fr);
-  gap: 10px 24px;
-  padding-bottom: 18px;
+  gap: 12px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--color-border);
 }
-.programming-course-head > .programming-back { grid-column: 1 / -1; }
-.programming-course-head h1 { font-size: 20px; }
-.programming-course-head dl {
+.programming-course-toolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.programming-course-breadcrumb {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.programming-course-progress {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, var(--color-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface));
+  color: var(--color-text-secondary);
+}
+.programming-course-progress b {
+  color: var(--color-primary);
+  font: 700 15px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+.programming-course-progress span {
+  font-size: 10px;
+}
+.programming-course-progress small {
+  margin-left: 3px;
+  color: var(--color-text-tertiary);
+  font-size: 8px;
+}
+.programming-course-title-block {
+  min-width: 0;
+  padding: 4px 0 2px;
+}
+.programming-course-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.programming-course-eyebrow span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
+  color: var(--color-primary);
+  font-size: 8px;
+  font-weight: 700;
+}
+.programming-course-title-block h1 {
+  max-width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  font-size: clamp(21px, 2.1vw, 28px);
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.programming-course-title-block p {
+  max-width: 82ch;
+  margin: 7px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.7;
+}
+.programming-course-facts {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 8px;
   margin: 0;
-  padding-left: 18px;
-  border-left: 1px solid var(--color-border);
+}
+.programming-course-facts > div {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-surface) 84%, transparent);
+}
+.programming-course-facts dt {
+  color: var(--color-primary);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.programming-course-facts dd {
+  display: -webkit-box;
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 .programming-course-sources {
   display: grid;
@@ -625,9 +740,6 @@ function scrollToPhase(phaseId: string): void {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.programming-course-head dl > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; }
-.programming-course-head dt { color: var(--color-text-tertiary); font-size: 9px; }
-.programming-course-head dd { margin: 0; font-size: 10px; line-height: 1.55; }
 .programming-back {
   display: inline-flex;
   min-height: 36px;
@@ -780,9 +892,8 @@ function scrollToPhase(phaseId: string): void {
   }
   .programming-course-grid { grid-template-columns: 1fr; }
   .programming-course-card { min-height: 126px; padding: 12px; }
-  .programming-course-head { grid-template-columns: 1fr; }
-  .programming-course-head h1 { font-size: 18px; }
-  .programming-course-head dl { padding: 10px 0 0; border-top: 1px solid var(--color-border); border-left: 0; }
+  .programming-course-title-block h1 { font-size: 22px; }
+  .programming-course-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .programming-course-sources { grid-template-columns: 1fr; margin-top: 10px; }
   .programming-stage-toggle { grid-template-columns: 30px minmax(0, 1fr); }
   .programming-stage-toggle > span { grid-column: 2; }
@@ -792,6 +903,11 @@ function scrollToPhase(phaseId: string): void {
   .programming-back { min-height: 44px; }
 }
 @media (max-width: 520px) {
+  .programming-course-progress {
+    width: 100%;
+    margin-left: 0;
+  }
+  .programming-course-facts { grid-template-columns: 1fr; }
   .programming-course-card { grid-template-columns: 32px minmax(0, 1fr); }
   .programming-course-icon { width: 30px; height: 30px; }
   .programming-course-side {

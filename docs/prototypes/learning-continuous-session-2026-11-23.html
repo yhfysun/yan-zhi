@@ -1,0 +1,1630 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学习模式连续学习会话 · 原型 2026-11-23</title>
+<style>
+  :root {
+    --page: #e9ebe6;
+    --paper: #fbfaf6;
+    --paper-2: #f3f2ec;
+    --ink: #17221d;
+    --muted: #66716b;
+    --line: #d9ddd6;
+    --line-strong: #c7cdc5;
+    --green: #256a50;
+    --green-soft: #e2eee8;
+    --green-deep: #17342a;
+    --amber: #8b5b24;
+    --amber-soft: #f5ead8;
+    --blue: #315e88;
+    --blue-soft: #e5edf4;
+    --danger: #a74636;
+    --shadow: 0 18px 55px rgba(29, 42, 35, .12);
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  html { min-width: 320px; background: var(--page); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font: 14px/1.6 "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+    background:
+      radial-gradient(circle at 93% 3%, rgba(49, 94, 136, .10), transparent 22rem),
+      radial-gradient(circle at 6% 92%, rgba(37, 106, 80, .10), transparent 24rem),
+      var(--page);
+  }
+  button, input, textarea { font: inherit; }
+  button { color: inherit; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid #4f9a79;
+    outline-offset: 2px;
+  }
+  .prototype-head {
+    width: min(1480px, calc(100% - 36px));
+    margin: 28px auto 16px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .prototype-head h1 {
+    margin: 0;
+    font-size: clamp(22px, 2.1vw, 31px);
+    font-weight: 650;
+    line-height: 1.25;
+  }
+  .prototype-head p {
+    max-width: 760px;
+    margin: 7px 0 0;
+    color: #536159;
+    font-size: 13px;
+  }
+  .proto-switch {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 5px;
+    padding: 5px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: rgba(251, 250, 246, .78);
+    box-shadow: 0 8px 24px rgba(29, 42, 35, .07);
+  }
+  .proto-switch button {
+    min-height: 36px;
+    padding: 6px 13px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .proto-switch button[aria-pressed="true"] {
+    background: var(--ink);
+    color: #fff;
+  }
+  .session {
+    width: min(1480px, calc(100% - 36px));
+    min-height: 760px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    overflow: hidden;
+    border: 1px solid #cdd3cc;
+    border-radius: 12px;
+    background: var(--paper);
+    box-shadow: var(--shadow);
+  }
+  .session-top {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    min-height: 64px;
+    padding: 9px 16px;
+    background: var(--green-deep);
+    color: #eff5f1;
+  }
+  .icon-button,
+  .text-button,
+  .primary-button,
+  .secondary-button,
+  .ghost-button {
+    display: inline-flex;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .icon-button {
+    width: 38px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, .18);
+    background: rgba(255, 255, 255, .045);
+    color: #eef5f0;
+  }
+  .text-button {
+    min-height: 38px;
+    padding: 0 12px;
+    border: 1px solid rgba(255, 255, 255, .18);
+    background: rgba(255, 255, 255, .045);
+    color: #eef5f0;
+    font-size: 12px;
+  }
+  .session-title {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .session-title .back {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .045);
+    color: #eff5f1;
+    cursor: pointer;
+  }
+  .crumb {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+    color: #a9bbb1;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .crumb b {
+    overflow: hidden;
+    color: #f5f7f5;
+    font-weight: 600;
+    text-overflow: ellipsis;
+  }
+  .session-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .session-actions .text-button span {
+    display: inline;
+  }
+  .journey-band {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--line);
+    background: #f6f5ef;
+  }
+  .journey {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+  .journey-stage {
+    position: relative;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 9px;
+    align-items: center;
+    min-height: 42px;
+    padding: 3px 15px 3px 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .journey-stage:not(:last-child)::after {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    width: calc(100% - 54px);
+    height: 1px;
+    background: var(--line-strong);
+    content: "";
+    transform: translateY(-50%);
+  }
+  .journey-dot {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    background: var(--paper);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .journey-copy {
+    position: relative;
+    z-index: 1;
+    min-width: 0;
+    width: fit-content;
+    padding-right: 8px;
+    background: #f6f5ef;
+  }
+  .journey-copy b,
+  .journey-copy small { display: block; }
+  .journey-copy b { font-size: 12px; }
+  .journey-copy small { color: var(--muted); font-size: 10px; }
+  .journey-stage.is-current .journey-dot {
+    border-color: var(--green);
+    background: var(--green);
+    color: #fff;
+  }
+  .journey-stage.is-done .journey-dot {
+    border-color: #7ca38e;
+    background: var(--green-soft);
+    color: var(--green);
+  }
+  .journey-stage.is-current .journey-copy b { color: var(--green); }
+  .session-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .session-meta i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+  }
+  .session-body {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr) 258px;
+    background: var(--paper);
+  }
+  .spine,
+  .evidence {
+    min-width: 0;
+    background: #f6f5ef;
+  }
+  .spine {
+    padding: 18px 14px 22px;
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+  }
+  .evidence {
+    padding: 18px 16px 22px;
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+  }
+  .pane-eyebrow {
+    display: block;
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .spine-head {
+    margin-bottom: 17px;
+  }
+  .spine-head b {
+    display: block;
+    font-size: 14px;
+  }
+  .spine-head small {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .spine-group {
+    margin: 16px 0 0;
+  }
+  .spine-group-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    color: #536159;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .spine-group-title span {
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .spine-item {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    gap: 7px;
+    align-items: center;
+    min-height: 40px;
+    padding: 5px 5px 5px 2px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .spine-item:hover { background: rgba(37, 106, 80, .055); }
+  .spine-item.is-current {
+    background: var(--green-soft);
+    color: var(--green);
+    font-weight: 650;
+  }
+  .spine-item .node {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    place-items: center;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    color: var(--muted);
+    font-size: 9px;
+    font-style: normal;
+  }
+  .spine-item.is-done .node {
+    border-color: #85aa96;
+    background: #e7f0eb;
+    color: var(--green);
+  }
+  .spine-item.is-current .node {
+    border-color: var(--green);
+    background: var(--green);
+    color: #fff;
+  }
+  .spine-item span {
+    overflow: hidden;
+    font-size: 11px;
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .spine-item small {
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .workspace {
+    position: relative;
+    min-width: 0;
+    min-height: 520px;
+    padding: 30px clamp(24px, 3vw, 54px) 34px;
+    overflow-y: auto;
+    background:
+      linear-gradient(90deg, rgba(255,255,255,.55), transparent 34%),
+      var(--paper);
+  }
+  .stage-panel {
+    width: min(820px, 100%);
+    min-height: 100%;
+    margin: 0 auto;
+    animation: stage-in .19s ease-out both;
+  }
+  .stage-panel[hidden] { display: none; }
+  @keyframes stage-in {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .stage-kicker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .06em;
+  }
+  .stage-kicker::before {
+    width: 22px;
+    height: 2px;
+    background: currentColor;
+    content: "";
+  }
+  .workspace h2 {
+    max-width: 760px;
+    margin: 11px 0 10px;
+    font-size: clamp(25px, 2.7vw, 36px);
+    font-weight: 650;
+    line-height: 1.27;
+    letter-spacing: 0;
+  }
+  .deck {
+    max-width: 720px;
+    margin: 0;
+    color: #4b5851;
+    font-size: 15px;
+    line-height: 1.8;
+  }
+  .reading-block {
+    max-width: 720px;
+    margin-top: 26px;
+  }
+  .reading-block h3 {
+    margin: 0 0 9px;
+    font-size: 18px;
+  }
+  .reading-block p {
+    margin: 0 0 12px;
+    font-size: 15px;
+    line-height: 1.9;
+  }
+  .memory-line {
+    margin-top: 22px;
+    padding: 14px 16px;
+    border-left: 3px solid var(--green);
+    background: var(--green-soft);
+    color: #244d3d;
+    font-size: 14px;
+    line-height: 1.75;
+  }
+  .capacity-visual {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    margin-top: 24px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    background: #fffdf9;
+  }
+  .capacity-box b,
+  .capacity-box small { display: block; }
+  .capacity-box b { margin-bottom: 9px; font-size: 12px; }
+  .capacity-box small { margin-top: 8px; color: var(--muted); font-size: 10px; }
+  .slots {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .slots i {
+    aspect-ratio: 1;
+    border: 1px solid #bfc8c0;
+    border-radius: 3px;
+    background: #edf1ec;
+  }
+  .slots i.full { border-color: #b99567; background: #ebd9bf; }
+  .capacity-arrow {
+    color: var(--muted);
+    font-size: 21px;
+    text-align: center;
+  }
+  .bridge {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 28px;
+    padding-top: 17px;
+    border-top: 1px solid var(--line);
+  }
+  .bridge-copy {
+    min-width: 0;
+    max-width: 620px;
+  }
+  .bridge b {
+    display: block;
+    margin-bottom: 3px;
+    font-size: 13px;
+  }
+  .bridge p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .bridge code {
+    color: var(--green);
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 11px;
+  }
+  .source-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 12px;
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .source-note a { color: var(--green); text-underline-offset: 2px; }
+  .task-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .task-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 26px;
+    padding: 3px 9px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .question-card,
+  .apply-card {
+    margin-top: 18px;
+    padding: 22px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fffdf9;
+  }
+  .question-card h3,
+  .apply-card h3 {
+    margin: 0 0 15px;
+    font-size: 20px;
+    line-height: 1.55;
+  }
+  .options {
+    display: grid;
+    gap: 8px;
+  }
+  .option {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 11px;
+    align-items: center;
+    min-height: 52px;
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #fff;
+    text-align: left;
+    cursor: pointer;
+  }
+  .option:hover { border-color: #9ab5a7; }
+  .option .letter {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border-radius: 5px;
+    background: #f1f3ef;
+    color: #506058;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .option.is-selected {
+    border-color: var(--green);
+    background: var(--green-soft);
+  }
+  .option.is-selected .letter {
+    background: var(--green);
+    color: #fff;
+  }
+  .option.is-correct {
+    border-color: #73a38a;
+    background: #e5f2ea;
+  }
+  .option.is-wrong {
+    border-color: #c78b7f;
+    background: #f8ebe8;
+  }
+  .feedback {
+    display: none;
+    margin-top: 13px;
+    padding: 12px 14px;
+    border-left: 3px solid var(--green);
+    background: #edf5f0;
+    color: #2b4a3b;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .feedback.is-visible { display: block; }
+  .feedback.wrong {
+    border-left-color: var(--danger);
+    background: #f8ece9;
+    color: #64372f;
+  }
+  .feedback a {
+    color: inherit;
+    font-weight: 700;
+    text-underline-offset: 2px;
+  }
+  .question-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 15px;
+  }
+  .primary-button {
+    border: 1px solid var(--green);
+    background: var(--green);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 650;
+    padding: 0 16px;
+  }
+  .primary-button:disabled {
+    border-color: #c5cdc7;
+    background: #c5cdc7;
+    cursor: not-allowed;
+  }
+  .secondary-button {
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--ink);
+    font-size: 12px;
+    padding: 0 14px;
+  }
+  .ghost-button {
+    min-height: 34px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .apply-brief {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 18px;
+    border: 1px solid var(--line);
+    background: var(--line);
+  }
+  .apply-brief div {
+    min-height: 78px;
+    padding: 12px;
+    background: #f5f3ec;
+  }
+  .apply-brief b,
+  .apply-brief span { display: block; }
+  .apply-brief b { margin-bottom: 5px; font-size: 11px; }
+  .apply-brief span { color: var(--muted); font-size: 11px; line-height: 1.55; }
+  .field-grid {
+    display: grid;
+    grid-template-columns: 160px minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .field {
+    display: grid;
+    gap: 6px;
+    color: #4e5c54;
+    font-size: 11px;
+  }
+  .field input,
+  .field textarea {
+    width: 100%;
+    min-height: 44px;
+    padding: 9px 11px;
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    background: #fff;
+    color: var(--ink);
+    font-size: 13px;
+  }
+  .field textarea {
+    min-height: 112px;
+    resize: vertical;
+    line-height: 1.7;
+  }
+  .check-row {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 9px;
+    align-items: start;
+    margin-top: 10px;
+    color: #4e5c54;
+    font-size: 12px;
+  }
+  .check-row input {
+    width: 18px;
+    height: 18px;
+    margin: 2px 0 0;
+    accent-color: var(--green);
+  }
+  .apply-result {
+    display: none;
+    margin-top: 14px;
+    padding: 13px 14px;
+    border: 1px solid #a9c9b8;
+    background: #e9f4ee;
+    color: #28523e;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .apply-result.is-visible { display: block; }
+  .done-panel {
+    width: min(760px, 100%);
+  }
+  .done-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 22px;
+  }
+  .done-evidence {
+    min-height: 134px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    background: #fffdf9;
+  }
+  .done-evidence i {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    margin-bottom: 12px;
+    border-radius: 50%;
+    background: var(--green-soft);
+    color: var(--green);
+    font-style: normal;
+    font-weight: 700;
+  }
+  .done-evidence b,
+  .done-evidence span { display: block; }
+  .done-evidence b { font-size: 13px; }
+  .done-evidence span { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+  .next-course {
+    margin-top: 15px;
+    padding: 16px;
+    border-left: 3px solid var(--green);
+    background: var(--green-soft);
+  }
+  .next-course small,
+  .next-course b,
+  .next-course span { display: block; }
+  .next-course small { color: var(--green); font-size: 10px; font-weight: 700; }
+  .next-course b { margin-top: 4px; font-size: 16px; }
+  .next-course span { margin-top: 3px; color: #4f655a; font-size: 11px; }
+  .evidence-card {
+    margin-bottom: 18px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .evidence-card:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+  .evidence-card h3 {
+    margin: 0 0 8px;
+    font-size: 12px;
+  }
+  .evidence-card p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.7;
+  }
+  .evidence-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .evidence-list li {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    gap: 7px;
+    align-items: start;
+    color: #556259;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+  .evidence-list i {
+    display: grid;
+    width: 15px;
+    height: 15px;
+    place-items: center;
+    margin-top: 1px;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    color: var(--muted);
+    font-size: 8px;
+    font-style: normal;
+  }
+  .evidence-list li.is-done i {
+    border-color: var(--green);
+    background: var(--green);
+    color: #fff;
+  }
+  .next-bridge {
+    padding: 11px 12px;
+    border: 1px solid #d8c5a9;
+    background: var(--amber-soft);
+    color: #674823;
+    font-size: 11px;
+    line-height: 1.65;
+  }
+  .next-bridge b { display: block; margin-bottom: 3px; }
+  .session-foot {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 12px;
+    align-items: center;
+    min-height: 64px;
+    padding: 9px 16px;
+    border-top: 1px solid var(--line);
+    background: #f7f6f0;
+  }
+  .foot-tools,
+  .foot-next {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .foot-next { justify-content: flex-end; }
+  .foot-progress {
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  .foot-next .primary-button {
+    min-width: 150px;
+    min-height: 42px;
+  }
+  .foot-tools button {
+    display: inline-flex;
+    min-height: 38px;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: #536159;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .foot-tools button:hover {
+    border-color: var(--line);
+    background: #fff;
+  }
+  .notes {
+    width: min(1480px, calc(100% - 36px));
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin: 16px auto 34px;
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: var(--line-strong);
+  }
+  .note {
+    min-height: 110px;
+    padding: 16px;
+    background: rgba(251, 250, 246, .86);
+  }
+  .note b {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .note p {
+    margin: 0;
+    color: #5b6760;
+    font-size: 11px;
+    line-height: 1.65;
+  }
+  .toast {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 20;
+    max-width: 320px;
+    padding: 11px 14px;
+    border: 1px solid #94b7a4;
+    border-radius: 8px;
+    background: #f1f8f4;
+    color: #29513e;
+    box-shadow: var(--shadow);
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition: opacity .16s ease, transform .16s ease;
+  }
+  .toast.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  @media (max-width: 1100px) {
+    .session-body { grid-template-columns: 210px minmax(0, 1fr); }
+    .evidence { display: none; }
+  }
+  @media (max-width: 900px) {
+    body { background: var(--paper); }
+    .prototype-head {
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px 8px;
+      display: block;
+      border-bottom: 1px solid var(--line);
+      background: #f6f5ef;
+    }
+    .prototype-head h1 { font-size: 17px; line-height: 1.25; }
+    .prototype-head p { display: none; }
+    .proto-switch {
+      position: sticky;
+      top: 0;
+      z-index: 12;
+      width: 100%;
+      margin-top: 8px;
+      overflow-x: auto;
+      background: rgba(246, 245, 239, .96);
+      box-shadow: none;
+    }
+    .proto-switch button { flex: 1 0 auto; min-height: 36px; }
+    .session {
+      width: 100%;
+      height: calc(100vh - 98px);
+      height: calc(100dvh - 98px);
+      min-height: 0;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      overflow: hidden;
+    }
+    .session-top {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      min-height: 58px;
+      gap: 9px;
+      padding: 8px 10px;
+    }
+    .session-title { gap: 8px; }
+    .session-title .back { width: 40px; height: 40px; }
+    .crumb span:first-child,
+    .crumb span:nth-child(2) { display: none; }
+    .crumb { font-size: 11px; }
+    .crumb b { font-size: 12px; }
+    .session-actions .text-button span { display: none; }
+    .session-actions .text-button {
+      width: 40px;
+      padding: 0;
+    }
+    .session-actions .text-button:nth-child(2) { display: none; }
+    .journey-band {
+      display: block;
+      padding: 7px 10px;
+      overflow-x: auto;
+    }
+    .journey { min-width: 430px; }
+    .journey-copy { background: #f6f5ef; }
+    .journey-stage { min-height: 38px; padding-right: 10px; }
+    .journey-copy small { display: none; }
+    .session-meta { display: none; }
+    .session-body { display: block; min-height: 0; overflow: hidden; }
+    .spine,
+    .evidence { display: none; }
+    .workspace {
+      height: 100%;
+      min-height: 0;
+      padding: 22px 16px 30px;
+    }
+    .workspace h2 { font-size: 26px; }
+    .deck { font-size: 14px; }
+    .reading-block p { font-size: 14px; }
+    .capacity-visual {
+      grid-template-columns: 1fr;
+      gap: 8px;
+      padding: 13px;
+    }
+    .capacity-arrow { transform: rotate(90deg); }
+    .bridge { display: block; }
+    .bridge .secondary-button { margin-top: 12px; }
+    .task-head { align-items: flex-start; }
+    .question-card,
+    .apply-card { padding: 16px; }
+    .question-card h3,
+    .apply-card h3 { font-size: 17px; }
+    .apply-brief { grid-template-columns: 1fr; }
+    .field-grid { grid-template-columns: 1fr; }
+    .done-grid { grid-template-columns: 1fr; }
+    .done-evidence { min-height: auto; }
+    .session-foot {
+      position: relative;
+      z-index: 10;
+      grid-template-columns: minmax(0, 1fr) auto;
+      min-height: 64px;
+      padding: 8px 10px max(8px, env(safe-area-inset-bottom));
+      box-shadow: 0 -10px 30px rgba(29, 42, 35, .09);
+    }
+    .foot-progress { display: none; }
+    .foot-tools { gap: 2px; }
+    .foot-tools button { width: 42px; min-height: 44px; padding: 0; justify-content: center; }
+    .foot-tools button span { display: none; }
+    .foot-next .secondary-button { display: none; }
+    .foot-next .primary-button { min-width: 132px; min-height: 46px; }
+    .notes { display: none; }
+    .toast { right: 12px; bottom: 78px; left: 12px; max-width: none; }
+  }
+  @media (max-width: 380px) {
+    .session {
+      height: calc(100vh - 118px);
+      height: calc(100dvh - 118px);
+    }
+    .session-top { padding-inline: 8px; gap: 6px; }
+    .session-actions .text-button { display: none; }
+    .workspace { padding-inline: 13px; }
+    .workspace h2 { font-size: 24px; }
+    .journey-copy b { font-size: 11px; }
+    .option { grid-template-columns: 28px minmax(0, 1fr); padding-inline: 9px; }
+  }
+</style>
+</head>
+<body>
+<header class="prototype-head">
+  <div>
+    <h1>学习、练习、实践：一条课脉，三种工作面</h1>
+    <p>外框、课程定位、本课结构和下一步始终不动，只替换中央工作面。点下面切换阶段，或直接点课脉和底部按钮体验连续推进。</p>
+  </div>
+  <nav class="proto-switch" aria-label="原型阶段快捷切换">
+    <button type="button" data-stage-jump="learn" aria-pressed="true">学习</button>
+    <button type="button" data-stage-jump="practice" aria-pressed="false">练习</button>
+    <button type="button" data-stage-jump="apply" aria-pressed="false">实践</button>
+    <button type="button" data-stage-jump="done" aria-pressed="false">结课</button>
+  </nav>
+</header>
+
+<main class="session" aria-label="连续学习会话原型">
+  <header class="session-top">
+    <div class="session-title">
+      <button class="back" type="button" data-action="back" aria-label="返回教材">←</button>
+      <div class="crumb" aria-label="课程位置">
+        <span>编程</span><span>/</span><span>Java 语言核心</span><span>/</span><b>3.2 HashMap 的哈希与扩容</b>
+      </div>
+    </div>
+    <div></div>
+    <div class="session-actions">
+      <button class="text-button" type="button" data-action="speech">◉ <span>朗读</span></button>
+      <button class="text-button" type="button" data-action="notes">▤ <span>笔记</span></button>
+      <button class="icon-button" type="button" data-action="exit" aria-label="退出本课">×</button>
+    </div>
+  </header>
+
+  <div class="journey-band">
+    <nav class="journey" aria-label="本课阶段">
+      <button class="journey-stage is-current" type="button" data-stage-jump="learn" data-stage="learn">
+        <span class="journey-dot">1</span>
+        <span class="journey-copy"><b>学习</b><small id="learn-progress">3 / 5 步</small></span>
+      </button>
+      <button class="journey-stage" type="button" data-stage-jump="practice" data-stage="practice">
+        <span class="journey-dot">2</span>
+        <span class="journey-copy"><b>练习</b><small id="practice-progress">0 / 1 题</small></span>
+      </button>
+      <button class="journey-stage" type="button" data-stage-jump="apply" data-stage="apply">
+        <span class="journey-dot">3</span>
+        <span class="journey-copy"><b>实践</b><small id="apply-progress">1 个任务</small></span>
+      </button>
+    </nav>
+    <div class="session-meta"><i></i><span>已连续学习 18 分钟 · 自动保存</span></div>
+  </div>
+
+  <div class="session-body">
+    <aside class="spine" aria-label="本课结构">
+      <span class="pane-eyebrow">本课结构</span>
+      <div class="spine-head">
+        <b>HashMap 的扩容</b>
+        <small>约 23 分钟 · 学习证据会自动写入本课</small>
+      </div>
+      <div class="spine-group">
+        <div class="spine-group-title">学习 <span id="spine-learn-count">3 / 5</span></div>
+        <button class="spine-item is-done" type="button" data-stage-jump="learn">
+          <i class="node">✓</i><span>为什么需要扩容</span><small>完成</small>
+        </button>
+        <button class="spine-item is-done" type="button" data-stage-jump="learn">
+          <i class="node">✓</i><span>threshold 是什么</span><small>完成</small>
+        </button>
+        <button class="spine-item is-current" type="button" data-stage-jump="learn" data-spine-current="learn">
+          <i class="node">3</i><span>扩容时的 rehash</span><small>当前</small>
+        </button>
+        <button class="spine-item" type="button" data-stage-jump="learn">
+          <i class="node">4</i><span>源码验证</span><small>未开始</small>
+        </button>
+        <button class="spine-item" type="button" data-stage-jump="learn">
+          <i class="node">5</i><span>本步小结</span><small>未开始</small>
+        </button>
+      </div>
+      <div class="spine-group">
+        <div class="spine-group-title">练习 <span id="spine-practice-count">0 / 1</span></div>
+        <button class="spine-item" type="button" data-stage-jump="practice" data-spine-current="practice">
+          <i class="node">1</i><span>扩容触发条件</span><small>选择</small>
+        </button>
+      </div>
+      <div class="spine-group">
+        <div class="spine-group-title">实践 <span id="spine-apply-count">未完成</span></div>
+        <button class="spine-item" type="button" data-stage-jump="apply" data-spine-current="apply">
+          <i class="node">用</i><span>为缓存选择容量</span><small>1 个产出</small>
+        </button>
+      </div>
+    </aside>
+
+    <section class="workspace" id="workspace" tabindex="-1" aria-live="polite">
+      <article class="stage-panel" data-panel="learn">
+        <div class="stage-kicker">学习 · 第 3 / 5 步</div>
+        <h2>扩容时，旧数据为什么要重新排？</h2>
+        <p class="deck">当元素数量超过阈值，HashMap 会把数组容量翻倍，并重新计算旧元素在新数组中的落点。这个动作叫 rehash，它保证了容量变化后仍能快速定位。</p>
+
+        <section class="reading-block" id="threshold-anchor">
+          <h3>先抓住 threshold</h3>
+          <p><code>threshold = capacity × load factor</code>。默认容量 16、负载因子 0.75，因此阈值为 12；插入第 13 个元素时触发扩容。</p>
+          <p>扩容后，元素的 hash 没有变，但用于定位的数组长度变了，所以旧元素需要重新分配位置。并不是“复制过去就完事”。</p>
+        </section>
+
+        <div class="capacity-visual" aria-label="容量从 16 扩容到 32 的示意">
+          <div class="capacity-box">
+            <b>容量 16 · 阈值 12</b>
+            <div class="slots">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i class="full"></i><i class="full"></i><i class="full"></i><i class="full"></i><i></i><i></i><i></i><i></i>
+            </div>
+            <small>第 13 个元素插入前，准备扩容</small>
+          </div>
+          <div class="capacity-arrow">→</div>
+          <div class="capacity-box">
+            <b>容量 32 · rehash 后</b>
+            <div class="slots">
+              <i class="full"></i><i></i><i class="full"></i><i></i><i class="full"></i><i></i><i class="full"></i><i></i>
+              <i class="full"></i><i></i><i class="full"></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <small>旧元素在新数组里重新落位</small>
+          </div>
+        </div>
+
+        <div class="memory-line"><b>本步要记住：</b>扩容不是单纯增加空间；它同时改变了落点计算，所以必须 rehash。</div>
+        <div class="source-note"><span>来源：OpenJDK HashMap 文档（开放许可）</span><a href="#" data-action="source">查看出处</a><span>常见错误：把容量当成阈值</span></div>
+
+        <div class="bridge">
+          <div class="bridge-copy">
+            <b>下一步：把这个判断变成自己的</b>
+            <p>现在去做第 1 题。答错会回到本页的 threshold 段落，不会把你甩到另一个页面。</p>
+          </div>
+          <button class="secondary-button" type="button" data-stage-jump="practice">去做第 1 题 →</button>
+        </div>
+      </article>
+
+      <article class="stage-panel" data-panel="practice" hidden>
+        <div class="task-head">
+          <div class="stage-kicker">练习 · 第 1 / 1 题</div>
+          <span class="task-badge">即时反馈 · 可回原文</span>
+        </div>
+        <h2>第几个元素插入时会触发第一次扩容？</h2>
+        <p class="deck">先自己判断，再提交。答错不会扣掉进度，只会把这道题送进今日复习。</p>
+
+        <section class="question-card" id="practice-card">
+          <h3>初始容量 16、负载因子 0.75，第几个元素插入时触发第一次扩容？</h3>
+          <div class="options" role="radiogroup" aria-label="选择一个答案">
+            <button class="option" type="button" role="radio" aria-checked="false" data-answer="11">
+              <span class="letter">A</span><span>第 11 个</span>
+            </button>
+            <button class="option" type="button" role="radio" aria-checked="false" data-answer="12">
+              <span class="letter">B</span><span>第 12 个</span>
+            </button>
+            <button class="option" type="button" role="radio" aria-checked="false" data-answer="13">
+              <span class="letter">C</span><span>第 13 个</span>
+            </button>
+          </div>
+          <div class="feedback" id="practice-feedback" role="status">
+            <b>判断正确。</b> 12 是阈值，达到阈值后还要看下一次写入；第 13 个元素插入时才会先扩容再放入。
+          </div>
+          <div class="question-actions">
+            <button class="ghost-button" type="button" data-action="hint">看提示</button>
+            <button class="primary-button" type="button" id="submit-practice" disabled>提交判断</button>
+          </div>
+        </section>
+
+        <div class="bridge">
+          <div class="bridge-copy">
+            <b>练习与阅读共用一个知识点</b>
+            <p>如果刚才的判断不稳，直接回看 <code>threshold = 16 × 0.75 = 12</code>，再回来提交。</p>
+          </div>
+          <button class="secondary-button" type="button" data-action="back-to-anchor">回到原文段落 ↑</button>
+        </div>
+      </article>
+
+      <article class="stage-panel" data-panel="apply" hidden>
+        <div class="stage-kicker">实践 · 1 个可验收产出</div>
+        <h2>为 10 万条缓存选择初始容量</h2>
+        <p class="deck">把刚才的机制用到一个真实取舍里。这里不要求唯一答案，要求你能说明容量、内存与 rehash 代价之间的关系。</p>
+
+        <div class="apply-brief">
+          <div><b>场景</b><span>缓存预计稳定保存 10 万条记录，读多写少。</span></div>
+          <div><b>产出</b><span>一个初始容量、一个负载因子、一条取舍理由。</span></div>
+          <div><b>验收</b><span>能解释为什么不做刚刚好，也不无限放大。</span></div>
+        </div>
+
+        <section class="apply-card">
+          <h3>写下你的选择</h3>
+          <div class="field-grid">
+            <label class="field">初始容量
+              <input id="capacity-input" type="text" inputmode="numeric" placeholder="例如 131072">
+            </label>
+            <label class="field">负载因子
+              <input id="factor-input" type="text" inputmode="decimal" placeholder="例如 0.75">
+            </label>
+          </div>
+          <label class="field" style="margin-top:12px">理由：容量、内存与 rehash 代价如何取舍？
+            <textarea id="reason-input" placeholder="预计稳定保存 10 万条，所以选择略大于 10 万的 2 的幂，避免稳定状态反复扩容；0.75 在空间与冲突之间比较平衡。"></textarea>
+          </label>
+          <label class="check-row"><input type="checkbox" id="check-1"><span>我说明了为什么容量要略大于预计数据量。</span></label>
+          <label class="check-row"><input type="checkbox" id="check-2"><span>我说明了负载因子对冲突和空间的影响。</span></label>
+          <div class="apply-result" id="apply-result" role="status">本课证据已形成：你选择了容量 <b id="result-capacity">—</b>、负载因子 <b id="result-factor">—</b>，并记录了取舍理由。</div>
+          <div class="question-actions">
+            <button class="ghost-button" type="button" data-stage-jump="practice">回看练习</button>
+            <button class="primary-button" type="button" id="submit-apply">提交实践产出</button>
+          </div>
+        </section>
+      </article>
+
+      <article class="stage-panel done-panel" data-panel="done" hidden>
+        <div class="stage-kicker">本课结课 · 3 类证据已收齐</div>
+        <h2>你已经能从机制走到取舍</h2>
+        <p class="deck">本课不会用“点过完成”冒充掌握。下面三件事分别对应理解、判断和应用，下一课会直接建立在这条结论上。</p>
+        <div class="done-grid">
+          <div class="done-evidence"><i>✓</i><b>理解了</b><span>能解释容量变化后为什么必须 rehash。</span></div>
+          <div class="done-evidence"><i>✓</i><b>判断对了</b><span>知道阈值 12，第 13 个元素触发扩容。</span></div>
+          <div class="done-evidence"><i>✓</i><b>做出来了</b><span>为 10 万条缓存写下了容量与负载因子取舍。</span></div>
+        </div>
+        <div class="next-course">
+          <small>下一课 · 同一阶段</small>
+          <b>3.3 避免不必要的扩容</b>
+          <span>从本课结论继续：既然扩容要 rehash，怎样在创建时就选对容量？</span>
+        </div>
+        <div class="bridge">
+          <div class="bridge-copy">
+            <b>课程衔接不再是一张孤立的课程卡</b>
+            <p>下一课会带入本课证据与错题；如果本章练习还没完成，结课主按钮会进入章末练习，而不是跳过章节验收。</p>
+          </div>
+          <button class="secondary-button" type="button" data-action="review">去今日复习</button>
+        </div>
+      </article>
+    </section>
+
+    <aside class="evidence" aria-label="本步目标与证据">
+      <span class="pane-eyebrow">当前任务</span>
+      <section class="evidence-card">
+        <h3 id="goal-title">本步目标</h3>
+        <p id="goal-copy">解释扩容时为什么必须重新计算旧元素位置，而不只是复制到更大的数组。</p>
+      </section>
+      <section class="evidence-card">
+        <h3>完成证据</h3>
+        <ul class="evidence-list">
+          <li class="is-done"><i>✓</i><span>能说出 threshold 的计算方式。</span></li>
+          <li class="is-done"><i>✓</i><span>知道第 13 个元素会触发扩容。</span></li>
+          <li id="evidence-apply"><i></i><span>能结合缓存场景写出容量取舍理由。</span></li>
+        </ul>
+      </section>
+      <section class="evidence-card">
+        <h3>下一步桥接</h3>
+        <div class="next-bridge">
+          <b id="bridge-title">学完就去判断</b>
+          <span id="bridge-copy">用一道题检查你是否真的理解阈值，而不是记住数字。</span>
+        </div>
+      </section>
+      <section class="evidence-card">
+        <h3>学习记录</h3>
+        <p>已用 18 分钟 · 自动保存到本课<br>错题会进入今日复习，资料出处仅使用开放许可内容。</p>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="session-foot">
+    <div class="foot-tools">
+      <button type="button" data-action="speech">◉ <span>朗读本步</span></button>
+      <button type="button" data-action="notes">▤ <span>记笔记</span></button>
+    </div>
+    <div class="foot-progress" id="foot-progress">学习第 3 / 5 步 · 本课共 3 个阶段</div>
+    <div class="foot-next">
+      <button class="secondary-button" type="button" id="previous-step">上一步</button>
+      <button class="primary-button" type="button" id="next-step">下一步：扩容时的 rehash</button>
+    </div>
+  </footer>
+</main>
+
+<section class="notes" aria-label="原型设计说明">
+  <div class="note"><b>为什么不再跳</b><p>顶栏、课脉、左栏、右栏、底部操作条在三阶段中保持原位。切换只替换中央工作面，外层不重建。</p></div>
+  <div class="note"><b>为什么像同一产品</b><p>阅读、题目、实践任务共用同一背景、字号、按钮和状态表达。科目差异只通过 accent、案例和图标呈现。</p></div>
+  <div class="note"><b>课程怎么接</b><p>每阶段结束都有桥接句；练习错题可回原文；实践产出写回本课证据；结课后再进入下一知识点或章末验收。</p></div>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite">已保存到本课</div>
+
+<script>
+  (function () {
+    const stageOrder = ['learn', 'practice', 'apply', 'done'];
+    const stageLabels = { learn: '学习', practice: '练习', apply: '实践', done: '结课' };
+    const panelMap = new Map(
+      [...document.querySelectorAll('[data-panel]')].map((panel) => [panel.dataset.panel, panel])
+    );
+    const jumpTargets = [...document.querySelectorAll('[data-stage-jump]')];
+    const journeyStages = [...document.querySelectorAll('.journey-stage')];
+    const workspace = document.getElementById('workspace');
+    const nextButton = document.getElementById('next-step');
+    const previousButton = document.getElementById('previous-step');
+    const footProgress = document.getElementById('foot-progress');
+    const toast = document.getElementById('toast');
+    let currentStage = 'learn';
+    let selectedAnswer = null;
+    let practiceSubmitted = false;
+    let practiceCorrect = false;
+    let applySubmitted = false;
+    let toastTimer = 0;
+
+    const stageContent = {
+      learn: {
+        progress: '学习第 3 / 5 步 · 本课共 3 个阶段',
+        next: '下一步：扩容时的 rehash',
+        goal: '解释扩容时为什么必须重新计算旧元素位置，而不只是复制到更大的数组。',
+        bridgeTitle: '学完就去判断',
+        bridgeCopy: '用一道题检查你是否真的理解阈值，而不是记住数字。'
+      },
+      practice: {
+        progress: '练习第 1 / 1 题 · 本课共 3 个阶段',
+        next: practiceSubmitted ? '下一步：带着结论去实践' : '先提交判断',
+        goal: '用一次独立判断确认：阈值与触发扩容的元素序号不是同一个概念。',
+        bridgeTitle: '用判断换一个应用',
+        bridgeCopy: '如果你能判断扩容时机，下一步就把容量取舍写进一个缓存场景。'
+      },
+      apply: {
+        progress: '实践第 1 / 1 项 · 本课共 3 个阶段',
+        next: applySubmitted ? '收下本课证据' : '提交实践产出',
+        goal: '把扩容机制用于一个缓存容量选择，并写清内存与 rehash 代价的取舍。',
+        bridgeTitle: '把知识变成产出',
+        bridgeCopy: '提交后，课程会记录你做了什么，而不只是记录你看过什么。'
+      },
+      done: {
+        progress: '本课已完成 · 3 类证据已收齐',
+        next: '进入下一课：3.3 避免不必要的扩容',
+        goal: '带着本课证据进入下一知识点，并保留错题与产出的上下文。',
+        bridgeTitle: '下一课已接上',
+        bridgeCopy: '从当前结论继续，不需要回到目录重新寻找位置。'
+      }
+    };
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('is-visible');
+      clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), 1900);
+    }
+
+    function setStage(stage, options = {}) {
+      if (!stageOrder.includes(stage)) return;
+      currentStage = stage;
+      document.querySelector('.session').dataset.stage = stage;
+      panelMap.forEach((panel, key) => {
+        panel.hidden = key !== stage;
+      });
+      journeyStages.forEach((button) => {
+        const key = button.dataset.stage;
+        const keyIndex = stageOrder.indexOf(key);
+        const currentIndex = stageOrder.indexOf(stage);
+        button.classList.toggle('is-current', key === stage);
+        button.classList.toggle('is-done', keyIndex < currentIndex || (
+          key === 'learn' && stage === 'learn'
+        ));
+        button.setAttribute('aria-current', key === stage ? 'step' : 'false');
+      });
+      jumpTargets.forEach((button) => {
+        if (button.matches('[data-stage-jump]')) {
+          button.setAttribute('aria-pressed', String(button.dataset.stageJump === stage));
+        }
+      });
+      const content = stageContent[stage];
+      footProgress.textContent = content.progress;
+      nextButton.textContent = content.next;
+      previousButton.disabled = stage === 'learn' || stage === 'done';
+      previousButton.style.opacity = previousButton.disabled ? '.48' : '1';
+      document.getElementById('goal-copy').textContent = content.goal;
+      document.getElementById('bridge-title').textContent = content.bridgeTitle;
+      document.getElementById('bridge-copy').textContent = content.bridgeCopy;
+      if (stage === 'practice') {
+        updatePracticeStage();
+      }
+      if (stage === 'apply') {
+        updateApplyStage();
+      }
+      document.querySelectorAll('[data-spine-current]').forEach((item) => {
+        item.classList.toggle(
+          'is-current',
+          item.dataset.spineCurrent === stage
+            || (stage === 'done' && item.dataset.spineCurrent === 'apply')
+        );
+      });
+      const learningSpine = document.querySelector('[data-spine-current="learn"] small');
+      const practiceSpine = document.querySelector('[data-spine-current="practice"] small');
+      const applySpine = document.querySelector('[data-spine-current="apply"] small');
+      if (learningSpine) learningSpine.textContent = stage === 'learn' ? '当前' : '已学';
+      if (practiceSpine) {
+        practiceSpine.textContent = stage === 'practice'
+          ? '当前'
+          : practiceSubmitted
+            ? '完成'
+            : '选择';
+      }
+      if (applySpine) applySpine.textContent = stage === 'apply' ? '当前' : applySubmitted ? '完成' : '1 个产出';
+      if (stage === 'done') {
+        document.querySelectorAll('[data-spine-current]').forEach((item) => {
+          item.classList.remove('is-current');
+          item.classList.add('is-done');
+          item.querySelector('.node').textContent = '✓';
+          const status = item.querySelector('small');
+          if (status) status.textContent = '完成';
+        });
+      }
+      if (!options.silent) {
+        workspace.focus({ preventScroll: true });
+        workspace.scrollTop = 0;
+      }
+    }
+
+    function updatePracticeStage() {
+      const content = stageContent.practice;
+      footProgress.textContent = content.progress;
+      nextButton.textContent = practiceSubmitted ? '下一步：带着结论去实践' : '先提交判断';
+      nextButton.disabled = !practiceSubmitted;
+    }
+
+    function updateApplyStage() {
+      const content = stageContent.apply;
+      footProgress.textContent = content.progress;
+      nextButton.textContent = applySubmitted ? '收下本课证据' : '提交实践产出';
+      nextButton.disabled = !applySubmitted;
+    }
+
+    function nextStage() {
+      if (currentStage === 'learn') {
+        setStage('practice');
+        showToast('已进入练习 · 第 1 题');
+        return;
+      }
+      if (currentStage === 'practice') {
+        if (!practiceSubmitted) {
+          document.getElementById('practice-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          showToast('先提交这道判断');
+          return;
+        }
+        setStage('apply');
+        showToast('已进入实践 · 同一个知识点');
+        return;
+      }
+      if (currentStage === 'apply') {
+        if (!applySubmitted) {
+          document.getElementById('submit-apply').focus();
+          showToast('先提交实践产出');
+          return;
+        }
+        setStage('done');
+        showToast('本课证据已收齐');
+        return;
+      }
+      showToast('原型结束：正式实现会按课程顺序进入下一知识点');
+    }
+
+    function previousStage() {
+      const index = stageOrder.indexOf(currentStage);
+      if (index <= 0) return;
+      if (currentStage === 'done') return;
+      setStage(stageOrder[index - 1]);
+    }
+
+    jumpTargets.forEach((button) => {
+      button.addEventListener('click', () => {
+        const stage = button.dataset.stageJump;
+        if (!stage) return;
+        setStage(stage);
+      });
+    });
+    nextButton.addEventListener('click', nextStage);
+    previousButton.addEventListener('click', previousStage);
+
+    document.querySelectorAll('.option').forEach((option) => {
+      option.addEventListener('click', () => {
+        if (practiceSubmitted) return;
+        selectedAnswer = Number(option.dataset.answer);
+        document.querySelectorAll('.option').forEach((item) => {
+          const selected = item === option;
+          item.classList.toggle('is-selected', selected);
+          item.setAttribute('aria-checked', String(selected));
+        });
+        document.getElementById('submit-practice').disabled = false;
+      });
+    });
+
+    document.getElementById('submit-practice').addEventListener('click', () => {
+      if (selectedAnswer == null || practiceSubmitted) return;
+      practiceSubmitted = true;
+      practiceCorrect = selectedAnswer === 13;
+      const feedback = document.getElementById('practice-feedback');
+      feedback.classList.add('is-visible');
+      feedback.classList.toggle('wrong', !practiceCorrect);
+      if (practiceCorrect) {
+        feedback.innerHTML = '<b>判断正确。</b> 12 是阈值，达到阈值后还要看下一次写入；第 13 个元素插入时才会先扩容再放入。';
+        document.querySelector('.option[data-answer="13"]').classList.add('is-correct');
+        document.getElementById('practice-progress').textContent = '1 / 1 题';
+        document.getElementById('spine-practice-count').textContent = '1 / 1';
+        showToast('答对了 · 已记入本课证据');
+      } else {
+        feedback.innerHTML = '<b>还差一步。</b> 先看阈值计算公式：16 × 0.75 = 12。阈值表示“最多容纳 12 个”，因此第 13 个元素进入前要扩容。<a href="#threshold-anchor" data-inline-anchor>回到原文段落</a>';
+        document.querySelector(`.option[data-answer="${selectedAnswer}"]`).classList.add('is-wrong');
+        document.querySelector('.option[data-answer="13"]').classList.add('is-correct');
+        showToast('已标出错题 · 可回原文查看');
+      }
+      document.getElementById('submit-practice').disabled = true;
+      updatePracticeStage();
+    });
+
+    document.getElementById('use-hint-placeholder')?.addEventListener('click', () => {});
+    document.querySelectorAll('[data-action="hint"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        showToast('提示：先把容量乘以负载因子，再想“达到阈值”与“第几次写入”的区别');
+      });
+    });
+    document.querySelectorAll('[data-action="back-to-anchor"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        setStage('learn', { silent: true });
+        requestAnimationFrame(() => {
+          document.getElementById('threshold-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          document.getElementById('threshold-anchor')?.focus?.();
+        });
+        showToast('已回到 threshold 段落');
+      });
+    });
+
+    document.getElementById('submit-apply').addEventListener('click', () => {
+      const capacity = document.getElementById('capacity-input').value.trim();
+      const factor = document.getElementById('factor-input').value.trim();
+      const reason = document.getElementById('reason-input').value.trim();
+      const check1 = document.getElementById('check-1').checked;
+      const check2 = document.getElementById('check-2').checked;
+      if (!capacity || !factor || !reason || !check1 || !check2) {
+        showToast('请补全容量、负载因子、理由和两项验收');
+        return;
+      }
+      applySubmitted = true;
+      document.getElementById('apply-result').classList.add('is-visible');
+      document.getElementById('result-capacity').textContent = capacity;
+      document.getElementById('result-factor').textContent = factor;
+      document.getElementById('evidence-apply').classList.add('is-done');
+      document.getElementById('evidence-apply').querySelector('i').textContent = '✓';
+      document.getElementById('apply-progress').textContent = '已完成';
+      document.getElementById('spine-apply-count').textContent = '完成';
+      document.getElementById('submit-apply').disabled = true;
+      updateApplyStage();
+      showToast('实践产出已写回本课证据');
+    });
+
+    document.querySelectorAll('[data-action="speech"]').forEach((button) => {
+      button.addEventListener('click', () => showToast('朗读入口会常驻，并在失败时显示具体原因'));
+    });
+    document.querySelectorAll('[data-action="notes"]').forEach((button) => {
+      button.addEventListener('click', () => showToast('笔记在当前知识点内打开，不打断阶段'));
+    });
+    document.querySelectorAll('[data-action="source"]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        showToast('来源将作为当前知识点的证据展开');
+      });
+    });
+    document.querySelectorAll('[data-action="review"]').forEach((button) => {
+      button.addEventListener('click', () => showToast('进入今日复习，保留本课上下文'));
+    });
+    document.querySelectorAll('[data-action="back"], [data-action="exit"]').forEach((button) => {
+      button.addEventListener('click', () => showToast('退出后回到原教材节点，并保留阶段、草稿和滚动位置'));
+    });
+    document.addEventListener('click', (event) => {
+      const anchor = event.target.closest('[data-inline-anchor]');
+      if (!anchor) return;
+      event.preventDefault();
+      setStage('learn', { silent: true });
+      requestAnimationFrame(() => {
+        document.getElementById('threshold-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+
+    const initialStage = new URLSearchParams(location.search).get('stage');
+    if (initialStage && stageOrder.includes(initialStage)) {
+      setStage(initialStage, { silent: true });
+    } else {
+      setStage('learn', { silent: true });
+    }
+    window.protoSetStage = setStage;
+  })();
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { LEARNING_V2_RAW_CATALOG } from './v2-catalog.js';
 import { LEARNING_V2_CURATED_PLANS } from './v2-curated/index.js';
 import { SUBJECT_EXPERT_NOTES } from './v2-curated/expert-notes.js';
+import { LEARNING_V2_CODE_LABS } from './learning-code-labs.js';
 import { ALGORITHM_SUBJECT } from './algorithms.js';
 import { MEDICINE_SUBJECT } from './medicine.js';
 import { PROGRAMMING_SUBJECT } from './v2-curated/programming/catalog.js';
@@ -13,10 +14,12 @@ import type {
   LearningV2LibraryEntry,
   LearningV2LessonStep,
   LearningV2PageKey,
+  LearningV2Practice,
   LearningV2Studio,
   LearningV2Subject,
   LearningV2SubjectView,
 } from './v2-types.js';
+import type { LearningSubjectContentPack } from './learning-content-pack.js';
 
 export {
   JAVA_ENTERPRISE_COURSE,
@@ -37,6 +40,7 @@ export {
   PROGRAMMING_PROJECTS,
   PROGRAMMING_PROJECT_COURSE_SEEDS,
 } from './v2-curated/programming/projects.js';
+export { PROGRAMMING_OTHER_COURSE_SEEDS } from './v2-curated/programming/programs.js';
 export type {
   ProgrammingProject,
   ProgrammingProjectKind,
@@ -125,11 +129,84 @@ const SUBJECT_VIEWS: readonly LearningV2SubjectView[] = [
   courses: flattenCourses(subject),
 }));
 
-const CATALOG = {
+const BUILTIN_CATALOG = {
   pages: LEARNING_V2_PAGES,
   subjects: SUBJECT_VIEWS,
   courses: SUBJECT_VIEWS.flatMap((subject) => subject.courses),
 } as const;
+
+const REGISTERED_CONTENT_PACKS = new Map<string, LearningSubjectContentPack>();
+let contentPackRevision = 0;
+let distributedSubjectKeys: ReadonlySet<string> | null = null;
+
+function packSubjectView(pack: LearningSubjectContentPack): LearningV2SubjectView {
+  return {
+    ...pack.subject,
+    courses: pack.courses.map((course) => ({
+      id: course.id,
+      name: course.name,
+      meta: `${course.trackName} · ${course.plan.steps.length} 步`,
+      subjectKey: pack.subject.key,
+      subjectName: pack.subject.name,
+      trackName: course.trackName,
+    })),
+  };
+}
+
+function effectiveSubjects(): readonly LearningV2SubjectView[] {
+  const builtinWithOverrides = SUBJECT_VIEWS
+    .filter((subject) => (
+      !distributedSubjectKeys
+      || distributedSubjectKeys.has(subject.key)
+      || REGISTERED_CONTENT_PACKS.has(subject.key)
+    ))
+    .map((subject) => {
+    const pack = REGISTERED_CONTENT_PACKS.get(subject.key);
+    return pack ? packSubjectView(pack) : subject;
+  });
+  const builtinKeys = new Set(SUBJECT_VIEWS.map((subject) => subject.key));
+  const importedOnly = [...REGISTERED_CONTENT_PACKS.values()]
+    .filter((pack) => !builtinKeys.has(pack.subject.key))
+    .map(packSubjectView);
+  return [...builtinWithOverrides, ...importedOnly];
+}
+
+export function registerLearningContentPacks(
+  packs: readonly LearningSubjectContentPack[],
+): void {
+  let changed = false;
+  for (const pack of packs) {
+    if (pack.distribution === 'excluded') continue;
+    REGISTERED_CONTENT_PACKS.set(pack.subject.key, pack);
+    changed = true;
+  }
+  if (changed) contentPackRevision += 1;
+}
+
+export function configureLearningContentDistribution(
+  bundledSubjectKeys: readonly string[] | null,
+): void {
+  distributedSubjectKeys = bundledSubjectKeys ? new Set(bundledSubjectKeys) : null;
+  contentPackRevision += 1;
+}
+
+export function unregisterLearningContentPack(subjectKey: string): void {
+  if (REGISTERED_CONTENT_PACKS.delete(subjectKey)) contentPackRevision += 1;
+}
+
+export function clearLearningContentPacks(): void {
+  if (REGISTERED_CONTENT_PACKS.size === 0) return;
+  REGISTERED_CONTENT_PACKS.clear();
+  contentPackRevision += 1;
+}
+
+export function getRegisteredLearningContentPacks(): readonly LearningSubjectContentPack[] {
+  return [...REGISTERED_CONTENT_PACKS.values()];
+}
+
+export function getLearningContentPackRevision(): number {
+  return contentPackRevision;
+}
 
 const STUDIO_TASKS: Record<string, (courseName: string) => string> = {
   party: (courseName) => `围绕“${courseName}”选择材料，列出可验证事件、证据与因果链。`,
@@ -327,16 +404,29 @@ function generatedSubjectSteps(
   }
 }
 
-export function getLearningV2Catalog(): typeof CATALOG {
-  return CATALOG;
+export function getLearningV2Catalog(): {
+  readonly pages: typeof LEARNING_V2_PAGES;
+  readonly subjects: readonly LearningV2SubjectView[];
+  readonly courses: readonly LearningV2CourseRef[];
+} {
+  const currentSubjects = effectiveSubjects();
+  return {
+    pages: LEARNING_V2_PAGES,
+    subjects: currentSubjects,
+    courses: currentSubjects.flatMap((subject) => subject.courses),
+  };
 }
 
 export function getLearningV2Subjects(): readonly LearningV2SubjectView[] {
+  return effectiveSubjects();
+}
+
+export function getLearningV2BuiltinSubjects(): readonly LearningV2SubjectView[] {
   return SUBJECT_VIEWS;
 }
 
 export function getLearningV2Subject(key: string): LearningV2SubjectView | undefined {
-  return SUBJECT_VIEWS.find((subject) => subject.key === key);
+  return effectiveSubjects().find((subject) => subject.key === key);
 }
 
 export function isLearningV2CourseReady(subjectKey: string, courseName: string): boolean {
@@ -379,22 +469,61 @@ function enrichReviewedSteps(
     const finalStep = index === plan.steps.length - 1;
     const independentStep = index === plan.steps.length - 2;
     const guidedStep = index === 2;
+    const lead = step.body
+      .trim()
+      .split(/[。！？]/)
+      .find((segment) => segment.trim().length > 0)
+      ?.trim()
+      || step.note
+      || step.title;
+    const excerpt = lead.length > 96 ? `${lead.slice(0, 96)}…` : lead;
     const objective = step.objective
-      ?? (step.note.length >= 12 ? step.note : `掌握${step.note}，并能说明其适用边界。`);
+      ?? `${step.title}：${excerpt}`;
+    const coursePractice = guidedStep
+      ? plan.guidedPractice
+      : independentStep || finalStep
+        ? plan.independentPractice
+        : plan.guidedPractice;
     const practice = step.practice
-      ?? (guidedStep
-        ? plan.guidedPractice
-        : independentStep || finalStep
-          ? plan.independentPractice
-          : `对照本步要点“${step.note}”，完成引导练习并记录运行证据。`);
+      ?? `${coursePractice} 本步聚焦“${step.title}”：${excerpt}`;
 
     return {
       ...step,
       objective,
       practice,
       checkpoint: step.checkpoint
-        ?? `能向他人讲清“${step.note}”，并当场完成一次对应操作或给出验证证据。`,
+        ?? `检查“${step.title}”：${step.note || excerpt}。再给出一个反例、失败条件或能证伪当前结论的证据。`,
     };
+  });
+}
+
+function expandStructuredSteps(
+  steps: readonly LearningV2LessonStep[],
+  practice: ReturnType<typeof getCoursePracticeTask>,
+): LearningV2LessonStep[] {
+  return steps.map((step, index) => ({
+    ...step,
+    body: step.body.length >= 100
+      ? step.body
+      : `${step.body} 本步的可复核产出是“${practice.studio.steps[index % Math.max(1, practice.studio.steps.length)]}”：记录实际输入、判断依据、一个最小反例和材料来源，下一次只改一个条件复测。`,
+  }));
+}
+
+function balanceQuizAnswerPositions(
+  quiz: readonly LearningV2Practice[],
+): readonly LearningV2Practice[] {
+  return quiz.map((question, index) => {
+    const optionCount = question.options.length;
+    if (optionCount < 2 || question.answer < 0 || question.answer >= optionCount) return question;
+    const targetAnswer = index % optionCount;
+    const shift = (targetAnswer - question.answer + optionCount) % optionCount;
+    if (shift === 0) return question;
+    const options = question.options.map(
+      (_, optionIndex) => question.options[
+        (optionIndex - shift + optionCount) % optionCount
+      ]!,
+    );
+    return { ...question, options, answer: targetAnswer };
   });
 }
 
@@ -403,52 +532,78 @@ export function getLearningV2CoursePlan(subjectKey: string, courseName: string):
   if (!subject) throw new Error(`unknown learning subject: ${subjectKey}`);
   const course = subject.courses.find((item) => item.name === courseName);
   if (!course) throw new Error(`unknown course: ${subjectKey}/${courseName}`);
+  const registeredPack = REGISTERED_CONTENT_PACKS.get(subjectKey);
+  const registeredCourse = registeredPack?.courses.find((item) => item.name === courseName);
+  if (registeredCourse) return registeredCourse.plan;
   const sameTrack = subject.courses.filter((item) => item.trackName === course.trackName);
   const courseIndex = sameTrack.findIndex((item) => item.name === course.name);
   const previous = courseIndex > 0 ? sameTrack[courseIndex - 1] : null;
   const practice = getCoursePracticeTask(subjectKey, courseName);
   const curated = LEARNING_V2_CURATED_PLANS[planKey(subjectKey, courseName)];
-  const fallbackSteps = course.name === subject.current.course
+  const baseFallbackSteps = course.name === subject.current.course
     ? subject.lesson.steps
     : generatedSubjectSteps(subjectKey, courseName, course.trackName, practice);
-  const selectedSteps = curated
-    ? enrichReviewedSteps(curated)
-    : fallbackSteps;
+  const fallbackSteps = expandStructuredSteps(baseFallbackSteps, practice);
+  const prerequisite = curated?.prerequisite
+    ?? (previous
+      ? `先完成同阶段课程“${previous.name}”。`
+      : '从零基础起步；只要求会阅读本页例子，不要求预先掌握术语。');
+  const plainLanguageGoal = curated?.plainLanguageGoal
+    ?? `学完“${course.name}”后，能用自己的话解释核心概念，并完成本课实践产出（${practice.output}）。`;
+  const guidedPractice = curated?.guidedPractice
+    ?? `按“${practice.studio.steps.join(' → ')}”跟做一遍，允许查看提示。`;
+  const independentPractice = curated?.independentPractice ?? practice.task;
+  const commonErrors = curated?.commonErrors
+    ?? SUBJECT_COMMON_ERRORS[subjectKey]
+    ?? [
+      '只记住结论，不能说明依据或适用条件。',
+      '跳过基础步骤，直接套用未理解的方法。',
+    ];
+  const sourceRefs = curated?.sourceRefs ?? [
+    `科目公开资料入口：${SUBJECT_SOURCE_URLS[subjectKey] || subject.book.source}`,
+    `${subject.book.title}：${subject.book.source}`,
+    `本科目实践边界：${practice.boundary}`,
+  ];
+  const structuredCurated = curated?.contentStatus === 'structured'
+    ? { ...curated, steps: expandStructuredSteps(curated.steps, practice) }
+    : curated;
+  const selectedSteps = enrichReviewedSteps(structuredCurated ?? {
+    contentStatus: 'structured',
+    prerequisite,
+    plainLanguageGoal,
+    guidedPractice,
+    independentPractice,
+    commonErrors,
+    sourceRefs,
+    steps: fallbackSteps,
+  });
 
   return {
     subjectKey,
     courseName,
     trackName: course.trackName,
     title: course.name,
-    prerequisite: curated?.prerequisite
-      ?? (previous
-        ? `先完成同阶段课程“${previous.name}”。`
-        : '从零基础起步；只要求会阅读本页例子，不要求预先掌握术语。'),
-    plainLanguageGoal: curated?.plainLanguageGoal
-      ?? `学完“${course.name}”后，能用自己的话解释核心概念，并完成本课实践产出（${practice.output}）。`,
-    guidedPractice: curated?.guidedPractice
-      ?? `按“${practice.studio.steps.join(' → ')}”跟做一遍，允许查看提示。`,
-    independentPractice: curated?.independentPractice ?? practice.task,
-    commonErrors: curated?.commonErrors
-      ?? SUBJECT_COMMON_ERRORS[subjectKey]
-      ?? [
-        '只记住结论，不能说明依据或适用条件。',
-        '跳过基础步骤，直接套用未理解的方法。',
-      ],
-    sourceRefs: curated?.sourceRefs ?? [
-      `科目公开资料入口：${SUBJECT_SOURCE_URLS[subjectKey] || subject.book.source}`,
-      `${subject.book.title}：${subject.book.source}`,
-      `本科目实践边界：${practice.boundary}`,
-    ],
-    qualityStatus: curated !== undefined ? 'curated' : 'generated',
+    prerequisite,
+    plainLanguageGoal,
+    guidedPractice,
+    independentPractice,
+    commonErrors,
+    sourceRefs,
+    qualityStatus: curated?.contentStatus === 'structured'
+      ? 'generated'
+      : curated
+        ? 'curated'
+        : 'generated',
+    reviewStatus: curated?.contentStatus === 'reviewed' ? 'reviewed' : 'structured',
     steps: selectedSteps,
     expertNotes: curated?.expertNotes ?? SUBJECT_EXPERT_NOTES[subjectKey] ?? [],
-    quiz: curated?.quiz ?? [],
+    quiz: balanceQuizAnswerPositions(curated?.quiz ?? []),
+    codeLab: curated?.codeLab ?? LEARNING_V2_CODE_LABS[planKey(subjectKey, courseName)],
   };
 }
 
 export function getLearningV2Library(subjectKey?: string): readonly LearningV2LibraryEntry[] {
-  return SUBJECT_VIEWS
+  return effectiveSubjects()
     .filter((subject) => !subjectKey || subject.key === subjectKey)
     .flatMap((subject) =>
       subject.book.shelf.map((title, index) => {

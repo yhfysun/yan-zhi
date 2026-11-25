@@ -55,6 +55,7 @@ describe('桌面能力出站桥', () => {
     fs.writeFileSync(screenshot, bytes);
     let receivedHello = null;
     let receivedCall = null;
+    let disconnected = 0;
     const serverReady = new Promise((resolve) => {
       wss.once('connection', (ws, req) => {
         const url = new URL(req.url, 'http://localhost');
@@ -73,6 +74,7 @@ describe('桌面能力出站桥', () => {
       deviceId: 'shell-1',
       deviceName: '测试壳',
       capabilities: { browser: true, computer: ['computer_screenshot'] },
+      onDisconnect: () => { disconnected += 1; },
       execute: async (capability, method) => {
         assert.strictEqual(capability, 'computer');
         assert.strictEqual(method, 'computer_screenshot');
@@ -109,5 +111,6 @@ describe('桌面能力出站桥', () => {
     assert.strictEqual(Buffer.from(result.files[0].dataBase64, 'base64').equals(bytes), true);
 
     await relay.stop();
+    assert.ok(disconnected >= 1, '断开远程后端时必须触发本机控制会话清理');
   });
 });

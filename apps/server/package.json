@@ -7,6 +7,10 @@
   "scripts": {
     "dev": "node scripts/dev.cjs",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node scripts/fix-esm-extensions.cjs && node scripts/copy-plugin-assets.cjs",
+    "content:list": "tsx ../../tools/learning-content-pack.ts list",
+    "content:init": "tsx ../../tools/learning-content-pack.ts init",
+    "content:export": "tsx ../../tools/learning-content-pack.ts export",
+    "content:verify": "tsx ../../tools/learning-content-pack.ts verify",
     "start": "node dist/apps/server/src/index.js",
     "enterprise:node": "node scripts/enterprise-node-agent.mjs",
     "test": "vitest run",

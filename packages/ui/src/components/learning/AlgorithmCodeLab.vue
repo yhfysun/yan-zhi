@@ -14,7 +14,14 @@ import type {
 } from '@yan-zhi/shared';
 import { api } from '../../api/client';
 
-type AlgorithmCodeLanguage = 'javascript' | 'python' | 'java' | 'c' | 'cpp';
+type AlgorithmCodeLanguage =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'java'
+  | 'c'
+  | 'cpp'
+  | 'go';
 type RuntimeStatus = {
   id: AlgorithmCodeLanguage;
   label: string;
@@ -53,10 +60,12 @@ const result = ref<RunResult | null>(null);
 
 const fileName = computed(() => ({
   javascript: 'main.js',
+  typescript: 'main.ts',
   python: 'main.py',
   java: 'Main.java',
   c: 'main.c',
   cpp: 'main.cpp',
+  go: 'main.go',
 }[language.value]));
 const currentRuntime = computed(() =>
   runtimes.value.find((runtime) => runtime.id === language.value) || null,
@@ -102,11 +111,17 @@ function starterCode(nextLanguage: AlgorithmCodeLanguage): string {
   if (nextLanguage === 'javascript') {
     return `// ${title}\nconst fs = require('node:fs');\nconst input = fs.readFileSync(0, 'utf8').trim();\n\n// 先写暴力解，再按伪代码骨架优化\nconsole.log(input);\n`;
   }
+  if (nextLanguage === 'typescript') {
+    return `// ${title}\nimport { readFileSync } from 'node:fs';\n\nconst input: string = readFileSync(0, 'utf8').trim();\n\n// 先写暴力解，再按伪代码骨架优化\nconsole.log(input);\n`;
+  }
   if (nextLanguage === 'python') {
     return `# ${title}\nimport sys\n\ndata = sys.stdin.read().strip()\n\n# 先写暴力解，再按伪代码骨架优化\nprint(data)\n`;
   }
   if (nextLanguage === 'java') {
     return `// ${title}\nimport java.io.*;\nimport java.util.*;\n\npublic class Main {\n  public static void main(String[] args) throws Exception {\n    BufferedReader br = new BufferedReader(new InputStreamReader(System.in));\n    String input = br.readLine();\n    System.out.println(input == null ? \"\" : input);\n  }\n}\n`;
+  }
+  if (nextLanguage === 'go') {
+    return `// ${title}\npackage main\n\nimport (\n  "bufio"\n  "fmt"\n  "os"\n)\n\nfunc main() {\n  scanner := bufio.NewScanner(os.Stdin)\n  for scanner.Scan() {\n    fmt.Println(scanner.Text())\n  }\n}\n`;
   }
   if (nextLanguage === 'c') {
     return `/* ${title} */\n#include <stdio.h>\n\nint main(void) {\n  char input[4096];\n  if (fgets(input, sizeof(input), stdin)) fputs(input, stdout);\n  return 0;\n}\n`;

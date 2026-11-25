@@ -901,6 +901,11 @@ body {
 /* 学习态整窗化：隐藏全局状态栏，并取消 Web 顶栏占位 */
 html.yz-learning-study .app-statusbar { display: none !important; }
 html.yz-learning-study .platform-web .main-content { padding-top: 0 !important; }
+html.yz-learning-study .tab-bar { display: none !important; }
+html.yz-learning-study .platform-mobile .main-content,
+html.yz-learning-study .main-content.no-shell-topbar {
+  padding-bottom: 0 !important;
+}
 
 /* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
 /* web/mobile 因 html,body,#app{height:100%} 仍正确铺满；高度从 100vh/dvh 改为 100% 以兼容桌面端被 flex 父容器包裹 */
@@ -928,6 +933,11 @@ html.yz-learning-study .platform-web .main-content { padding-top: 0 !important; 
   margin-left: 0;                 /* web 端 SideNav 已退役（导航上移 WebTopBar），主区全宽 */
   padding-right: 0;
   padding-top: var(--titlebar-h);
+}
+/* 学习页的 WebTopBar 已在 .web-root 的正常文档流中占位；这里再让一次会形成
+   56px 宽的空白带（900–1240px 学习总览实测）。只取消学习模式下的重复留白。 */
+.platform-web.app-shell.is-learning .main-content {
+  padding-top: 0;
 }
 .platform-web .page { padding-top: 24px; }  /* 主区已抬出 --titlebar-h，page 内顶部留 24px，避免与原 28px 叠加 */
 .platform-desktop .page-title { font-size: 18px; }

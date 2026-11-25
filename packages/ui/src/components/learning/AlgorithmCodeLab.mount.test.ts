@@ -32,10 +32,12 @@ async function mount() {
   getMock.mockResolvedValue({
     data: [
       { id: 'javascript', label: 'JavaScript / Node.js', available: true, version: '24.18.1', detail: '内置 Node.js', bundled: true },
+      { id: 'typescript', label: 'TypeScript / Node.js', available: true, version: '24.18.1', detail: '原生类型擦除', bundled: true },
       { id: 'python', label: 'Python', available: true, version: '3.13.5', detail: '内置 Python', bundled: true },
       { id: 'java', label: 'Java', available: false, version: '', detail: '需要完整 JDK', bundled: false },
       { id: 'c', label: 'C', available: true, version: '15.2.0', detail: 'gcc', bundled: false },
       { id: 'cpp', label: 'C++', available: true, version: '15.2.0', detail: 'g++', bundled: false },
+      { id: 'go', label: 'Go', available: true, version: '1.25.4', detail: 'go', bundled: false },
     ],
   });
   postMock.mockResolvedValue({
@@ -57,7 +59,7 @@ async function mount() {
   app.use(createPinia());
   app.mount(host);
   await nextTick();
-  await vi.waitFor(() => expect(host.textContent).toContain('4 / 5 种语言可用'));
+  await vi.waitFor(() => expect(host.textContent).toContain('6 / 7 种语言可用'));
   return host;
 }
 

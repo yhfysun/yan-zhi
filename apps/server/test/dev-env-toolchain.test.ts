@@ -6,13 +6,14 @@ import {
 } from '../src/services/dev-env';
 
 describe('programming toolchain detection', () => {
-  it('detects Java, Python, Node, C, C++ and CMake as first-class tools', () => {
-    for (const id of ['java', 'python', 'node', 'c', 'cpp', 'cmake'] as const) {
+  it('detects Java, Python, Node, C, C++, Go and CMake as first-class tools', () => {
+    for (const id of ['java', 'python', 'node', 'c', 'cpp', 'go', 'cmake'] as const) {
       expect(DEV_ENV_TOOL_IDS).toContain(id);
     }
     expect(DEFAULT_DEV_ENV).toMatchObject({
       cCompilerPath: '',
       cppCompilerPath: '',
+      goPath: '',
       cmakePath: '',
     });
   });

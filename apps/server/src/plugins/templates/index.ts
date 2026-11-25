@@ -213,6 +213,7 @@ const COMPUTER_USE_CODE = `// computer-use 内置插件：智能体操作本机�
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
@@ -262,11 +263,30 @@ import {
   desktopCapabilitySeen,
   callDesktopCapability,
 } from './desktop-capability.js';
+import {
+  computerControlSessionId,
+  pulseComputerControl,
+  shouldShowComputerControl,
+  stopComputerControl,
+} from '../computer-control-bridge.js';
+import { ComputerInputAdapter } from './computer-input-adapter.js';
+import {
+  ComputerControlCoordinator,
+  ControlSessionError,
+  actionRequiresConfirmation,
+  assertObservationReferences,
+  pickUniqueControlWindow,
+  type ControlActionEffect,
+  type ControlObservation,
+  type ControlWindow,
+} from './computer-control-session.js';
+import { ComputerControlAppPolicy } from './computer-control-policy.js';
+import { windowPointToPhysical } from './computer-input-adapter.js';
 
 export const computerUseManifest: PluginManifest = {
   id: 'computer-use',
   name: '电脑使用',
-  version: '0.1.0',
+  version: '0.2.0',
   category: '操作',
   description:
     '智能体可操作本机软件：鼠标点击、键盘输入/快捷键、窗口激活、截屏、启动应用（Windows 全量支持；macOS 基础支持需辅助功能权限）；系统体检与设置：读取整机硬件/显示/配色配置（只读，无需确认）、按白名单读写系统设置项（写入前自动备份注册表）、显示器亮度对比度调节；系统管理：安装/卸载应用、强制删除残留文件、注册表键清理（高危操作全部需用户确认后传 confirm:true 才执行）；默认关闭，需手动开启',
@@ -297,6 +317,12 @@ export const computerUseManifest: PluginManifest = {
       'computer_install_app',
       'computer_force_delete',
       'computer_registry_delete',
+      'computer_control_start',
+      'computer_control_observe',
+      'computer_control_act',
+      'computer_control_handoff',
+      'computer_control_end',
+      'computer_control_app_approval',
     ],
   },
   config: {
@@ -304,6 +330,16 @@ export const computerUseManifest: PluginManifest = {
     properties: {
       maxOps: { type: 'number', description: '10 分钟窗口内最大输入操作次数', default: 200 },
       allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
+      sessionV2: {
+        type: 'boolean',
+        description: '启用会话化控制、黄色窗口边框和动作级审批；关闭时保留旧 computer_* 工具路径',
+        default: true,
+      },
+      overlayPreview: {
+        type: 'boolean',
+        description: '控制时显示“AI 正在控制 / Esc 取消”状态提示；关闭只保留黄色窗口边框',
+        default: true,
+      },
     },
   },
 };
@@ -316,8 +352,40 @@ let allowSelfWindowClick = false;
 let screenshotsDirOverride = '';
 /** 急停标志：Ctrl+Alt+Esc（桌面端 globalShortcut → POST /panic）触发后置位并禁用插件 */
 let panicActive = false;
+let residentInputAdapter: ComputerInputAdapter | null = null;
+let activeControlSessions: ComputerControlCoordinator | null = null;
+let controlExpiryTimer: ReturnType<typeof setInterval> | null = null;
+const controlScreenshotFiles = new Map<string, Set<string>>();
+
+function rememberControlScreenshot(sessionId: string, file: string): void {
+  if (!sessionId || !file) return;
+  let files = controlScreenshotFiles.get(sessionId);
+  if (!files) {
+    files = new Set();
+    controlScreenshotFiles.set(sessionId, files);
+  }
+  files.add(file);
+}
+
+function cleanupControlScreenshots(sessionId?: string): void {
+  const ids = sessionId ? [String(sessionId)] : [...controlScreenshotFiles.keys()];
+  for (const id of ids) {
+    for (const file of controlScreenshotFiles.get(id) || []) {
+      try { fs.rmSync(file, { force: true }); } catch { /* best-effort cleanup */ }
+    }
+    controlScreenshotFiles.delete(id);
+  }
+}
 
 const OP_WINDOW_MS = 10 * 60 * 1000;
+const RESIDENT_INPUT_TOOLS = new Set([
+  'computer_mouse_click',
+  'computer_mouse_move',
+  'computer_mouse_drag',
+  'computer_scroll',
+  'computer_type',
+  'computer_press_key',
+]);
 
 function checkLimit(): void {
   if (panicActive) throw new Error('急停已触发（Ctrl+Alt+Esc），输入工具已冻结。请在「插件管理」页手动重新启用插件');
@@ -628,8 +696,20 @@ export const computerUseModule: PluginModule = {
     panicActive = false;
     maxOps = Number(cfg.maxOps) || 200;
     allowSelfWindowClick = !!cfg.allowSelfWindowClick;
+    const sessionV2 = cfg.sessionV2 !== false;
+    const overlayPreview = cfg.overlayPreview !== false;
     screenshotsDirOverride = String(cfg.screenshotDir || '');
     const configuredLocalExecution = cfg.localExecution === true;
+    const controlSessions = new ComputerControlCoordinator({
+      idleTimeoutMs: 2 * 60 * 1000,
+      onExpire: (session) => cleanupControlScreenshots(session.id),
+    });
+    activeControlSessions = controlSessions;
+    if (controlExpiryTimer) clearInterval(controlExpiryTimer);
+    controlExpiryTimer = setInterval(() => controlSessions.expire(), 15_000);
+    controlExpiryTimer.unref?.();
+    let controlPolicyPromise: Promise<ComputerControlAppPolicy> | null = null;
+    const rawToolDefs = new Map<string, { name: string; execute: (args: any, ctx: any) => Promise<McpCallResult> }>();
     ctx.log(
       \`[computer-use] execution routing configuredLocal=\${configuredLocalExecution} envLocal=\${process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1'} platform=\${process.platform}\`,
     );
@@ -637,31 +717,74 @@ export const computerUseModule: PluginModule = {
     // 轻量壳/远程桌面在线时，所有 computer_* 工具必须回到用户本机执行。
     // 不能因为后端恰好也是 Windows 就“看起来能用”——那会操作错误机器的键鼠。
     const rawRegisterTool = ctx.registerTool.bind(ctx);
-    ctx.registerTool = (def) => rawRegisterTool({
-      ...def,
-      execute: async (args, toolCtx) => {
+    ctx.registerTool = (def) => {
+      rawToolDefs.set(def.name, def as any);
+      return rawRegisterTool({
+        ...def,
+        execute: async (args, toolCtx) => {
         const userId = String(toolCtx?.userId || 'guest');
-        if (desktopCapabilityAvailable(userId, 'computer')) {
-          return callDesktopCapability('computer', def.name, args, {
-            userId,
-            conversationId: toolCtx?.conversationId,
-            workspaceDir: toolCtx?.workspaceDir,
-            timeoutMs: def.name === 'computer_screenshot' ? 60_000 : 45_000,
+        const sessionId = computerControlSessionId({
+          userId,
+          conversationId: toolCtx?.conversationId,
+          taskId: toolCtx?.taskId,
+        });
+        const showControl = shouldShowComputerControl(def.name);
+        const xy = Number(args?.x);
+        const yy = Number(args?.y);
+        const controlCursor = Number.isFinite(xy) && Number.isFinite(yy) ? { x: xy, y: yy } : undefined;
+        const controlPaused = def.name === 'computer_control_handoff'
+          ? String(args?.action || '') === 'take'
+          : undefined;
+        if (showControl) {
+          await pulseComputerControl({
+            sessionId,
+            toolName: def.name,
+            phase: 'before',
+            preview: overlayPreview,
+            cursor: controlCursor,
+            click: def.name === 'computer_mouse_click',
+            paused: controlPaused,
           });
         }
-        // 一旦该用户连接过轻量壳，掉线后只报错，绝不回落到后端机器。
-        // 完整桌面包由主进程显式标记为“本地执行”，从没接能力桥，继续沿用原执行器。
-        const localDesktop = configuredLocalExecution || process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1';
-        const explicitHeadless = process.env.YZ_ALLOW_BACKEND_COMPUTER_USE === '1';
-        if (desktopCapabilitySeen(userId) || (!localDesktop && !explicitHeadless)) {
-          return errResult(new Error(
-            '本机执行端未连接：电脑使用工具必须在轻量壳/桌面端执行。'
-            + '请确认壳已启动并连到当前后端',
-          ));
+        try {
+          if (desktopCapabilityAvailable(userId, 'computer')) {
+            return await callDesktopCapability('computer', def.name, args, {
+              userId,
+              conversationId: toolCtx?.conversationId,
+              workspaceDir: toolCtx?.workspaceDir,
+              timeoutMs: def.name === 'computer_screenshot' ? 60_000 : 45_000,
+            });
+          }
+          // 一旦该用户连接过轻量壳，掉线后只报错，绝不回落到后端机器。
+          // 完整桌面包由主进程显式标记为“本地执行”，从没接能力桥，继续沿用原执行器。
+          const localDesktop = configuredLocalExecution || process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1';
+          const explicitHeadless = process.env.YZ_ALLOW_BACKEND_COMPUTER_USE === '1';
+          if (desktopCapabilitySeen(userId) || (!localDesktop && !explicitHeadless)) {
+            return errResult(new Error(
+              '本机执行端未连接：电脑使用工具必须在轻量壳/桌面端执行。'
+              + '请确认壳已启动并连到当前后端',
+            ));
+          }
+          if (sessionV2 && RESIDENT_INPUT_TOOLS.has(def.name)) {
+            return runResidentInputTool(def.name, args);
+          }
+          return await def.execute(args, toolCtx);
+        } finally {
+          if (showControl) {
+            await pulseComputerControl({
+              sessionId,
+              toolName: def.name,
+              phase: 'after',
+              preview: overlayPreview,
+              cursor: controlCursor,
+              click: def.name === 'computer_mouse_click',
+              paused: controlPaused,
+            });
+          }
         }
-        return def.execute(args, toolCtx);
-      },
-    });
+        },
+      });
+    };
 
     // 截图临时区清理器：启用即扫一次，之后每 5 分钟扫一次（模块级单例定时器，防止重复启用叠加）
     reapOldScreenshots();
@@ -684,11 +807,69 @@ export const computerUseModule: PluginModule = {
           return;
         }
         panicActive = true;
+        void stopComputerControl('*');
         ctx.log('!!! 急停触发（Ctrl+Alt+Esc）：输入工具已冻结，插件即将禁用');
         void getPluginManager()
           .disable('computer-use')
           .catch(() => undefined);
         res.json({ data: { ok: true, message: '急停已生效，computer-use 插件已禁用（可在插件管理页重新启用）' } });
+      });
+      r.get('/control-apps', async (req, res) => {
+        try {
+          const deviceId = String((req as { query?: Record<string, unknown> })?.query?.deviceId || 'local');
+          const policy = await getControlPolicy();
+          res.json({ data: { deviceId, apps: policy.list(deviceId) } });
+        } catch (e) {
+          res.json({ error: (e as Error).message });
+        }
+      });
+      r.post('/control-apps', async (req, res) => {
+        try {
+          const body = (req as { body?: Record<string, unknown> })?.body || {};
+          const action = String(body.action || '');
+          const deviceId = String(body.deviceId || 'local');
+          const appId = String(body.appId || '').trim();
+          const displayName = String(body.displayName || appId);
+          if (!appId) throw new Error('appId 必填');
+          const policy = await getControlPolicy();
+          if (action === 'allow') {
+            const grant = policy.approve(deviceId, appId, displayName);
+            await saveControlPolicy(policy);
+            res.json({ data: { ok: true, grant } });
+            return;
+          }
+          if (action === 'revoke') {
+            const revoked = policy.revoke(deviceId, appId);
+            await saveControlPolicy(policy);
+            res.json({ data: { ok: true, revoked } });
+            return;
+          }
+          throw new Error('action 必须是 allow 或 revoke');
+        } catch (e) {
+          res.json({ error: (e as Error).message });
+        }
+      });
+      r.get('/control-status', (_req, res) => {
+        res.json({ data: { sessions: activeControlSessions?.activeSessions() || [] } });
+      });
+      r.post('/control-end', async (req, res) => {
+        try {
+          const conversationId = String((req as { body?: Record<string, unknown> })?.body?.conversationId || '');
+          const ended = endAllComputerControlSessions(conversationId || undefined);
+          res.json({ data: { ok: true, ended } });
+        } catch (e) {
+          res.json({ error: (e as Error).message });
+        }
+      });
+      r.post('/control-handoff', (req, res) => {
+        try {
+          const sessionId = String((req as { body?: Record<string, unknown> })?.body?.sessionId || '');
+          if (!sessionId) throw new Error('sessionId 必填');
+          const session = activeControlSessions?.beginHandoff(sessionId);
+          res.json({ data: { ok: true, session } });
+        } catch (e) {
+          res.json({ error: (e as Error).message });
+        }
       });
       r.get('/audit', (_req, res) => {
         // 未启用时明确拒绝（路由禁用后仍挂载），历史记录仍在 plugin_storage，重新启用即可查看
@@ -750,6 +931,375 @@ export const computerUseModule: PluginModule = {
         return errResult(e);
       }
     };
+
+    /** 常驻输入通道：键鼠/文本动作不再逐次启动 PowerShell。 */
+    async function runResidentInputTool(
+      toolName: string,
+      args: Record<string, unknown>,
+    ): Promise<McpCallResult> {
+      checkLimit();
+      const startedAt = Date.now();
+      residentInputAdapter ||= new ComputerInputAdapter();
+      try {
+        switch (toolName) {
+          case 'computer_mouse_click':
+            await residentInputAdapter.click({
+              x: Number(args.x),
+              y: Number(args.y),
+              button: ['left', 'right', 'middle'].includes(String(args.button))
+                ? String(args.button) as 'left' | 'right' | 'middle'
+                : 'left',
+              double: !!args.double,
+            });
+            break;
+          case 'computer_mouse_move':
+            await residentInputAdapter.move({ x: Number(args.x), y: Number(args.y) });
+            break;
+          case 'computer_mouse_drag':
+            await residentInputAdapter.drag({
+              fromX: Number(args.fromX),
+              fromY: Number(args.fromY),
+              toX: Number(args.toX),
+              toY: Number(args.toY),
+            });
+            break;
+          case 'computer_scroll': {
+            const notches = Math.max(1, Math.min(30, Math.floor(Number(args.notches) || 3)));
+            const direction = String(args.direction || 'down').toLowerCase() === 'up' ? 1 : -1;
+            await residentInputAdapter.scroll({
+              x: Number(args.x),
+              y: Number(args.y),
+              deltaY: direction * notches * 120,
+            });
+            break;
+          }
+          case 'computer_type':
+            await residentInputAdapter.typeText(String(args.text || ''));
+            break;
+          case 'computer_press_key': {
+            const keys = Array.isArray(args.keys) ? args.keys.map(String) : [];
+            await residentInputAdapter.pressKey(keys);
+            break;
+          }
+          default:
+            throw new Error(\`未接入常驻输入通道: \${toolName}\`);
+        }
+        recordOp();
+        await pushPluginAudit(ctx.storage, {
+          t: Date.now(),
+          target: 'desktop',
+          action: toolName,
+          ok: true,
+          detail: { transport: 'resident-agent' },
+        });
+        const receipt = createExecutionReceipt({
+          target: 'desktop',
+          action: toolName,
+          ok: true,
+          startedAt,
+          evidence: [{ kind: 'note', summary: \`常驻输入通道 \${toolName}\` }],
+        });
+        return textResult({ ok: true, receipt }, { executionReceipt: receipt });
+      } catch (err) {
+        void residentInputAdapter?.restart().catch(() => undefined);
+        await pushPluginAudit(ctx.storage, {
+          t: Date.now(),
+          target: 'desktop',
+          action: toolName,
+          ok: false,
+          detail: { transport: 'resident-agent', error: String((err as Error)?.message || err) },
+        }).catch(() => undefined);
+        throw err;
+      }
+    }
+
+    async function executeRawTool(
+      name: string,
+      args: Record<string, unknown>,
+      toolCtx: Record<string, unknown>,
+    ): Promise<McpCallResult> {
+      const def = rawToolDefs.get(name);
+      if (!def) throw new Error(\`未注册的工具: \${name}\`);
+      return def.execute(args, toolCtx);
+    }
+
+    function parseToolResult(result: McpCallResult): Record<string, any> {
+      if ((result as any)?.isError) {
+        const text = result.content?.find((item: any) => item?.type === 'text')?.text || '工具执行失败';
+        throw new Error(String(text));
+      }
+      const text = result.content?.find((item: any) => item?.type === 'text')?.text || '{}';
+      try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        throw new Error(\`工具返回不是 JSON: \${String(text).slice(0, 300)}\`);
+      }
+    }
+
+    async function getControlPolicy(): Promise<ComputerControlAppPolicy> {
+      if (!controlPolicyPromise) {
+        controlPolicyPromise = ctx.storage
+          .get<Record<string, unknown>>('controlAppPolicy')
+          .then((data) => new ComputerControlAppPolicy((data || {}) as any));
+      }
+      return controlPolicyPromise;
+    }
+
+    async function saveControlPolicy(policy: ComputerControlAppPolicy): Promise<void> {
+      await ctx.storage.set('controlAppPolicy', policy.toJSON());
+    }
+
+    async function listControlWindows(toolCtx: Record<string, unknown>): Promise<ControlWindow[]> {
+      const data = parseToolResult(await executeRawTool('computer_list_windows', {
+        page: 1,
+        pageSize: 100,
+      }, toolCtx));
+      return (Array.isArray(data.windows) ? data.windows : []).map((item: any) => {
+        const rect = item?.rect || {};
+        const x = Number(rect.left) || 0;
+        const y = Number(rect.top) || 0;
+        const right = Number(rect.right) || x;
+        const bottom = Number(rect.bottom) || y;
+        return {
+          id: \`\${Number(item?.pid) || 0}:\${String(item?.title || '')}\`,
+          app: String(item?.exePath || item?.process || 'unknown'),
+          pid: Number(item?.pid) || undefined,
+          title: String(item?.title || ''),
+          rect: { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) },
+        } satisfies ControlWindow;
+      });
+    }
+
+    async function captureControlObservation(
+      sessionId: string,
+      args: Record<string, unknown>,
+      toolCtx: Record<string, unknown>,
+    ): Promise<Record<string, any>> {
+      const session = controlSessions.get(sessionId);
+      if (!session?.window) throw new ControlSessionError('window-required', 'bind a target window before observing');
+      const includeScreenshot = args.includeScreenshot !== false;
+      const includeUi = args.includeUi === true || args.includeText === true;
+      let screenshot: Record<string, any> | null = null;
+      let ui: Record<string, any> | null = null;
+      let uiError = '';
+      if (includeScreenshot) {
+        screenshot = parseToolResult(await executeRawTool('computer_screenshot', {
+          window: session.window.title,
+        }, toolCtx));
+        const width = Number(screenshot.width) || 0;
+        const height = Number(screenshot.height) || 0;
+        if (width > 0 && height > 0 && width * height > 16_000_000) {
+          const file = String(screenshot.file || '');
+          if (file) {
+            try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
+          }
+          throw new Error(\`目标窗口截图过大（\${width}x\${height}），请先调整窗口大小后再观察\`);
+        }
+        if (screenshot.file) rememberControlScreenshot(sessionId, String(screenshot.file));
+      }
+      if (includeUi) {
+        try {
+          ui = parseToolResult(await executeRawTool('computer_get_ui_tree', {
+            pid: session.window.pid,
+            window: session.window.title,
+            maxDepth: Number(args.maxDepth) || 8,
+            maxNodes: Number(args.maxNodes) || 500,
+          }, toolCtx));
+        } catch (err) {
+          uiError = String((err as Error)?.message || err);
+        }
+      }
+      const screenshotId = screenshot?.file ? path.basename(String(screenshot.file)) : undefined;
+      const refs = Array.isArray(ui?.nodes)
+        ? ui.nodes.map((node: any) => String(node?.ref || '')).filter(Boolean)
+        : [];
+      const observation: ControlObservation = {
+        version: \`obs-\${Date.now()}-\${crypto.randomUUID().slice(0, 8)}\`,
+        windowId: session.window.id,
+        ...(screenshotId ? { screenshotId } : {}),
+        refs,
+        createdAt: Date.now(),
+        captureMode: screenshot ? 'foreground-window-gdi' : 'accessibility-only',
+      };
+      controlSessions.observe(sessionId, observation);
+      return {
+        session: controlSessions.get(sessionId),
+        observation,
+        screenshot,
+        ui: ui ? {
+          revision: ui.revision,
+          title: ui.title,
+          nodes: Array.isArray(ui.nodes) ? ui.nodes.slice(0, 500) : [],
+        } : null,
+        ...(uiError ? { uiError } : {}),
+      };
+    }
+
+    async function executeControlAction(
+      sessionId: string,
+      args: Record<string, unknown>,
+      toolCtx: Record<string, unknown>,
+    ): Promise<McpCallResult> {
+      const session = controlSessions.get(sessionId);
+      if (!session?.window) throw new ControlSessionError('session-not-found', 'start a control session and bind a window first');
+      const effect = String(args.effect || 'unknown') as ControlActionEffect;
+      const allowedEffects: ControlActionEffect[] = [
+        'read', 'local_write', 'external_send', 'destructive',
+        'financial', 'security_or_auth', 'unknown',
+      ];
+      if (!allowedEffects.includes(effect)) throw new Error(\`无效的 effect: \${effect}\`);
+      const preapproved = args.preapproved === true || args.confirmed === true;
+      if (actionRequiresConfirmation(effect, preapproved)) {
+        return textResult({
+          ok: false,
+          error: 'ACTION_CONFIRMATION_REQUIRED',
+          effect,
+          message: '该动作会改变外部或系统状态。先用 confirm_user 取得用户对具体目标、数据和动作的确认，再以 preapproved:true 重试。',
+        });
+      }
+      assertObservationReferences(session.observation, {
+        version: args.observationVersion ? String(args.observationVersion) : undefined,
+        screenshotId: args.screenshotId ? String(args.screenshotId) : undefined,
+        ref: args.ref ? String(args.ref) : undefined,
+      });
+      const action = String(args.action || '');
+      residentInputAdapter ||= new ComputerInputAdapter();
+      let lastCursor: { x: number; y: number } | undefined;
+      const receipt = await controlSessions.runAction(sessionId, effect, async () => {
+        checkLimit();
+        switch (action) {
+          case 'click': {
+            const physical = windowPointToPhysical(
+              session.window!.rect!,
+              Number(args.x),
+              Number(args.y),
+              Number(args.scale) || 1,
+            );
+            lastCursor = physical;
+            await residentInputAdapter!.click({
+              x: physical.x,
+              y: physical.y,
+              button: ['left', 'right', 'middle'].includes(String(args.button))
+                ? String(args.button) as 'left' | 'right' | 'middle'
+                : 'left',
+              double: !!args.double,
+              window: session.window!,
+            });
+            break;
+          }
+          case 'move': {
+            const physical = windowPointToPhysical(
+              session.window!.rect!,
+              Number(args.x),
+              Number(args.y),
+              Number(args.scale) || 1,
+            );
+            lastCursor = physical;
+            await residentInputAdapter!.move({ ...physical, window: session.window! });
+            break;
+          }
+          case 'scroll': {
+            const physical = windowPointToPhysical(
+              session.window!.rect!,
+              Number(args.x),
+              Number(args.y),
+              Number(args.scale) || 1,
+            );
+            lastCursor = physical;
+            await residentInputAdapter!.scroll({
+              ...physical,
+              deltaY: Number(args.deltaY) || -120,
+              window: session.window!,
+            });
+            break;
+          }
+          case 'drag': {
+            const from = windowPointToPhysical(
+              session.window!.rect!,
+              Number(args.fromX),
+              Number(args.fromY),
+              Number(args.scale) || 1,
+            );
+            const to = windowPointToPhysical(
+              session.window!.rect!,
+              Number(args.toX),
+              Number(args.toY),
+              Number(args.scale) || 1,
+            );
+            lastCursor = to;
+            await residentInputAdapter!.drag({
+              fromX: from.x,
+              fromY: from.y,
+              toX: to.x,
+              toY: to.y,
+              window: session.window!,
+            });
+            break;
+          }
+          case 'type':
+            await residentInputAdapter!.typeText(String(args.text || ''));
+            break;
+          case 'press_key':
+            await residentInputAdapter!.pressKey(Array.isArray(args.keys) ? args.keys.map(String) : []);
+            break;
+          case 'click_element': {
+            const result = await executeRawTool('computer_click_element', {
+              ...args,
+              pid: session.window!.pid,
+              window: session.window!.title,
+              effect: undefined,
+              preapproved: undefined,
+            }, toolCtx);
+            parseToolResult(result);
+            break;
+          }
+          case 'set_value': {
+            const result = await executeRawTool('computer_set_value', {
+              ...args,
+              pid: session.window!.pid,
+              window: session.window!.title,
+              effect: undefined,
+              preapproved: undefined,
+            }, toolCtx);
+            parseToolResult(result);
+            break;
+          }
+          default:
+            throw new Error(\`不支持的控制动作: \${action}\`);
+        }
+        recordOp();
+        await pushPluginAudit(ctx.storage, {
+          t: Date.now(),
+          target: 'desktop',
+          action: \`computer_control_act:\${action}\`,
+          ok: true,
+          detail: { sessionId, effect, preapproved },
+        });
+      }, async () => {
+        const observed = await captureControlObservation(sessionId, {
+          includeScreenshot: true,
+          includeUi: true,
+        }, toolCtx);
+        return observed.observation as ControlObservation;
+      });
+      if (lastCursor) {
+        void pulseComputerControl({
+          sessionId,
+          toolName: 'computer_control_act',
+          phase: 'after',
+          preview: true,
+          cursor: lastCursor,
+          click: action === 'click',
+        });
+      }
+      return textResult({
+        ok: receipt.status === 'ok',
+        receipt,
+        session: controlSessions.get(sessionId),
+        observation: receipt.observation || null,
+      });
+    }
 
     const uiEvidence = (tree: { revision?: string; nodes?: UiNode[] }, summary: string): ExecutionEvidence => ({
       kind: 'ui_tree',
@@ -2486,6 +3036,240 @@ if (Test-Path -LiteralPath $k) { Write-Output 'STILL_EXISTS' } else { Write-Outp
         ),
     });
 
+    // ===== 会话化电脑控制（v0.2）：应用授权、窗口绑定、观察版本与动作级审批 =====
+    ctx.registerTool({
+      name: 'computer_control_start',
+      description:
+        '开始一次会话化桌面控制。必须先用 pid/title/processName 唯一指定目标窗口；未获用户授权的应用会返回 APP_APPROVAL_REQUIRED。'
+        + '本工具会建立黄色目标窗口边框的会话租约，后续用 computer_control_observe/act 操作。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string', description: '设备标识，默认 local' },
+          pid: { type: 'number' },
+          title: { type: 'string', description: '窗口标题包含匹配' },
+          processName: { type: 'string', description: '进程名包含匹配' },
+        },
+      },
+      execute: async (args, toolCtx) => {
+        if (!sessionV2) return errResult(new Error('sessionV2 已关闭'));
+        try {
+          const windows = await listControlWindows(toolCtx as Record<string, unknown>);
+          const processName = String(args.processName || '').toLowerCase();
+          const filtered = processName
+            ? windows.filter((window) => window.app.toLowerCase().includes(processName))
+            : windows;
+          const selected = pickUniqueControlWindow(filtered, {
+            pid: args.pid == null ? undefined : Number(args.pid),
+            title: args.title == null ? undefined : String(args.title),
+          });
+          const policy = await getControlPolicy();
+          const deviceId = String(args.deviceId || 'local');
+          if (!policy.isAllowed(deviceId, selected.app)) {
+            return textResult({
+              ok: false,
+              error: 'APP_APPROVAL_REQUIRED',
+              deviceId,
+              appId: selected.app,
+              displayName: path.basename(selected.app),
+              target: selected,
+              message: '先向用户确认是否允许控制该应用，再用 computer_control_app_approval(action="allow", confirm=true) 记录授权。',
+            });
+          }
+          const sessionId = \`ctrl-\${crypto.randomUUID()}\`;
+          controlSessions.start({
+            sessionId,
+            deviceId,
+            conversationId: String(toolCtx?.conversationId || ''),
+          });
+          controlSessions.bindWindow(sessionId, selected);
+          return textResult({
+            ok: true,
+            session: controlSessions.get(sessionId),
+            nextStep: '调用 computer_control_observe 获取最新截图/辅助功能树；坐标与 ref 只对这次观察有效。',
+          });
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
+    ctx.registerTool({
+      name: 'computer_control_observe',
+      description:
+        '观察当前会话绑定的窗口，返回新的观察版本、截图和可选辅助功能树。默认只截目标窗口；includeUi=true 时附带控件 ref。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          includeScreenshot: { type: 'boolean', description: '默认 true' },
+          includeUi: { type: 'boolean', description: '默认 false；需要 ref/元素索引时开启' },
+          maxDepth: { type: 'number' },
+          maxNodes: { type: 'number' },
+        },
+        required: ['sessionId'],
+      },
+      execute: async (args, toolCtx) => {
+        if (!sessionV2) return errResult(new Error('sessionV2 已关闭'));
+        try {
+          return textResult(await captureControlObservation(
+            String(args.sessionId || ''),
+            args as Record<string, unknown>,
+            toolCtx as Record<string, unknown>,
+          ));
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
+    ctx.registerTool({
+      name: 'computer_control_act',
+      description:
+        '在会话中执行恰好一个动作，并在动作后自动刷新观察。effect 必填：read/local_write/external_send/destructive/financial/security_or_auth/unknown。'
+        + '外部发送、删除、支付、安全设置和 unknown 必须先用 confirm_user 取得用户确认，再传 preapproved=true。'
+        + '坐标是窗口相对坐标；截图 ID、UIA ref 和观察版本只对 computer_control_observe 的最新结果有效。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          action: {
+            type: 'string',
+            enum: ['click', 'move', 'scroll', 'drag', 'type', 'press_key', 'click_element', 'set_value'],
+          },
+          effect: {
+            type: 'string',
+            enum: ['read', 'local_write', 'external_send', 'destructive', 'financial', 'security_or_auth', 'unknown'],
+          },
+          preapproved: { type: 'boolean', description: '仅当用户已明确确认具体目标、数据和动作时传 true' },
+          observationVersion: { type: 'string' },
+          screenshotId: { type: 'string' },
+          ref: { type: 'string' },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          scale: { type: 'number', description: '窗口相对坐标到物理像素的缩放，默认 1' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'] },
+          double: { type: 'boolean' },
+          deltaY: { type: 'number' },
+          fromX: { type: 'number' },
+          fromY: { type: 'number' },
+          toX: { type: 'number' },
+          toY: { type: 'number' },
+          text: { type: 'string' },
+          keys: { type: 'array', items: { type: 'string' } },
+          value: { type: 'string' },
+          name: { type: 'string' },
+          nameContains: { type: 'string' },
+          automationId: { type: 'string' },
+          controlType: { type: 'string' },
+        },
+        required: ['sessionId', 'action', 'effect'],
+      },
+      execute: async (args, toolCtx) => {
+        if (!sessionV2) return errResult(new Error('sessionV2 已关闭'));
+        try {
+          return await executeControlAction(
+            String(args.sessionId || ''),
+            args as Record<string, unknown>,
+            toolCtx as Record<string, unknown>,
+          );
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
+    ctx.registerTool({
+      name: 'computer_control_handoff',
+      description:
+        '在 AI 控制与用户接管之间切换。action=take 冻结 AI 输入；action=return 恢复 AI，但之前的观察、坐标和 ref 全部失效，必须重新 observe。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          action: { type: 'string', enum: ['take', 'return'] },
+        },
+        required: ['sessionId', 'action'],
+      },
+      execute: async (args) => {
+        if (!sessionV2) return errResult(new Error('sessionV2 已关闭'));
+        try {
+          const sessionId = String(args.sessionId || '');
+          const action = String(args.action || '');
+          if (action === 'take') controlSessions.beginHandoff(sessionId);
+          else if (action === 'return') controlSessions.returnControl(sessionId);
+          else throw new Error('action 必须是 take 或 return');
+          return textResult({ ok: true, session: controlSessions.get(sessionId) });
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
+    ctx.registerTool({
+      name: 'computer_control_end',
+      description: '结束电脑控制会话，立即释放输入会话并拆除黄色窗口边框。',
+      inputSchema: {
+        type: 'object',
+        properties: { sessionId: { type: 'string' } },
+        required: ['sessionId'],
+      },
+      execute: async (args) => {
+        try {
+          const sessionId = String(args.sessionId || '');
+          const session = controlSessions.end(sessionId);
+          cleanupControlScreenshots(sessionId);
+          await stopComputerControl(sessionId);
+          return textResult({ ok: true, session });
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
+    ctx.registerTool({
+      name: 'computer_control_app_approval',
+      description:
+        '查看、允许或撤销按设备保存的电脑控制应用授权。allow 前必须先通过 confirm_user 得到用户对具体应用的明确允许，再传 confirm=true。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'allow', 'revoke'] },
+          deviceId: { type: 'string', description: '默认 local' },
+          appId: { type: 'string', description: '窗口返回的 exePath 或进程名' },
+          displayName: { type: 'string' },
+          confirm: { type: 'boolean', description: 'allow 必须传 true' },
+        },
+        required: ['action'],
+      },
+      execute: async (args) => {
+        try {
+          const policy = await getControlPolicy();
+          const action = String(args.action || '');
+          const deviceId = String(args.deviceId || 'local');
+          if (action === 'list') {
+            return textResult({ ok: true, deviceId, apps: policy.list(deviceId) });
+          }
+          const appId = String(args.appId || '').trim();
+          if (!appId) throw new Error('appId 必填');
+          if (action === 'allow') {
+            requireConfirm(args as Record<string, unknown>, \`允许 AI 控制应用「\${args.displayName || appId}」\`);
+            const grant = policy.approve(deviceId, appId, String(args.displayName || path.basename(appId)));
+            await saveControlPolicy(policy);
+            return textResult({ ok: true, grant });
+          }
+          if (action === 'revoke') {
+            const revoked = policy.revoke(deviceId, appId);
+            await saveControlPolicy(policy);
+            return textResult({ ok: true, revoked });
+          }
+          throw new Error('action 必须是 list、allow 或 revoke');
+        } catch (err) {
+          return errResult(err);
+        }
+      },
+    });
+
     ctx.log(
       \`computer-use 插件已激活（maxOps=\${maxOps}/10min，allowSelfWindowClick=\${allowSelfWindowClick}），\` +
         \`注册 \${computerUseManifest.contributes?.tools?.length ?? 0} 个 computer_* 工具\` +
@@ -2495,8 +3279,26 @@ if (Test-Path -LiteralPath $k) { Write-Output 'STILL_EXISTS' } else { Write-Outp
   deactivate: async () => {
     // 停止清理器（临时截图文件保留到下次启用再回收，避免禁用期间误删用户还想看的图）
     if (reapTimer) { clearInterval(reapTimer); reapTimer = null; }
+    if (controlExpiryTimer) { clearInterval(controlExpiryTimer); controlExpiryTimer = null; }
+    activeControlSessions = null;
+    cleanupControlScreenshots();
+    try { residentInputAdapter?.stop(); } catch { /* ignore */ }
+    residentInputAdapter = null;
+    await stopComputerControl('*');
   },
 };
+
+export function endAllComputerControlSessions(conversationId?: string): number {
+  const wanted = String(conversationId || '');
+  const sessions = (activeControlSessions?.activeSessions() || [])
+    .filter((session) => !wanted || session.conversationId === wanted);
+  for (const session of sessions) {
+    try { activeControlSessions?.end(session.id); } catch { /* already ended */ }
+    cleanupControlScreenshots(session.id);
+  }
+  void stopComputerControl('*');
+  return sessions.length;
+}
 
 /** keys 数组 → SendKeys 序列（先经黑名单校验） */
 function buildSendKeys(keys: string[]): string {

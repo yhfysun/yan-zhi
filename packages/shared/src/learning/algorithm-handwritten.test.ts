@@ -83,4 +83,29 @@ describe('algorithm handwritten lesson plans', () => {
       expect(answers.size, `${lesson.courseName} 正确项应分散`).toBeGreaterThanOrEqual(2);
     }
   });
+
+  it('keeps the runnable algorithm code-lab expansion wired to real lessons', () => {
+    const codeLabLessons = ALGORITHM_LESSONS.filter((lesson) =>
+      Boolean(getLearningV2CoursePlan('algorithms', lesson.courseName).codeLab),
+    );
+    console.table(ALGORITHM_TRACKS.map((track) => {
+      const lessons = ALGORITHM_LESSONS.filter((lesson) => lesson.trackId === track.id);
+      const covered = lessons.filter((lesson) =>
+        Boolean(getLearningV2CoursePlan('algorithms', lesson.courseName).codeLab),
+      );
+      return {
+        track: `${track.id} · ${track.title}`,
+        courses: lessons.length,
+        codeLabs: covered.length,
+        remaining: lessons.length - covered.length,
+      };
+    }));
+    expect(codeLabLessons).toHaveLength(64);
+    for (const lesson of codeLabLessons) {
+      const lab = getLearningV2CoursePlan('algorithms', lesson.courseName).codeLab;
+      expect(lab?.practice.id, lesson.courseName).toBeTruthy();
+      expect(lab?.apply.id, lesson.courseName).toBeTruthy();
+      expect(lab?.practice.id, lesson.courseName).not.toBe(lab?.apply.id);
+    }
+  });
 });

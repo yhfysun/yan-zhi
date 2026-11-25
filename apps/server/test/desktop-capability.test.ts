@@ -73,7 +73,7 @@ function connect(mod: Awaited<ReturnType<typeof activate>>, userToken = ''): Fak
     deviceName: '测试轻量壳',
     capabilities: {
       browser: true,
-      computer: ['computer_screenshot', 'computer_mouse_click'],
+      computer: ['computer_screenshot', 'computer_mouse_click', 'computer_control_observe', 'computer_control_act'],
     },
   });
   expect(ws.sent.find((m) => m.type === 'hello.ack')).toBeTruthy();
@@ -183,5 +183,48 @@ describe('桌面能力桥', () => {
     expect(fs.readFileSync(result._meta.path).equals(bytes)).toBe(true);
     expect(JSON.parse(result.content[0].text)).toMatchObject({ file: result._meta.path });
     fs.rmSync(result._meta.path, { force: true });
+  });
+
+  it('会话观察/动作方法原样转发到壳，并回传刷新后的截图', async () => {
+    const mod = await activate();
+    const host = connect(mod);
+    const pending = mod.callDesktopCapability(
+      'computer',
+      'computer_control_observe',
+      { sessionId: 'ctrl-1', includeScreenshot: true },
+      { userId: 'guest', conversationId: 'conv-1', timeoutMs: 2000 },
+    );
+    const call = host.sent.find((m) => m.type === 'call');
+    expect(call).toMatchObject({
+      capability: 'computer',
+      method: 'computer_control_observe',
+      args: { sessionId: 'ctrl-1', includeScreenshot: true },
+      context: { conversationId: 'conv-1' },
+    });
+    const sourcePath = 'C:\\Users\\shell\\control-observation.png';
+    host.receive({
+      type: 'result',
+      id: call!.id,
+      ok: true,
+      result: {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            observation: { version: 'obs-2', screenshotId: 'control-observation.png' },
+            screenshot: { file: sourcePath },
+          }),
+        }],
+      },
+      files: [{
+        path: sourcePath,
+        name: 'control-observation.png',
+        dataBase64: Buffer.from('png').toString('base64'),
+      }],
+    });
+    const result = await pending as { content: Array<{ text: string }> };
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.observation.version).toBe('obs-2');
+    expect(parsed.screenshot.file).not.toBe(sourcePath);
+    fs.rmSync(parsed.screenshot.file, { force: true });
   });
 });

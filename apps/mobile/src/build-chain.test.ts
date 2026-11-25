@@ -111,6 +111,10 @@ describe('Android 打包链接线', () => {
     for (const plugin of ['office-core', 'shop-ops', 'ops-shell', 'sec-lab', 'learning-mode']) {
       expect(slim, `精简包缺少 ${plugin}`).toContain(`'${plugin}'`);
     }
+    const viteIndex = slim.indexOf("path.join(MOBILE_DIR, 'node_modules', 'vite', 'bin', 'vite.js')");
+    const verifyIndex = slim.indexOf('run(process.execPath, [VERIFY_MODE_PRUNE');
+    expect(verifyIndex).toBeGreaterThan(viteIndex);
+    expect(slim).toContain("'--dirs=apps/mobile/dist'");
   });
 
   it('★ GitHub 移动打包先构建 Web 入口，再生成 Android 工程', () => {

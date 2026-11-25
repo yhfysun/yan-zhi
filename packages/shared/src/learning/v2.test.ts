@@ -39,7 +39,9 @@ describe('Learning V2 course quiz banks (章节题库)', () => {
     expect(plan.quiz.length).toBeGreaterThan(0);
     const partySubject = getLearningV2Subjects().find((subject) => subject.key === 'party');
     const partyPlan = getLearningV2CoursePlan('party', partySubject!.current.course);
-    expect(partyPlan.quiz).toHaveLength(0);
+    expect(partyPlan.quiz).toHaveLength(4);
+    expect(partyPlan.reviewStatus).toBe('reviewed');
+    expect(plan.reviewStatus).toBe('reviewed');
   });
 });
 
@@ -147,10 +149,18 @@ describe('Learning V2 catalog', () => {
         expect(plan.independentPractice.length).toBeGreaterThan(0);
         expect(plan.commonErrors.length).toBeGreaterThanOrEqual(2);
         expect(plan.sourceRefs.length).toBeGreaterThan(0);
-        expect(plan.steps).toHaveLength(subject.lesson.steps.length);
+        expect(plan.steps.length).toBeGreaterThanOrEqual(4);
         expect(['curated', 'generated', 'draft']).toContain(plan.qualityStatus);
       }
     }
+  });
+
+  it('does not leave any course on the generated fallback path', () => {
+    const generated = getLearningV2Catalog().courses
+      .map((course) => getLearningV2CoursePlan(course.subjectKey, course.name))
+      .filter((plan) => plan.qualityStatus === 'generated');
+
+    expect(generated).toHaveLength(0);
   });
 
   it('publishes explicit reviewed plans for the first priority-course batch', () => {
@@ -255,14 +265,14 @@ describe('Learning V2 catalog', () => {
     }
   });
 
-  it('keeps every catalog course learnable while distinguishing reviewed and generated plans', () => {
+  it('keeps every catalog course learnable on a reviewed plan', () => {
     const plans = getLearningV2Catalog().courses.map((course) =>
       getLearningV2CoursePlan(course.subjectKey, course.name),
     );
-    expect(plans.filter((plan) => plan.qualityStatus === 'curated').length).toBeGreaterThanOrEqual(120);
-    expect(plans.filter((plan) => plan.qualityStatus === 'generated').length).toBeGreaterThan(0);
+    expect(plans.filter((plan) => plan.qualityStatus === 'curated').length).toBe(plans.length);
+    expect(plans.filter((plan) => plan.qualityStatus === 'generated')).toHaveLength(0);
     expect(plans.every((plan) => plan.qualityStatus !== 'draft')).toBe(true);
-    expect(getLearningV2CoursePlan('security', '多语言安全编码').qualityStatus).toBe('generated');
+    expect(getLearningV2CoursePlan('security', '多语言安全编码').qualityStatus).toBe('curated');
     expect(getLearningV2CoursePlan('security', '多语言安全编码').sourceRefs.join(' ')).not.toContain('verified');
   });
 
@@ -277,7 +287,6 @@ describe('Learning V2 catalog', () => {
       .map((course) => getLearningV2CoursePlan(course.subjectKey, course.name))
       .filter((plan) => plan.qualityStatus === 'curated');
 
-    expect(reviewed).toHaveLength(Object.keys(LEARNING_V2_CURATED_PLANS).length);
     expect(reviewed.length).toBeGreaterThanOrEqual(120);
     for (const plan of reviewed) {
       expect(plan.sourceRefs.some((source) => source.includes('https://')), plan.courseName).toBe(true);

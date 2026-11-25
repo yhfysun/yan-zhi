@@ -17,6 +17,7 @@ it('audits programming lesson, quiz, and practice usability', () => {
     ).length;
     return {
       name: course.name,
+      track: course.trackName,
       lesson: plan.steps.length === 5
         && plan.steps.every((step) =>
           step.body.length >= 60
@@ -46,6 +47,37 @@ it('audits programming lesson, quiz, and practice usability', () => {
     exampleSteps: rows.reduce((sum, row) => sum + row.exampleSteps, 0),
   };
   console.table(summary);
+  const codeLabCoverage = [...new Set(rows.map((row) => row.track))].map((track) => {
+    const trackRows = rows.filter((row) => row.track === track);
+    return {
+      track,
+      courses: trackRows.length,
+      codeLabs: trackRows.filter((row) => row.codeLab).length,
+      remaining: trackRows.filter((row) => !row.codeLab).length,
+    };
+  }).sort((left, right) => right.remaining - left.remaining);
+  console.table(codeLabCoverage);
+  const independentCodeLabCoverage = [...new Set(
+    rows.filter((row) => row.track === 'P14 · 独立语言课程')
+      .map((row) => row.name.split(' · ')[0]),
+  )].map((packageName) => {
+    const packageRows = rows.filter((row) =>
+      row.track === 'P14 · 独立语言课程'
+      && row.name.split(' · ')[0] === packageName,
+    );
+    return {
+      package: packageName,
+      courses: packageRows.length,
+      codeLabs: packageRows.filter((row) => row.codeLab).length,
+      remaining: packageRows.filter((row) => !row.codeLab).length,
+    };
+  }).sort((left, right) => right.remaining - left.remaining);
+  console.table(independentCodeLabCoverage);
+  expect(codeLabCoverage.find((row) => row.track === 'P15 · 综合训练项目')).toMatchObject({
+    courses: 130,
+    codeLabs: 130,
+    remaining: 0,
+  });
   console.table(rows.filter((row) =>
     !row.lesson || row.quizCount < 3 || row.quizIssues > 0 || !row.practice || row.exampleSteps === 0,
   ).slice(0, 30));
@@ -54,7 +86,7 @@ it('audits programming lesson, quiz, and practice usability', () => {
   expect(summary.quizIssues).toBe(0);
   expect(summary.quizCourses).toBe(946);
   expect(summary.quizQuestions).toBe(3784);
-  expect(summary.codeLabs).toBe(13);
+  expect(summary.codeLabs).toBe(946);
   expect(summary.coursesWithExamples).toBe(946);
   expect(summary.exampleSteps).toBe(4730);
 });

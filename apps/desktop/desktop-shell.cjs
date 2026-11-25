@@ -157,6 +157,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32;
 
 class YzDesktop {
@@ -185,6 +186,8 @@ class YzDesktop {
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   const uint GA_ROOT = 2;
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
   [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO mi);
@@ -308,6 +311,38 @@ class YzDesktop {
       if (!GetMonitorInfo(mon, ref mi)) return false;
       return r.L <= mi.rcMonitor.L && r.T <= mi.rcMonitor.T && r.R >= mi.rcMonitor.R && r.B >= mi.rcMonitor.B;
     } catch { return false; }
+  }
+
+  static string JsonEscape(string value) {
+    if (value == null) return "";
+    StringBuilder b = new StringBuilder(value.Length + 8);
+    foreach (char c in value) {
+      if (c == '\\') b.Append("\\\\");
+      else if (c == '"') b.Append("\\\"");
+      else if (c == '\r') b.Append("\\r");
+      else if (c == '\n') b.Append("\\n");
+      else if (c < ' ') b.Append(' ');
+      else b.Append(c);
+    }
+    return b.ToString();
+  }
+
+  static string ForegroundInfo() {
+    IntPtr fg = GetForegroundWindow();
+    if (fg == IntPtr.Zero) return "{\"ok\":false,\"error\":\"no-foreground-window\"}";
+    uint pid = 0;
+    GetWindowThreadProcessId(fg, out pid);
+    StringBuilder title = new StringBuilder(512);
+    GetWindowText(fg, title, title.Capacity);
+    RECT r;
+    if (!GetWindowRect(fg, out r) || r.R <= r.L || r.B <= r.T) {
+      return "{\"ok\":false,\"error\":\"no-window-rect\",\"hwnd\":" + H(fg) + "}";
+    }
+    return "{\"ok\":true,\"hwnd\":" + H(fg)
+      + ",\"pid\":" + pid
+      + ",\"title\":\"" + JsonEscape(title.ToString()) + "\""
+      + ",\"rect\":{\"x\":" + r.L + ",\"y\":" + r.T + ",\"width\":" + (r.R - r.L) + ",\"height\":" + (r.B - r.T) + "}"
+      + ",\"fullscreen\":" + (ForegroundFullscreen() ? "true" : "false") + "}";
   }
 
   const uint WM_COMMAND = 0x0111;
@@ -500,7 +535,7 @@ class YzDesktop {
         return 0;
 
       case "--foreground":
-        Emit("{\"hwnd\":" + H(GetForegroundWindow()) + ",\"fullscreen\":" + (ForegroundFullscreen() ? "true" : "false") + "}");
+        Emit(ForegroundInfo());
         return 0;
 
       /* 给桌面层窗口抢键盘焦点。

@@ -499,6 +499,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!rec || rec.endedAt) return;
     rec.status = status;
     rec.endedAt = Date.now();
+    void api.post('/plugin/computer-use/control-end', { conversationId: convId }).catch(() => undefined);
   }
   // 正在执行的 call_agent 工具调用 id 集合：用于跨层强制展开对应工具项，
   // 让 SubAgentRoundView 实时露出子智能体每一步；执行结束移除即自动折叠回简洁态。

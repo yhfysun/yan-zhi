@@ -121,6 +121,13 @@ test('助手源码包含全部命令', () => {
   }
 });
 
+test('foreground 命令返回控制边框所需的 hwnd、pid、标题和物理矩形', () => {
+  assert.ok(HELPER_CS.includes('ForegroundInfo()'));
+  assert.ok(HELPER_CS.includes('\\"rect\\":{'));
+  assert.ok(HELPER_CS.includes('\\"pid\\":'));
+  assert.ok(HELPER_CS.includes('\\"title\\":'));
+});
+
 test('入口允许带查询串（?layer=desktop），路径部分照常校验', () => {
   const { dirs, root } = mkPlugin();
   fs.writeFileSync(path.join(dirs.installed, 'desktop-manager', 'frontend', 'widgets.html'), '<!doctype html>');

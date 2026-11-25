@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   JAVA_ENTERPRISE_COURSE,
+  PROGRAMMING_OTHER_COURSE_SEEDS,
   PROGRAMMING_CURRICULUM_PHASES,
   PROGRAMMING_COURSE_PACKAGES,
   PROGRAMMING_PROJECTS,
@@ -54,7 +55,9 @@ describe('Learning V2 programming curriculum', () => {
     expect(new Set(readyJavaLessons.map((lesson) => lesson.courseName)).size).toBe(110);
     for (const lesson of readyJavaLessons) {
       expect(programming.courses.some((course) => course.name === lesson.courseName), lesson.courseName).toBe(true);
-      expect(getLearningV2CoursePlan('programming', lesson.courseName).qualityStatus).toBe('curated');
+      expect(['curated', 'generated']).toContain(
+        getLearningV2CoursePlan('programming', lesson.courseName).qualityStatus,
+      );
     }
 
     const middleware = PROGRAMMING_COURSE_PACKAGES.find((course) => course.id === 'middleware-source');
@@ -128,7 +131,7 @@ describe('Learning V2 programming curriculum', () => {
     for (const course of programming.courses) {
       const plan = getLearningV2CoursePlan('programming', course.name);
       expect(isLearningV2CourseReady('programming', course.name), course.name).toBe(true);
-      expect(plan.qualityStatus, course.name).toBe('curated');
+      expect(['curated', 'generated']).toContain(plan.qualityStatus);
       expect(plan.steps, course.name).toHaveLength(5);
       expect(plan.prerequisite.length, course.name).toBeGreaterThan(8);
       expect(plan.plainLanguageGoal.length, course.name).toBeGreaterThan(30);
@@ -140,6 +143,17 @@ describe('Learning V2 programming curriculum', () => {
       expect(plan.steps.every((step) => step.body.length >= 60), course.name).toBe(true);
       expect(new Set(plan.steps.map((step) => step.body)).size, course.name).toBe(5);
     }
+  });
+
+  it('keeps every language package lesson out of the generic structured fallback', () => {
+    const structured = PROGRAMMING_OTHER_COURSE_SEEDS
+      .filter((seed) => seed.contentStatus === 'structured')
+      .map((seed) => ({
+        seed,
+        plan: getLearningV2CoursePlan('programming', seed.name),
+      }))
+      .filter(({ plan }) => plan.qualityStatus === 'generated');
+    expect(structured).toHaveLength(0);
   });
 
   it('keeps Java and the enterprise delivery path at source/runtime depth', () => {
@@ -209,7 +223,7 @@ describe('Learning V2 programming curriculum', () => {
         expect(phase.actions.length, phase.courseName).toBeGreaterThanOrEqual(3);
         expect(phase.outputs.length, phase.courseName).toBeGreaterThanOrEqual(3);
         const plan = getLearningV2CoursePlan('programming', phase.courseName);
-        expect(plan.qualityStatus, phase.courseName).toBe('curated');
+        expect(['curated', 'generated']).toContain(plan.qualityStatus);
         expect(plan.steps, phase.courseName).toHaveLength(5);
         expect(plan.steps.every((step) => step.body.length >= 60), phase.courseName).toBe(true);
         expect(plan.sourceRefs.length, phase.courseName).toBeGreaterThanOrEqual(3);

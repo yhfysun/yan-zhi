@@ -265,7 +265,7 @@ function medicinePlan(track: MedicineTrack, lesson: MedicineLesson): LearningV2C
       ? '无需医学或古文基础；准备一份可记录时间、来源和不确定性的学习笔记。'
       : `先完成“${track.title}”的前一主题，保留观察记录、问题清单和来源标签。`,
     plainLanguageGoal: `学完“${topic}”后，能区分事实、解释、检查和行动边界，用${branchName}的一套术语说明问题，同时知道哪些情况必须交给医生或急救系统处理。`,
-    guidedPractice: `围绕一个完全虚构的教学病例完成“观察—问题清单—${isTcm ? '证候与经典依据' : '鉴别与检查依据'}—安全边界”四栏记录，至少写一条反证和一个仍需核对的信息。`,
+    guidedPractice: `围绕一个完全虚构的教学病例完成“${topic}”：先列观察与问题清单，再写${isTcm ? '证候与经典依据' : '鉴别与检查依据'}，最后补安全边界，至少写一条反证和一个仍需核对的信息。`,
     independentPractice: `换一个不同年龄或不同病史的合成病例，重做“${topic}”的分析卡；不得填写真人姓名、联系方式、影像或可识别病历。`,
     commonErrors: isTcm
       ? [

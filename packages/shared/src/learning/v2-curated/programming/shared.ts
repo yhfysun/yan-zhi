@@ -1,5 +1,6 @@
 import type {
   LearningV2CuratedCoursePlan,
+  LearningV2LessonExample,
   LearningV2LessonStep,
   LearningV2Studio,
 } from '../../v2-types.js';
@@ -26,11 +27,14 @@ export type ProgrammingStepSeed = readonly [
   title: string,
   body: string,
   note: string,
+  example?: LearningV2LessonExample,
 ];
 
 export type ProgrammingCourseSeed = {
   readonly name: string;
   readonly track: ProgrammingTrackName;
+  /** 未逐课人工整理的课程必须显式标记为 structured，不能冒充手写审校。 */
+  readonly contentStatus?: 'reviewed' | 'structured';
   readonly minutes: number;
   readonly prerequisite: string;
   readonly goal: string;
@@ -54,13 +58,14 @@ export function programmingPlan(seed: ProgrammingCourseSeed): LearningV2CuratedC
   const substantive = (text: string, minimum = 30) =>
     text.length > minimum ? text : `${text} 完成后补充边界输入、失败路径和可重复验证记录。`;
   return {
+    contentStatus: seed.contentStatus ?? 'reviewed',
     prerequisite: seed.prerequisite,
     plainLanguageGoal: substantive(seed.goal),
     guidedPractice: substantive(seed.guidedPractice),
     independentPractice: substantive(seed.independentPractice),
     commonErrors: seed.commonErrors,
     sourceRefs: seed.sourceRefs,
-    steps: seed.steps.map(([title, body, note]) => {
+    steps: seed.steps.map(([title, body, note, example]) => {
       const namedBody = body.includes(seed.name) ? body : `${seed.name}：${body}`;
       return {
         title,
@@ -68,6 +73,7 @@ export function programmingPlan(seed: ProgrammingCourseSeed): LearningV2CuratedC
           ? namedBody
           : `${namedBody} 学完这一步，必须记录输入、状态变化、失败方式和可验证证据。`,
         note,
+        ...(example ? { example } : {}),
       };
     }),
   };
@@ -107,11 +113,12 @@ export function programmingLessonSteps(
 ): readonly LearningV2LessonStep[] {
   const seed = seeds.find((item) => item.name === courseName) || seeds[0];
   if (!seed) return [];
-  return seed.steps.map(([title, body, note]) => ({
+  return seed.steps.map(([title, body, note, example]) => ({
     title,
     body: body.includes(seed.name)
       ? body
       : `${seed.name}：${body} 学完这一步，必须记录输入、状态变化、失败方式和可验证证据。`,
     note,
+    ...(example ? { example } : {}),
   }));
 }

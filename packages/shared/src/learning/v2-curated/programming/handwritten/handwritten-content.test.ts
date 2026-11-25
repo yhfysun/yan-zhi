@@ -50,8 +50,137 @@ import {
   HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES,
   HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES,
 } from './cpp-performance.js';
+import {
+  HANDWRITTEN_AI_PROGRAMMING_A0_COURSES,
+  HANDWRITTEN_AI_PROGRAMMING_A1_COURSES,
+  HANDWRITTEN_AI_PROGRAMMING_A2_COURSES,
+  HANDWRITTEN_AI_PROGRAMMING_A3_COURSES,
+  HANDWRITTEN_AI_PROGRAMMING_A4_COURSES,
+  HANDWRITTEN_AI_PROGRAMMING_A5_COURSES,
+} from './ai-programming.js';
+import {
+  HANDWRITTEN_TESTING_QUALITY_Q0_COURSES,
+  HANDWRITTEN_TESTING_QUALITY_Q1_COURSES,
+  HANDWRITTEN_TESTING_QUALITY_Q2_COURSES,
+  HANDWRITTEN_TESTING_QUALITY_Q3_COURSES,
+  HANDWRITTEN_TESTING_QUALITY_Q4_COURSES,
+  HANDWRITTEN_TESTING_QUALITY_Q5_COURSES,
+} from './testing-quality.js';
+import {
+  HANDWRITTEN_SECURITY_ENGINEERING_S0_COURSES,
+  HANDWRITTEN_SECURITY_ENGINEERING_S1_COURSES,
+  HANDWRITTEN_SECURITY_ENGINEERING_S2_COURSES,
+  HANDWRITTEN_SECURITY_ENGINEERING_S3_COURSES,
+  HANDWRITTEN_SECURITY_ENGINEERING_S4_COURSES,
+  HANDWRITTEN_SECURITY_ENGINEERING_S5_COURSES,
+} from './security-engineering.js';
+import {
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M0_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M1_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M2_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M3_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M4_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M5_COURSES,
+  HANDWRITTEN_MIDDLEWARE_SOURCE_M6_COURSES,
+} from './middleware-source.js';
+import {
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E0_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E1_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E2_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E3_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E4_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E5_COURSES,
+  HANDWRITTEN_SOFTWARE_ENGINEERING_E6_COURSES,
+} from './software-engineering.js';
+import {
+  HANDWRITTEN_CSS3_C0_COURSES,
+  HANDWRITTEN_CSS3_C1_COURSES,
+  HANDWRITTEN_CSS3_C2_COURSES,
+  HANDWRITTEN_CSS3_C3_COURSES,
+  HANDWRITTEN_CSS3_C4_COURSES,
+  HANDWRITTEN_CSS3_C5_COURSES,
+} from './css3.js';
+import {
+  HANDWRITTEN_TYPESCRIPT_T0_COURSES,
+  HANDWRITTEN_TYPESCRIPT_T1_COURSES,
+  HANDWRITTEN_TYPESCRIPT_T2_COURSES,
+  HANDWRITTEN_TYPESCRIPT_T3_COURSES,
+  HANDWRITTEN_TYPESCRIPT_T4_COURSES,
+  HANDWRITTEN_TYPESCRIPT_T5_COURSES,
+} from './typescript.js';
+import {
+  HANDWRITTEN_JAVASCRIPT_J0_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J1_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J2_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J3_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J4_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J5_COURSES,
+  HANDWRITTEN_JAVASCRIPT_J6_COURSES,
+} from './javascript.js';
+import {
+  HANDWRITTEN_VUE3_V0_COURSES,
+  HANDWRITTEN_VUE3_V1_COURSES,
+  HANDWRITTEN_VUE3_V2_COURSES,
+  HANDWRITTEN_VUE3_V3_COURSES,
+  HANDWRITTEN_VUE3_V4_COURSES,
+  HANDWRITTEN_VUE3_V5_COURSES,
+  HANDWRITTEN_VUE3_V6_COURSES,
+} from './vue3.js';
+import {
+  HANDWRITTEN_HTML5_H0_COURSES,
+  HANDWRITTEN_HTML5_H1_COURSES,
+  HANDWRITTEN_HTML5_H2_COURSES,
+  HANDWRITTEN_HTML5_H3_COURSES,
+  HANDWRITTEN_HTML5_H4_COURSES,
+  HANDWRITTEN_HTML5_H5_COURSES,
+} from './html5.js';
+import {
+  HANDWRITTEN_REACT_R0_COURSES,
+  HANDWRITTEN_REACT_R1_COURSES,
+  HANDWRITTEN_REACT_R2_COURSES,
+  HANDWRITTEN_REACT_R3_COURSES,
+  HANDWRITTEN_REACT_R4_COURSES,
+  HANDWRITTEN_REACT_R5_COURSES,
+  HANDWRITTEN_REACT_R6_COURSES,
+} from './react.js';
+import {
+  HANDWRITTEN_JAVA_ADVANCED_J2_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J3_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J4_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J5_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J6_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J7_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J8_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J9_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J10_COURSES,
+  HANDWRITTEN_JAVA_ADVANCED_J11_COURSES,
+} from './java-advanced.js';
 import { C_SYSTEMS_COURSE_QUIZ } from '../quiz-c-systems.js';
 import { CPP_PERFORMANCE_COURSE_QUIZ } from '../quiz-cpp-performance.js';
+import { AI_PROGRAMMING_COURSE_QUIZ } from '../quiz-ai-programming.js';
+import { SECURITY_ENGINEERING_COURSE_QUIZ } from '../quiz-security-engineering.js';
+import { TESTING_QUALITY_COURSE_QUIZ } from '../quiz-testing-quality.js';
+import { SOFTWARE_ENGINEERING_COURSE_QUIZ } from '../quiz-software-engineering.js';
+import { MIDDLEWARE_SOURCE_COURSE_QUIZ } from '../quiz-middleware-source.js';
+import { CSS3_COURSE_QUIZ } from '../quiz-css3.js';
+import { TYPESCRIPT_COURSE_QUIZ } from '../quiz-typescript.js';
+import { JAVASCRIPT_COURSE_QUIZ } from '../quiz-javascript.js';
+import { VUE3_COURSE_QUIZ } from '../quiz-vue3.js';
+import { HTML5_COURSE_QUIZ } from '../quiz-html5.js';
+import { REACT_COURSE_QUIZ } from '../quiz-react.js';
+import { JAVA_ADVANCED_COURSE_QUIZ } from '../quiz-java-advanced.js';
+import { JAVA_FOUNDATION_COURSE_QUIZ } from '../quiz-java-foundations.js';
+import { GO_CLOUD_COURSE_QUIZ } from '../quiz-go-cloud.js';
+import { PYTHON_ENTERPRISE_COURSE_QUIZ } from '../quiz-python-enterprise.js';
+import { PROGRAMMING_FOUNDATION_COURSE_QUIZ } from '../quiz-programming-foundations.js';
+import { PROGRAMMING_COURSE_PACKAGES } from '../programs.js';
+import { PROGRAMMING_PROJECTS } from '../projects.js';
+import { PROGRAMMING_CORE_COURSES } from '../core.js';
+import { PROGRAMMING_BACKEND_COURSES } from '../backend.js';
+import { PROGRAMMING_SYSTEMS_COURSES } from '../systems.js';
+import { PROGRAMMING_JAVA_FOUNDATION_COURSES } from '../java-foundations.js';
+import { PROGRAMMING_PROJECT_COURSE_SEEDS } from '../projects.js';
+import { PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES } from './project-training-batch-01.js';
 
 const ALL_HANDWRITTEN = [
   ...HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES,
@@ -94,6 +223,240 @@ const ALL_HANDWRITTEN = [
   ...HANDWRITTEN_CPP_PERFORMANCE_X4_COURSES,
   ...HANDWRITTEN_CPP_PERFORMANCE_X5_COURSES,
   ...HANDWRITTEN_CPP_PERFORMANCE_X6_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A0_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A1_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A2_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A3_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A4_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A5_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q0_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q1_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q2_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q3_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q4_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q5_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S0_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S1_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S2_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S3_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S4_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S5_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M0_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M1_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M2_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M3_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M4_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M5_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M6_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E0_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E1_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E2_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E3_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E4_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E5_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E6_COURSES,
+  ...HANDWRITTEN_CSS3_C0_COURSES,
+  ...HANDWRITTEN_CSS3_C1_COURSES,
+  ...HANDWRITTEN_CSS3_C2_COURSES,
+  ...HANDWRITTEN_CSS3_C3_COURSES,
+  ...HANDWRITTEN_CSS3_C4_COURSES,
+  ...HANDWRITTEN_CSS3_C5_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T0_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T1_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T2_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T3_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T4_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T5_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J0_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J1_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J2_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J3_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J4_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J5_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J6_COURSES,
+  ...HANDWRITTEN_VUE3_V0_COURSES,
+  ...HANDWRITTEN_VUE3_V1_COURSES,
+  ...HANDWRITTEN_VUE3_V2_COURSES,
+  ...HANDWRITTEN_VUE3_V3_COURSES,
+  ...HANDWRITTEN_VUE3_V4_COURSES,
+  ...HANDWRITTEN_VUE3_V5_COURSES,
+  ...HANDWRITTEN_VUE3_V6_COURSES,
+  ...HANDWRITTEN_HTML5_H0_COURSES,
+  ...HANDWRITTEN_HTML5_H1_COURSES,
+  ...HANDWRITTEN_HTML5_H2_COURSES,
+  ...HANDWRITTEN_HTML5_H3_COURSES,
+  ...HANDWRITTEN_HTML5_H4_COURSES,
+  ...HANDWRITTEN_HTML5_H5_COURSES,
+  ...HANDWRITTEN_REACT_R0_COURSES,
+  ...HANDWRITTEN_REACT_R1_COURSES,
+  ...HANDWRITTEN_REACT_R2_COURSES,
+  ...HANDWRITTEN_REACT_R3_COURSES,
+  ...HANDWRITTEN_REACT_R4_COURSES,
+  ...HANDWRITTEN_REACT_R5_COURSES,
+  ...HANDWRITTEN_REACT_R6_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J2_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J3_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J4_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J5_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J6_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J7_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J8_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J9_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J10_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J11_COURSES,
+  ...PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES,
+];
+
+const PROGRAMMING_FOUNDATION_COURSES = [
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_F1_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_F2_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_F3_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_F4_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_F5_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H0_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H1_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H2_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H3_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H4_COURSES,
+  ...HANDWRITTEN_PROGRAMMING_FOUNDATION_H5_COURSES,
+];
+
+const AI_PROGRAMMING_COURSES = [
+  ...HANDWRITTEN_AI_PROGRAMMING_A0_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A1_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A2_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A3_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A4_COURSES,
+  ...HANDWRITTEN_AI_PROGRAMMING_A5_COURSES,
+];
+
+const TESTING_QUALITY_COURSES = [
+  ...HANDWRITTEN_TESTING_QUALITY_Q0_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q1_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q2_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q3_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q4_COURSES,
+  ...HANDWRITTEN_TESTING_QUALITY_Q5_COURSES,
+];
+
+const SECURITY_ENGINEERING_COURSES = [
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S0_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S1_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S2_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S3_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S4_COURSES,
+  ...HANDWRITTEN_SECURITY_ENGINEERING_S5_COURSES,
+];
+
+const MIDDLEWARE_SOURCE_COURSES = [
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M0_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M1_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M2_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M3_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M4_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M5_COURSES,
+  ...HANDWRITTEN_MIDDLEWARE_SOURCE_M6_COURSES,
+];
+
+const SOFTWARE_ENGINEERING_COURSES = [
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E0_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E1_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E2_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E3_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E4_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E5_COURSES,
+  ...HANDWRITTEN_SOFTWARE_ENGINEERING_E6_COURSES,
+];
+
+const CSS3_COURSES = [
+  ...HANDWRITTEN_CSS3_C0_COURSES,
+  ...HANDWRITTEN_CSS3_C1_COURSES,
+  ...HANDWRITTEN_CSS3_C2_COURSES,
+  ...HANDWRITTEN_CSS3_C3_COURSES,
+  ...HANDWRITTEN_CSS3_C4_COURSES,
+  ...HANDWRITTEN_CSS3_C5_COURSES,
+];
+
+const TYPESCRIPT_COURSES = [
+  ...HANDWRITTEN_TYPESCRIPT_T0_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T1_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T2_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T3_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T4_COURSES,
+  ...HANDWRITTEN_TYPESCRIPT_T5_COURSES,
+];
+
+const JAVASCRIPT_COURSES = [
+  ...HANDWRITTEN_JAVASCRIPT_J0_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J1_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J2_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J3_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J4_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J5_COURSES,
+  ...HANDWRITTEN_JAVASCRIPT_J6_COURSES,
+];
+
+const VUE3_COURSES = [
+  ...HANDWRITTEN_VUE3_V0_COURSES,
+  ...HANDWRITTEN_VUE3_V1_COURSES,
+  ...HANDWRITTEN_VUE3_V2_COURSES,
+  ...HANDWRITTEN_VUE3_V3_COURSES,
+  ...HANDWRITTEN_VUE3_V4_COURSES,
+  ...HANDWRITTEN_VUE3_V5_COURSES,
+  ...HANDWRITTEN_VUE3_V6_COURSES,
+];
+
+const HTML5_COURSES = [
+  ...HANDWRITTEN_HTML5_H0_COURSES,
+  ...HANDWRITTEN_HTML5_H1_COURSES,
+  ...HANDWRITTEN_HTML5_H2_COURSES,
+  ...HANDWRITTEN_HTML5_H3_COURSES,
+  ...HANDWRITTEN_HTML5_H4_COURSES,
+  ...HANDWRITTEN_HTML5_H5_COURSES,
+];
+
+const REACT_COURSES = [
+  ...HANDWRITTEN_REACT_R0_COURSES,
+  ...HANDWRITTEN_REACT_R1_COURSES,
+  ...HANDWRITTEN_REACT_R2_COURSES,
+  ...HANDWRITTEN_REACT_R3_COURSES,
+  ...HANDWRITTEN_REACT_R4_COURSES,
+  ...HANDWRITTEN_REACT_R5_COURSES,
+  ...HANDWRITTEN_REACT_R6_COURSES,
+];
+
+const GO_CLOUD_COURSES = [
+  ...HANDWRITTEN_GO_CLOUD_G0_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G1_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G2_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G3_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G4_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G5_COURSES,
+  ...HANDWRITTEN_GO_CLOUD_G6_COURSES,
+];
+
+const PYTHON_ENTERPRISE_COURSES = [
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P0_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P1_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P2_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P3_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P4_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P5_COURSES,
+  ...HANDWRITTEN_PYTHON_ENTERPRISE_P6_COURSES,
+];
+
+const JAVA_ADVANCED_COURSES = [
+  ...HANDWRITTEN_JAVA_ADVANCED_J2_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J3_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J4_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J5_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J6_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J7_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J8_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J9_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J10_COURSES,
+  ...HANDWRITTEN_JAVA_ADVANCED_J11_COURSES,
 ];
 
 // 模板话术：手写正文里绝不能出现（这些正是用户截图吐槽的口水话）
@@ -109,6 +472,829 @@ const BOILERPLATE = [
 ];
 
 describe('handwritten programming foundation courses', () => {
+  it('keeps the authored P00-P05 tracks out of generated fallback content', () => {
+    expect(PROGRAMMING_CORE_COURSES).toHaveLength(24);
+    for (const seed of PROGRAMMING_CORE_COURSES) {
+      const plan = getLearningV2CoursePlan('programming', seed.name);
+      expect(plan.qualityStatus, seed.name).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${seed.name}/${step.title}`;
+        expect(step.body.length, tag).toBeGreaterThanOrEqual(100);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+  });
+
+  it('gives the terminal and environment lesson runnable examples on every step', () => {
+    const plan = getLearningV2CoursePlan('programming', '终端、版本与环境：先把工具链跑通');
+    expect(plan.steps).toHaveLength(5);
+    for (const [index, step] of plan.steps.entries()) {
+      expect(step.example, step.title).toBeTruthy();
+      expect(step.example!.code.trim().length, step.title).toBeGreaterThan(40);
+      expect(step.example!.output?.trim().length || 0, step.title).toBeGreaterThan(20);
+      expect(step.body.length, step.title).toBeGreaterThanOrEqual(100);
+      expect(index, step.title).toBeLessThan(5);
+      expect(step.body, step.title).not.toContain('在 PowerShell 可用 Get-Command rg');
+    }
+    expect(plan.steps[0].example!.code).toContain('Get-Command');
+    expect(plan.steps[1].example!.code).toContain('--version');
+    expect(plan.steps[2].example!.code).toContain('Get-ChildItem');
+    expect(plan.steps[3].example!.code).toContain('$LASTEXITCODE');
+    expect(plan.steps[4].example!.code).toContain('environment.md');
+  });
+
+  it('gives every remaining P00 foundation lesson runnable evidence on every step', () => {
+    const names = [
+      '程序如何运行：源码、编译与进程',
+      '首次 HTTP 请求：浏览器到服务端',
+      '从空目录搭建项目与 Docker 本地依赖',
+    ];
+
+    for (const name of names) {
+      const plan = getLearningV2CoursePlan('programming', name);
+      expect(plan.steps, name).toHaveLength(5);
+      for (const step of plan.steps) {
+        expect(step.example, `${name}/${step.title}`).toBeTruthy();
+        expect(step.example!.code.trim().length, `${name}/${step.title}`).toBeGreaterThan(80);
+        expect(step.example!.output?.trim().length || 0, `${name}/${step.title}`).toBeGreaterThan(30);
+        expect(step.body.length, `${name}/${step.title}`).toBeGreaterThanOrEqual(100);
+      }
+    }
+  });
+
+  it('gives every P01 browser foundation lesson runnable evidence on every step', () => {
+    const names = [
+      'HTML 语义、表单与可访问性',
+      'CSS 级联、布局与响应式',
+      '浏览器渲染、性能与前端安全',
+    ];
+
+    for (const name of names) {
+      const plan = getLearningV2CoursePlan('programming', name);
+      expect(plan.steps, name).toHaveLength(5);
+      for (const step of plan.steps) {
+        expect(step.example, `${name}/${step.title}`).toBeTruthy();
+        expect(step.example!.code.trim().length, `${name}/${step.title}`).toBeGreaterThan(80);
+        expect(step.example!.output?.trim().length || 0, `${name}/${step.title}`).toBeGreaterThan(30);
+        expect(step.body.length, `${name}/${step.title}`).toBeGreaterThanOrEqual(100);
+      }
+    }
+  });
+
+  it('gives every P02 JavaScript and TypeScript foundation lesson runnable evidence on every step', () => {
+    const names = [
+      'JavaScript 类型、作用域与闭包',
+      '原型、对象与 this 调用规则',
+      '事件循环、Promise 与异步控制流',
+      'TypeScript 类型系统与企业 API 契约',
+    ];
+
+    for (const name of names) {
+      const plan = getLearningV2CoursePlan('programming', name);
+      expect(plan.steps, name).toHaveLength(5);
+      for (const step of plan.steps) {
+        expect(step.example, `${name}/${step.title}`).toBeTruthy();
+        expect(step.example!.code.trim().length, `${name}/${step.title}`).toBeGreaterThan(80);
+        expect(step.example!.output?.trim().length || 0, `${name}/${step.title}`).toBeGreaterThan(30);
+        expect(step.body.length, `${name}/${step.title}`).toBeGreaterThanOrEqual(100);
+      }
+    }
+  });
+
+  it('gives every P03-P05 framework and backend foundation lesson runnable evidence on every step', () => {
+    const names = [
+      'Vue 响应式原理与组合式状态',
+      'Vue 组件、组合式 API 与工程边界',
+      'Vue Router、Pinia 与请求状态',
+      'Vue 源码与 Nuxt SSR 部署',
+      'React 组件、状态与表单',
+      'React Hooks、渲染与副作用边界',
+      'React Router、数据缓存与 Next.js 部署',
+      'React 源码：Fiber、Hooks 与 Scheduler',
+      'HTTP API、错误模型与幂等设计',
+      'SQL、事务、索引与数据库迁移',
+      '认证、授权与后端安全边界',
+      '日志、指标、Trace 与 OpenTelemetry',
+    ];
+
+    for (const name of names) {
+      const plan = getLearningV2CoursePlan('programming', name);
+      expect(plan.steps, name).toHaveLength(5);
+      for (const step of plan.steps) {
+        expect(step.example, `${name}/${step.title}`).toBeTruthy();
+        expect(step.example!.code.trim().length, `${name}/${step.title}`).toBeGreaterThan(80);
+        expect(step.example!.output?.trim().length || 0, `${name}/${step.title}`).toBeGreaterThan(30);
+        expect(step.body.length, `${name}/${step.title}`).toBeGreaterThanOrEqual(100);
+      }
+    }
+  });
+
+  it('keeps the authored P06-P13 tracks out of generated fallback content', () => {
+    const authoredTracks = [
+      ...PROGRAMMING_BACKEND_COURSES,
+      ...PROGRAMMING_SYSTEMS_COURSES,
+    ];
+    expect(authoredTracks).toHaveLength(42);
+    for (const seed of authoredTracks) {
+      const plan = getLearningV2CoursePlan('programming', seed.name);
+      expect(plan.qualityStatus, seed.name).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${seed.name}/${step.title}`;
+        expect(step.body.length, tag).toBeGreaterThanOrEqual(100);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+  });
+
+  it('keeps the Commerce project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'commerce-modular');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        expect(step.body.length, tag).toBeGreaterThanOrEqual(100);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+  });
+
+  it('keeps the Orbit project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'orbit-microservices');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the Atlas project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'atlas-ai-rag');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the Nimbus project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'booking-cloud');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the LogForge project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'logforge-native');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the LaunchPad project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'launchpad-devops');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the Canvas project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'canvas-collab');
+    expect(project).toBeTruthy();
+    expect(project!.phases).toHaveLength(10);
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) {
+          expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps the DataFlow project-training phases out of generated fallback content', () => {
+    const project = PROGRAMMING_PROJECTS.find((item) => item.id === 'dataflow-lakehouse');
+    expect(project).toBeTruthy();
+    const tooShort: string[] = [];
+    for (const phase of project!.phases) {
+      const plan = getLearningV2CoursePlan('programming', phase.courseName);
+      expect(plan.qualityStatus, phase.courseName).toBe('curated');
+      for (const step of plan.steps) {
+        const tag = `${phase.courseName}/${step.title}`;
+        if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+        expect(step.body, tag).not.toContain('本步的可复核产出是');
+        for (const phrase of BOILERPLATE) expect(step.body, tag).not.toContain(phrase);
+      }
+    }
+    expect(tooShort).toEqual([]);
+  });
+
+  it('keeps SecureVault and DevKit project-training phases out of generated fallback content', () => {
+    for (const projectId of ['securevault', 'devkit-sdk']) {
+      const project = PROGRAMMING_PROJECTS.find((item) => item.id === projectId);
+      expect(project, projectId).toBeTruthy();
+      const tooShort: string[] = [];
+      for (const phase of project!.phases) {
+        const plan = getLearningV2CoursePlan('programming', phase.courseName);
+        expect(plan.qualityStatus, phase.courseName).toBe('curated');
+        for (const step of plan.steps) {
+          const tag = `${phase.courseName}/${step.title}`;
+          if (step.body.length < 100) tooShort.push(`${tag}: ${step.body.length}`);
+          expect(step.body, tag).not.toContain('本步的可复核产出是');
+          for (const phrase of BOILERPLATE) expect(step.body, tag).not.toContain(phrase);
+        }
+      }
+      expect(tooShort, projectId).toEqual([]);
+    }
+  });
+
+  it('covers every ai-programming package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'ai-programming')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(AI_PROGRAMMING_COURSES).toHaveLength(24);
+    expect(AI_PROGRAMMING_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(AI_PROGRAMMING_COURSES.map((course) => course.name)).size).toBe(24);
+  });
+
+  it('attaches a handwritten four-question quiz to every ai-programming lesson', () => {
+    expect(Object.keys(AI_PROGRAMMING_COURSE_QUIZ)).toHaveLength(24);
+    for (const seed of AI_PROGRAMMING_COURSES) {
+      const quiz = AI_PROGRAMMING_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every security-engineering lesson', () => {
+    expect(Object.keys(SECURITY_ENGINEERING_COURSE_QUIZ)).toHaveLength(36);
+    for (const seed of SECURITY_ENGINEERING_COURSES) {
+      const quiz = SECURITY_ENGINEERING_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every testing-quality lesson', () => {
+    expect(Object.keys(TESTING_QUALITY_COURSE_QUIZ)).toHaveLength(36);
+    for (const seed of TESTING_QUALITY_COURSES) {
+      const quiz = TESTING_QUALITY_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every software-engineering lesson', () => {
+    expect(Object.keys(SOFTWARE_ENGINEERING_COURSE_QUIZ)).toHaveLength(35);
+    for (const seed of SOFTWARE_ENGINEERING_COURSES) {
+      const quiz = SOFTWARE_ENGINEERING_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every middleware-source lesson', () => {
+    expect(Object.keys(MIDDLEWARE_SOURCE_COURSE_QUIZ)).toHaveLength(35);
+    for (const seed of MIDDLEWARE_SOURCE_COURSES) {
+      const quiz = MIDDLEWARE_SOURCE_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every css3 lesson', () => {
+    expect(Object.keys(CSS3_COURSE_QUIZ)).toHaveLength(36);
+    for (const seed of CSS3_COURSES) {
+      const quiz = CSS3_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every typescript lesson', () => {
+    expect(Object.keys(TYPESCRIPT_COURSE_QUIZ)).toHaveLength(36);
+    for (const seed of TYPESCRIPT_COURSES) {
+      const quiz = TYPESCRIPT_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every javascript lesson', () => {
+    expect(Object.keys(JAVASCRIPT_COURSE_QUIZ)).toHaveLength(42);
+    for (const seed of JAVASCRIPT_COURSES) {
+      const quiz = JAVASCRIPT_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every vue3 lesson', () => {
+    expect(Object.keys(VUE3_COURSE_QUIZ)).toHaveLength(42);
+    for (const seed of VUE3_COURSES) {
+      const quiz = VUE3_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every html5 lesson', () => {
+    expect(Object.keys(HTML5_COURSE_QUIZ)).toHaveLength(36);
+    for (const seed of HTML5_COURSES) {
+      const quiz = HTML5_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every react lesson', () => {
+    expect(Object.keys(REACT_COURSE_QUIZ)).toHaveLength(42);
+    for (const seed of REACT_COURSES) {
+      const quiz = REACT_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every go-cloud lesson', () => {
+    expect(Object.keys(GO_CLOUD_COURSE_QUIZ)).toHaveLength(42);
+    for (const seed of GO_CLOUD_COURSES) {
+      const quiz = GO_CLOUD_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every Java foundation lesson', () => {
+    expect(Object.keys(JAVA_FOUNDATION_COURSE_QUIZ)).toHaveLength(22);
+    for (const seed of PROGRAMMING_JAVA_FOUNDATION_COURSES) {
+      const quiz = JAVA_FOUNDATION_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every Python enterprise lesson', () => {
+    expect(Object.keys(PYTHON_ENTERPRISE_COURSE_QUIZ)).toHaveLength(42);
+    for (const seed of PYTHON_ENTERPRISE_COURSES) {
+      const quiz = PYTHON_ENTERPRISE_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every programming foundation lesson', () => {
+    expect(Object.keys(PROGRAMMING_FOUNDATION_COURSE_QUIZ)).toHaveLength(72);
+    for (const seed of PROGRAMMING_FOUNDATION_COURSES) {
+      const quiz = PROGRAMMING_FOUNDATION_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('attaches a handwritten four-question quiz to every Java advanced lesson', () => {
+    expect(Object.keys(JAVA_ADVANCED_COURSE_QUIZ)).toHaveLength(88);
+    for (const seed of JAVA_ADVANCED_COURSES) {
+      const quiz = JAVA_ADVANCED_COURSE_QUIZ[seed.name];
+      expect(quiz, seed.name).toHaveLength(4);
+      const answers = new Set<number>();
+      for (const [index, question] of quiz.entries()) {
+        const tag = `${seed.name}/题${index + 1}`;
+        expect(question.options.length, tag).toBeGreaterThanOrEqual(3);
+        expect(new Set(question.options).size, tag).toBe(question.options.length);
+        expect(question.answer, tag).toBeGreaterThanOrEqual(0);
+        expect(question.answer, tag).toBeLessThan(question.options.length);
+        expect(question.explanation.length, tag).toBeGreaterThanOrEqual(25);
+        expect(question.focus.length, tag).toBeGreaterThan(0);
+        for (const phrase of [...BOILERPLATE, '正确答案是']) {
+          expect(question.prompt, tag).not.toContain(phrase);
+          expect(question.explanation, tag).not.toContain(phrase);
+        }
+        answers.add(question.answer);
+      }
+      expect(answers.size, `${seed.name} 正确项应分散`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('covers every testing-quality package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'testing-quality')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(TESTING_QUALITY_COURSES).toHaveLength(36);
+    expect(TESTING_QUALITY_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(TESTING_QUALITY_COURSES.map((course) => course.name)).size).toBe(36);
+  });
+
+  it('covers every security-engineering package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'security-engineering')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(SECURITY_ENGINEERING_COURSES).toHaveLength(36);
+    expect(SECURITY_ENGINEERING_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(SECURITY_ENGINEERING_COURSES.map((course) => course.name)).size).toBe(36);
+  });
+
+  it('covers every middleware-source package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'middleware-source')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(MIDDLEWARE_SOURCE_COURSES).toHaveLength(35);
+    expect(MIDDLEWARE_SOURCE_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(MIDDLEWARE_SOURCE_COURSES.map((course) => course.name)).size).toBe(35);
+  });
+
+  it('covers every software-engineering package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'software-engineering')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(SOFTWARE_ENGINEERING_COURSES).toHaveLength(35);
+    expect(SOFTWARE_ENGINEERING_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(SOFTWARE_ENGINEERING_COURSES.map((course) => course.name)).size).toBe(35);
+  });
+
+  it('covers every css3 package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'css3')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(CSS3_COURSES).toHaveLength(36);
+    expect(CSS3_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(CSS3_COURSES.map((course) => course.name)).size).toBe(36);
+  });
+
+  it('covers every typescript package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'typescript')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(TYPESCRIPT_COURSES).toHaveLength(36);
+    expect(TYPESCRIPT_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(TYPESCRIPT_COURSES.map((course) => course.name)).size).toBe(36);
+  });
+
+  it('covers every javascript package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'javascript')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(JAVASCRIPT_COURSES).toHaveLength(42);
+    expect(JAVASCRIPT_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(JAVASCRIPT_COURSES.map((course) => course.name)).size).toBe(42);
+  });
+
+  it('covers every vue3 package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'vue3')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(VUE3_COURSES).toHaveLength(42);
+    expect(VUE3_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(VUE3_COURSES.map((course) => course.name)).size).toBe(42);
+  });
+
+  it('covers every html5 package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'html5')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(HTML5_COURSES).toHaveLength(36);
+    expect(HTML5_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(HTML5_COURSES.map((course) => course.name)).size).toBe(36);
+  });
+
+  it('covers every react package lesson exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'react')!
+      .stages.flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(REACT_COURSES).toHaveLength(42);
+    expect(REACT_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(REACT_COURSES.map((course) => course.name)).size).toBe(42);
+  });
+
+  it('covers every Java advanced lesson from J2 through J11 exactly once', () => {
+    const expected = PROGRAMMING_COURSE_PACKAGES
+      .find((course) => course.id === 'java-enterprise')!
+      .stages
+      .filter((stage) => !['J0', 'J1'].includes(stage.id))
+      .flatMap((stage) => stage.lessons.map((lesson) => lesson.courseName));
+    expect(JAVA_ADVANCED_COURSES).toHaveLength(88);
+    expect(JAVA_ADVANCED_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(JAVA_ADVANCED_COURSES.map((course) => course.name)).size).toBe(88);
+  });
+
+  it('covers the first three project-training mainlines exactly once', () => {
+    const expected = PROGRAMMING_PROJECT_COURSE_SEEDS
+      .filter((course) =>
+        ['Studio 企业官网', 'Pulse 实时驾驶舱', 'TeamFlow 协作 SaaS']
+          .some((project) => course.name.startsWith(`综合训练 · ${project} ·`)),
+      )
+      .map((course) => course.name);
+    expect(PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES).toHaveLength(30);
+    expect(PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES.map((course) => course.name)).toEqual(expected);
+    expect(new Set(PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES.map((course) => course.name)).size).toBe(30);
+    for (const course of PROGRAMMING_PROJECT_TRAINING_BATCH_01_COURSES) {
+      expect(course.steps.some((step) => !!step[3]?.code), course.name).toBe(true);
+    }
+  });
+
   it('overrides the generated template plan for every handwritten course', () => {
     for (const seed of ALL_HANDWRITTEN) {
       const plan = getLearningV2CoursePlan('programming', seed.name);
@@ -130,7 +1316,7 @@ describe('handwritten programming foundation courses', () => {
         expect(note.length, `${seed.name}/${title} note`).toBeGreaterThan(0);
       }
     }
-  });
+  }, 30_000);
 
   it('covers stages F0 through H5 in checklist order', () => {
     expect(HANDWRITTEN_PROGRAMMING_FOUNDATION_COURSES.map((s) => s.name)).toEqual([

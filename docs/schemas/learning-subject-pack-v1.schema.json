@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yan-zhi.local/schemas/learning-subject-pack-v1.schema.json",
+  "title": "言智学习科目数据包 v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "format",
+    "formatVersion",
+    "packageId",
+    "contentVersion",
+    "generatedAt",
+    "distribution",
+    "scope",
+    "subject",
+    "courses",
+    "counts"
+  ],
+  "properties": {
+    "format": {
+      "const": "yan-zhi.learning-subject-pack"
+    },
+    "formatVersion": {
+      "const": 1
+    },
+    "packageId": {
+      "type": "string",
+      "pattern": "^learning\\.subject\\.[a-z][a-z0-9-]{1,63}$"
+    },
+    "contentVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "distribution": {
+      "enum": [
+        "bundled",
+        "ondemand"
+      ]
+    },
+    "scope": {
+      "const": "subject"
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "courses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/course"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "courses",
+        "steps",
+        "quizQuestions",
+        "codeLabs"
+      ],
+      "properties": {
+        "courses": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quizQuestions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "codeLabs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "subjectKey": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,63}$"
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "note",
+        "courses"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string"
+        },
+        "courses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "name",
+              "meta"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "meta": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "key",
+        "name",
+        "short",
+        "accent",
+        "tint",
+        "line",
+        "current",
+        "stats",
+        "tracks",
+        "lesson",
+        "practice",
+        "review",
+        "coach",
+        "book",
+        "studio"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/subjectKey"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "short": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "string"
+        },
+        "current": {
+          "type": "object"
+        },
+        "stats": {
+          "type": "array"
+        },
+        "tracks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/track"
+          }
+        },
+        "lesson": {
+          "type": "object"
+        },
+        "practice": {
+          "type": "object"
+        },
+        "review": {
+          "type": "object"
+        },
+        "coach": {
+          "type": "object"
+        },
+        "book": {
+          "type": "object"
+        },
+        "studio": {
+          "type": "object"
+        }
+      }
+    },
+    "example": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "title",
+        "language",
+        "code"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output": {
+          "type": "string"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "title",
+        "body",
+        "note"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "practice": {
+          "type": "string"
+        },
+        "checkpoint": {
+          "type": "string"
+        },
+        "example": {
+          "$ref": "#/$defs/example"
+        }
+      }
+    },
+    "quiz": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "prompt",
+        "options",
+        "answer",
+        "explanation",
+        "focus"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "options": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "answer": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "focus": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "subjectKey",
+        "courseName",
+        "trackName",
+        "title",
+        "prerequisite",
+        "plainLanguageGoal",
+        "guidedPractice",
+        "independentPractice",
+        "commonErrors",
+        "sourceRefs",
+        "qualityStatus",
+        "steps",
+        "expertNotes",
+        "quiz"
+      ],
+      "properties": {
+        "subjectKey": {
+          "$ref": "#/$defs/subjectKey"
+        },
+        "courseName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trackName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prerequisite": {
+          "type": "string"
+        },
+        "plainLanguageGoal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guidedPractice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "independentPractice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commonErrors": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "sourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "qualityStatus": {
+          "enum": [
+            "curated",
+            "generated",
+            "draft"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        },
+        "expertNotes": {
+          "type": "array"
+        },
+        "quiz": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/quiz"
+          }
+        },
+        "codeLab": {
+          "type": "object"
+        }
+      }
+    },
+    "course": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name",
+        "trackName",
+        "plan"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "trackName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan": {
+          "$ref": "#/$defs/plan"
+        }
+      }
+    }
+  }
+}

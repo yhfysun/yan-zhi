@@ -7,6 +7,7 @@ export interface DevEnvConfig {
   nodePath: string;
   cCompilerPath: string;
   cppCompilerPath: string;
+  goPath: string;
   cmakePath: string;
   gitPath: string;
   defaultShell: 'powershell' | 'cmd' | 'bash';
@@ -17,7 +18,7 @@ export interface DevEnvConfig {
 }
 
 export interface DevToolStatus {
-  id: 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git';
+  id: 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'go' | 'cmake' | 'git';
   label: string;
   path: string;
   version: string;

@@ -39,12 +39,15 @@
  *   node scripts/package.cjs desktop --plugins=office-core --pets=none
  *                                  # 宠物资源独立维度：all / none / 具体 id（2D 包 + 3D 模型）；
  *                                  # none = 包内无精灵图与 VRM，宠物入口降级隐藏。
+ *   node scripts/package.cjs desktop --content=math,physics
+ *                                  # 只把数学、物理列为 bundled；其余内置科目不注册。
+ *                                  # --content=all 全带；--content=none 不含内置科目。
+ *                                  # 生成 selection.manifest.json，ondemand 包不复制进安装包。
  *   node scripts/package.cjs --list-plugins   # 列出可选插件（catalog/builtin/optional 三源合并）、宠物与三档预设
  *   node scripts/package.cjs desktop:pro --name=办公测试
- *                                  # 安装包名带上该名称：
- *                                  #   yan-zhi-Setup-<版本>-x64-办公测试.exe
- *                                  # 输出目录仍是 dist-release/desktop/pro/<版本>/，
- *                                  # 靠文件名区分，换模式重打包不会覆盖上一份。
+ *                                  # 使用独立构建标识，输出目录为
+ *                                  # dist-release/desktop/办公测试/<版本>/；
+ *                                  # 安装包文件名固定为 yan-zhi-Setup-<版本>-x64.exe。
  *   node scripts/package.cjs --pick-modes
  *                                  # 兼容参数：交互式运行时本就会弹模式选择；
  *                                  # 该参数保留给"想显式声明"的脚本调用。
@@ -170,6 +173,47 @@ if (DEFAULT_AUTH_MODE !== 'guest' && DEFAULT_AUTH_MODE !== 'multi') {
   process.exit(1);
 }
 process.env.YZ_DEFAULT_AUTH_MODE = DEFAULT_AUTH_MODE;
+
+// ── 科目内容选择（--content=all|none|math,physics）──
+// 生成唯一的 selection.manifest.json，运行时按 bundled 白名单过滤科目。
+const CONTENT_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--content='));
+  if (hit) return hit.slice('--content='.length).trim();
+  const index = argv.indexOf('--content');
+  const value = index >= 0 ? argv[index + 1] : null;
+  return value && !value.startsWith('-') ? value.trim() : null;
+})();
+const CONTENT_OUT_DIR = path.join(ROOT, 'apps', 'server', 'assets', 'learning-content');
+
+function prepareLearningContentSelection() {
+  if (CONTENT_FLAG === null) return;
+  if (CONTENT_FLAG === '') {
+    throw new Error('--content 需要 all / none / 逗号分隔的科目 key');
+  }
+  const normalized = CONTENT_FLAG.toLowerCase();
+  const args = ['--out=apps/server/assets/learning-content'];
+  if (normalized === 'all') {
+    args.push('--default=bundled');
+  } else if (normalized === 'none') {
+    args.push('--default=excluded');
+  } else {
+    const subjects = CONTENT_FLAG.split(/[\s,]+/).filter(Boolean);
+    args.push(`--subjects=${subjects.join(',')}`, '--default=excluded');
+  }
+  if (fs.existsSync(CONTENT_OUT_DIR)) {
+    fs.rmSync(CONTENT_OUT_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  }
+  const pnpm = resolvePnpm([
+    '--filter',
+    '@yan-zhi/server',
+    'exec',
+    'tsx',
+    '../../tools/learning-content-pack.ts',
+    'export',
+    ...args,
+  ]);
+  run(pnpm.cmd, pnpm.argv, { env: pnpm.extraEnv });
+}
 
 // ── 快打包（迭代验证用，不下发）──
 // --fast      只出免安装目录（electron-builder --dir）：跳过 NSIS 打安装包与压缩，
@@ -1346,7 +1390,7 @@ function buildAndroid() {
   // 发行默认走精简链：仅 office/learning、真机 ABI，避免把模拟器库和桌面插件
   // 全部塞进手机安装包。需要全模式全 ABI 调试时显式传 --android-full。
   if (!ANDROID_FULL) {
-    info('① 构建移动端精简发行包（office + learning，arm64-v8a + armeabi-v7a）');
+    info('① 构建移动端五模式发行包（office + shop + ops + sec + learning，arm64-v8a + armeabi-v7a）');
     run(
       process.execPath,
       [path.join(mobile, 'scripts', 'build-android-slim.cjs')],
@@ -1667,8 +1711,20 @@ function cleanFreshRoot() {
   if (NAME_FLAG && targets.desktop.length) {
     info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''}`);
   }
+  if (CONTENT_FLAG !== null) {
+    info(`科目数据：${CONTENT_FLAG}（生成 selection.manifest.json）`);
+  }
 
   preflight(targets);
+  if (CONTENT_FLAG !== null && !DRY) {
+    step('生成科目内容选择清单');
+    prepareLearningContentSelection();
+    ok('selection.manifest.json 已生成');
+  } else if (CONTENT_FLAG === null && !DRY && fs.existsSync(CONTENT_OUT_DIR)) {
+    step('清理上次科目选择清单');
+    fs.rmSync(CONTENT_OUT_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    ok('已恢复全量科目模式');
+  }
 
   // 是否需要真编译 server：
   //   · 普通桌面档位构建内含编译（build-all-editions 第一步就是 server build）；
@@ -1693,6 +1749,7 @@ function cleanFreshRoot() {
     ].filter(Boolean).join(' → ')}`);
     info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
     info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);
+    if (CONTENT_FLAG !== null) info(`科目数据: ${CONTENT_FLAG}（将生成 selection.manifest.json）`);
     if (PLUGIN_SELECTION) {
       info(`排除插件: ${PLUGIN_SELECTION.excluded.length ? PLUGIN_SELECTION.excluded.join(', ') : '(无)'}`);
     }

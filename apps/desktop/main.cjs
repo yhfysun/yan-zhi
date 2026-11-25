@@ -30,6 +30,8 @@ const { createCookiesManager } = require('./extension-cookies.cjs');
 const { createWebNavigationManager } = require('./extension-web-navigation.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
+const { createComputerControlOverlay } = require('./computer-control-overlay.cjs');
+const { createComputerControlBridge } = require('./computer-control-bridge.cjs');
 // 收藏夹：只读解析本机 Chrome/Edge 书签文件（纯函数模块，有单测）
 const { discoverChromeBookmarks } = require('./bookmarks-import.cjs');
 // 插件前端包装载协议（mode-pluginization P0）：yz://shared/**（共享依赖 shim）与
@@ -234,6 +236,75 @@ let localCapabilityBootError = '';
 let localCapabilityPort = API_PORT;
 let desktopCapabilityRelay = null;
 let desktopCapabilityRelayKey = '';
+let computerControlOverlay = null;
+let computerControlBridge = null;
+const computerControlEscapeHotkey = { current: null };
+
+async function startComputerControlBridgeRuntime() {
+  if (computerControlBridge) return computerControlBridge;
+  computerControlOverlay = createComputerControlOverlay({
+    BrowserWindow,
+    screen: electronScreen,
+    overlayFile: path.join(__dirname, 'computer-control-overlay.html'),
+    preloadFile: path.join(__dirname, 'computer-control-preload.cjs'),
+    resolveForeground: async () => {
+      const result = await runDesktopHelper(['--foreground']);
+      return result.data || { ok: false, error: result.error || 'foreground-unavailable' };
+    },
+    registerEscape: (handler) => {
+      const result = setGlobalHotkey(computerControlEscapeHotkey, 'Escape', handler, '电脑控制取消');
+      return () => setGlobalHotkey(computerControlEscapeHotkey, '', null, '电脑控制取消');
+    },
+    onEscape: () => triggerPanicHotkey(),
+    log: (...args) => console.log(...args),
+  });
+  computerControlBridge = createComputerControlBridge({
+    controller: computerControlOverlay,
+    logger: console,
+  });
+  await computerControlBridge.start();
+  return computerControlBridge;
+}
+
+function requestComputerControlHandoff(sessionId) {
+  return new Promise((resolve) => {
+    const body = Buffer.from(JSON.stringify({ sessionId }));
+    const req = http.request(API_ORIGIN + '/api/plugin/computer-use/control-handoff', {
+      method: 'POST',
+      timeout: 3000,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(body.length),
+      },
+    }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode >= 200 && res.statusCode < 300));
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.end(body);
+  });
+}
+
+ipcMain.on('computer-control:pause', (event) => {
+  if (!computerControlOverlay?.ownsWebContents?.(event.sender)) return;
+  const state = computerControlOverlay.state();
+  if (!state.active) return;
+  const sessionId = String(state.sessionId || '');
+  if (!sessionId) return;
+  void requestComputerControlHandoff(sessionId).then((ok) => {
+    if (ok) computerControlOverlay?.setPaused(true);
+  });
+});
+
+ipcMain.on('computer-control:cancel', (event) => {
+  if (!computerControlOverlay?.ownsWebContents?.(event.sender)) return;
+  const state = computerControlOverlay.state();
+  const sessionId = String(state.sessionId || '');
+  if (!state.active) return;
+  computerControlOverlay.stop(sessionId);
+  triggerPanicHotkey();
+});
 
 async function startLocalCapabilitiesRuntime() {
   // 完整桌面包/开发包已有本机后端，浏览器桥和 computer-use 在执行端本进程内跑；
@@ -252,6 +323,11 @@ async function startLocalCapabilitiesRuntime() {
       host: '0.0.0.0',
       distDir: path.join(__dirname, 'dist'),
       dataDir: path.join(app.getPath('userData'), 'local-capabilities'),
+      onComputerControl: async (event) => {
+        if (!computerControlOverlay) return { ok: false, error: 'overlay-unavailable' };
+        if (event?.op === 'stop') return computerControlOverlay.stop(event?.sessionId || '');
+        return computerControlOverlay.pulse(event || {});
+      },
     });
     if (SHELL_MODE) localCapabilityPort = localCapabilityRuntime.port;
     console.log('[local-capabilities] 已启动，本机远控地址:', localCapabilityRuntime.baseUrl);
@@ -426,6 +502,9 @@ ipcMain.handle('desktop-capability:start', async (event, options = {}) => {
       license,
       deviceId: `${os.hostname()}-${IS_DEV_INSTANCE ? 'dev' : 'app'}`,
       deviceName: `${os.hostname()} · 言智${SHELL_MODE ? '轻量壳' : '桌面端'}`,
+      onDisconnect: () => {
+        try { localCapabilityRuntime?.endComputerControlSessions?.(); } catch { /* cleanup only */ }
+      },
       capabilities: {
         browser: true,
         computer: localCapabilityRuntime?.capabilities?.().computer || [],
@@ -1808,6 +1887,7 @@ async function startServer() {
   // ★ 浏览器桥的 URL/token（「执行面直连化」P0-3）：桥已在 whenReady 里 start() 过（见调用点注释）。
   //   档位不是 off 时返回两条 env，服务端据此直连；off 时返回 {} ⇒ 服务端走原有 SSE 委托。
   const bridgeEnv = browserBridge.envForServer();
+  const controlEnv = computerControlBridge ? computerControlBridge.envForServer() : {};
   // 模型目录统一放**共享** models（两实例复用同一份 gguf，不重复下载 1.1GB，见 instance.cjs）
   const modelsDir = sharedDataDir('models');
   // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
@@ -1867,7 +1947,7 @@ async function startServer() {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_DESKTOP_LOCAL_EXECUTION: '1', ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
+          ...bridgeEnv, ...controlEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -1881,7 +1961,7 @@ async function startServer() {
         env: { ...process.env, PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_DESKTOP_LOCAL_EXECUTION: '1', ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
-          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
+          ...bridgeEnv, ...controlEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -1911,7 +1991,7 @@ async function startServer() {
       stdio: logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       ...(detached ? { detached: true } : {}),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YZ_INTERNAL_TOKEN: INTERNAL_TOKEN, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...controlEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv(), ...sharedModeEnv(), ...serverIdentityEnv() },
     });
     if (logStream) {
       serverProcess.stdout.on('data', (d) => logStream.write(d));
@@ -14336,6 +14416,7 @@ function setScreenshotHotkey(accel) {
  *  computer-use（电脑使用）与 remote-control（远程控制）同时打：一次急停把两条
  *  输入注入通道全部冻结 —— 远控若还在流式推帧，只冻 computer-use 是不够的。 */
 function triggerPanicHotkey() {
+  try { computerControlOverlay?.stop(); } catch { /* overlay may already be gone */ }
   for (const p of ['/api/plugin/computer-use/panic', '/api/plugin/remote-control/panic']) {
     const req = http.request(API_ORIGIN + p, { method: 'POST', timeout: 3000 }, (res) => {
       res.resume();
@@ -17106,6 +17187,7 @@ app.whenReady().then(async () => {
   //   ★ 必须 **await**：`server.listen()` 是异步的，不等就取 envForServer() 会拿到空 url/token
   //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
   await browserBridge.start();
+  await startComputerControlBridgeRuntime();
   await startLocalCapabilitiesRuntime();
   reportBootPhase('backend');
   const serverStartupPromise = startServer();
@@ -17319,6 +17401,8 @@ app.on('before-quit', () => {
   isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch {}
   try { browserBridge.close(); } catch { /* 端口自动分配，异常退出也无需处理残留 */ }
+  try { computerControlOverlay?.dispose(); } catch { /* overlay may already be gone */ }
+  try { void computerControlBridge?.close(); } catch { /* loopback port is released with process */ }
   try { void desktopCapabilityRelay?.stop(); } catch { /* ignore */ }
   try { void localCapabilityRuntime?.close(); } catch { /* 进程退出时端口会随进程释放 */ }
   if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
@@ -17386,9 +17470,10 @@ async function compileDesktopHelper() {
     //     压在它上面，整屏鼠标被吃掉，表现是"桌面层看得见、按钮和图标全点不动"。
     // v9：新增 --focus —— 桌面层是 Progman 的 WS_CHILD 子窗口，永远拿不到键盘焦点，
     //     win.focus() 对子窗口无效，Delete/F2/Esc 全都不响应；改名让老 exe 自动重编。
+    // v11：--foreground 返回 hwnd/pid/title/物理矩形，供电脑控制黄色边框在 DPI 换算后定位。
     // v10：--focus 先把顶层（Progman）提成前台窗口再 SetFocus —— 只 SetFocus 会被系统
     //      立刻收回（实测焦点几百毫秒后回到前台应用，按键全落到别的应用里）。
-    const exe = path.join(dir, 'yz-desktop-v10.exe');
+    const exe = path.join(dir, 'yz-desktop-v11.exe');
     if (fs.existsSync(exe)) { desktopHelperPath = exe; return exe; }
     const csc = [
       'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
@@ -17396,7 +17481,7 @@ async function compileDesktopHelper() {
     ].find((p) => fs.existsSync(p));
     if (!csc) { console.warn('[desktop-shell] 未找到 csc.exe，桌面外壳能力不可用'); return null; }
     fs.mkdirSync(dir, { recursive: true });
-    const srcPath = path.join(dir, 'yz-desktop-v10.cs');
+    const srcPath = path.join(dir, 'yz-desktop-v11.cs');
     fs.writeFileSync(srcPath, DESKTOP_HELPER_CS, 'utf8');
     await new Promise((resolve, reject) => {
       execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {

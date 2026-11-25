@@ -3,11 +3,14 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const BASE_URL = process.env.MOBILE_AUDIT_URL || 'http://127.0.0.1:5174';
+const API_BASE = process.env.MOBILE_AUDIT_API_BASE || '';
 const CHROME_PATH = process.env.MOBILE_AUDIT_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const OUTPUT_DIR = path.resolve('artifacts/mobile-audit-2026-11-24');
 const VIEWPORTS = [
+  { name: '430x932', width: 430, height: 932 },
   { name: '390x844', width: 390, height: 844 },
   { name: '375x812', width: 375, height: 812 },
+  { name: '320x568', width: 320, height: 568 },
 ];
 
 await mkdir(OUTPUT_DIR, { recursive: true });
@@ -34,6 +37,11 @@ async function createAuditPage(viewport) {
     hasTouch: true,
     isMobile: true,
   });
+  if (API_BASE) {
+    await context.addInitScript((url) => {
+      localStorage.setItem('yz_server_base', url);
+    }, API_BASE);
+  }
   const page = await context.newPage();
   const consoleEntries = [];
   page.on('console', (message) => {
@@ -434,6 +442,50 @@ async function expectLearningMoreMenu(page, result, label, exerciseAction = fals
   });
 }
 
+async function expectMobileSubjectSheetBottomEntry(page, result, label) {
+  await page.locator('.lv2-mobile-subject').click();
+  const sheet = page.locator('.lv2-mobile-subject-sheet');
+  await sheet.waitFor({ state: 'visible', timeout: 5000 });
+  const entry = page.locator('.lv2-mobile-subject-sheet > div button').filter({ hasText: '占卜' }).first();
+  await entry.scrollIntoViewIfNeeded();
+  const hit = await page.evaluate(() => {
+    const target = [...document.querySelectorAll('.lv2-mobile-subject-sheet > div button')]
+      .find((element) => element.textContent?.includes('占卜'));
+    if (!(target instanceof HTMLElement)) return null;
+    target.scrollIntoView({ block: 'center' });
+    const rect = target.getBoundingClientRect();
+    const element = document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    return {
+      hitTag: element?.tagName || '',
+      hitText: element?.textContent?.trim().slice(0, 40) || '',
+      insideEntry: !!element?.closest('.lv2-mobile-subject-sheet > div button'),
+      rect: {
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+      },
+    };
+  });
+  result.steps.push({
+    step: `${label}: 科目抽屉最底部条目可命中`,
+    ok: !!hit?.insideEntry,
+    expected: '科目抽屉高于全局 TabBar，最后一项命中科目按钮',
+    actual: JSON.stringify(hit),
+  });
+
+  await entry.click();
+  await sheet.waitFor({ state: 'detached', timeout: 5000 });
+  const selected = (await page.locator('.lv2-mobile-subject').innerText()).trim();
+  result.steps.push({
+    step: `${label}: 科目抽屉底部条目可切换`,
+    ok: selected.includes('占卜') && await page.locator('.lv2-mobile-overview').isVisible(),
+    expected: '选择占卜后关闭抽屉并渲染占卜总览',
+    actual: selected,
+  });
+}
+
 async function clickFirstVisible(page, selector) {
   const candidates = page.locator(selector);
   const count = await candidates.count();
@@ -457,6 +509,7 @@ function runPrimary(route, readySelector, expectedTabLabel, expectedPath) {
     await expectNoHorizontalOverflow(page, result, '页面');
     if (route === '/learning-v2') {
       await expectLearningTopbarLayout(page, result, '学习总览');
+      await expectMobileSubjectSheetBottomEntry(page, result, '学习总览');
       await expectLearningMoreMenu(page, result, '学习总览', true);
     }
     await page.mouse.wheel(0, 900);
@@ -629,6 +682,20 @@ function runCourseDetail() {
     await expectLearningMoreMenu(page, result, '课程详情');
     await expectNoHorizontalOverflow(page, result, '课程详情');
 
+    const readyLesson = page.locator('[data-programming-lesson-status="ready"]').first();
+    if (await readyLesson.isVisible().catch(() => false)) {
+      await readyLesson.click();
+      await page.locator('[data-learning-session]').waitFor({ state: 'visible', timeout: 15000 });
+      await page.locator('.session-back').click();
+      await page.locator('.programming-course-head').waitFor({ state: 'visible', timeout: 10000 });
+      result.steps.push({
+        step: '课程课时：退出后回到课程详情',
+        ok: await page.locator('.programming-course-head').isVisible(),
+        expected: '退出沉浸课后回到原课程详情，而不是总览',
+        actual: (await page.locator('.lv2-mobile-pagebar').innerText()).replace(/\s+/g, ' ').trim(),
+      });
+    }
+
     const back = page.locator('.programming-back');
     if (await back.isVisible()) {
       await back.click();
@@ -677,8 +744,38 @@ function runLearningSession() {
     await expectTabHidden(page, result, '实践阶段');
     await expectNonEmpty(page, result, '实践阶段');
 
-    await page.locator('.session-back').click();
+    const nativeBack = await page.evaluate(() => {
+      const event = new CustomEvent('yz:mobile-back', { cancelable: true });
+      const dispatchResult = document.dispatchEvent(event);
+      return { dispatchResult, defaultPrevented: event.defaultPrevented };
+    });
     await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+    result.steps.push({
+      step: '系统返回:先退出课时到教材',
+      ok: nativeBack.dispatchResult === false
+        && nativeBack.defaultPrevented
+        && await page.locator('.lv2-mobile-overview').isVisible(),
+      expected: 'Android 返回事件被学习会话消费，只退出当前课时',
+      actual: JSON.stringify(nativeBack),
+    });
+
+    await page.locator('.lv2-mobile-continue').click();
+    await page.locator('[data-learning-session]').waitFor({ state: 'visible', timeout: 15000 });
+    const historyMarker = await page.evaluate(() => window.history.state?.yzLearningStudy === true);
+    await page.evaluate(() => window.history.back()).catch(() => {});
+    await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+    result.steps.push({
+      step: '系统侧滑:只退出课时',
+      ok: historyMarker
+        && await page.locator('.lv2-mobile-overview').isVisible()
+        && (await page.locator('[data-learning-session]').count()) === 0,
+      expected: '同路由历史哨兵被消费，仍停留在 #/learning-v2',
+      actual: JSON.stringify({
+        historyMarker,
+        hash: await page.evaluate(() => window.location.hash),
+      }),
+    });
+
     await page.waitForFunction(() => !document.documentElement.classList.contains('yz-learning-study'));
     const state = await tabItemState(page, '笔记');
     result.steps.push({
@@ -690,12 +787,187 @@ function runLearningSession() {
   };
 }
 
+function runLearningAuxiliaryNavigation() {
+  return async ({ page, result }) => {
+    const openTool = async (label, readySelector) => {
+      await page.locator('.lv2-mobile-tools button').filter({ hasText: label }).first().click();
+      await page.locator(readySelector).waitFor({ state: 'visible', timeout: 10000 });
+      const pagebar = (await page.locator('.lv2-mobile-pagebar').innerText()).replace(/\s+/g, ' ').trim();
+      await page.locator('.lv2-mobile-pagebar button').click();
+      await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+      result.steps.push({
+        step: `学习二级页返回：${label}`,
+        ok: pagebar.includes('返回学科') && await page.locator('.lv2-mobile-overview').isVisible(),
+        expected: '二级页只返回一层到学习总览',
+        actual: pagebar,
+      });
+    };
+
+    await openTool('书籍', '.lv2-book-layout');
+    await openTool('复习', '.lv2-review');
+    await page.getByRole('button', { name: '完整地图' }).click();
+    await page.locator('.lv2-roadmap').waitFor({ state: 'visible', timeout: 15000 });
+    const mapPagebar = (await page.locator('.lv2-mobile-pagebar').innerText()).replace(/\s+/g, ' ').trim();
+    await page.locator('.lv2-mobile-pagebar button').click();
+    await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+    result.steps.push({
+      step: '学习二级页返回：课程地图',
+      ok: mapPagebar.includes('返回学科') && await page.locator('.lv2-mobile-overview').isVisible(),
+      expected: '课程地图只返回一层到学习总览',
+      actual: mapPagebar,
+    });
+  };
+}
+
+function runProgrammingProjectHierarchy() {
+  return async ({ page, result }) => {
+    await page.locator('.lv2-mobile-subject').click();
+    await page.locator('.lv2-mobile-subject-sheet').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('[data-mobile-programming-package="java-enterprise"]').click();
+    await page.locator('.programming-hub').waitFor({ state: 'visible', timeout: 15000 });
+    await page.locator('[data-learning-layer="projects"]').click();
+
+    if (await page.locator('.programming-project-detail-head').isVisible().catch(() => false)) {
+      await page.locator('.programming-project-back').click();
+      await page.locator('.programming-project-grid').waitFor({ state: 'visible', timeout: 5000 });
+    }
+    await page.locator('.programming-project-card').first().click();
+    await page.locator('.programming-project-detail-head').waitFor({ state: 'visible', timeout: 10000 });
+    await page.locator('[data-programming-project-phase] button').first().click();
+    await page.locator('[data-learning-session]').waitFor({ state: 'visible', timeout: 15000 });
+    await page.locator('.session-back').click();
+    await page.locator('.programming-project-detail-head').waitFor({ state: 'visible', timeout: 10000 });
+    result.steps.push({
+      step: '项目阶段：退出课时回到项目详情',
+      ok: await page.locator('.programming-project-detail-head').isVisible(),
+      expected: '退出沉浸课后停在原项目详情，而不是总览',
+      actual: `pagebar=${(await page.locator('.lv2-mobile-pagebar').innerText()).replace(/\s+/g, ' ').trim()}`,
+    });
+
+    await page.locator('.programming-project-back').click();
+    await page.locator('.programming-project-grid').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('.lv2-mobile-pagebar button').click();
+    await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+    result.steps.push({
+      step: '项目详情：逐级返回项目列表和学科',
+      ok: await page.locator('.lv2-mobile-overview').isVisible(),
+      expected: '项目详情 → 项目列表 → 学习总览',
+      actual: await page.evaluate(() => window.location.hash),
+    });
+  };
+}
+
+function runAlgorithmWorkbench() {
+  return async ({ page, result }) => {
+    await page.locator('.lv2-mobile-subject').click();
+    await page.locator('.lv2-mobile-subject-sheet').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('.lv2-mobile-subject-sheet > div button')
+      .filter({ hasText: '算法与数据结构' })
+      .first()
+      .click();
+    await page.locator('.lv2-mobile-overview').waitFor({ state: 'visible', timeout: 10000 });
+
+    await page.locator('.lv2-mobile-course-select .el-select__wrapper').click();
+    await page.locator('.lv2-ai-select-popper.el-popper').waitFor({ state: 'visible', timeout: 5000 });
+    const picker = await page.evaluate(() => {
+      const popper = document.querySelector('.lv2-ai-select-popper.el-popper');
+      const rect = popper?.getBoundingClientRect();
+      return {
+        options: [...document.querySelectorAll('.el-select-dropdown__item')]
+          .filter((element) => element.offsetParent !== null).length,
+        popper: rect ? {
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+        } : null,
+        docScrollWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    result.steps.push({
+      step: '算法课程下拉：64 门课程且不撑破视口',
+      ok: picker.options === 64
+        && picker.docScrollWidth <= picker.viewportWidth + 1
+        && !!picker.popper
+        && picker.popper.left >= 0
+        && picker.popper.right <= picker.viewportWidth,
+      expected: '64 个课程选项，popper 完整落在移动视口内',
+      actual: JSON.stringify(picker),
+    });
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: '完整地图' }).click();
+    await page.locator('.algorithm-workbench').waitFor({ state: 'visible', timeout: 15000 });
+    await page.locator('.algorithm-mode-tabs button').filter({ hasText: '题型实战' }).click();
+    await page.locator('.algorithm-problem-card').first().waitFor({ state: 'visible', timeout: 10000 });
+    const problemCount = await page.locator('.algorithm-problem-card').count();
+    await page.locator('.algorithm-problem-card').first().click();
+    await page.locator('.algorithm-focus').waitFor({ state: 'visible', timeout: 10000 });
+    await page.locator('.algorithm-focus button').filter({ hasText: '返回题库' }).click();
+    await page.locator('.algorithm-problem-browser').waitFor({ state: 'visible', timeout: 5000 });
+    result.steps.push({
+      step: '算法题型实战：列表和单题返回',
+      ok: problemCount > 0 && await page.locator('.algorithm-problem-browser').isVisible(),
+      expected: '题型列表可打开，单题实战只返回题库',
+      actual: `problemCount=${problemCount}`,
+    });
+    await expectNoHorizontalOverflow(page, result, '算法工作台');
+  };
+}
+
+function runNotesActions() {
+  return async ({ page, result }) => {
+    await page.getByRole('button', { name: '管理模板与字典' }).click();
+    await page.getByRole('button', { name: '关闭模板工作台' }).waitFor({
+      state: 'visible',
+      timeout: 5000,
+    });
+    await page.getByRole('button', { name: '关闭模板工作台' }).click();
+    await page.getByRole('button', { name: '新建记录' }).click();
+    await page.getByRole('button', { name: '关闭' }).waitFor({
+      state: 'visible',
+      timeout: 5000,
+    });
+    await page.getByRole('button', { name: '关闭' }).click();
+    result.steps.push({
+      step: '笔记页：模板管理与新建记录弹层',
+      ok: await page.locator('.nmh-page').isVisible(),
+      expected: '两个弹层均能打开和关闭，关闭后恢复笔记页',
+      actual: await page.evaluate(() => window.location.hash),
+    });
+    await expectNoHorizontalOverflow(page, result, '笔记页');
+  };
+}
+
+function runSettingsDetail() {
+  return async ({ page, result }) => {
+    await page.getByRole('button', { name: /^通用设置/ }).click();
+    await page.waitForTimeout(300);
+    const back = page.getByRole('button', { name: '返回' }).first();
+    await back.waitFor({ state: 'visible', timeout: 5000 });
+    const bodyLength = (await page.locator('body').innerText()).trim().length;
+    await back.click();
+    await page.waitForTimeout(300);
+    result.steps.push({
+      step: '设置详情：通用设置打开与返回',
+      ok: bodyLength > 100 && await page.getByRole('button', { name: /^通用设置/ }).isVisible(),
+      expected: '通用设置可打开，返回后回到设置分类首页',
+      actual: `bodyLength=${bodyLength}`,
+    });
+    await expectNoHorizontalOverflow(page, result, '设置详情');
+  };
+}
+
 for (const viewport of VIEWPORTS) {
   await recordCase(viewport, '工作', '/chat', runPrimary('/chat', '.chat-page', '笔记', '/notes'));
   await recordCase(viewport, '笔记', '/notes', runPrimary('/notes', '.nmh-page', '资讯', '/news'));
+  await recordCase(viewport, '笔记弹层', '/notes', runNotesActions(), { readySelector: '.nmh-page' });
   await recordCase(viewport, '学习总览', '/learning-v2', runPrimary('/learning-v2', '.lv2-mobile-overview', '资讯', '/news'));
   await recordCase(viewport, '课程详情', '/learning-v2', runCourseDetail(), { readySelector: '.lv2-mobile-overview' });
   await recordCase(viewport, '学习练习实践', '/learning-v2', runLearningSession(), { readySelector: '.lv2-mobile-overview' });
+  await recordCase(viewport, '学习逐级返回', '/learning-v2', runLearningAuxiliaryNavigation(), { readySelector: '.lv2-mobile-overview' });
+  await recordCase(viewport, '编程项目逐级返回', '/learning-v2', runProgrammingProjectHierarchy(), { readySelector: '.lv2-mobile-overview' });
+  await recordCase(viewport, '算法工作台', '/learning-v2', runAlgorithmWorkbench(), { readySelector: '.lv2-mobile-overview' });
   await recordCase(viewport, '资讯首页', '/news', runPrimary('/news', '.news-feed-list', '笔记', '/notes'));
   await recordCase(viewport, '资讯分类', '/news', runNewsCategory(), { readySelector: '.news-feed-list' });
   await recordCase(viewport, '新闻详情', '/news', runNewsDetail(), { readySelector: '.news-feed-list' });
@@ -704,6 +976,7 @@ for (const viewport of VIEWPORTS) {
     readySelector: '.news-feed-list',
   });
   await recordCase(viewport, '我的', '/settings', runPrimary('/settings', null, '笔记', '/notes'));
+  await recordCase(viewport, '设置详情', '/settings', runSettingsDetail());
 
   for (const result of results.filter((entry) => entry.viewport === viewport.name)) {
     const layout = result.layout;

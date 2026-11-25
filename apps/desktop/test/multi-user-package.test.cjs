@@ -10,6 +10,7 @@ const SET_EDITION = fs.readFileSync(path.join(DESKTOP, 'scripts', 'set-edition.c
 const PACKAGE = fs.readFileSync(path.join(ROOT, 'scripts', 'package.cjs'), 'utf8');
 const BUILD_ALL = fs.readFileSync(path.join(DESKTOP, 'scripts', 'build-all-editions.cjs'), 'utf8');
 const ROOT_PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const DESKTOP_YMLS = ['electron-builder.full.yml', 'electron-builder.lite.yml'];
 
 test('多用户发行配置随包固化，并由主进程注入后端', () => {
   assert.match(SET_EDITION, /authMode/);
@@ -29,4 +30,12 @@ test('打包入口支持显式多用户 Pro 包', () => {
     ROOT_PKG.scripts['package:desktop:pro:multi'],
     'node scripts/package-desktop-pro.cjs --auth-mode=multi --name=pro-multi --yes',
   );
+});
+
+test('Windows 安装包文件名不追加档位或自定义用途后缀', () => {
+  for (const name of DESKTOP_YMLS) {
+    const source = fs.readFileSync(path.join(DESKTOP, name), 'utf8');
+    assert.match(source, /artifactName: \$\{productName\}-Setup-\$\{version\}-\$\{arch\}\.\$\{ext\}/);
+    assert.doesNotMatch(source, /artifactName:.*YZ_ARTIFACT_SUFFIX/);
+  }
 });

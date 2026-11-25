@@ -76,7 +76,7 @@ describe('computer-use 桌面能力代理', () => {
   it('完整桌面包没有能力桥时，继续在后端本机执行', async () => {
     bridge.available.mockReturnValue(false);
     bridge.seen.mockReturnValue(false);
-    const tools = activateWithTools({ localExecution: true });
+    const tools = activateWithTools({ localExecution: true, sessionV2: false });
     const result = await tools.get('computer_mouse_move').execute(
       { x: 10, y: 20 },
       { userId: 'guest' },

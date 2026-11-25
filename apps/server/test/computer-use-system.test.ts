@@ -108,6 +108,11 @@ describe('computer-use manifest 与实现一致性', () => {
     expect(m).not.toBeNull();
     expect(m![1]).toMatch(/系统体检/);
   });
+
+  it('会话升级有显式版本和回退开关', () => {
+    expect(src).toMatch(/version:\s*'0\.2\.0'/);
+    expect(src).toMatch(/sessionV2:\s*\{[^}]*default:\s*true/s);
+  });
 });
 
 // ---------- 白名单护栏（安全核心） ----------

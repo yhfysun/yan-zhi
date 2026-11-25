@@ -20,7 +20,8 @@ import path from 'node:path';
 import { URL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { remoteControlModule } from '../server/src/plugins/remote-control.ts';
-import { computerUseModule } from '../server/src/plugins/computer-use.ts';
+import { computerUseModule, endAllComputerControlSessions } from '../server/src/plugins/computer-use.ts';
+import { shouldShowComputerControl } from '../server/src/computer-control-bridge.ts';
 
 const API_PREFIX = '/api/plugin/remote-control';
 const MAX_JSON_BODY = 2 * 1024 * 1024;
@@ -522,7 +523,28 @@ export async function startLocalCapabilities(options = {}) {
   async function executeComputerTool(name, args = {}, context = {}) {
     const tool = computerTools.get(String(name || ''));
     if (!tool) throw new Error(`未知的电脑使用工具: ${name}`);
-    return tool.execute(args || {}, context);
+    const visual = shouldShowComputerControl(String(name || ''));
+    const sessionId = `desktop:${String(context.conversationId || context.taskId || 'active')}`;
+    if (visual && typeof options.onComputerControl === 'function') {
+      await Promise.resolve(options.onComputerControl({
+        op: 'pulse',
+        sessionId,
+        toolName: String(name || ''),
+        phase: 'before',
+      })).catch(() => undefined);
+    }
+    try {
+      return await tool.execute(args || {}, context);
+    } finally {
+      if (visual && typeof options.onComputerControl === 'function') {
+        await Promise.resolve(options.onComputerControl({
+          op: 'pulse',
+          sessionId,
+          toolName: String(name || ''),
+          phase: 'after',
+        })).catch(() => undefined);
+      }
+    }
   }
 
   logger.log?.(`[local-capabilities] 远控被控端已监听 ${baseUrl}`);
@@ -534,7 +556,17 @@ export async function startLocalCapabilities(options = {}) {
     rotateCode,
     capabilities,
     executeComputerTool,
+    endComputerControlSessions() {
+      const ended = endAllComputerControlSessions();
+      if (typeof options.onComputerControl === 'function') {
+        void Promise.resolve(options.onComputerControl({ op: 'stop', sessionId: '*' })).catch(() => undefined);
+      }
+      return ended;
+    },
     async close() {
+      if (typeof options.onComputerControl === 'function') {
+        await Promise.resolve(options.onComputerControl({ op: 'stop', sessionId: '' })).catch(() => undefined);
+      }
       for (const client of wss?.clients || []) {
         try { client.close(); } catch { /* ignore */ }
       }

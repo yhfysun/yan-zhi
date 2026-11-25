@@ -55,6 +55,7 @@ function createDesktopCapabilityRelay(options = {}) {
   const deviceName = String(options.deviceName || '言智轻量壳');
   const capabilities = options.capabilities || { browser: true, computer: [] };
   const execute = options.execute;
+  const onDisconnect = options.onDisconnect;
   const logger = options.logger || console;
   const WebSocketImpl = options.WebSocketImpl || WebSocket;
   let ws = null;
@@ -125,6 +126,7 @@ function createDesktopCapabilityRelay(options = {}) {
     });
     sock.on('close', () => {
       if (ws === sock) ws = null;
+      try { onDisconnect?.(); } catch { /* cleanup must not block reconnect */ }
       if (pingTimer) {
         clearInterval(pingTimer);
         pingTimer = null;

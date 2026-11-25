@@ -31,6 +31,25 @@ describe('algorithm practice code runner', () => {
     expect(result.runtime).toContain('Node.js');
   });
 
+  it('runs TypeScript through native type stripping with stdin', async () => {
+    const runtimes = await listAlgorithmCodeRuntimes();
+    const typescript = runtimes.find((runtime) => runtime.id === 'typescript');
+    if (!typescript?.available) return;
+    const result = await runAlgorithmCode({
+      language: 'typescript',
+      source: [
+        "import { readFileSync } from 'node:fs';",
+        "const value: number = Number(readFileSync(0, 'utf8').trim());",
+        'const doubled: number = value * 2;',
+        'console.log(doubled);',
+      ].join('\n'),
+      stdin: '21',
+    });
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.stdout.trim()).toBe('42');
+    expect(result.runtime).toContain('type stripping');
+  });
+
   it('returns runtime errors without crashing the server', async () => {
     const result = await runAlgorithmCode({
       language: 'javascript',
@@ -71,6 +90,27 @@ describe('algorithm practice code runner', () => {
     });
     expect(result.ok, `${compiled.id}: ${result.stderr}`).toBe(true);
     expect(result.stdout.trim()).toBe('42');
+  });
+
+  it('builds and runs a detected Go toolchain with stdin', async () => {
+    const runtimes = await listAlgorithmCodeRuntimes();
+    const go = runtimes.find((runtime) => runtime.id === 'go');
+    if (!go?.available) return;
+    const result = await runAlgorithmCode({
+      language: 'go',
+      source: [
+        'package main',
+        'import ("bufio"; "fmt"; "os")',
+        'func main() {',
+        '  scanner := bufio.NewScanner(os.Stdin)',
+        '  scanner.Scan()',
+        '  fmt.Println(scanner.Text() + "1")',
+        '}',
+      ].join('\n'),
+      stdin: '4',
+    });
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.stdout.trim()).toBe('41');
   });
 
   it('rejects empty source before spawning a process', async () => {

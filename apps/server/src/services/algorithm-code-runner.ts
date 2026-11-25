@@ -9,7 +9,14 @@ import {
   resolveToolExe,
 } from './dev-env.js';
 
-export type AlgorithmCodeLanguage = 'javascript' | 'python' | 'java' | 'c' | 'cpp';
+export type AlgorithmCodeLanguage =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'java'
+  | 'c'
+  | 'cpp'
+  | 'go';
 
 export type AlgorithmCodeRuntime = {
   id: AlgorithmCodeLanguage;
@@ -74,6 +81,14 @@ export async function listAlgorithmCodeRuntimes(): Promise<AlgorithmCodeRuntime[
     detail: nodeBundled ? '应用内置 Node.js，无需安装' : (nodePath || '使用当前服务端 Node.js'),
     bundled: nodeBundled,
   });
+  runtimes.push({
+    id: 'typescript',
+    label: 'TypeScript / Node.js',
+    available: Number(process.versions.node.split('.')[0]) >= 22,
+    version: process.versions.node,
+    detail: 'Node.js 原生类型擦除，直接运行 .ts 单文件任务',
+    bundled: nodeBundled,
+  });
 
   try {
     const python = await findPython();
@@ -128,6 +143,17 @@ export async function listAlgorithmCodeRuntimes(): Promise<AlgorithmCodeRuntime[
     available: !!cppExe && cppStatus.ok,
     version: cppStatus.version,
     detail: cppExe || cppStatus.error || '未找到 G++ / Clang++',
+    bundled: false,
+  });
+
+  const goExe = resolveToolExe('go');
+  const goStatus = probeTool('go');
+  runtimes.push({
+    id: 'go',
+    label: 'Go',
+    available: !!goExe && goStatus.ok,
+    version: goStatus.version,
+    detail: goExe || goStatus.error || '未找到 Go',
     bundled: false,
   });
 
@@ -210,14 +236,16 @@ function runProcess(
 
 function sourceFileName(language: AlgorithmCodeLanguage): string {
   if (language === 'javascript') return 'main.js';
+  if (language === 'typescript') return 'main.ts';
   if (language === 'python') return 'main.py';
   if (language === 'java') return 'Main.java';
   if (language === 'c') return 'main.c';
-  return 'main.cpp';
+  if (language === 'cpp') return 'main.cpp';
+  return 'main.go';
 }
 
 function validateRequest(language: AlgorithmCodeLanguage, source: string, stdin: string): string {
-  if (!['javascript', 'python', 'java', 'c', 'cpp'].includes(language)) {
+  if (!['javascript', 'typescript', 'python', 'java', 'c', 'cpp', 'go'].includes(language)) {
     throw new Error('不支持的编程语言');
   }
   if (!source.trim()) throw new Error('代码不能为空');
@@ -244,6 +272,8 @@ export async function runAlgorithmCode(input: {
   const env = buildSpawnEnv();
   env.PYTHONIOENCODING = 'utf-8';
   env.PYTHONUTF8 = '1';
+  env.GOTOOLCHAIN = 'local';
+  env.GO111MODULE = 'off';
   const started = Date.now();
   let stdout = '';
   let stderr = '';
@@ -263,6 +293,11 @@ export async function runAlgorithmCode(input: {
       env.ELECTRON_RUN_AS_NODE = '1';
       args = [file];
       runtime = `Node.js ${process.versions.node}`;
+    } else if (language === 'typescript') {
+      command = process.versions.electron ? process.execPath : (resolveToolExe('node') || process.execPath);
+      env.ELECTRON_RUN_AS_NODE = '1';
+      args = ['--experimental-strip-types', file];
+      runtime = `Node.js ${process.versions.node} (type stripping)`;
     } else if (language === 'python') {
       command = await findPython();
       args = [file];
@@ -294,6 +329,33 @@ export async function runAlgorithmCode(input: {
       command = java;
       args = ['-Dfile.encoding=UTF-8', '-cp', dir, 'Main'];
       runtime = java;
+    } else if (language === 'go') {
+      const go = resolveToolExe('go');
+      if (!go) throw new Error('未找到 Go 工具链');
+      const output = path.join(dir, process.platform === 'win32' ? 'program.exe' : 'program');
+      const compile = await runProcess(go, ['build', '-trimpath', '-o', output, file], {
+        cwd: dir,
+        env,
+        stdin: '',
+        timeoutMs: 30_000,
+      });
+      compileOutput = [compile.stdout, compile.stderr].filter(Boolean).join('\n');
+      if (compile.exitCode !== 0 || compile.timedOut) {
+        return {
+          ok: false,
+          language,
+          stdout: '',
+          stderr: compile.stderr,
+          compileOutput,
+          exitCode: compile.exitCode,
+          timedOut: compile.timedOut,
+          durationMs: Date.now() - started,
+          runtime: go,
+        };
+      }
+      command = output;
+      args = [];
+      runtime = go;
     } else {
       const compiler = resolveToolExe(language === 'c' ? 'c' : 'cpp');
       if (!compiler) throw new Error(language === 'c' ? '未找到 C 编译器' : '未找到 C++ 编译器');

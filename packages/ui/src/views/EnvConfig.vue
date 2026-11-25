@@ -135,6 +135,15 @@
         </SettingRow>
       </template>
 
+      <template v-else-if="activeTab === 'go'">
+        <SettingRow label="Go 可执行文件" tip="Go 代码台使用它完成编译、运行和版本证据记录；留空用 PATH 里的 go。">
+          <div class="env-input-row">
+            <el-input v-model="form.goPath" size="default" placeholder="如 C:\Program Files\Go\bin\go.exe" />
+            <button class="env-pick" @click="pick('goPath', false)">浏览</button>
+          </div>
+        </SettingRow>
+      </template>
+
       <template v-else-if="activeTab === 'cmake'">
         <SettingRow label="CMake 可执行文件" tip="C/C++ 项目配置、构建和 Presets 使用；留空用 PATH 里的 cmake。">
           <div class="env-input-row">
@@ -187,7 +196,7 @@ import type { DevEnvConfig, DevToolStatus } from '../types/dev-env';
 
 type ToolStatus = DevToolStatus;
 
-type TabKey = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git' | 'general';
+type TabKey = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'go' | 'cmake' | 'git' | 'general';
 
 const TABS: Array<{ key: TabKey; label: string; tool?: DevToolStatus['id'] }> = [
   { key: 'java', label: 'Java', tool: 'java' },
@@ -196,6 +205,7 @@ const TABS: Array<{ key: TabKey; label: string; tool?: DevToolStatus['id'] }> = 
   { key: 'node', label: 'Node', tool: 'node' },
   { key: 'c', label: 'C', tool: 'c' },
   { key: 'cpp', label: 'C++', tool: 'cpp' },
+  { key: 'go', label: 'Go', tool: 'go' },
   { key: 'cmake', label: 'CMake', tool: 'cmake' },
   { key: 'git', label: 'Git', tool: 'git' },
   { key: 'general', label: '通用' },
@@ -208,6 +218,7 @@ const TOOL_CHANNELS: Partial<Record<DevToolStatus['id'], { download: string; doc
   node: { download: 'https://nodejs.org/en/download', docs: 'https://nodejs.org/en/learn/getting-started/introduction-to-nodejs' },
   c: { download: 'https://www.msys2.org/', docs: 'https://gcc.gnu.org/onlinedocs/' },
   cpp: { download: 'https://www.msys2.org/', docs: 'https://gcc.gnu.org/onlinedocs/' },
+  go: { download: 'https://go.dev/dl/', docs: 'https://go.dev/doc/' },
   cmake: { download: 'https://cmake.org/download/', docs: 'https://cmake.org/cmake/help/latest/guide/user-interaction/' },
   git: { download: 'https://git-scm.com/downloads', docs: 'https://git-scm.com/doc' },
 };
@@ -220,7 +231,7 @@ const activeTab = ref<TabKey>('java');
 
 const form = reactive<DevEnvConfig>({
   javaHome: '', mavenHome: '', pythonPath: '', nodePath: '',
-  cCompilerPath: '', cppCompilerPath: '', cmakePath: '', gitPath: '',
+  cCompilerPath: '', cppCompilerPath: '', goPath: '', cmakePath: '', gitPath: '',
   defaultShell: 'powershell', extraEnv: {}, javaOpts: '', mavenOpts: '', pipIndexUrl: '',
 });
 const extraEnvText = ref('');
@@ -295,7 +306,7 @@ async function reset() {
 
 /** 浏览：桌面端走原生目录/文件选择，web 端退化为手填提示 */
 async function pick(
-  key: 'javaHome' | 'mavenHome' | 'pythonPath' | 'nodePath' | 'cCompilerPath' | 'cppCompilerPath' | 'cmakePath' | 'gitPath',
+  key: 'javaHome' | 'mavenHome' | 'pythonPath' | 'nodePath' | 'cCompilerPath' | 'cppCompilerPath' | 'goPath' | 'cmakePath' | 'gitPath',
   isDir: boolean,
 ) {
   try {

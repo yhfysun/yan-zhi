@@ -19,6 +19,8 @@ export interface DevEnvConfig {
   cCompilerPath: string;
   /** C++ 编译器绝对路径；留空按 g++ / clang++ 顺序查找 PATH */
   cppCompilerPath: string;
+  /** Go 可执行文件绝对路径；留空用 PATH 里的 go */
+  goPath: string;
   /** CMake 可执行文件绝对路径；留空用 PATH 里的 cmake */
   cmakePath: string;
   /** Git 可执行文件绝对路径；留空用 PATH 里的 git */
@@ -42,6 +44,7 @@ export const DEFAULT_DEV_ENV: DevEnvConfig = {
   nodePath: '',
   cCompilerPath: '',
   cppCompilerPath: '',
+  goPath: '',
   cmakePath: '',
   gitPath: '',
   defaultShell: process.platform === 'win32' ? 'powershell' : 'bash',
@@ -77,7 +80,7 @@ export function saveDevEnv(patch: Partial<DevEnvConfig>): DevEnvConfig {
 
 // ======================== 工具探测 ========================
 
-export type ToolId = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'cmake' | 'git';
+export type ToolId = 'java' | 'maven' | 'python' | 'node' | 'c' | 'cpp' | 'go' | 'cmake' | 'git';
 
 export interface ToolStatus {
   id: ToolId;
@@ -112,6 +115,7 @@ const TOOL_SPECS: ToolSpec[] = [
   { id: 'node', label: 'Node.js', commands: ['node'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
   { id: 'c', label: 'C 编译器', commands: ['gcc', 'clang'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
   { id: 'cpp', label: 'C++ 编译器', commands: ['g++', 'clang++', 'c++'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
+  { id: 'go', label: 'Go', commands: ['go'], versionArgs: ['version'], kind: 'exe', exeRel: [] },
   { id: 'cmake', label: 'CMake', commands: ['cmake'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
   { id: 'git', label: 'Git', commands: ['git'], versionArgs: ['--version'], kind: 'exe', exeRel: [] },
 ];
@@ -174,6 +178,14 @@ function windowsFallbackExecutable(id: ToolId): string {
       ...programFiles.map((base) => path.join(base, 'CMake', 'bin', 'cmake.exe')),
       joinRoot('APP', 'CMake', 'bin', 'cmake.exe'),
       joinRoot('APP', 'cmake', 'bin', 'cmake.exe'),
+    ]);
+  }
+  if (id === 'go') {
+    return firstExisting([
+      process.env.GOROOT ? path.join(process.env.GOROOT, 'bin', 'go.exe') : '',
+      joinRoot('Go', 'bin', 'go.exe'),
+      joinRoot('APP', 'Go', 'bin', 'go.exe'),
+      local ? path.join(local, 'Programs', 'Go', 'bin', 'go.exe') : '',
     ]);
   }
   if (id === 'git') {
@@ -286,6 +298,8 @@ export function resolveToolExe(id: ToolId, cfg: DevEnvConfig = loadDevEnv()): st
         ? cfg.cCompilerPath
         : id === 'cpp'
           ? cfg.cppCompilerPath
+          : id === 'go'
+            ? cfg.goPath
           : id === 'cmake'
             ? cfg.cmakePath
             : cfg.gitPath;
@@ -320,6 +334,7 @@ export function detectDevEnv(): { suggested: Partial<DevEnvConfig>; tools: ToolS
   const node = by('node'); if (node?.ok) suggested.nodePath = node.path;
   const c = by('c'); if (c?.ok) suggested.cCompilerPath = c.path;
   const cpp = by('cpp'); if (cpp?.ok) suggested.cppCompilerPath = cpp.path;
+  const go = by('go'); if (go?.ok) suggested.goPath = go.path;
   const cmake = by('cmake'); if (cmake?.ok) suggested.cmakePath = cmake.path;
   const git = by('git'); if (git?.ok) suggested.gitPath = git.path;
   return { suggested, tools };
@@ -353,6 +368,7 @@ export function buildSpawnEnv(cfg: DevEnvConfig = loadDevEnv()): NodeJS.ProcessE
     cfg.nodePath,
     cfg.cCompilerPath,
     cfg.cppCompilerPath,
+    cfg.goPath,
     cfg.cmakePath,
     cfg.gitPath,
   ]) {

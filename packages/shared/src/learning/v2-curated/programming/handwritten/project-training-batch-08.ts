@@ -21,7 +21,7 @@ const makeCourse = (
   minutes,
   prerequisite: '完成至少一个全栈项目，理解 HTTP、WebSocket、数据库事务和前端状态。',
   goal,
-  guidedPractice: '围绕当前阶段完成可观察实验，记录输入、网络消息、合并结果、失败状态和恢复证据。',
+  guidedPractice: `围绕“${phase}”完成可观察实验：${steps[0][1]} 记录网络消息、合并结果、失败状态和恢复证据。`,
   independentPractice: '独立交付阶段产物，并用两到三个客户端并发操作、断线和重连验证最终一致性。',
   commonErrors: [
     '冲突只在客户端按顺序覆盖，没有使用可合并数据类型或服务端版本。',

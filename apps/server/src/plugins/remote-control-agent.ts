@@ -116,6 +116,7 @@ public class RcAgent
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder t, int n);
@@ -328,6 +329,12 @@ public class RcAgent
         EmitEvent(ev);
         return;
       }
+    }
+    POINT p = new POINT(); p.X = x; p.Y = y;
+    IntPtr top = GetAncestor(WindowFromPoint(p), 2);
+    if (top != IntPtr.Zero) {
+      SetForegroundWindow(top);
+      Thread.Sleep(15);
     }
     SetCursorPos(x, y);
     // 12ms 只为让光标落位 / down-up 有非零按住时长；旧值 30/30/40 每次点击固定烧 100ms，

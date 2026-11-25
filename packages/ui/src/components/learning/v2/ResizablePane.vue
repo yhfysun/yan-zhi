@@ -142,7 +142,20 @@ defineExpose({ toggle, collapsed, width });
   background: color-mix(in srgb, var(--lv2-surface, #fff) 86%, transparent);
 }
 .rpane-right { flex-direction: row-reverse; border-right: 0; border-left: 1px solid var(--lv2-line, #d8ded9); }
-.rpane-content { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.rpane-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.rpane-content::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 .rpane-fold {
   position: absolute; top: 7px; right: 10px; z-index: 2;
   display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center;

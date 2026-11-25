@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { createApp, nextTick, type App } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import ProgrammingCourseHub from './ProgrammingCourseHub.vue';
 import {
   JAVA_ENTERPRISE_COURSE,
@@ -72,7 +74,7 @@ describe('ProgrammingCourseHub', () => {
     (host.querySelector('[data-programming-course="java-enterprise"]') as HTMLButtonElement).click();
     await nextTick();
 
-    expect(host.textContent).toContain('110 / 110 课时已开放');
+    expect(host.textContent).toContain('110 / 110课时开放');
     expect(host.querySelectorAll('[data-programming-stage-status="planned"]')).toHaveLength(0);
   });
 
@@ -88,6 +90,32 @@ describe('ProgrammingCourseHub', () => {
     expect(host.textContent).toContain('语义化、可键盘操作');
     expect(host.querySelectorAll('[data-programming-stage]').length).toBeGreaterThanOrEqual(6);
     expect(host.textContent).not.toContain('Java 零基础样板课');
+  });
+
+  it('keeps the long course overview compact instead of leaving a blank title column', async () => {
+    const { host } = await mount();
+    (host.querySelector('[data-programming-course="middleware-source"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const head = host.querySelector('.programming-course-head') as HTMLElement;
+    expect(head.querySelector('.programming-course-toolbar')).toBeTruthy();
+    expect(head.querySelector('.programming-course-title-block h1')?.textContent)
+      .toContain('Kafka、Redis、RabbitMQ');
+    expect(head.querySelector('.programming-course-title-block h1')?.getAttribute('title'))
+      .toContain('中间件与源码');
+    expect(head.querySelector('[data-programming-course-summary]')?.textContent)
+      .toContain('消息、缓存、配置和代理');
+    expect(head.querySelector('[data-programming-course-progress]')?.textContent)
+      .toContain('35 / 35');
+    expect(head.querySelectorAll('.programming-course-facts > div')).toHaveLength(6);
+
+    const source = readFileSync(resolve(__dirname, 'ProgrammingCourseHub.vue'), 'utf8');
+    expect(source).toMatch(/\.programming-course-facts \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(/);
+    expect(source).not.toMatch(/\.programming-course-head \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(260px/);
+    expect(source).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.programming-course-facts \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
+    expect(source).toMatch(/@media \(max-width: 520px\)[\s\S]*?\.programming-course-progress \{[\s\S]*?width: 100%;[\s\S]*?margin-left: 0;/);
+    expect(source).toMatch(/@media \(max-width: 520px\)[\s\S]*?\.programming-course-facts \{ grid-template-columns: 1fr; \}/);
+    expect(source).toMatch(/\.programming-course-title-block h1 \{[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;[\s\S]*?white-space: nowrap;/);
   });
 
   it('restores the selected course and stage after leaving and reopening learning', async () => {

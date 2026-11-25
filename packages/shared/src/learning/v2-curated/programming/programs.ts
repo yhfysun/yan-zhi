@@ -574,32 +574,32 @@ function generatedCourseSteps(
   const profile = DETAILED_PROGRAMMING_COURSE_CATALOG[course.id];
   const detailedStage = profile?.stages.find((item) => item.id === stage.id);
   const sourceAnchor = detailedStage?.sourceAnchor || course.sourceAnchors[0] || '官方文档与固定版本源码';
-  const lab = detailedStage?.lab || `围绕“${lesson.title}”完成正常链路、边界输入、失败注入和恢复实验`;
+  const lab = detailedStage?.lab || `为“${lesson.title}”建立正常链路、边界输入、失败注入和恢复实验`;
   return [
     [
-      '先建立可运行基线',
-      `${lesson.title} 属于“${course.shortTitle}”的“${stage.title}”阶段。运行环境是${course.runtime}，使用${course.toolchain}。先在最小项目中固定版本、目录、启动命令、退出码和预期输出，再开始解释“${lesson.title}”的机制。`,
-      '环境、版本、命令和输出先固定',
+      `固定“${lesson.title}”的运行契约`,
+      `课程“${lesson.title}”在“${stage.title}”阶段要解决的是：${stage.goal}。先在${course.runtime}中固定版本、目录、启动命令、退出码和预期输出，并使用${course.toolchain}记录第一次成功与第一次失败。只有这些事实可重复，后面关于“${lesson.title}”的解释才有依据。`,
+      '版本、命令、输出和失败必须可复现',
     ],
     [
-      `拆解“${lesson.title}”的机制`,
-      `写出这个知识点的输入、状态、输出、异常和资源释放路径，并说明它如何接入${course.frameworks}。反例必须能指出：如果跳过边界、配置、权限或生命周期，程序会以什么方式失败。`,
-      '机制要能画成状态、数据流或调用链',
+      `画清“${lesson.title}”的状态和边界`,
+      `把“${lesson.title}”拆成输入、前置条件、运行时状态、输出、副作用和资源释放六栏，再标出它与${course.frameworks}的交接点。至少准备一个缺失配置、一个非法输入和一个边界值，观察错误在哪一层出现，并写清它是否会污染状态、泄漏资源或留下不可恢复的数据。`,
+      '状态、调用链、失败层和恢复动作都要画出来',
     ],
     [
-      '用规范、源码与工具取得证据',
-      `固定版本后从“${sourceAnchor}”进入，记录仓库或规范、符号、配置和调用关系。再用${course.toolchain}中的调试、日志、测试或性能工具验证实际行为，结论不能只来自记忆或搜索结果。`,
-      '版本、符号和运行证据一起保留',
+      `沿“${sourceAnchor}”核对真实机制`,
+      `把源码或规范固定到“${sourceAnchor}”，定位与“${lesson.title}”直接相关的类型、函数、配置项或协议字段，记录符号位置、调用方向和版本差异。再用${course.toolchain}中的调试、日志、测试或性能工具观察实际执行结果；如果文档描述与运行行为不一致，以可复现实验和固定版本证据为准。`,
+      '源码位置、版本和运行结果必须相互印证',
     ],
     [
-      `完成“${lesson.title}”实验`,
-      `${lab}。实验至少包含正常输入、边界值、失败注入和恢复，并保存命令、输出、日志、测试结果以及一次修复前后的对照。`,
-      '成功、失败和恢复都要验证',
+      `完成“${lesson.title}”的对照实验`,
+      `执行这项阶段实验：${lab}。为“${lesson.title}”分别保存正常输入、边界值、故障输入和恢复结果，记录命令、日志、退出码、测试断言与耗时；随后只改一个变量重跑，说明结果变化来自哪一行配置、哪段代码或哪条运行时规则。`,
+      '一次只改一个变量，并保留修复前后对照',
     ],
     [
-      '接入企业项目与运行边界',
-      `把这一步接入${course.targetRole}的项目主线：${course.capstone}。补齐测试、配置、安全、性能、可观测性、部署和回滚，阶段验收是：${stage.goal}`,
-      '能开发、部署、排障和回滚才算完成',
+      `把“${lesson.title}”放进项目验收`,
+      `面向${course.targetRole}的真实交付，把“${lesson.title}”接入项目主线：${course.capstone}。补齐测试、配置、安全、性能、日志、指标、发布与回滚证据，并让另一位学习者按说明复现。阶段验收仍以“${stage.goal}”为准，不能只看页面能打开或样例命令没有报错。`,
+      '能复现、能观测、能排障、能回滚才算完成',
     ],
   ];
 }
@@ -617,6 +617,7 @@ export const PROGRAMMING_OTHER_COURSE_SEEDS: readonly ProgrammingCourseSeed[] =
             return {
               name: lesson.courseName,
               track: 'P14 · 独立语言课程',
+              contentStatus: 'structured',
               minutes: lesson.minutes,
               prerequisite:
                 lessonIndex === 0

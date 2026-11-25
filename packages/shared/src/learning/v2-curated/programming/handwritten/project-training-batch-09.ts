@@ -21,7 +21,7 @@ const course = (
   minutes,
   prerequisite: '理解数据库、消息队列、数据仓库和容器基础，能编写 SQL 与一种后端语言。',
   goal,
-  guidedPractice: '为当前阶段构造小规模批流数据，记录输入、血缘、质量结果、资源成本和失败恢复。',
+  guidedPractice: `为“${phase}”构造小规模批流验证：${steps[0][1]} 记录输入、血缘、质量结果、资源成本和失败恢复。`,
   independentPractice: '交付阶段产物，并用重复、乱序、晚到和坏数据验证幂等、质量与回滚。',
   commonErrors: ['只验证正常数据，不处理迟到、重复和 schema 演进。', '提前物化全部指标，造成存储和刷新成本失控。'],
   sourceRefs: sources,

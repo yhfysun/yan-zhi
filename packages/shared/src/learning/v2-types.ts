@@ -46,6 +46,24 @@ export type LearningV2Studio = {
   readonly features: readonly string[];
 };
 
+export type LearningV2CodeLanguage =
+  | 'javascript'
+  | 'typescript'
+  | 'html'
+  | 'python'
+  | 'java'
+  | 'c'
+  | 'cpp'
+  | 'go';
+
+export type LearningV2LessonExample = {
+  readonly title: string;
+  readonly language: string;
+  readonly code: string;
+  /** 命令或程序的预期输出；用于对照，不参与自动判分。 */
+  readonly output?: string;
+};
+
 export type LearningV2LessonStep = {
   readonly title: string;
   readonly body: string;
@@ -53,6 +71,31 @@ export type LearningV2LessonStep = {
   readonly objective?: string;
   readonly practice?: string;
   readonly checkpoint?: string;
+  /** 手写命令、源码或追踪样例，在学习步骤正文之后原样展示。 */
+  readonly example?: LearningV2LessonExample;
+};
+
+export type LearningV2CodeLabTask = {
+  readonly id: string;
+  readonly title: string;
+  readonly brief: string;
+  readonly defaultLanguage: LearningV2CodeLanguage;
+  readonly starterCode: Partial<Record<LearningV2CodeLanguage, string>>;
+  readonly stdin?: string;
+  readonly checkpoint: string;
+};
+
+export type LearningV2CodeLab = {
+  readonly title: string;
+  readonly description: string;
+  readonly requiredRuntime?: 'java' | 'python' | 'node' | 'c' | 'cpp' | 'go';
+  readonly runtimeLabel: string;
+  readonly downloadUrl?: string;
+  readonly docsUrl?: string;
+  readonly installSteps: readonly string[];
+  readonly languages: readonly LearningV2CodeLanguage[];
+  readonly practice: LearningV2CodeLabTask;
+  readonly apply: LearningV2CodeLabTask;
 };
 
 export type LearningV2Lesson = {
@@ -140,10 +183,13 @@ export type LearningV2CoursePlan = {
   readonly commonErrors: readonly string[];
   readonly sourceRefs: readonly string[];
   readonly qualityStatus: 'curated' | 'generated' | 'draft';
+  readonly reviewStatus: 'reviewed' | 'structured';
   readonly steps: LearningV2Lesson['steps'];
   readonly expertNotes: readonly LearningV2ExpertNote[];
   /** 本课章节题库（选择题）；未配置时练习页回退科目综合题 + 步骤自测清单。 */
   readonly quiz: readonly LearningV2Practice[];
+  /** 本课可真实编辑、运行并保存证据的代码任务。 */
+  readonly codeLab?: LearningV2CodeLab;
 };
 
 export type LearningV2CuratedCoursePlan = Pick<
@@ -156,10 +202,14 @@ export type LearningV2CuratedCoursePlan = Pick<
   | 'sourceRefs'
   | 'steps'
 > & {
+  /** reviewed = 人工逐课整理；structured = 由课程阶段资料结构化生成。 */
+  readonly contentStatus?: 'reviewed' | 'structured';
   /** 课程级真实注解/笔记；不填则回退到科目池（v2-curated/expert-notes.ts）。 */
   readonly expertNotes?: readonly LearningV2ExpertNote[];
   /** 本课章节题库；不填则练习页回退科目综合题 + 步骤自测清单。 */
   readonly quiz?: readonly LearningV2Practice[];
+  /** 本课代码实验室；仅在手写并核对任务后挂接。 */
+  readonly codeLab?: LearningV2CodeLab;
 };
 
 export type LearningV2SubjectView = LearningV2Subject & {
