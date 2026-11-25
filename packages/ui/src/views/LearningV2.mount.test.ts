@@ -196,6 +196,18 @@ describe('LearningV2', () => {
     expect(css).not.toMatch(/\[data-skin="on"\] \.lv2-quiz \{[^}]*backdrop-filter/);
   });
 
+  it('gives the mobile learning session a bounded fourth row and touch scrolling', () => {
+    const shell = readFileSync(
+      resolve(__dirname, '../components/learning/v2/LearningSessionShell.vue'),
+      'utf8',
+    );
+    const mobile = shell.match(/@media \(max-width: 900px\) \{[\s\S]*?@media \(max-width: 370px\)/)
+      ?.[0] || '';
+
+    expect(mobile).toMatch(/\.learning-session \{[^}]*grid-template-rows: auto auto auto minmax\(0, 1fr\);/);
+    expect(mobile).toMatch(/\.session-surface \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*touch-action: pan-y;/s);
+  });
+
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
     const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
     const libraryCss = readFileSync(resolve(__dirname, '../components/learning/v2/learning-library.css'), 'utf8');

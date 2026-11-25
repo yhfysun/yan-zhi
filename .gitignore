@@ -66,6 +66,11 @@ apps/mobile/public/
 *.apk
 *.ipa
 
+# Android 发布签名：keystore 与密码只放本机/CI Secrets，不提交
+apps/mobile/signing/*.jks
+apps/mobile/signing/*.keystore
+apps/mobile/signing/keystore.properties
+
 # IDE
 .vscode/
 .idea/

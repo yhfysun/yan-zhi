@@ -411,7 +411,7 @@ function stageSummary(stage: 'learn' | 'practice' | 'apply'): string {
 
 @media (max-width: 900px) {
   .learning-session {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     min-height: 100%;
     margin: 0;
     border: 0;
@@ -521,9 +521,11 @@ function stageSummary(stage: 'learn' | 'practice' | 'apply'): string {
   }
 
   .session-surface {
+    min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
+    touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
   }
 }

@@ -1462,6 +1462,10 @@ function buildAndroid() {
   info('④.5 应用 nodejs-mobile 原生库短路径修复');
   run(process.execPath, ['scripts/apply-native-nodejs-shortpath.cjs'], { cwd: mobile });
 
+  // ④.6 固定 APK 签名：android/ 是 cap 生成目录，每次同步后都要重新注入项目共享 keystore。
+  info('④.6 应用固定 APK 签名');
+  run(process.execPath, ['scripts/apply-native-signing.cjs'], { cwd: mobile });
+
   // ⑤ gradle assembleDebug
   const tc = androidToolchain();
   if (!tc.sdk || !tc.javaHome) {

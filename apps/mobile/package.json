@@ -15,7 +15,7 @@
     "native:system-bars": "node scripts/apply-native-system-bars.cjs",
     "native:sherpa": "node scripts/fetch-sherpa.cjs && node scripts/apply-native-sherpa.cjs",
     "build:mobile:server": "node scripts/build-mobile-server.cjs",
-    "build:android": "node scripts/prepare-clean-build.cjs && node scripts/gen-android-icons.cjs && vite build && node scripts/build-mobile-server.cjs && node scripts/apply-native-sms.cjs && node scripts/apply-native-permissions.cjs && node scripts/apply-native-immersive.cjs && node scripts/apply-native-m1nfc.cjs && node scripts/apply-native-tts.cjs && node scripts/fetch-sherpa.cjs && node scripts/apply-native-sherpa.cjs && cap sync android && node scripts/apply-native-system-bars.cjs && node scripts/apply-native-nodejs-shortpath.cjs && node scripts/assemble-debug.cjs && node ./scripts/copy-apk.cjs",
+    "build:android": "node scripts/prepare-clean-build.cjs && node scripts/gen-android-icons.cjs && vite build && node scripts/build-mobile-server.cjs && node scripts/apply-native-sms.cjs && node scripts/apply-native-permissions.cjs && node scripts/apply-native-immersive.cjs && node scripts/apply-native-m1nfc.cjs && node scripts/apply-native-tts.cjs && node scripts/fetch-sherpa.cjs && node scripts/apply-native-sherpa.cjs && cap sync android && node scripts/apply-native-system-bars.cjs && node scripts/apply-native-nodejs-shortpath.cjs && node scripts/apply-native-signing.cjs && node scripts/assemble-debug.cjs && node ./scripts/copy-apk.cjs",
     "build:android:slim": "node scripts/build-android-slim.cjs",
     "build:ios": "vite build && node scripts/build-mobile-server.cjs && cap sync ios && cap build ios",
     "sync": "cap sync",

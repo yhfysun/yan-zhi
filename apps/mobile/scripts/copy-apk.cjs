@@ -10,6 +10,7 @@ const apkRoot = path.join(mobileDir, 'android', 'app', 'build', 'outputs', 'apk'
 const { DEFAULT_RELEASE_ROOT, androidOutDir, resolvePkgVersion } = require(
   path.join(mobileDir, '..', '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'),
 );
+const { verifyApkSignature } = require('./lib/android-signing.cjs');
 const version = resolvePkgVersion({ pkgPath: path.join(mobileDir, 'package.json') });
 const outDir = androidOutDir({
   repoRoot: path.join(mobileDir, '..', '..'),
@@ -52,6 +53,13 @@ const expectedAbis = String(process.env.YZ_EXPECTED_ABIS || defaultAbis.join(','
 const minSizeMb = profile === 'slim' ? 140 : 300;
 
 function assertCompleteApk(apkPath) {
+  try {
+    const fingerprint = verifyApkSignature(apkPath);
+    console.log(`[copy-apk] 签名校验通过: ${fingerprint}`);
+  } catch (error) {
+    console.error(`[copy-apk] ✗ APK 签名校验失败: ${error.message}`);
+    process.exit(4);
+  }
   const fd = fs.openSync(apkPath, 'r');
   try {
     const size = fs.fstatSync(fd).size;

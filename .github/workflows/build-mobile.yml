@@ -76,6 +76,20 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
+      - name: 准备 Android 固定签名
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_PROPERTIES_BASE64: ${{ secrets.ANDROID_SIGNING_PROPERTIES_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ] || [ -z "${ANDROID_SIGNING_PROPERTIES_BASE64:-}" ]; then
+            echo "::error::缺少 Android 固定签名 Secrets：ANDROID_KEYSTORE_BASE64 / ANDROID_SIGNING_PROPERTIES_BASE64"
+            exit 1
+          fi
+          mkdir -p apps/mobile/signing
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > apps/mobile/signing/yan-zhi-release.jks
+          printf '%s' "$ANDROID_SIGNING_PROPERTIES_BASE64" | base64 --decode > apps/mobile/signing/keystore.properties
+
       # Cap add 会在生成工程时同步一次 Web 资源；dist 不存在或为空时 Capacitor 直接失败。
       # 先产出真实 index.html，再生成 Android 工程。后面 package.cjs 仍会重新 build 最新产物。
       - name: 预构建移动端 Web 入口

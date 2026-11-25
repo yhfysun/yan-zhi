@@ -55,6 +55,18 @@ describe('Android 打包链接线', () => {
     expect(patch).not.toMatch(/\brmSync\s*\(/);
   });
 
+  it('★ 固定签名紧跟在原生工程同步后，并在复制 APK 前校验证书', () => {
+    const c = chain();
+    expect(c).toContain('node scripts/apply-native-signing.cjs');
+    expect(c.indexOf('apply-native-nodejs-shortpath.cjs'))
+      .toBeLessThan(c.indexOf('apply-native-signing.cjs'));
+    expect(c.indexOf('apply-native-signing.cjs')).toBeLessThan(c.indexOf('assemble-debug.cjs'));
+
+    const copyApk = read('scripts/copy-apk.cjs');
+    expect(copyApk).toContain('verifyApkSignature');
+    expect(copyApk).toContain('APK 签名校验失败');
+  });
+
   it('M1 NFC 插件脚本排在 cap sync 之前，copy-apk 是链路终点', () => {
     const c = chain();
     expect(c.indexOf('apply-native-m1nfc.cjs')).toBeLessThan(c.indexOf('cap sync android'));
