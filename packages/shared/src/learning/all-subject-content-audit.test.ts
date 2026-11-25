@@ -10,6 +10,35 @@ function contentSkeleton(value: string): string {
   return value.replace(/[“”‘’"'`、，。；：！？,.!?;:()[\]{}<>《》\s]/g, '');
 }
 
+const CHINESE_NUMBER: Record<string, number> = {
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+  十: 10,
+};
+
+function requestedTimelineNodes(task: string | undefined): number {
+  if (!task) return 0;
+  if (!/(时间轴|时间线|年表)/.test(task)) return 0;
+  const match = task.match(/至少[^。；]{0,12}?([一二三四五六七八九十\d]+)\s*个节点/);
+  if (!match) return 0;
+  const quantity = match[1] || '';
+  return CHINESE_NUMBER[quantity] ?? Number(quantity) ?? 0;
+}
+
+function datedTimelineParagraphs(body: string): number {
+  return body
+    .split(/\n{2,}/)
+    .filter((paragraph) => /(?:18|19|20)\d{2}\s*年/.test(paragraph))
+    .length;
+}
+
 it('prints runtime content quality by subject', () => {
   const rows = getLearningV2Subjects().map((subject) => {
     const plans = subject.courses.map((course) =>
@@ -183,6 +212,23 @@ it('prints runtime content quality by subject', () => {
     structuredCourses: usability.reduce((sum, row) => sum + row.structured, 0),
   };
   console.log('usability totals', usabilityTotals);
+  const timelineTaskMismatches = getLearningV2Subjects().flatMap((subject) =>
+    subject.courses.flatMap((course) => {
+      const plan = getLearningV2CoursePlan(subject.key, course.name);
+      return plan.steps.flatMap((step) => {
+        const required = requestedTimelineNodes(step.practice);
+        const supplied = datedTimelineParagraphs(step.body);
+        return required > 0 && supplied < required
+          ? [{
+            course: `${subject.name}/${course.name}/${step.title}`,
+            required,
+            supplied,
+          }]
+          : [];
+      });
+    }),
+  );
+  console.log('timeline task/content mismatches', timelineTaskMismatches);
   const security = getLearningV2Subject('security');
   const generatedSecurity = security?.courses.filter((course) =>
     getLearningV2CoursePlan('security', course.name).qualityStatus === 'generated',
@@ -233,4 +279,5 @@ it('prints runtime content quality by subject', () => {
     .toBe(usabilityTotals.courses);
   expect(usabilityTotals.reviewedCourses).toBe(usabilityTotals.courses);
   expect(usabilityTotals.structuredCourses).toBe(0);
+  expect(timelineTaskMismatches).toHaveLength(0);
 });

@@ -1013,9 +1013,13 @@ describe('LearningV2', () => {
     await nextTick();
 
     const copy = host.querySelector('.lv2-lesson-copy')?.textContent || '';
-    expect(host.querySelectorAll('.lv2-lesson-copy p').length).toBeGreaterThanOrEqual(3);
-    expect(copy).toContain('1919 年爆发的五四运动');
+    expect(host.querySelectorAll('.lv2-lesson-copy p').length).toBeGreaterThanOrEqual(6);
+    expect(copy).toContain('1919 年 5 月 4 日');
+    expect(copy).toContain('1920 年');
     expect(copy).toContain('1921 年 7 月');
+    expect(copy).toContain('1922 年 7 月');
+    expect(copy).toContain('画舫');
+    expect(copy).toContain('不是“红船会议”');
     expect(copy).not.toContain('党史不是一串孤立结论');
     expect(copy).not.toContain('时间轴的任务');
   });
