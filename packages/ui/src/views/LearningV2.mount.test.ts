@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import LearningV2 from './LearningV2.vue';
 import { setLead, setMode } from '../stores/mode';
+import { toggleRegisteredWorkspaceSidebar } from '../stores/workspaceSidebar';
 
 const apiState = vi.hoisted(() => ({
   get: vi.fn(async (_url: string): Promise<any> => ({ data: { lessonIds: [] } })),
@@ -208,6 +209,17 @@ describe('LearningV2', () => {
     expect(mobile).toMatch(/\.session-surface \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*touch-action: pan-y;/s);
   });
 
+  it('keeps one centered desktop quick-action set and a wide learning composer', () => {
+    const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+
+    expect(view).not.toContain('lv2-ai-quick-strip');
+    expect(css).toMatch(/\.lv2-ai-welcome-prompts \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
+    expect(css).toMatch(/\.lv2-ai-welcome \{[^}]*align-items: center;[^}]*text-align: center;/s);
+    expect(css).toMatch(/\.lv2-ai-messages :deep\(\.messages\) \{[^}]*max-width: min\(1180px, calc\(100% - 32px\)\);/s);
+    expect(css).toMatch(/\.lv2-ai-composer :deep\(\.input-area\) \{[^}]*max-width: min\(1180px, calc\(100% - 32px\)\);/s);
+  });
+
   it('uses neutral surfaces for course selection instead of flooding the page with subject tint', () => {
     const css = readFileSync(resolve(__dirname, 'learning-v2.css'), 'utf8');
     const libraryCss = readFileSync(resolve(__dirname, '../components/learning/v2/learning-library.css'), 'utf8');
@@ -223,7 +235,7 @@ describe('LearningV2', () => {
       '.lv2-book-layers button.active',
       '.lv2-mobile-tools button.active',
       '.lv2-mobile-course-strip > div button.active',
-      '.lv2-mobile-subject-sheet > div button.active',
+      '.lv2-mobile-subject-sheet .lv2-mobile-subject-entry.active',
     ]) {
       const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       expect(css).toMatch(new RegExp(`${esc} \\{[^}]*background: color-mix\\(in srgb, var\\(--skin-surface-raised`));
@@ -512,15 +524,13 @@ describe('LearningV2', () => {
     const host = await mountPage();
 
     expect(host.querySelector('.lv2')?.classList.contains('subjects-collapsed')).toBe(true);
-    const expand = host.querySelector('[aria-label="展开学习科目栏"]') as HTMLButtonElement;
-    expect(expand).toBeTruthy();
-
-    expand.click();
+    expect(host.querySelector('[aria-label="展开学习科目栏"]')).toBeNull();
+    toggleRegisteredWorkspaceSidebar();
     await nextTick();
 
     expect(host.querySelector('.lv2')?.classList.contains('subjects-collapsed')).toBe(false);
     expect(localStorage.getItem('yz.learning.v2.subjects-collapsed.v1')).toBe('0');
-    expect(host.querySelector('[aria-label="收起学习科目栏"]')).toBeTruthy();
+    expect(host.querySelector('[aria-label="收起学习科目栏"]')).toBeNull();
   });
 
   it('collapses roadmap stages and keeps the selected stage visible', async () => {
@@ -793,8 +803,18 @@ describe('LearningV2', () => {
 
     (host.querySelector('.lv2-mobile-subject') as HTMLButtonElement).click();
     await nextTick();
+    expect(host.querySelectorAll('[data-mobile-subject-category]')).toHaveLength(7);
+    const technology = host.querySelector('[data-mobile-subject-category="technology"] .lv2-mobile-subject-group-head') as HTMLButtonElement;
+    technology.click();
+    await nextTick();
     expect(host.querySelectorAll('[data-mobile-programming-package]')).toHaveLength(17);
     expect(host.querySelector('[data-mobile-programming-package="go-cloud"]')?.textContent).toContain('Go');
+
+    technology.click();
+    await nextTick();
+    expect((host.querySelector('[data-mobile-subject-category-items="technology"]') as HTMLElement).style.display).toBe('none');
+    technology.click();
+    await nextTick();
 
     (host.querySelector('[data-mobile-programming-package="go-cloud"]') as HTMLButtonElement).click();
     await nextTick();
@@ -1042,6 +1062,19 @@ describe('LearningV2', () => {
     expect(host.querySelector('[data-test="learning-chat-input"]')).toBeTruthy();
     expect(host.querySelector('.lv2-ai-welcome')?.textContent).toContain('今天想把哪一块学明白');
     expect(host.querySelector('.lv2-ai-actions')?.textContent).toContain('图书馆');
+    const coachPane = host.querySelector('[data-pane-label="学习教练"]') as HTMLElement;
+    const conversationPane = host.querySelector('[data-pane-label="学习会话"]') as HTMLElement;
+    expect(coachPane.querySelector('[role="separator"]')).toBeTruthy();
+    expect(coachPane.querySelector('.lv2-ai-brand-toggle')).toBeNull();
+    expect(coachPane.querySelector('.rpane-fold')).toBeNull();
+    expect(conversationPane.querySelector('[role="separator"]')).toBeTruthy();
+    expect(conversationPane.textContent).toContain('还没有学习会话');
+    toggleRegisteredWorkspaceSidebar();
+    await nextTick();
+    expect(coachPane.classList.contains('rpane-collapsed')).toBe(true);
+    toggleRegisteredWorkspaceSidebar();
+    await nextTick();
+    expect(coachPane.classList.contains('rpane-collapsed')).toBe(false);
 
     (host.querySelector('.lv2-ai-actions button') as HTMLButtonElement).click();
     await nextTick();
@@ -1049,6 +1082,16 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2')?.classList.contains('is-learning-ai')).toBe(false);
     expect(host.querySelector('.lv2-subjects')).toBeTruthy();
     expect(host.querySelector('.lv2-workspace')).toBeTruthy();
+  });
+
+  it('restores the latest learning-mode conversation without reusing another mode', () => {
+    const view = readFileSync(resolve(__dirname, 'LearningV2.vue'), 'utf8');
+
+    expect(view).toContain("conversation.mode === 'learning'");
+    expect(view).toContain('async function restoreLearningConversation()');
+    expect(view).toContain('await chat.selectConv(latest.id)');
+    expect(view).toContain('<LearningConversationRail');
+    expect(view).toContain('@select="selectLearningConversation"');
   });
 
   it('returns from the built-in reader to the open library instead of dropping to the overview', async () => {
@@ -1310,6 +1353,20 @@ describe('LearningV2', () => {
     expect(host.querySelector('.lv2-mobile-continue')?.textContent).toContain('开始本节');
     expect(host.querySelector('.lv2-mobile-continue')?.textContent).toContain('第 2 / 13 课');
     expect(host.querySelector('.lv2-mobile-course-strip .lv2-course-order')).toBeTruthy();
+
+    (host.querySelector('.lv2-mobile-course-trigger') as HTMLButtonElement).click();
+    await nextTick();
+    const trackHeads = host.querySelectorAll('[data-mobile-course-track]');
+    expect(trackHeads.length).toBeGreaterThan(1);
+    const currentTrack = [...trackHeads].find((item) =>
+      (host.querySelector(`[data-mobile-course-track-items="${item.getAttribute('data-mobile-course-track')}"]`) as HTMLElement)
+        ?.style.display !== 'none') as HTMLButtonElement;
+    expect(currentTrack).toBeTruthy();
+    currentTrack.click();
+    await nextTick();
+    expect((host.querySelector(`[data-mobile-course-track-items="${currentTrack.getAttribute('data-mobile-course-track')}"]`) as HTMLElement).style.display).toBe('none');
+    currentTrack.click();
+    await nextTick();
 
     (host.querySelector('.lv2-mobile-tools [data-page="books"]') as HTMLButtonElement).click();
     await nextTick();

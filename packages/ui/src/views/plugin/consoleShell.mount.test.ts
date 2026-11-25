@@ -14,6 +14,7 @@ import { createApp, h, nextTick, type App } from 'vue';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
+import { toggleRegisteredWorkspaceSidebar } from '../../stores/workspaceSidebar';
 
 const SHELL_SRC = readFileSync(resolve(__dirname, '../../components/console/ConsoleShell.vue'), 'utf8');
 
@@ -34,8 +35,6 @@ function mountShell(extra: Record<string, unknown> = {}): Mounted {
   return { host, app };
 }
 
-const click = (el: Element) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
 describe('ConsoleShell · 控制台通用外壳', () => {
   it('两个插槽分别渲染进左栏与主区', () => {
     const { host, app } = mountShell();
@@ -44,18 +43,19 @@ describe('ConsoleShell · 控制台通用外壳', () => {
     app.unmount();
   });
 
-  it('★ 折叠条收起左栏与分隔条，主区仍在', async () => {
+  it('★ 顶栏侧栏开关收起左栏与分隔条，主区仍在', async () => {
     const { host, app } = mountShell();
     const aside = () => host.querySelector('.cs-aside') as HTMLElement;
     expect(aside().style.display).not.toBe('none');
     expect(host.querySelector('.rs-handle')).not.toBeNull();
+    expect(host.querySelector('.cs-aside-toggle')).toBeNull();
 
-    click(host.querySelector('.cs-aside-toggle')!);
+    toggleRegisteredWorkspaceSidebar();
     await nextTick();
     expect(aside().style.display).toBe('none');
     expect((host.querySelector('.probe-main') as HTMLElement).style.display).not.toBe('none');
 
-    click(host.querySelector('.cs-aside-toggle')!);
+    toggleRegisteredWorkspaceSidebar();
     await nextTick();
     expect(aside().style.display).not.toBe('none');
     app.unmount();
@@ -66,7 +66,7 @@ describe('ConsoleShell · 控制台通用外壳', () => {
     const style = () => (host.querySelector('.cs-layout') as HTMLElement).getAttribute('style') || '';
     expect(style()).toContain('--cs-aside-w: 260px');
 
-    click(host.querySelector('.cs-aside-toggle')!);
+    toggleRegisteredWorkspaceSidebar();
     await nextTick();
     expect(style()).toContain('--cs-aside-w: 0px');
     app.unmount();

@@ -73,16 +73,16 @@
           <el-icon :size="15"><Refresh /></el-icon>
         </button>
         <button
-          v-if="officeSidebarAvailable"
-          class="title-nav-item title-nav-item--icon office-sidebar-toggle"
+          v-if="currentSidebarAvailable"
+          class="title-nav-item title-nav-item--icon workspace-sidebar-toggle"
           type="button"
-          :title="officeAiSidebarCollapsed ? '展开办公侧栏（Ctrl+B）' : '收起办公侧栏（Ctrl+B）'"
-          :aria-label="officeAiSidebarCollapsed ? '展开办公侧栏' : '收起办公侧栏'"
-          :aria-pressed="!officeAiSidebarCollapsed"
-          @click="toggleOfficeAiSidebar"
+          :title="currentSidebarCollapsed ? `展开${currentSidebarLabel}（Ctrl+B）` : `收起${currentSidebarLabel}（Ctrl+B）`"
+          :aria-label="currentSidebarCollapsed ? `展开${currentSidebarLabel}` : `收起${currentSidebarLabel}`"
+          :aria-pressed="!currentSidebarCollapsed"
+          @click="toggleCurrentSidebar"
         >
           <svg
-            class="office-sidebar-icon"
+            class="workspace-sidebar-icon"
             viewBox="0 0 24 24"
             width="15"
             height="15"
@@ -94,7 +94,7 @@
             aria-hidden="true"
           >
             <rect x="3" y="3" width="18" height="18" rx="3" />
-            <path :d="officeAiSidebarCollapsed ? 'M6 4v16' : 'M9 3v18'" />
+            <path :d="currentSidebarCollapsed ? 'M6 4v16' : 'M9 3v18'" />
           </svg>
         </button>
       </nav>
@@ -320,6 +320,12 @@ import WorkspaceModeSwitch from './workbench/WorkspaceModeSwitch.vue';
 import { useChat } from '../composables/chat/useChat';
 import { activeMode } from '../stores/mode';
 import { officeAiSidebarCollapsed, officePanel, toggleOfficeAiSidebar } from '../stores/officeWorkbench';
+import {
+  toggleRegisteredWorkspaceSidebar,
+  workspaceSidebarAvailable,
+  workspaceSidebarCollapsed,
+  workspaceSidebarLabel,
+} from '../stores/workspaceSidebar';
 import { isStandaloneWindow } from '../utils/modeWindow';
 
 // 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
@@ -366,6 +372,20 @@ const officeSidebarAvailable = computed(() => (
   activeMode.value === 'office'
   && ['/chat', '/memory', '/scheduled-tasks', '/publish-queue'].includes(route.path)
 ));
+const currentSidebarAvailable = computed(() =>
+  officeSidebarAvailable.value || workspaceSidebarAvailable.value,
+);
+const currentSidebarCollapsed = computed(() =>
+  officeSidebarAvailable.value ? officeAiSidebarCollapsed.value : workspaceSidebarCollapsed.value,
+);
+const currentSidebarLabel = computed(() =>
+  officeSidebarAvailable.value ? '办公侧栏' : workspaceSidebarLabel.value,
+);
+
+function toggleCurrentSidebar(): void {
+  if (officeSidebarAvailable.value) toggleOfficeAiSidebar();
+  else toggleRegisteredWorkspaceSidebar();
+}
 
 /**
  * 桌面端「本机身份」展示名与首字母。
@@ -770,6 +790,10 @@ function onCmdKKeydown(e: KeyboardEvent) {
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
   if (key === 'b') {
     e.preventDefault();
+    if (workspaceSidebarAvailable.value) {
+      toggleRegisteredWorkspaceSidebar();
+      return;
+    }
     if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
     if (activeMode.value === 'office' && officePanel.value === 'ai') {
       toggleOfficeAiSidebar();

@@ -3,6 +3,7 @@
     ref="shellRef"
     storage-key="shop_aside"
     root-class="shop-console"
+    sidebar-label="店铺侧栏"
     :default-width="260"
     mobile-aside="drawer"
   >

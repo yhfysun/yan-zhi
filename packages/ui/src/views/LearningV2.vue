@@ -38,6 +38,7 @@ import NoteQuickCreateDialog from '../components/notes/NoteQuickCreateDialog.vue
 import AlgorithmWorkbench from '../components/learning/AlgorithmWorkbench.vue';
 import LearningCoachPanel from '../components/learning/v2/LearningCoachPanel.vue';
 import LearningCodeLab from '../components/learning/v2/LearningCodeLab.vue';
+import LearningConversationRail from '../components/learning/v2/LearningConversationRail.vue';
 import LearningLibrary from '../components/learning/v2/LearningLibrary.vue';
 import LearningBookReader from '../components/learning/v2/LearningBookReader.vue';
 import LearningPracticeStudio from '../components/learning/v2/LearningPracticeStudio.vue';
@@ -57,6 +58,11 @@ import { listStoredLearningContentPacks } from '../components/learning/v2/conten
 import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
 import { useAgentStore } from '../stores/agent';
 import { useChat } from '../composables/chat/useChat';
+import {
+  registerWorkspaceSidebar,
+  unregisterWorkspaceSidebar,
+  updateWorkspaceSidebar,
+} from '../stores/workspaceSidebar';
 
 const SESSION_KEY = 'yz.learning.v2.session.v1';
 const PROGRESS_KEY = 'yz.learning.v2.progress.v1';
@@ -175,11 +181,14 @@ const readerOpen = ref(false);
 const readerBook = ref<LearningV2ReaderBook | null>(null);
 const mobileSubjectsOpen = ref(false);
 const mobileMoreOpen = ref(false);
+const mobileCoursePickerOpen = ref(false);
 const mobileSubjectButton = ref<HTMLButtonElement | null>(null);
 const learningAiInput = ref<{
   fillInput: (text: string) => void;
   fillAndSend: (text: string) => Promise<void>;
 } | null>(null);
+const learningCoachPane = ref<{ toggle: () => void } | null>(null);
+const learningCoachCollapsed = ref(false);
 const libraryPage = ref<HTMLElement | null>(null);
 const workspaceRoot = ref<HTMLElement | null>(null);
 const mobileSubjectSheet = ref<HTMLElement | null>(null);
@@ -223,6 +232,13 @@ const subject = computed(() => getLearningV2Subject(selectedSubjectKey.value) ||
 const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 const chat = useChat();
 const agentStore = useAgentStore();
+const learningConversations = computed(() =>
+  chat.store.conversations.filter((conversation) =>
+    conversation.mode === 'learning'
+    && !conversation.archivedAt
+    && !conversation.deletedAt,
+  ),
+);
 const courses = computed(() => subject.value?.courses || []);
 const customSubjects = computed(() => {
   const known = new Set<string>(SUBJECT_CATEGORY_DEFS.flatMap((category) => category.subjects));
@@ -322,6 +338,7 @@ function paragraphs(value?: string): string[] {
 function toggleSubjects() {
   subjectsCollapsed.value = !subjectsCollapsed.value;
   localStorage.setItem(SUBJECTS_COLLAPSED_KEY, subjectsCollapsed.value ? '1' : '0');
+  updateWorkspaceSidebar('learning');
 }
 function subjectCategoryFor(subjectKey: string): string {
   if (customSubjects.value.some((item) => item.key === subjectKey)) return 'custom';
@@ -380,9 +397,10 @@ type MobileSubjectNavigationEntry = {
   accent: string;
   meta: string;
 };
-const mobileSubjectEntries = computed<MobileSubjectNavigationEntry[]>(() => {
-  const entries: MobileSubjectNavigationEntry[] = [];
+const mobileSubjectEntriesByCategory = computed<Record<string, MobileSubjectNavigationEntry[]>>(() => {
+  const byCategory: Record<string, MobileSubjectNavigationEntry[]> = {};
   for (const category of subjectCategoryGroups.value) {
+    const entries: MobileSubjectNavigationEntry[] = [];
     for (const key of category.subjects as readonly string[]) {
       const item = subjects.value.find((subjectItem) => subjectItem.key === key);
       if (!item) continue;
@@ -406,9 +424,15 @@ const mobileSubjectEntries = computed<MobileSubjectNavigationEntry[]>(() => {
         meta: `${item.tracks.length} 阶段 · ${item.courses.length} 门`,
       });
     }
+    byCategory[category.key] = entries;
   }
-  return entries;
+  return byCategory;
 });
+const mobileSubjectEntries = computed<MobileSubjectNavigationEntry[]>(() =>
+  subjectCategoryGroups.value.flatMap((category) =>
+    mobileSubjectEntriesByCategory.value[category.key] || [],
+  ),
+);
 function openProgrammingPackage(packageId: string): void {
   programmingPackageId.value = packageId;
   selectPage('roadmap');
@@ -849,6 +873,7 @@ function restoreSession() {
 function selectSubject(key: string) {
   const next = getLearningV2Subject(key);
   if (!next) return;
+  mobileCoursePickerOpen.value = false;
   selectedSubjectKey.value = key;
   ensureSubjectCategoryOpen(key);
   programmingPackageId.value = '';
@@ -1030,6 +1055,33 @@ async function newLearningConversation(): Promise<void> {
   await chat.startNewChat();
 }
 
+async function selectLearningConversation(conversationId: string): Promise<void> {
+  if (!learningConversations.value.some((conversation) => conversation.id === conversationId)) return;
+  await chat.selectConv(conversationId);
+}
+
+let learningConversationRestoreToken = 0;
+async function restoreLearningConversation(): Promise<void> {
+  if (lead.value !== 'ai') return;
+  const token = ++learningConversationRestoreToken;
+  const currentIsLearning = learningConversations.value.some(
+    (conversation) => conversation.id === chat.store.currentConvId,
+  );
+  if (currentIsLearning) return;
+
+  const latest = [...learningConversations.value].sort((left, right) => {
+    if (!!left.pinned !== !!right.pinned) return left.pinned ? -1 : 1;
+    return (right.lastActivityAt || right.updatedAt || 0)
+      - (left.lastActivityAt || left.updatedAt || 0);
+  })[0];
+  if (!latest) {
+    if (chat.store.currentConvId) await chat.startNewChat();
+    return;
+  }
+  await chat.selectConv(latest.id);
+  if (token !== learningConversationRestoreToken) return;
+}
+
 function progressSubjectName(subjectKey: string, displayName: string): string {
   // 易学只升级用户可见名称；服务端历史进度仍以“周易”存储，避免已有学习记录失联。
   return subjectKey === 'zhouyi' ? '周易' : displayName;
@@ -1147,6 +1199,19 @@ function onMobileCourseChange(name: string) {
   if (name) selectCourse(name);
 }
 
+function toggleMobileCoursePicker(): void {
+  mobileCoursePickerOpen.value = !mobileCoursePickerOpen.value;
+  if (mobileCoursePickerOpen.value && currentTrackName.value && !isTrackOpen(currentTrackName.value)) {
+    openTrackNames.value = [...openTrackNames.value, currentTrackName.value];
+  }
+}
+
+function chooseMobileCourse(name: string): void {
+  if (!courseReady(name)) return;
+  onMobileCourseChange(name);
+  mobileCoursePickerOpen.value = false;
+}
+
 function sourceSegments(source: string): Array<{ text: string; href?: string }> {
   const urlPattern = /https?:\/\/[^\s；。]+/g;
   const segments: Array<{ text: string; href?: string }> = [];
@@ -1178,6 +1243,8 @@ function toggleMobileMore(): void {
 
 function openMobileSubjects(): void {
   closeMobileMore();
+  mobileCoursePickerOpen.value = false;
+  ensureSubjectCategoryOpen(selectedSubjectKey.value);
   mobileSubjectsOpen.value = true;
 }
 
@@ -1278,7 +1345,14 @@ watch(lead, (next, previous) => {
   if (next === 'ai' && previous !== 'ai') {
     ensureLearningAgent();
   }
+  updateWorkspaceSidebar('learning');
 });
+watch([learningCoachCollapsed, subjectsCollapsed], () => updateWorkspaceSidebar('learning'));
+watch(
+  [lead, () => chat.store.conversations.length, () => chat.store.currentConvId],
+  () => { void restoreLearningConversation(); },
+  { immediate: true },
+);
 watch(() => agentStore.agents.length, ensureLearningAgent);
 watch(() => agentStore.selectedId, ensureLearningAgent);
 watch(() => chat.store.currentConvId, ensureLearningAgent);
@@ -1323,6 +1397,15 @@ watch(mobileSubjectsOpen, async (open) => {
   }
 });
 onMounted(async () => {
+  registerWorkspaceSidebar({
+    key: 'learning',
+    label: '学习侧栏',
+    getCollapsed: () => lead.value === 'ai' ? learningCoachCollapsed.value : subjectsCollapsed.value,
+    toggle: () => {
+      if (lead.value === 'ai') learningCoachPane.value?.toggle();
+      else toggleSubjects();
+    },
+  });
   // Local UI state and keyboard controls must work before remote content-pack
   // discovery finishes; otherwise an immediate lesson cannot be exited.
   restoreStudyRailPreferences();
@@ -1363,6 +1446,7 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  unregisterWorkspaceSidebar('learning');
   document.documentElement.classList.remove('yz-learning-study');
   window.removeEventListener('keydown', onKeydown);
   window.removeEventListener('popstate', onStudyPopState);
@@ -1414,10 +1498,22 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else-if="lead === 'ai'" class="lv2-ai-shell" aria-label="学习 AI 工作区">
-      <aside class="lv2-ai-context">
+      <ResizablePane
+        ref="learningCoachPane"
+        class="lv2-ai-context-pane"
+        label="学习教练"
+        storage-key="yz.learning.v2.ai-context.v1"
+        :default-width="248"
+        :min-width="220"
+        :max-width="360"
+        :collapsed-width="42"
+        hide-fold
+        @collapsed-change="learningCoachCollapsed = $event"
+      >
+      <div class="lv2-ai-context">
         <header class="lv2-ai-brand">
           <span><Sparkles :size="17" /></span>
-          <div><b>学习教练</b><small>只围绕你的课程与进度</small></div>
+          <div class="lv2-ai-brand-copy"><b>学习教练</b><small>只围绕你的课程与进度</small></div>
         </header>
 
         <section class="lv2-ai-context-block">
@@ -1486,7 +1582,8 @@ onBeforeUnmount(() => {
             <Play :size="16" />
           </button>
         </section>
-      </aside>
+      </div>
+      </ResizablePane>
 
       <main class="lv2-ai-main">
         <header class="lv2-ai-chat-head">
@@ -1500,9 +1597,6 @@ onBeforeUnmount(() => {
             </button>
             <button type="button" class="lv2-ai-head-button" @click="libraryOpen = true">
               <Library :size="15" /><span>图书馆</span>
-            </button>
-            <button type="button" class="lv2-ai-head-button icon-only" title="新建学习会话" aria-label="新建学习会话" @click="newLearningConversation">
-              <Sparkles :size="15" />
             </button>
           </div>
         </header>
@@ -1553,15 +1647,29 @@ onBeforeUnmount(() => {
           </ChatMessageList>
         </div>
 
-        <div class="lv2-ai-quick-strip" aria-label="学习快捷指令">
-          <button v-for="item in aiQuickPrompts" :key="item.key" type="button" @click="fillLearningPrompt(item.prompt)">
-            {{ item.label }}
-          </button>
-        </div>
         <div class="lv2-ai-composer">
           <ChatInputArea ref="learningAiInput" />
         </div>
       </main>
+
+      <ResizablePane
+        v-if="!isCompactLayout"
+        class="lv2-ai-conversation-pane"
+        label="学习会话"
+        storage-key="yz.learning.v2.ai-conversations.v1"
+        side="right"
+        :default-width="236"
+        :min-width="188"
+        :max-width="360"
+        :collapsed-width="42"
+      >
+        <LearningConversationRail
+          :conversations="learningConversations"
+          :current-id="chat.store.currentConvId"
+          @create="newLearningConversation"
+          @select="selectLearningConversation"
+        />
+      </ResizablePane>
     </section>
 
     <template v-else>
@@ -1574,15 +1682,6 @@ onBeforeUnmount(() => {
       <header class="lv2-brand">
         <span>学</span>
         <div class="lv2-brand-copy"><b>学习</b><small>{{ subjects.length }} 个科目</small></div>
-        <button
-          class="lv2-subjects-toggle"
-          type="button"
-          :aria-label="subjectsCollapsed ? '展开学习科目栏' : '收起学习科目栏'"
-          :aria-expanded="!subjectsCollapsed"
-          @click="toggleSubjects"
-        >
-          <ChevronLeft :size="16" :class="{ reversed: subjectsCollapsed }" />
-        </button>
       </header>
       <nav class="lv2-subject-list">
         <section
@@ -1830,26 +1929,66 @@ onBeforeUnmount(() => {
                2026-11-22：Hub 只留在「课程地图」，通用总览（继续学习 + 统计 + 接下来）对所有科目生效——
                否则编程/算法的总览会整页空白（用户截图实报）。 -->
           <div v-if="isCompactLayout" class="lv2-mobile-overview">
-            <label class="lv2-mobile-course-select">
-              <el-select
-                :model-value="selectedCourseName"
-                class="lv2-ai-select"
-                popper-class="lv2-ai-select-popper lv2-ai-course-popper"
-                aria-label="选择阶段与课程"
-                filterable
-                @change="onMobileCourseChange"
+            <div class="lv2-mobile-course-select" data-mobile-course-picker>
+              <span>选择阶段与课程</span>
+              <button
+                type="button"
+                class="lv2-mobile-course-trigger"
+                aria-controls="lv2-mobile-course-menu"
+                :aria-expanded="mobileCoursePickerOpen"
+                @click="toggleMobileCoursePicker"
               >
-                <el-option-group v-for="track in subject.tracks" :key="track.name" :label="track.name">
-                  <el-option
-                    v-for="course in track.courses"
-                    :key="course.name"
-                    :value="course.name"
-                    :label="courseReady(course.name) ? course.name : `${course.name}（建设中）`"
-                    :disabled="!courseReady(course.name)"
-                  />
-                </el-option-group>
-              </el-select>
-            </label>
+                <span><small>{{ selectedCourse?.trackName }}</small><b>{{ selectedCourseName }}</b></span>
+                <ChevronDown :size="16" :class="{ reversed: !mobileCoursePickerOpen }" />
+              </button>
+              <section
+                v-if="mobileCoursePickerOpen"
+                id="lv2-mobile-course-menu"
+                class="lv2-mobile-course-menu"
+                aria-label="阶段与课程"
+              >
+                <div
+                  v-for="track in subject.tracks"
+                  :key="track.name"
+                  class="lv2-mobile-course-track"
+                  :class="{ open: isTrackOpen(track.name) }"
+                >
+                  <button
+                    type="button"
+                    class="lv2-mobile-course-track-head"
+                    :aria-expanded="isTrackOpen(track.name)"
+                    :data-mobile-course-track="track.name"
+                    @click="toggleTrack(track.name)"
+                  >
+                    <span>
+                      <small>阶段 {{ trackOrderLabel(track.name) }}</small>
+                      <b>{{ track.name }}</b>
+                    </span>
+                    <em>{{ track.courses.length }}</em>
+                    <ChevronDown :size="15" :class="{ reversed: !isTrackOpen(track.name) }" />
+                  </button>
+                  <div
+                    v-show="isTrackOpen(track.name)"
+                    class="lv2-mobile-course-track-items"
+                    :data-mobile-course-track-items="track.name"
+                  >
+                    <button
+                      v-for="course in track.courses"
+                      :key="course.name"
+                      type="button"
+                      :class="{ active: course.name === selectedCourseName }"
+                      :disabled="!courseReady(course.name)"
+                      :data-mobile-course="course.name"
+                      @click="chooseMobileCourse(course.name)"
+                    >
+                      <span>{{ courseOrderLabel(course.name) }}</span>
+                      <b>{{ course.name }}</b>
+                      <small>{{ courseReady(course.name) ? courseProgressLabel(course) : '建设中' }}</small>
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </div>
 
             <!-- 2026-11-21 用户要求：移动端首页不再放独占一行的图书馆入口卡片（顶栏已有
                  「图书馆」按钮，卡片整行占竖向空间，重复入口只浪费空间）。 -->
@@ -2574,29 +2713,54 @@ onBeforeUnmount(() => {
             <div><span>学习科目</span><h2 id="lv2-mobile-subject-title">选择一门课</h2></div>
             <button type="button" aria-label="关闭科目选择" @click="closeMobileSubjects(true)"><X :size="17" /></button>
           </header>
-          <div>
-            <button
-              v-for="item in mobileSubjectEntries"
-              :key="`${item.kind}:${item.key}`"
-              type="button"
-              :class="{
-                active: item.kind === 'programming'
-                  ? selectedSubjectKey === 'programming' && programmingPackageId === item.key
-                  : item.key === selectedSubjectKey,
-              }"
-              :data-mobile-programming-package="item.kind === 'programming' ? item.key : undefined"
-              :data-mobile-subject="item.kind === 'subject' ? item.key : undefined"
-              @click="selectMobileSubjectEntry(item)"
+          <div class="lv2-mobile-subject-groups">
+            <section
+              v-for="category in subjectCategoryGroups"
+              :key="category.key"
+              class="lv2-mobile-subject-group"
+              :class="{ active: subjectCategoryFor(selectedSubjectKey) === category.key }"
+              :data-mobile-subject-category="category.key"
             >
-              <i :style="{ '--dot': item.accent }">{{ item.short.slice(0, 1) }}</i>
-              <span><b>{{ item.name }}</b><small>{{ item.meta }}</small></span>
-              <Check
-                v-if="item.kind === 'programming'
-                  ? selectedSubjectKey === 'programming' && programmingPackageId === item.key
-                  : item.key === selectedSubjectKey"
-                :size="16"
-              />
-            </button>
+              <button
+                type="button"
+                class="lv2-mobile-subject-group-head"
+                :aria-expanded="isSubjectCategoryOpen(category.key)"
+                @click="toggleSubjectCategory(category.key)"
+              >
+                <b>{{ category.label }}</b>
+                <small>{{ categoryNavigationCount(category) }}</small>
+                <ChevronDown :size="15" :class="{ reversed: !isSubjectCategoryOpen(category.key) }" />
+              </button>
+              <div
+                v-show="isSubjectCategoryOpen(category.key)"
+                class="lv2-mobile-subject-group-items"
+                :data-mobile-subject-category-items="category.key"
+              >
+                <button
+                  v-for="item in mobileSubjectEntriesByCategory[category.key] || []"
+                  :key="`${item.kind}:${item.key}`"
+                  type="button"
+                  class="lv2-mobile-subject-entry"
+                  :class="{
+                    active: item.kind === 'programming'
+                      ? selectedSubjectKey === 'programming' && programmingPackageId === item.key
+                      : item.key === selectedSubjectKey,
+                  }"
+                  :data-mobile-programming-package="item.kind === 'programming' ? item.key : undefined"
+                  :data-mobile-subject="item.kind === 'subject' ? item.key : undefined"
+                  @click="selectMobileSubjectEntry(item)"
+                >
+                  <i :style="{ '--dot': item.accent }">{{ item.short.slice(0, 1) }}</i>
+                  <span><b>{{ item.name }}</b><small>{{ item.meta }}</small></span>
+                  <Check
+                    v-if="item.kind === 'programming'
+                      ? selectedSubjectKey === 'programming' && programmingPackageId === item.key
+                      : item.key === selectedSubjectKey"
+                    :size="16"
+                  />
+                </button>
+              </div>
+            </section>
           </div>
         </section>
       </div>

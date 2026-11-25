@@ -1,5 +1,5 @@
 <template>
-  <ConsoleShell storage-key="ops_aside" root-class="ops-console" @aside-contextmenu="onTreeCtx">
+  <ConsoleShell storage-key="ops_aside" root-class="ops-console" sidebar-label="运维侧栏" @aside-contextmenu="onTreeCtx">
     <!-- 左侧：资源列表（可整体收起；目录行可折叠；空白处右键新建，资源行右键出操作菜单）
          ★ 盒子（布局 / 分隔条 / 折叠条 / 宽度持久化）在 components/console/ConsoleShell.vue -->
     <template #aside>

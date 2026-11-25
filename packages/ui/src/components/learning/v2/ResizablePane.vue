@@ -15,13 +15,18 @@ const props = withDefaults(defineProps<{
   minWidth?: number;
   maxWidth?: number;
   collapsedWidth?: number;
+  hideFold?: boolean;
 }>(), {
   side: 'left',
   defaultWidth: 220,
   minWidth: 34,
   maxWidth: 420,
   collapsedWidth: 34,
+  hideFold: false,
 });
+const emit = defineEmits<{
+  'collapsed-change': [collapsed: boolean];
+}>();
 
 const width = ref(props.defaultWidth);
 const collapsed = ref(false);
@@ -51,6 +56,7 @@ function restore(): void {
 function toggle(): void {
   collapsed.value = !collapsed.value;
   save();
+  emit('collapsed-change', collapsed.value);
 }
 
 function onPointerMove(event: PointerEvent): void {
@@ -88,7 +94,10 @@ function onKeydown(event: KeyboardEvent): void {
   save();
 }
 
-onMounted(restore);
+onMounted(() => {
+  restore();
+  emit('collapsed-change', collapsed.value);
+});
 onBeforeUnmount(stopResize);
 
 defineExpose({ toggle, collapsed, width });
@@ -104,13 +113,13 @@ defineExpose({ toggle, collapsed, width });
   >
     <template v-if="collapsed">
       <button class="rpane-reveal" type="button" :aria-label="`展开${label}`" @click="toggle">
-        <ChevronLeft v-if="side === 'left'" :size="13" />
-        <ChevronRight v-else :size="13" />
+        <ChevronRight v-if="side === 'left'" :size="13" />
+        <ChevronLeft v-else :size="13" />
         <span>{{ label }}</span>
       </button>
     </template>
     <template v-else>
-      <button class="rpane-fold" type="button" :aria-label="`收起${label}`" @click="toggle">
+      <button v-if="!hideFold" class="rpane-fold" type="button" :aria-label="`收起${label}`" @click="toggle">
         <ChevronLeft v-if="side === 'left'" :size="13" />
         <ChevronRight v-else :size="13" />
       </button>

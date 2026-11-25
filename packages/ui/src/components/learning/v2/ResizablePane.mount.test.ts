@@ -63,4 +63,13 @@ describe('ResizablePane', () => {
     expect((restored.querySelector('.rpane') as HTMLElement).style.width).toBe('34px');
     expect(restored.querySelector('[aria-label="展开章节目录"]')).toBeTruthy();
   });
+
+  it('points the reveal arrow back into the workspace', async () => {
+    const host = await mountPane();
+    (host.querySelector('[aria-label="收起章节目录"]') as HTMLButtonElement).click();
+    await nextTick();
+
+    const reveal = host.querySelector('[aria-label="展开章节目录"]') as HTMLElement;
+    expect(reveal.querySelector('svg')?.getAttribute('class')).toContain('lucide-chevron-right');
+  });
 });

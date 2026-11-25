@@ -189,7 +189,7 @@ export interface Conversation {
    * ★ 2026-10-16 移除 douyin（与 office 同形态的重复模式），新增 shop（店铺运营模式，
    *   插件 shop-ops 贡献独立控制台）。
    */
-  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
+  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'rpa' | 'clip' | 'shop' | 'learning';
   /**
    * 运维会话绑定的服务器连接 id（2026-10-21）。
    *

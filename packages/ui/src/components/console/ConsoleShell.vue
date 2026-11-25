@@ -42,6 +42,7 @@
 
       <!-- 折叠条：贴左边缘的竖条，点击收起/展开左栏（与「对话」页 .conv-toggle 一致） -->
       <button
+        v-if="isMobile"
         type="button"
         class="cs-aside-toggle"
         :title="collapsed ? '展开资源列表' : '收起资源列表'"
@@ -62,10 +63,15 @@
 // 通用控制台外壳（2026-10-16 从 OpsConsole 抽出，运维与店铺共用）。
 // 宽度走 useResizable：localStorage 持久化，故每个模式必须给**不同的 storageKey**，
 // 否则两边的侧栏宽度会互相覆盖。
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Expand, Fold } from '@element-plus/icons-vue';
 import { useResizable } from '../../composables/useResizable';
 import { useMobileShell } from '../../composables/useMobileShell';
+import {
+  registerWorkspaceSidebar,
+  unregisterWorkspaceSidebar,
+  updateWorkspaceSidebar,
+} from '../../stores/workspaceSidebar';
 
 const props = withDefaults(defineProps<{
   /** 宽度持久化 key（每个模式一个，如 'ops_aside' / 'shop_aside'） */
@@ -77,12 +83,14 @@ const props = withDefaults(defineProps<{
   maxWidth?: number;
   /** mobile：push=保持内联挤压；drawer=抽屉覆盖，主工作区始终满宽。 */
   mobileAside?: 'push' | 'drawer';
+  sidebarLabel?: string;
 }>(), {
   rootClass: '',
   defaultWidth: 260,
   minWidth: 160,
   maxWidth: 460,
   mobileAside: 'push',
+  sidebarLabel: '资源侧栏',
 });
 
 defineEmits<{ (e: 'aside-contextmenu', ev: MouseEvent): void }>();
@@ -104,13 +112,27 @@ const asideStyle = computed(() => ({ width: asideEffW.value + 'px' }));
 
 function toggleAside(): void {
   collapsed.value = !collapsed.value;
+  updateWorkspaceSidebar(`console:${props.storageKey}`);
 }
 
 function collapseAside(): void {
   collapsed.value = true;
+  updateWorkspaceSidebar(`console:${props.storageKey}`);
 }
 
 defineExpose({ collapsed, toggleAside, collapseAside, asideW });
+
+const sidebarRegistrationKey = `console:${props.storageKey}`;
+onMounted(() => {
+  registerWorkspaceSidebar({
+    key: sidebarRegistrationKey,
+    label: props.sidebarLabel,
+    getCollapsed: () => collapsed.value,
+    toggle: toggleAside,
+  });
+});
+watch(collapsed, () => updateWorkspaceSidebar(sidebarRegistrationKey));
+onBeforeUnmount(() => unregisterWorkspaceSidebar(sidebarRegistrationKey));
 </script>
 
 <style scoped>

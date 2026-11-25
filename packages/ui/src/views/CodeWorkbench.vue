@@ -12,9 +12,6 @@
           <span class="cp-proj-name">{{ code.projectName || '选择项目目录' }}</span>
           <el-icon :size="10" class="cp-proj-caret"><ArrowDown /></el-icon>
         </button>
-        <button class="cp-side-toggle" :title="sideCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar">
-          <el-icon :size="14"><Fold v-if="!sideCollapsed" /><Expand v-else /></el-icon>
-        </button>
         <Teleport to="body">
           <div v-if="projDropdownOpen" class="cp-task-dropdown cp-proj-dropdown" :style="projDropdownStyle" @click.stop>
             <div class="cp-task-section">项目目录</div>
@@ -264,7 +261,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus, Monitor, Close, Link } from '@element-plus/icons-vue';
+import { FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Share, Download, Upload, Refresh, WarningFilled, Plus, Monitor, Close, Link } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
@@ -291,6 +288,11 @@ import GitCommitDialog from '../components/git/GitCommitDialog.vue';
 import GitCheckoutConflictDialog from '../components/git/GitCheckoutConflictDialog.vue';
 import GitConflictResolver from '../components/git/GitConflictResolver.vue';
 import GitRemoteDialog from '../components/git/GitRemoteDialog.vue';
+import {
+  registerWorkspaceSidebar,
+  unregisterWorkspaceSidebar,
+  updateWorkspaceSidebar,
+} from '../stores/workspaceSidebar';
 
 const code = useCodeStore();
 const chatStore = useChatStore();
@@ -509,7 +511,16 @@ function toggleChat() {
 function toggleSidebar() {
   sideCollapsed.value = !sideCollapsed.value;
   sideW.value = sideCollapsed.value ? 0 : 260;
+  updateWorkspaceSidebar('dev');
 }
+registerWorkspaceSidebar({
+  key: 'dev',
+  label: '开发侧栏',
+  getCollapsed: () => sideCollapsed.value,
+  toggle: toggleSidebar,
+});
+watch(sideCollapsed, () => updateWorkspaceSidebar('dev'));
+onBeforeUnmount(() => unregisterWorkspaceSidebar('dev'));
 // 「退出开发模式」按钮已删（决策 1）：模式切换统一走顶栏模式下拉；
 // 旧 backToChat 的「清标记回 /chat」职责由模式下拉承担（setMode('office') + router.push）。
 
@@ -841,13 +852,6 @@ onMounted(async () => {
   background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
 }
 .cp-title { font-size: 13.5px; font-weight: 700; color: var(--color-text, #1a1a1a); }
-.cp-side-toggle {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border: 1px solid var(--glass-border, #e7e4dc); border-radius: 8px;
-  background: transparent; color: var(--color-text-secondary, #6b6b66); cursor: pointer;
-  transition: all 0.15s ease;
-}
-.cp-side-toggle:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 .cp-proj {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 9px; max-width: 320px;

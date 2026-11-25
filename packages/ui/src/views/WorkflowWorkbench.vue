@@ -20,10 +20,7 @@
       </span>
       <span class="wf-hint">选一个工作流 → 填入参 → 运行，节点级进度实时可见</span>
       <span class="wf-spacer"></span>
-      <!-- 三屏收起/展开（与开发模式同款交互：图标按钮 + 拖拽条） -->
-      <button class="wf-icon-btn" :class="{ on: !sideCollapsed }" :title="sideCollapsed ? '展开工作流列表' : '收起工作流列表'" @click="toggleSidebar">
-        <el-icon :size="13"><Fold v-if="!sideCollapsed" /><Expand v-else /></el-icon>
-      </button>
+      <!-- 左栏收起统一走应用顶栏；这里只保留右对话栏的内部开关。 -->
       <button class="wf-icon-btn" :class="{ on: !chatCollapsed }" :title="chatCollapsed ? '展开对话' : '收起对话'" @click="toggleChat">
         <el-icon :size="13"><ChatDotRound v-if="!chatCollapsed" /><Expand v-else /></el-icon>
       </button>
@@ -345,8 +342,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { ArrowDown, ArrowRight, WarningFilled, Clock, Fold, Expand, ChatDotRound, ChatLineSquare, Plus, Check } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { ArrowDown, ArrowRight, WarningFilled, Clock, Expand, ChatDotRound, ChatLineSquare, Plus, Check } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
 import LeadToggle from '../components/workbench/LeadToggle.vue';
@@ -361,6 +358,11 @@ import { leadOf, setLead, type LeadMode } from '../stores/mode';
 import { setWorkbenchContext } from '../stores/workbenchContext';
 import { useResizable } from '../composables/useResizable';
 import { useChat } from '../composables/chat/useChat';
+import {
+  registerWorkspaceSidebar,
+  unregisterWorkspaceSidebar,
+  updateWorkspaceSidebar,
+} from '../stores/workspaceSidebar';
 
 const wf = useWorkflowStore();
 const platformStore = usePlatformStore();
@@ -463,7 +465,16 @@ const chatCollapsed = computed(() => collapse.value.chat);
 function toggleSidebar() {
   collapse.value.side = !collapse.value.side;
   writeCollapse();
+  updateWorkspaceSidebar('workflow');
 }
+registerWorkspaceSidebar({
+  key: 'workflow',
+  label: '工作流侧栏',
+  getCollapsed: () => sideCollapsed.value,
+  toggle: toggleSidebar,
+});
+watch(sideCollapsed, () => updateWorkspaceSidebar('workflow'));
+onBeforeUnmount(() => unregisterWorkspaceSidebar('workflow'));
 function toggleChat() {
   collapse.value.chat = !collapse.value.chat;
   writeCollapse();

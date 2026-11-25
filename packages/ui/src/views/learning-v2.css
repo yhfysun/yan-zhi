@@ -36,17 +36,21 @@
   display: grid;
   height: 100%;
   min-height: 0;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   overflow: hidden;
+}
+.lv2-ai-context-pane,
+.lv2-ai-conversation-pane {
+  min-height: 0;
 }
 .lv2-ai-context {
   display: flex;
+  height: 100%;
   min-height: 0;
   flex-direction: column;
   gap: 0;
   overflow-y: auto;
   padding: 14px 12px;
-  border-right: 1px solid var(--lv2-line);
   background: color-mix(in srgb, var(--skin-panel-bg-strong, #fbfcfb) 58%, transparent);
   backdrop-filter: blur(18px) saturate(112%);
   -webkit-backdrop-filter: blur(18px) saturate(112%);
@@ -56,6 +60,10 @@
   align-items: center;
   gap: 9px;
   padding: 2px 4px 14px;
+}
+.lv2-ai-brand-copy {
+  min-width: 0;
+  flex: 1;
 }
 .lv2-ai-brand > span {
   display: grid;
@@ -327,18 +335,19 @@
 }
 .lv2-ai-messages :deep(.messages) {
   width: 100%;
-  max-width: 980px;
+  max-width: min(1180px, calc(100% - 32px));
   min-height: 0;
   margin: 0 auto;
 }
 .lv2-ai-welcome {
   display: flex;
-  width: min(680px, 100%);
+  width: min(1080px, 100%);
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   margin: 0 auto;
   padding: 36px 24px 28px;
+  text-align: center;
 }
 .lv2-ai-welcome-mark {
   display: grid;
@@ -364,7 +373,8 @@
 }
 .lv2-ai-welcome-prompts {
   display: grid;
-  width: 100%;
+  width: min(920px, 100%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 12px;
 }
@@ -410,6 +420,7 @@
 .lv2-ai-welcome-foot {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 7px;
   margin-top: 6px;
 }
@@ -426,36 +437,13 @@
   font-size: 9px;
   cursor: pointer;
 }
-.lv2-ai-quick-strip {
-  display: flex;
-  flex: none;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 7px 18px;
-  border-top: 1px solid var(--lv2-line);
-}
-.lv2-ai-quick-strip button {
-  min-height: 32px;
-  flex: none;
-  padding: 0 10px;
-  border: 1px solid var(--lv2-line);
-  border-radius: 999px;
-  background: var(--lv2-surface);
-  color: var(--lv2-muted);
-  font-size: 9px;
-  cursor: pointer;
-}
-.lv2-ai-quick-strip button:hover {
-  border-color: var(--lv2-accent);
-  color: var(--lv2-accent);
-}
 .lv2-ai-composer {
   flex: none;
   min-height: 0;
 }
 .lv2-ai-composer :deep(.input-area) {
   width: 100%;
-  max-width: 980px;
+  max-width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
 }
 .lv2 button, .lv2 input, .lv2 select, .lv2 textarea { font: inherit; }
@@ -472,15 +460,6 @@
 .lv2-brand > span { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 8px; background: #17211e; color: #fff; font-family: Georgia, serif; font-size: 18px; }
 .lv2-brand b, .lv2-brand small { display: block; }
 .lv2-brand small { color: var(--lv2-muted); font-size: 9px; }
-.lv2-subjects-toggle {
-  display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center;
-  border: 1px solid color-mix(in srgb, var(--lv2-line) 78%, transparent); border-radius: 7px;
-  background: color-mix(in srgb, var(--lv2-surface) 72%, transparent); color: var(--lv2-muted);
-  cursor: pointer;
-}
-.lv2-subjects-toggle:hover { border-color: var(--lv2-accent); color: var(--lv2-accent); }
-.lv2-subjects-toggle svg { transition: transform .18s ease; }
-.lv2-subjects-toggle svg.reversed { transform: rotate(180deg); }
 .lv2-subjects.collapsed { padding: 14px 8px; }
 .lv2-subjects.collapsed .lv2-brand { justify-content: center; padding: 2px 0 14px; }
 .lv2-subjects.collapsed .lv2-brand > span,
@@ -1338,13 +1317,53 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-mobile-overview { display: flex; flex-direction: column; gap: 14px; }
 /* lv2-mobile-library-entry 已删（2026-11-21）：顶栏「图书馆」按钮保留，独占一行的
    重复入口卡片按用户要求移除，样式一并清掉。 */
-.lv2-mobile-course-select { display: flex; flex-direction: column; gap: 5px; }
+.lv2-mobile-course-select { position: relative; display: flex; flex-direction: column; gap: 5px; }
 .lv2-mobile-course-select > span { color: var(--lv2-muted); font-size: 9px; }
-.lv2-mobile-course-select select {
-  width: 100%; min-height: 46px; padding: 7px 10px; border: 1px solid var(--lv2-line);
-  border-radius: 8px; background: var(--lv2-surface); color: inherit; font-size: 11px;
+.lv2-mobile-course-trigger {
+  display: flex; width: 100%; min-height: 54px; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 11px; border: 1px solid var(--lv2-line); border-radius: 8px;
+  background: var(--lv2-surface); color: inherit; text-align: left;
 }
-.lv2-mobile-course-select option:disabled { color: #9a6b4d; }
+.lv2-mobile-course-trigger > span { display: grid; min-width: 0; gap: 2px; }
+.lv2-mobile-course-trigger small { color: var(--lv2-muted); font-size: 8px; }
+.lv2-mobile-course-trigger b {
+  overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
+}
+.lv2-mobile-course-menu {
+  position: absolute; z-index: 35; top: calc(100% + 6px); right: 0; left: 0;
+  max-height: min(62vh, 520px); overflow-y: auto; overscroll-behavior: contain;
+  padding: 6px; border: 1px solid var(--lv2-line); border-radius: 10px;
+  background: var(--lv2-surface, #fff); box-shadow: 0 16px 40px rgba(18, 28, 23, .2);
+}
+.lv2-mobile-course-track { border-radius: 8px; }
+.lv2-mobile-course-track + .lv2-mobile-course-track { margin-top: 3px; }
+.lv2-mobile-course-track-head {
+  display: grid; width: 100%; min-height: 48px; grid-template-columns: minmax(0, 1fr) auto 18px;
+  gap: 9px; align-items: center; padding: 7px 9px; border: 0; border-radius: 7px;
+  background: transparent; color: inherit; text-align: left;
+}
+.lv2-mobile-course-track.open .lv2-mobile-course-track-head { background: var(--lv2-tint); }
+.lv2-mobile-course-track-head span { min-width: 0; display: grid; gap: 2px; }
+.lv2-mobile-course-track-head small,
+.lv2-mobile-course-track-head em { color: var(--lv2-muted); font-size: 8px; font-style: normal; }
+.lv2-mobile-course-track-head b {
+  overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap;
+}
+.lv2-mobile-course-track-items { display: grid; gap: 3px; padding: 4px 0 7px 10px; }
+.lv2-mobile-course-track-items > button {
+  display: grid; width: 100%; min-height: 48px; grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid transparent;
+  border-radius: 7px; background: transparent; color: inherit; text-align: left;
+}
+.lv2-mobile-course-track-items > button.active {
+  border-color: var(--lv2-accent); background: var(--lv2-tint); color: var(--lv2-accent);
+}
+.lv2-mobile-course-track-items > button:disabled { opacity: .5; }
+.lv2-mobile-course-track-items span,
+.lv2-mobile-course-track-items small { color: var(--lv2-muted); font-size: 8px; }
+.lv2-mobile-course-track-items b {
+  overflow: hidden; font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap;
+}
 .lv2-mobile-continue {
   display: flex; min-height: 138px; flex-direction: column; align-items: flex-start; justify-content: space-between;
   padding: 17px; border: 1px solid var(--lv2-line);
@@ -1427,14 +1446,30 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 .lv2-mobile-subject-sheet h2 { margin: 3px 0 0; font-size: 18px; }
 .lv2-mobile-subject-sheet > header button { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--lv2-line); border-radius: 8px; background: var(--lv2-surface); }
 .lv2-mobile-subject-sheet > div { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
-.lv2-mobile-subject-sheet > div button {
+.lv2-mobile-subject-sheet .lv2-mobile-subject-entry {
   display: grid; width: 100%; min-height: 54px; grid-template-columns: 30px minmax(0, 1fr) 18px;
   gap: 10px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px;
   background: transparent; color: inherit; text-align: left;
 }
-.lv2-mobile-subject-sheet > div button.active {
+.lv2-mobile-subject-sheet .lv2-mobile-subject-entry.active {
   background: color-mix(in srgb, var(--skin-surface-raised, var(--color-surface, #f2f4f2)) 30%, transparent);
   box-shadow: inset 3px 0 var(--lv2-accent);
+}
+.lv2-mobile-subject-group { border-bottom: 1px solid color-mix(in srgb, var(--lv2-line) 72%, transparent); }
+.lv2-mobile-subject-group:last-child { border-bottom: 0; }
+.lv2-mobile-subject-group-head {
+  display: grid; width: 100%; min-height: 48px; grid-template-columns: minmax(0, 1fr) auto 18px;
+  gap: 9px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px;
+  background: transparent; color: inherit; text-align: left;
+}
+.lv2-mobile-subject-group.active .lv2-mobile-subject-group-head { color: var(--lv2-accent); }
+.lv2-mobile-subject-group-head b { font-size: 11px; }
+.lv2-mobile-subject-group-head small {
+  display: grid; min-width: 24px; height: 24px; place-items: center; border-radius: 999px;
+  background: var(--lv2-tint); color: var(--lv2-muted); font-size: 8px;
+}
+.lv2-mobile-subject-group-items {
+  display: grid; gap: 2px; padding: 0 0 7px 8px;
 }
 .lv2-mobile-subject-sheet i {
   display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid color-mix(in srgb, var(--dot) 34%, transparent);
@@ -1446,6 +1481,8 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
 @media (max-width: 900px) {
   .lv2 { display: block; }
   .lv2-ai-shell { display: flex; flex-direction: column; }
+  .lv2-ai-context-pane,
+  .lv2-ai-conversation-pane,
   .lv2-ai-context { display: none; }
   .lv2-ai-chat-head {
     min-height: 54px;
@@ -1557,12 +1594,8 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
     min-height: 44px;
     font-size: 10px;
   }
-  .lv2-ai-quick-strip {
-    padding: 7px 10px;
-  }
-  .lv2-ai-quick-strip button {
-    min-height: 44px;
-    font-size: 10px;
+  .lv2-ai-welcome-prompts {
+    grid-template-columns: 1fr;
   }
   .lv2-ai-composer :deep(.input-area) {
     max-width: none;
