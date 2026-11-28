@@ -977,7 +977,14 @@ function createChat() {  const router = useRouter();
     await settingsStore.update({ workspaceDir: path });
     await pushWorkspaceDir(path);
 
-    // 选了工作目录后自动打开 Git 文件预览面板
+    // 移动端不自动打开 Git 面板：它面向桌面宽屏，自动弹出会遮住欢迎页/输入区。
+    // 目录已经保存成功，用户仍可从文件管理按需进入。
+    try {
+      const { getPlatformAdapter } = await import('@yan-zhi/core');
+      if (getPlatformAdapter().platform === 'mobile') return;
+    } catch { /* 平台判定失败时保持桌面旧行为 */ }
+
+    // 桌面端选了工作目录后自动打开 Git 文件预览面板
     try {
       const gitStore = useGitStore();
       await gitStore.checkCapability();
@@ -1045,7 +1052,7 @@ function createChat() {  const router = useRouter();
     const t = resolveOpenTarget(p, isDir);
     const name = opts?.name || t.name;
     if (t.kind === 'dir') store.openTab({ kind: 'git', name, repoPath: t.path });
-    else store.openTab({ kind: 'file', name, path: t.path });
+    else store.openTab({ kind: 'file', name, path: t.path, conversationId: store.currentConvId || undefined });
   }
 
   /** 在系统文件管理器中定位/打开（桌面端）。目录直接在文件管理器里打开，文件则选中它。
@@ -3979,7 +3986,7 @@ ${q.text}
 
   async function previewFile(f: { name: string; path: string; isDir: boolean }) {
     if (f.isDir) return;
-    store.openTab({ kind: 'file', name: f.name, path: f.path });
+    store.openTab({ kind: 'file', name: f.name, path: f.path, conversationId: store.currentConvId || undefined });
     store.showFilePopup = false;
   }
 

@@ -52,6 +52,21 @@ export function splitLocalPaths(text: string): PathSegment[] {
   return out;
 }
 
+/** 取文本里第一条真正的本地绝对路径；HTTP URL 等非本地地址一律返回 null。 */
+export function firstLocalPath(text: string): string | null {
+  const src = String(text || '');
+  // 工具结果通常是 JSON，优先读结构化 file/path，避免把转义后的反斜杠再当正文扫描。
+  try {
+    const parsed = JSON.parse(src) as Record<string, unknown>;
+    for (const key of ['file', 'path']) {
+      const value = parsed[key];
+      if (typeof value === 'string' && isLocalPath(value)) return normalizePath(value);
+    }
+  } catch { /* 非 JSON：继续按文本扫描 */ }
+  const hit = splitLocalPaths(src).find((part) => part.type === 'path');
+  return hit ? normalizePath(hit.value) : null;
+}
+
 /** 取路径末段作为展示名（去掉尾部斜杠后取最后一段） */
 export function baseNameOf(p: string): string {
   const t = String(p || '').trim().replace(/[\\/]+$/, '');

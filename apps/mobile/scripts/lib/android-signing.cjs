@@ -75,6 +75,7 @@ function signingGradleBlock() {
     '        }',
     '        release {',
     '            signingConfig signingConfigs.yanzhiRelease',
+    '            debuggable false',
     '        }',
     '    }',
     '}',
@@ -133,6 +134,21 @@ function findApkSignerJar(sdk = findAndroidSdk()) {
   throw new Error(`未找到 apksigner.jar: ${buildTools}`);
 }
 
+function findAaptExecutable(sdk = findAndroidSdk()) {
+  const buildTools = path.join(sdk, 'build-tools');
+  const versions = fs.readdirSync(buildTools).sort((a, b) =>
+    b.localeCompare(a, undefined, { numeric: true }),
+  );
+  const names = process.platform === 'win32' ? ['aapt.exe', 'aapt'] : ['aapt'];
+  for (const version of versions) {
+    for (const name of names) {
+      const candidate = path.join(buildTools, version, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  throw new Error(`未找到 aapt: ${buildTools}`);
+}
+
 function findJavaExecutable() {
   const names = process.platform === 'win32' ? ['java.exe', 'java'] : ['java'];
   const candidates = [
@@ -177,6 +193,26 @@ function verifyApkSignature(apkPath, { expectedFingerprint = readExpectedFingerp
   return actual;
 }
 
+function inspectApkBadging(apkPath) {
+  if (!fs.existsSync(apkPath)) throw new Error(`APK 不存在: ${apkPath}`);
+  const result = spawnSync(findAaptExecutable(), ['dump', 'badging', apkPath], {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+  if (result.status !== 0) throw new Error(`aapt 解析 APK 失败: ${output}`);
+  const packageLine = output.split(/\r?\n/).find((line) => line.startsWith("package: name='"));
+  const match = packageLine && /^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'/.exec(packageLine);
+  if (!match) throw new Error(`无法从 aapt 输出读取包信息: ${output.slice(0, 500)}`);
+  return {
+    packageName: match[1],
+    versionCode: Number(match[2]),
+    versionName: match[3],
+    debuggable: /^application-debuggable$/m.test(output),
+    output,
+  };
+}
+
 module.exports = {
   MOBILE_DIR,
   SIGNING_DIR,
@@ -190,6 +226,8 @@ module.exports = {
   readExpectedFingerprint,
   findAndroidSdk,
   findApkSignerJar,
+  findAaptExecutable,
   findJavaExecutable,
   verifyApkSignature,
+  inspectApkBadging,
 };

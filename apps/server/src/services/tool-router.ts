@@ -18,13 +18,13 @@
 
 /**
  * 触发路由的工具面阈值：超过才裁。
- * ★ 必须大于常驻核心集规模（当前 41，2026-11-15 补确定性循环家族 browser_run_loop/
+ * ★ 必须大于常驻核心集规模（当前 44，2026-11-15 补确定性循环家族 browser_run_loop/
  *   press_key/wait/wait_for —— 刷关/连续操作类任务的关键件，被裁掉模型只能逐轮手点）
  *   + 常见 custom_/mcp_ 挂载数，否则核心集直接占满阈值、裁剪永远不触发（首版设 24 被
  *   测试抓出这个 bug；2026-10-17 两度随核心集扩张 30→36→42，本轮 42→46）。
  *   超出部分仍按相关性裁；核心集再膨胀时应考虑收敛清单而不是继续抬阈值。
  */
-export const TOOL_ROUTE_THRESHOLD = 46;
+export const TOOL_ROUTE_THRESHOLD = 47;
 
 /**
  * 常驻核心集：无论打分高低都不裁。
@@ -45,7 +45,7 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   // 交互（在线任务）
   'ask_user', 'confirm_user',
   // 文件与执行底座
-  'file_read', 'file_list', 'file_write', 'file_edit',
+  'file_read', 'file_list', 'file_write', 'file_edit', 'api_artifact_save',
   'cmd_exec', 'python_exec',
   'code_verify',
   // 后台作业状态轮询：与 python_exec background=true 配套，裁掉会让长任务永远等不到结果

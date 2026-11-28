@@ -31,6 +31,22 @@ const DIRECT_TIMEOUT_MS = 20000;
 
 let proxyCandidates: ProxyEndpoint[] | null = null;
 
+export interface MediaDownloadOptions {
+  /**
+   * 直连返回「暂时不可用」时重试几次（总尝试次数，默认 1）。
+   * 生图产物地址刚返回时对象存储偶尔还没就绪，会出现短暂 404/5xx；
+   * 此时不能把 host 标成代理黑名单，否则移动端没有本地代理时会直接丢图。
+   */
+  retryAttempts?: number;
+  /** 第 attempt 次失败后的等待毫秒数（attempt 从 1 开始） */
+  retryDelayMs?: (attempt: number) => number;
+  /**
+   * 直连单次超时上限。默认 20s 适合普通媒体；
+   * 生图产物在移动网络/对象存储刚就绪时可能明显更慢，可由调用方放宽。
+   */
+  directTimeoutMs?: number;
+}
+
 /**
  * 浏览器形态请求头（2026-10-06）：mixkit 等素材站有 UA/Referer 防盗链，
  * 自报 `yan-zhi-media/1.0` 直接 403（直连和代理隧道都一样，因为拒的是应用层头）。
@@ -144,6 +160,17 @@ export async function directFetch(url: string, timeoutMs: number): Promise<Buffe
   return buf;
 }
 
+/** 对象刚生成时的暂时性 HTTP 错误：稍后重试即可，不代表直连网络不通。 */
+export function isTransientMediaFetchError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /下载失败 HTTP (?:404|408|409|425|429|5\d\d)\b/i.test(msg);
+}
+
+function retryDelayMs(attempt: number, options: MediaDownloadOptions): number {
+  if (options.retryDelayMs) return Math.max(0, Number(options.retryDelayMs(attempt)) || 0);
+  return Math.min(8000, 500 * 2 ** Math.max(0, attempt - 1));
+}
+
 /** 记录：该 host 直连不通（TTL 内后续同 host 直接走代理，过期后重新尝试直连） */
 export function markDirectBlocked(url: string) {
   try { directBlockedHosts.set(new URL(url).hostname, Date.now()); } catch { /* 非法 url 忽略 */ }
@@ -253,23 +280,51 @@ function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number, re
  * 下载媒体字节：直连优先；直连失败（或该 host 已记录直连不通）时依次尝试代理候选链。
  * 两条路都失败时抛最后的错误，由调用方决定降级（例如只留远端 URL）。
  */
-export async function downloadMediaBinary(url: string, timeoutMs = 180000): Promise<Buffer> {
+export async function downloadMediaBinary(
+  url: string,
+  timeoutMs = 180000,
+  options: MediaDownloadOptions = {},
+): Promise<Buffer> {
   const s = (url || '').trim();
   if (!s) throw new Error('媒体地址为空');
   let host = '';
   try { host = new URL(s).hostname; } catch { /* 非法 url 交给直连去报错 */ }
 
-  const blocked = !!host && isDirectBlocked(host);
+  const retryAttempts = Math.max(1, Math.min(8, Math.floor(Number(options.retryAttempts) || 1)));
+  const directTimeoutMs = Math.max(
+    1000,
+    Math.min(timeoutMs, Math.floor(Number(options.directTimeoutMs) || DIRECT_TIMEOUT_MS)),
+  );
+  // 明确要求重试的调用（生图产物落盘）即使 host 曾进入短暂冷却，也要重新试直连：
+  // 上一次 404/5xx 只说明当次对象未就绪，不能据此封死后续新生成图片的唯一通道。
+  const blocked = !!host && isDirectBlocked(host) && retryAttempts <= 1;
 
   if (!blocked) {
-    try {
-      return await directFetch(s, Math.min(timeoutMs, DIRECT_TIMEOUT_MS));
-    } catch (e: unknown) {
-      // 直连不通（该网络被挡）：记下并进入冷却期（TTL 内不再重试直连，避免白等超时）
-      if (host) markDirectBlocked(s);
-      logger.warn(
-        `[media] 直连 ${host || s} 失败（${e instanceof Error ? e.message : String(e)}），尝试本机代理`,
-      );
+    let lastDirectError: unknown = null;
+    for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+      try {
+        return await directFetch(s, directTimeoutMs);
+      } catch (e: unknown) {
+        lastDirectError = e;
+        if (attempt < retryAttempts && isTransientMediaFetchError(e)) {
+          logger.warn(
+            `[media] ${host || s} 尚未就绪（${e instanceof Error ? e.message : String(e)}），` +
+            `${retryDelayMs(attempt, options)}ms 后重试 ${attempt + 1}/${retryAttempts}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt, options)));
+          continue;
+        }
+        break;
+      }
+    }
+    // 只有在重试耗尽后才把 host 记入冷却期；暂时性对象未就绪不应污染后续生图落盘。
+    if (host) markDirectBlocked(s);
+    logger.warn(
+      `[media] 直连 ${host || s} 失败（${lastDirectError instanceof Error ? lastDirectError.message : String(lastDirectError)}），尝试本机代理`,
+    );
+    if (!isTransientMediaFetchError(lastDirectError) && retryAttempts > 1) {
+      // 非暂时性错误（例如证书/网络层异常）没有必要继续空等同一地址；仍保留代理兜底。
+      logger.warn(`[media] ${host || s} 的直连错误不可重试，已转入代理兜底`);
     }
   }
 

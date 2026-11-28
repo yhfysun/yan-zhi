@@ -2,7 +2,7 @@
   <ConsoleShell
     ref="shellRef"
     storage-key="shop_aside"
-    root-class="shop-console"
+    :root-class="compactMobile ? 'shop-console is-mobile-workbench' : 'shop-console'"
     sidebar-label="店铺侧栏"
     :default-width="260"
     mobile-aside="drawer"
@@ -59,7 +59,9 @@
           @open-browser="openShopBrowserPreview"
           :browser-available="browserAvailable"
           :platform-available="browserAvailable"
+          :compact-mobile="compactMobile"
           @toggle-chat="chatCollapsed = !chatCollapsed"
+          @open-projects="toggleShopAside"
         />
 
         <el-tabs v-model="tab" class="shop-tabs">
@@ -123,6 +125,14 @@
             <ShopReference :browser-available="browserAvailable" />
           </el-tab-pane>
         </el-tabs>
+
+        <div v-if="compactMobile && tab === 'setup'" class="shop-mobile-setup-bar">
+          <div class="shop-mobile-setup-copy">
+            <span>开店准备度 {{ setupProgress.percent }}%</span>
+            <strong>{{ setupProgress.nextStep?.title || '进入经营复盘' }}</strong>
+          </div>
+          <el-button type="primary" :icon="ArrowRight" @click="startSetupAi()">AI 继续</el-button>
+        </div>
       </div>
 
       <!-- 拖拽条：工作台 ↔ 对话栏（任一侧收起时不渲染） -->
@@ -245,7 +255,7 @@ import {
 
 // 对话栏：宽度可拖拽并持久化（与运维/工作流同一个 useResizable）
 const chatR = useResizable('shop_chat', 360, 280, 760);
-const shellRef = ref<{ collapseAside: () => void } | null>(null);
+const shellRef = ref<{ collapseAside: () => void; toggleAside: () => void } | null>(null);
 const isMobileShell = useMobileShell();
 const platformInfo = usePlatform();
 const compactMobile = computed(() => (
@@ -274,6 +284,10 @@ watch(lead, (next) => {
 function openShopAi(): void {
   setLead(activeMode.value, 'ai');
   chatCollapsed.value = false;
+}
+
+function toggleShopAside(): void {
+  shellRef.value?.toggleAside();
 }
 
 /** 平板/手机宽度下优先给工作台让位；资源栏和 AI 栏都从边缘入口按需展开。 */

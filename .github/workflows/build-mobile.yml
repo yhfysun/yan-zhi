@@ -1,6 +1,7 @@
 name: 构建移动端
 
-# Android APK 始终构建；iOS 始终产出模拟器包，配置 Apple 签名 secrets 后额外产出真机 IPA。
+# Android 始终按 build/mobile.catalog.json 产出两个单 ABI 正式 APK；
+# iOS 始终产出模拟器包，配置 Apple 签名 secrets 后额外产出真机 IPA。
 #
 # ★★ 为什么这个 job 的步骤顺序不能改（每一步都在补一个「干净 checkout 下的坑」）：
 #   1. apps/mobile/android/ 是 Capacitor 生成目录，**被 gitignore**
@@ -26,6 +27,17 @@ on:
       - 'packages/ui/**'
       - 'scripts/package.cjs'
       - 'scripts/package-android.cjs'
+      - 'scripts/lib/mobile-build-profile.cjs'
+      - 'scripts/select-modes.cjs'
+      - 'build/mobile.catalog.json'
+      - 'build/modes.catalog.json'
+      - 'build/plugins.catalog.json'
+      - 'apps/mobile/scripts/build-android-slim.cjs'
+      - 'apps/mobile/scripts/build-mobile-server.cjs'
+      - 'apps/mobile/scripts/assemble-debug.cjs'
+      - 'apps/mobile/scripts/assemble-release.cjs'
+      - 'apps/mobile/scripts/apply-native-release.cjs'
+      - 'apps/mobile/scripts/copy-apk.cjs'
       - 'assets/icons/**'
       - '.github/workflows/build-mobile.yml'
   workflow_dispatch:
@@ -33,7 +45,9 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    # ★ 输出目录口径与本地一致：dist-release/android/<版本>/app-debug.apk
+    # ★ 输出目录口径与本地一致：
+    #   dist-release/android/<版本>/yan-zhi-<版本>-arm64-v8a.apk
+    #   dist-release/android/<版本>/yan-zhi-<版本>-armeabi-v7a.apk
     #   （路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，脚本内部自行解析）
     #
     # ★ SDK / JDK 路径**不在这里硬编码**：
@@ -134,13 +148,70 @@ jobs:
 
       # ★ 打包主链路（一条命令覆盖，与本地完全同一个口径）：
       #   gen-android-icons → vite build → apply-native-sms → 内嵌后端 → cap sync
-      #   → gradle assembleDebug → 拷 APK
+      #   → 按 ABI 分别 gradle assembleRelease → 校验单 ABI/签名/版本 → 重命名复制
       #   这几步都在 scripts/package.cjs 的 buildAndroid() 里，**不在 workflow 重复实现** ——
       #   本地怎么打、CI 就怎么打，从根上避免两套口径漂移。
       #   ★ 上面单独跑 `cap add android` 是因为 package.cjs 假定工程已存在
       #     （本地开发机 cap add 过一次就一直在），而干净 runner 上没有。
       - name: 打包 Android APK
         run: node scripts/package-android.cjs --yes
+
+      - name: 校验五模式双 ABI 正式包
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./apps/mobile/package.json').version")"
+          OUT="dist-release/android/${VERSION}"
+          ARM64="${OUT}/yan-zhi-${VERSION}-arm64-v8a.apk"
+          ARMV7="${OUT}/yan-zhi-${VERSION}-armeabi-v7a.apk"
+
+          test -s "$ARM64"
+          test -s "$ARMV7"
+          test "$(find "$OUT" -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 2
+
+          if find "$OUT" -maxdepth 1 -type f \( -name 'app-debug.apk' -o -name 'app-release.apk' \) | grep -q .; then
+            echo "::error::正式发行目录出现了调试包 app-debug.apk/app-release.apk"
+            exit 1
+          fi
+          if find "$OUT" -maxdepth 1 -type f -name '*x86*.apk' | grep -q .; then
+            echo "::error::正式发行目录出现了 x86/x86_64 调试包"
+            exit 1
+          fi
+
+          node - <<'NODE'
+          const profile = require('./build/mobile.catalog.json');
+          const expected = ['office', 'shop', 'ops', 'sec', 'learning'];
+          if (JSON.stringify(profile.modes) !== JSON.stringify(expected)) {
+            throw new Error(`移动模式必须固定为 ${expected.join(',')}，实际 ${profile.modes.join(',')}`);
+          }
+          for (const id of ['git-explorer', 'cicd-pipeline', 'java-suite']) {
+            if (profile.plugins.includes(id)) throw new Error(`手机发行插件不能包含 ${id}`);
+          }
+          for (const id of ['learning-mode', 'remote-control', 'skins']) {
+            if (!profile.plugins.includes(id)) throw new Error(`手机发行插件必须包含 ${id}`);
+          }
+          if (profile.keepOfflineTts !== true || profile.keepSkins !== true) {
+            throw new Error('手机发行必须保留离线 TTS 与皮肤库');
+          }
+          NODE
+
+          AAPT="$(find "${ANDROID_SDK_ROOT}/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$AAPT"
+          VERSION_CODE="$(node -e "
+            const [major, minor, patch] = require('./apps/mobile/package.json').version.split('.').map(Number);
+            process.stdout.write(String(major * 10000 + minor * 100 + patch));
+          ")"
+          for APK in "$ARM64" "$ARMV7"; do
+            BADGING="$("$AAPT" dump badging "$APK")"
+            echo "$BADGING" | grep -q "package: name='com.yanzhi.mobile'"
+            echo "$BADGING" | grep -q "versionCode='${VERSION_CODE}'"
+            echo "$BADGING" | grep -q "versionName='${VERSION}'"
+            if echo "$BADGING" | grep -q '^application-debuggable$'; then
+              echo "::error::$(basename "$APK") 是 debuggable 包，不能提交商店"
+              exit 1
+            fi
+          done
+
+          ls -lh "$OUT"/*.apk
 
       - name: 列出构建产物（诊断用）
         run: |
@@ -152,7 +223,7 @@ jobs:
       - name: 上传 APK
         uses: actions/upload-artifact@v7
         with:
-          name: Android-APK
+          name: Android-Release-APK-5Mode-Split-ABI
           path: dist-release/android/*/*.apk
           if-no-files-found: error
 

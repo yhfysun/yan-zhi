@@ -2,7 +2,10 @@
   <div
     ref="inputAreaEl"
     class="input-area"
-    :class="{ 'is-mobile-collapsed': isMobileShell && !mobileExpanded }"
+    :class="{
+      'is-mobile-collapsed': isMobileShell && !mobileExpanded,
+      'is-mobile-running': isMobileShell && store.streaming,
+    }"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
@@ -491,14 +494,14 @@
                 <el-icon><Plus /></el-icon>
               </el-button>
             </template>
-            <div class="plus-menu-wrap" @mouseleave="scheduleCloseSub">
+            <div class="plus-menu-wrap" :class="{ 'is-mobile-shell': isMobileShell }" @mouseleave="scheduleCloseSub">
               <div class="plus-menu">
                 <!-- ★★ 原第一项「助手」（hover 展开助手列表 + 点击切换）已删除：
                      它与**输入框上方**的 `.input-agent-bar` 智能体下拉是同一个动作
                      （都调 agentStore.select / onAgentSwitch），属于"同一动作两个入口"。
                      用户 2026-08-21 拍板的口径是「智能体切换移到输入框上方」，
                      所以保留上方下拉、去掉这里这份（2026-09-21 复核确认冗余）。 -->
-                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'skills' }" @mouseenter="openSub('skills', $event)" @click="openSub('skills', $event)">
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'skills' }" @mouseenter="openSubHover('skills', $event)" @click="openSub('skills', $event)">
                   <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
                   <div class="plus-menu-info">
                     <div class="plus-menu-label">技能 · Skill</div>
@@ -513,7 +516,7 @@
                     <div class="plus-menu-desc">{{ store.mountedMcpServers.length ? `已挂载 ${store.mountedMcpServers.length} 个` : '未挂载' }}</div>
                   </div>
                 </div>
-                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'modes' }" @mouseenter="openSub('modes', $event)" @click="openSub('modes', $event)">
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'modes' }" @mouseenter="openSubHover('modes', $event)" @click="openSub('modes', $event)">
                   <span class="plus-menu-ic"><el-icon><Operation /></el-icon></span>
                   <div class="plus-menu-info">
                     <div class="plus-menu-label">模式</div>
@@ -524,7 +527,7 @@
                 <!-- 工具权限：窄屏不再单独占一个工具条按钮（用户拍板「权限放到加号按钮里面」），
                      桌面端工具条上仍保留独立的权限胶囊，此处是它的窄屏落点。
                      两侧写同一个 store.permissionMode，避免两种真相。 -->
-                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'perm' }" @mouseenter="openSub('perm', $event)" @click="openSub('perm', $event)">
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'perm' }" @mouseenter="openSubHover('perm', $event)" @click="openSub('perm', $event)">
                   <span class="plus-menu-ic"><el-icon><Lock /></el-icon></span>
                   <div class="plus-menu-info">
                     <div class="plus-menu-label">工具权限</div>
@@ -553,10 +556,32 @@
                   <div class="plus-menu-info"><div class="plus-menu-label">配置模型平台</div></div>
                 </div>
               </div>
-              <!-- hover 右侧弹出的子菜单（专家列表 / 模式开关） -->
+              <!-- 桌面端 hover 右侧弹出；移动端改为可点按的底部面板 -->
               <Teleport to="body">
               <transition name="plus-sub-fade">
-                <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px', left: subLeft + 'px' }" @mouseenter="cancelCloseSub">
+                <div
+                  v-if="hoverSub"
+                  class="plus-sub-layer"
+                  :class="{ 'is-mobile': isMobileShell }"
+                  @pointerdown.stop
+                  @touchstart.stop
+                  @click="onSubLayerClick"
+                >
+                <div
+                  class="plus-menu plus-menu-sub"
+                  :class="{ 'is-mobile-sub': isMobileShell }"
+                  :style="isMobileShell ? undefined : { top: subTop + 'px', left: subLeft + 'px' }"
+                  role="dialog"
+                  :aria-modal="isMobileShell ? 'true' : undefined"
+                  :aria-label="submenuTitle"
+                  @mouseenter="cancelCloseSub"
+                >
+                  <div v-if="isMobileShell" class="plus-sub-mobile-head">
+                    <div class="plus-sub-mobile-title">{{ submenuTitle }}</div>
+                    <button type="button" class="plus-sub-mobile-close" aria-label="关闭子菜单" @click.stop="closeSubNow">
+                      <el-icon><Close /></el-icon>
+                    </button>
+                  </div>
                   <!-- 原 `hoverSub === 'agents'` 分支（助手列表 + 编辑当前助手）已随主菜单「助手」项一并删除：
                        选助手 = 输入框上方的 .input-agent-bar 下拉；编辑助手 = 同区域的 Tools 圆钮。
                        两处入口都在输入框上方，不再在 + 菜单里重复一份。 -->
@@ -587,7 +612,7 @@
                     </div>
                   </template>
                   <template v-else-if="hoverSub === 'modes'">
-                    <div class="plus-menu-item" @click.stop>
+                    <div class="plus-menu-item" @click="store.thinkingMode = !store.thinkingMode">
                       <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">深度思考</div>
@@ -595,7 +620,7 @@
                       </div>
                       <el-switch v-model="store.thinkingMode" size="small" @click.stop />
                     </div>
-                    <div class="plus-menu-item" @click.stop>
+                    <div class="plus-menu-item" @click="store.planMode = !store.planMode">
                       <span class="plus-menu-ic"><el-icon><Tickets /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">计划</div>
@@ -603,7 +628,7 @@
                       </div>
                       <el-switch v-model="store.planMode" size="small" @click.stop />
                     </div>
-                    <div class="plus-menu-item" @click.stop>
+                    <div class="plus-menu-item" @click="store.answerOnly = !store.answerOnly">
                       <span class="plus-menu-ic"><el-icon><Memo /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">仅回答</div>
@@ -611,7 +636,7 @@
                       </div>
                       <el-switch v-model="store.answerOnly" size="small" @click.stop />
                     </div>
-                    <div class="plus-menu-item" @click.stop>
+                    <div class="plus-menu-item" @click="store.goalMode = !store.goalMode">
                       <span class="plus-menu-ic"><el-icon><Aim /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">目标模式</div>
@@ -652,6 +677,7 @@
                       <el-icon v-if="store.permissionMode === p.value" class="plus-menu-check"><Check /></el-icon>
                     </div>
                   </template>
+                </div>
                 </div>
               </transition>
               </Teleport>
@@ -1570,19 +1596,32 @@ async function startScreenshot(fromHotkey = false) {
   }
 }
 
-// ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
+// ===== 「+」聚合菜单（桌面 hover 子菜单；移动端使用触屏底部面板） =====
 const plusOpen = ref(false);
 function closePlus(fn?: () => void) { fn?.(); plusOpen.value = false; hoverSub.value = null; }
 
-// hover 子菜单：记录触发行 offsetTop，子菜单绝对定位对齐该行
+// 子菜单：桌面记录触发行坐标并按 hover 定位；移动端只维护当前面板，不参与 hover 关闭。
 const hoverSub = ref<'modes' | 'skills' | 'perm' | null>(null);
+const submenuTitle = computed(() => ({
+  skills: '技能',
+  modes: '模式',
+  perm: '工具权限',
+})[hoverSub.value || 'skills']);
 const subTop = ref(0);
 const subLeft = ref(0);
 let subCloseTimer: ReturnType<typeof setTimeout> | undefined;
-function openSub(kind: 'modes' | 'skills' | 'perm', evt: MouseEvent) {
+function openSubHover(kind: 'modes' | 'skills' | 'perm', evt: MouseEvent) {
+  // 触屏会先合成 mouseenter；若在这里打开遮罩，同一次触摸的 click 会落到遮罩并立即关闭。
+  if (isMobileShell.value) return;
+  openSub(kind, evt);
+}
+function openSub(kind: 'modes' | 'skills' | 'perm', evt?: MouseEvent) {
   if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
   if (kind === 'skills') skillSearch.value = '';
-  const el = evt.currentTarget as HTMLElement;
+  hoverSub.value = kind;
+  if (isMobileShell.value) return;
+  const el = evt?.currentTarget as HTMLElement | undefined;
+  if (!el) return;
   const wrap = el.closest('.plus-menu-wrap') as HTMLElement | null;
   if (wrap) {
     const wr = wrap.getBoundingClientRect();
@@ -1591,10 +1630,19 @@ function openSub(kind: 'modes' | 'skills' | 'perm', evt: MouseEvent) {
     subLeft.value = wr.right + 10 + subW > window.innerWidth ? wr.left - subW - 10 : wr.right + 10;
     subTop.value = Math.min(er.top, window.innerHeight - 400);
   }
-  hoverSub.value = kind;
 }
-function closeSubNow() { hoverSub.value = null; }
+function closeSubNow() {
+  if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
+  hoverSub.value = null;
+}
+function onSubLayerClick(evt: MouseEvent) {
+  // Teleport 到 body 后，子面板点击会被一级 el-popover 判为“外部点击”。
+  // 在面板边界截断事件，关闭子面板时保留一级菜单。
+  evt.stopPropagation();
+  if (evt.target === evt.currentTarget) closeSubNow();
+}
 function scheduleCloseSub() {
+  if (isMobileShell.value) return;
   // 延迟关闭，留出指针移入子菜单的时间
   if (subCloseTimer) clearTimeout(subCloseTimer);
   subCloseTimer = setTimeout(() => { hoverSub.value = null; }, 150);

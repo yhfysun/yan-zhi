@@ -113,7 +113,7 @@
     <template v-else>
       <!-- 图片 -->
       <div v-if="kind === 'image'" class="fp-image-wrap">
-        <img :src="imageSrc" :alt="file.name" class="fp-image" />
+        <img :src="imageSrc" :alt="file.name" class="fp-image" @error="onImageLoadError" />
       </div>
       <!-- 视频：原生播放器内嵌播放（走 HTTP Range 流式，不再用 Blob —— 见 resolveMediaUrl） -->
       <div v-else-if="kind === 'video'" class="fp-video-wrap">
@@ -1312,6 +1312,22 @@ async function readTextDecoded(
   return decoded.text;
 }
 
+async function onImageLoadError() {
+  if (!imageSrc.value || imageSrc.value.startsWith('data:')) {
+    error.value = '图片加载失败：文件可能已移动、过期或无法读取';
+    return;
+  }
+  try {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const adapter = getPlatformAdapter();
+    const b64 = await readFileWithFallback(adapter);
+    imageSrc.value = `data:${imgMime(ext.value)};base64,${b64}`;
+    error.value = '';
+  } catch (e: any) {
+    error.value = '图片加载失败：' + String(e?.message || e);
+  }
+}
+
 /**
  * 解析「可流式播放」的 HTTP URL（视频 / 音频专用，**优先于读字节**）。
  *
@@ -1347,7 +1363,8 @@ async function resolveMediaUrl(): Promise<string | null> {
     //    越界 403，命中则 sendFile（原生 Range）→ 不再退回 Blob（blob 媒体无 Range → 黑屏）。
     //    ★ 只认绝对路径：Web 端 File System Access 句柄可能是虚拟相对路径，那种留给 ③/兜底。
     const localPath = String(props.file.path || '').trim();
-    if (localPath && (/^[A-Za-z]:[\\/]/.test(localPath) || localPath.startsWith('/') || localPath.startsWith('\\'))) {
+    const androidPrivatePath = /^data\/(?:data|user)\//.test(localPath);
+    if (localPath && (/^[A-Za-z]:[\\/]/.test(localPath) || localPath.startsWith('/') || localPath.startsWith('\\') || androidPrivatePath)) {
       return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(localPath)}${authQs()}`;
     }
     // ③ 空间资源通道（资源文件没有 conversationId）
@@ -1454,6 +1471,14 @@ async function loadFile() {
     if (IMG_EXTS.includes(e)) {
       // 二进制图片：以 base64 读取原始字节，构造 data URL 才能正确渲染
       // ★ 走 readFileWithFallback：登记路径失效时自动向服务端要真实路径（产物根漂移兜底）
+      // 移动端优先走内嵌后端的 HTTP 文件流：Capacitor 的 file:// 读取受 ROM / 插件影响，
+      // 同一个文件服务端已能访问；加载失败再由 onImageLoadError 回退原生字节读取。
+      const httpUrl = adapter.platform === 'mobile' ? await resolveMediaUrl() : null;
+      if (httpUrl) {
+        imageSrc.value = httpUrl;
+        kind.value = 'image';
+        return;
+      }
       const b64 = await readFileWithFallback(adapter);
       imageSrc.value = `data:${imgMime(e)};base64,${b64}`;
       byteSize.value = Math.floor(b64.length * 3 / 4);

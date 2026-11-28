@@ -100,16 +100,13 @@ import installRoutes from './routes/install.js';
 import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
 import pluginDraftsRouter from './routes/plugin-drafts.js';
 import { createDraft } from './services/plugin-drafts.js';
-import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
 import localConsoleRoutes from './routes/local-console.js';
 import deviceDebugRoutes from './routes/device-debug.js';
-import envRoutes from './routes/env.js';
 // 系统信息（当前数据目录等）——「关于」页展示「跑在哪套数据上」
 // ★ 不受 MOBILE_MODE 限制：移动端同样需要知道数据落在哪
 import systemRoutes from './routes/system.js';
-import debugRoutes from './routes/debug.js';
 import queryContractRoutes from './routes/query-contract.js';
 import dashboardRoutes from './routes/dashboards.js';
 import documentTypeRoutes from './routes/document-types.js';
@@ -129,19 +126,12 @@ import {
 } from './enterprise/repository.js';
 import { handleRuntimeWsUpgrade } from './enterprise/runtime-ws.js';
 import { ensureEnterpriseSchema } from './enterprise/schema.js';
-import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
-import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
-import { desktopCapabilityManifest, desktopCapabilityModule } from './plugins/desktop-capability.js';
 // 远程控制（向日葵式配对：授权码 + 白名单免确认 + WebRTC/JPEG 双通道），见 plugins/remote-control.ts 文件头
 import { remoteControlManifest, remoteControlModule } from './plugins/remote-control.js';
-// 安卓远控（scrcpy）：电脑上镜像并操作安卓手机，见 plugins/android-mirror.ts 文件头
-import { androidMirrorManifest, androidMirrorModule } from './plugins/android-mirror.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理，见 plugins/shop-ops.ts 文件头
 import { shopOpsManifest, shopOpsModule } from './plugins/shop-ops.js';
-import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
-import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
 import { learningModeManifest, learningModeModule } from './plugins/learning-mode.js';
 import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
@@ -591,7 +581,10 @@ app.get('/api/media/proxy', async (req, res) => {
     res.status(502).json({ error: e instanceof Error ? e.message : 'proxy failed' });
   }
 });
-app.use('/api/git', gitRoutes);
+if (!process.env.MOBILE_MODE) {
+  const { default: gitRoutes } = await import('./routes/git.js');
+  app.use('/api/git', gitRoutes);
+}
 app.use('/api/llm', llmProxyRoutes);
 app.use('/api/llm', llmTaskRoutes);
 // 无头执行入口（POST /api/exec）：一次性任务 → JSON（进程内等待终态，非 SSE）
@@ -604,6 +597,10 @@ app.use('/api/preview', previewRoutes);
 app.use('/api/office', officeRoutes);
 // 代码模式：开发环境（Java/Maven/Python/Node/Git）配置与探测
 if (!process.env.MOBILE_MODE) {
+  const [{ default: envRoutes }, { default: debugRoutes }] = await Promise.all([
+    import('./routes/env.js'),
+    import('./routes/debug.js'),
+  ]);
   app.use('/api/env', envRoutes);
   app.use('/api/debug', debugRoutes);
 }
@@ -1091,11 +1088,19 @@ try {
       }
       await source();
     };
-    await registerPkgOrSource('git-explorer', () => mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule));
+    if (!process.env.MOBILE_MODE) {
+      await registerPkgOrSource('git-explorer', async () => {
+        const { gitExplorerManifest, gitExplorerModule } = await import('./plugins/git-explorer.js');
+        await mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule);
+      });
+    }
     // computer-use 高危权限（desktop-input）：产品口径为内置插件默认开启（用户仍可在插件管理页停用）
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
-      await registerPkgOrSource('computer-use', () => mgr.registerBuiltin(computerUseManifest, computerUseModule, true));
+      await registerPkgOrSource('computer-use', async () => {
+        const { computerUseManifest, computerUseModule } = await import('./plugins/computer-use.js');
+        await mgr.registerBuiltin(computerUseManifest, computerUseModule, true);
+      });
       // 完整桌面包必须把“本机执行”显式写入插件配置：插件包运行时会丢失后端进程的部分
       // Electron 环境变量，仅靠 process.env 会把完整桌面误判成轻量壳。
       if (process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1') {
@@ -1109,8 +1114,10 @@ try {
         if (wasEnabled) await mgr.enable('computer-use');
       }
       // 轻量壳执行桥：浏览器/电脑使用工具必须回到壳所在机器；无连接时明确失败。
-      await registerPkgOrSource('desktop-capability', () =>
-        mgr.registerBuiltin(desktopCapabilityManifest, desktopCapabilityModule, true));
+      await registerPkgOrSource('desktop-capability', async () => {
+        const { desktopCapabilityManifest, desktopCapabilityModule } = await import('./plugins/desktop-capability.js');
+        await mgr.registerBuiltin(desktopCapabilityManifest, desktopCapabilityModule, true);
+      });
     }
     // remote-control（2026-10-25 起移动端同样注册）：手机是「控制端」的重要形态 ——
     // 看并操作桌面机只依赖 WS 信令 + REST（activate 期零桌面专属动作；C# 代理与剪贴板
@@ -1120,7 +1127,10 @@ try {
     // android-mirror（安卓远控 / scrcpy）：依赖本机 adb 与 tools/scrcpy，只登记桌面端。
     // 默认开启 —— 不点「连接」时不产生任何进程。
     if (!process.env.MOBILE_MODE) {
-      await registerPkgOrSource('android-mirror', () => mgr.registerBuiltin(androidMirrorManifest, androidMirrorModule, true));
+      await registerPkgOrSource('android-mirror', async () => {
+        const { androidMirrorManifest, androidMirrorModule } = await import('./plugins/android-mirror.js');
+        await mgr.registerBuiltin(androidMirrorManifest, androidMirrorModule, true);
+      });
     }
     // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换。
     // 包形态 = skins 目录的 multi manifest（27 套各自注册，共享 noop 入口）；缺包回退源码注册。
@@ -1166,9 +1176,15 @@ try {
     if (!process.env.MOBILE_MODE) {
       // CICD 流水线插件：本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接
       // ★ 包形态自带一份 ops-shell 助手拷贝（连接池独立，凭据同源 plugin_storage —— P3 记录）
-      await registerPkgOrSource('cicd-pipeline', () => mgr.registerBuiltin(cicdManifest, cicdModule, true));
+      await registerPkgOrSource('cicd-pipeline', async () => {
+        const { cicdManifest, cicdModule } = await import('./plugins/cicd-pipeline.js');
+        await mgr.registerBuiltin(cicdManifest, cicdModule, true);
+      });
       // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
-      await registerPkgOrSource('java-suite', () => mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true));
+      await registerPkgOrSource('java-suite', async () => {
+        const { javaSuiteManifest, javaSuiteModule } = await import('./plugins/java-suite.js');
+        await mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true);
+      });
     }
     // 安全工作台：授权范围内的侦察/扫描/审计（护栏：授权范围 + 危险动作黑名单 + 全量审计）
     await registerPkgOrSource('sec-lab', () => mgr.registerBuiltin(secLabManifest, secLabModule, true));
@@ -1211,12 +1227,14 @@ try {
     // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑。
     // ★ 目录名 ≠ 插件 id：多清单包（skins）一个目录含多个插件，按清单逐条补绑；
     //   入口统一走 resolveInstalledEntryPath（backend/index.js 优先，修掉旧的 index.js 假设）。
-    try {
-      for (const { id, entryPath } of installedRebinds(scanInstalledPackages(PLUGINS_DIR), (x) => !!mgr.get(x))) {
-        await mgr.rebindAndReactivate(id, pathToFileURL(entryPath).href);
+    if (!process.env.MOBILE_MODE) {
+      try {
+        for (const { id, entryPath } of installedRebinds(scanInstalledPackages(PLUGINS_DIR), (x) => !!mgr.get(x))) {
+          await mgr.rebindAndReactivate(id, pathToFileURL(entryPath).href);
+        }
+      } catch {
+        /* plugins/installed 目录不存在等，忽略 */
       }
-    } catch {
-      /* plugins/installed 目录不存在等，忽略 */
     }
     const toolReg = getToolRegistry();
     const syncPluginTools = () => {

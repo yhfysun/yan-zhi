@@ -70,6 +70,7 @@ apps/mobile/public/
 apps/mobile/signing/*.jks
 apps/mobile/signing/*.keystore
 apps/mobile/signing/keystore.properties
+apps/mobile/signing/backup-*/
 
 # IDE
 .vscode/

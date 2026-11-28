@@ -67,6 +67,7 @@ import {
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { resolvePluginIcon } from '../plugin-icons';
+import { isCapacitor } from '../api/client';
 
 interface SettingsSection {
   section: SettingsDrawerSection;
@@ -97,6 +98,16 @@ const builtinSections: SettingsSection[] = [
   { section: 'plugins', label: '插件管理', icon: Box },
 ];
 
+const MOBILE_HIDDEN_SETTINGS = new Set([
+  'distill',
+  'datasources',
+  'ontology',
+  'stdattrs',
+  'connections',
+  'env',
+  'extensions',
+]);
+
 // P5 灰度：shadow/off 模式隐藏扩展管理入口（扩展仍可在主进程加载，供内部 dogfood）
 const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
 onMounted(() => {
@@ -115,9 +126,12 @@ const sections = computed<SettingsSection[]>(() => {
     label: t.label,
     icon: resolvePluginIcon(t.icon || ''),
   }));
+  const available = isCapacitor
+    ? builtinSections.filter((item) => !MOBILE_HIDDEN_SETTINGS.has(item.section))
+    : builtinSections;
   const base = extensionsMode.value === 'on'
-    ? builtinSections
-    : builtinSections.filter((item) => item.section !== 'extensions');
+    ? available
+    : available.filter((item) => item.section !== 'extensions');
   return [...base, ...pluginTabs];
 });
 

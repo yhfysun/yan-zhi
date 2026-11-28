@@ -103,7 +103,9 @@ function pruneExcludedModeSources() {
   const excludedModes = [];
 
   for (const [id, plugin] of Object.entries(catalog.plugins || {})) {
-    if (plugin.kind !== 'mode' || !plugin.backendEntry) continue;
+    // 模式与功能插件统一按选择集计算可达性。CICD/Java/Git 等桌面功能不是 mode，
+    // 但同样不能因为静态 import 被带进手机包。
+    if (!plugin.backendEntry) continue;
     const compiled = path.join(
       NODEJS_DIST,
       plugin.backendEntry.replace(/\.ts$/, '.js').replace(/\//g, path.sep),
@@ -159,9 +161,22 @@ function pruneExcludedModeSources() {
     }
   }
 
+  // 这四个入口不在 catalog 的 mode/feature 插件表里，但仍是桌面专属：
+  // - Git/开发环境/调试路由只在桌面挂载；
+  // - desktop-capability 是轻量壳执行桥。
+  // index.js 已改成动态 import，因此手机端可以安全物理删除。
+  for (const rel of [
+    'routes/git.js',
+    'routes/env.js',
+    'routes/debug.js',
+    'plugins/desktop-capability.js',
+  ]) {
+    removeCompiled(path.join(serverSrc, ...rel.split('/')));
+  }
+
   for (const { root } of excludedModes) {
     if (fs.existsSync(root)) {
-      error('未选模式的静态入口未裁干净: ' + path.relative(NODEJS_DIST, root));
+    error('未选插件的静态入口未裁干净: ' + path.relative(NODEJS_DIST, root));
       process.exit(1);
     }
   }
@@ -266,19 +281,26 @@ pruneExcludedModeSources();
 {
   const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
   log('=== 步骤 2.5-pre: 从零重建 plugins/builtin ===');
-  if (fs.existsSync(builtinSrc)) {
-    fs.rmSync(builtinSrc, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-  }
-  fs.mkdirSync(builtinSrc, { recursive: true });
-  const { spawnSync } = require('node:child_process');
-  const buildPlugins = path.join(ROOT, 'apps', 'desktop', 'scripts', 'build-plugins.mjs');
-  const r = spawnSync(process.execPath, [buildPlugins, '--all', '--with-frontend', `--out=${builtinSrc}`], {
-    cwd: ROOT,
-    stdio: 'inherit',
-  });
-  if (r.status !== 0) {
-    error('builtin 插件包从零重建失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），中止打包');
-    process.exit(1);
+  const reuseBuiltin = process.env.YZ_SKIP_PLUGIN_BUILD === '1' && fs.existsSync(builtinSrc);
+  if (reuseBuiltin) {
+    log('YZ_SKIP_PLUGIN_BUILD=1，复用现有 plugins/builtin（增量调试）');
+  } else {
+    if (fs.existsSync(builtinSrc)) {
+      fs.rmSync(builtinSrc, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    }
+    fs.mkdirSync(builtinSrc, { recursive: true });
+    const { spawnSync } = require('node:child_process');
+    const buildPlugins = path.join(ROOT, 'apps', 'desktop', 'scripts', 'build-plugins.mjs');
+    // 手机主包已经包含选中模式的静态视图；插件包只需要后端入口。
+    // 若仍构建 frontend/，同一份 Learning/Shop/Ops/Sec 前端会在 APK 内重复数十 MB。
+    const r = spawnSync(process.execPath, [buildPlugins, '--all', `--out=${builtinSrc}`], {
+      cwd: ROOT,
+      stdio: 'inherit',
+    });
+    if (r.status !== 0) {
+      error('builtin 插件包从零重建失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），中止打包');
+      process.exit(1);
+    }
   }
   if (!fs.existsSync(path.join(builtinSrc, 'learning-mode', 'manifest.json'))) {
     error('builtin 重建后缺少 learning-mode/manifest.json，中止打包');
@@ -586,6 +608,9 @@ const indexJs = [
   "process.env.MOBILE_MODE = '1';",
   "process.env.DISABLE_PLAYWRIGHT = '1';",
   "process.env.DISABLE_COMPUTER_USE = '1';",
+  ...(process.env.YZ_BUILD_MODES
+    ? [`process.env.YZ_BUILD_MODES = '${String(process.env.YZ_BUILD_MODES).replace(/'/g, "\\'")}';`]
+    : []),
   // ★ 精简包（2026-11-16）：未选插件**连源码兜底注册也跳过**。
   //   必须写进 index.js（设备上跑的是这个文件，构建机的 env 传不过去）——
   //   否则目录裁掉了、插件却还在注册：包里「看起来有」、实际只有后端没界面。
@@ -610,6 +635,39 @@ const indexJs = [
 ].join('\n');
 fs.writeFileSync(path.join(NODEJS_DIR, 'index.js'), indexJs);
 log('已生成: ' + path.relative(ROOT, path.join(NODEJS_DIR, 'index.js')));
+
+/** 删除手机内嵌后端中不会被执行、只增加安装包体积的产物。 */
+function pruneMobileArtifacts(root) {
+  let removedFiles = 0;
+  let removedDirs = 0;
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    const builtinFrontend = /[\\/]plugins[\\/]builtin[\\/][^\\/]+[\\/]frontend$/i.test(dir);
+    if (builtinFrontend) {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+      removedDirs += 1;
+      return;
+    }
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (/\.map$/i.test(entry.name)) {
+        fs.rmSync(full, { force: true });
+        removedFiles += 1;
+      }
+    }
+  };
+  walk(root);
+  return { removedFiles, removedDirs };
+}
+
+if (process.env.YZ_MOBILE_STRIP_BUILTIN_FRONTENDS === '1') {
+  // 必须从 NODEJS_DIR 根开始：npm install 后的第三方 node_modules 也在包内，
+  // 只扫 NODEJS_DIST 会漏掉依赖自带的 .map，随后被原样同步进 APK。
+  const pruned = pruneMobileArtifacts(NODEJS_DIR);
+  log(`已清理手机无用产物：sourcemap ${pruned.removedFiles} 个，重复插件前端目录 ${pruned.removedDirs} 个`);
+}
 
 // ── 步骤 5：同步到 dist/nodejs/（Capacitor webDir=dist，插件按 nodeDir 加载）──
 log('=== 步骤 5: 同步到 dist/nodejs ===');

@@ -385,11 +385,20 @@ const router = createRouter({
   routes,
 });
 
-// 移动端（Capacitor）屏蔽的重功能路由：开发模式/浏览器/Skill蒸馏/本体/SQL控制台/数据源/节点/IM连接
+// 移动端（Capacitor）屏蔽的桌面专属路由。插件动态路由还会额外检查 meta.desktopOnly。
 const MOBILE_BLOCKED_PATHS = new Set([
   '/code', '/browser', '/distill', '/ontologies', '/std-attributes',
   '/sql-console', '/data-sources', '/peers', '/connections',
+  '/diff-window', '/task-window', '/clip-panel', '/live',
+  '/pet-settings', '/pet-window', '/pet-popup', '/git-explorer',
 ]);
+
+function isMobileBlockedPath(path: string): boolean {
+  for (const blocked of MOBILE_BLOCKED_PATHS) {
+    if (path === blocked || path.startsWith(blocked + '/')) return true;
+  }
+  return false;
+}
 
 /**
  * 模式路由 → 模式 key。授权分级（版本档）据此拦截**未授权模式**的路由。
@@ -498,7 +507,7 @@ function markPluginRoutesSynced(): void {
 
 router.beforeEach(async (to) => {
   // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
-  if (isCapacitor && MOBILE_BLOCKED_PATHS.has(to.path)) {
+  if (isCapacitor && isMobileBlockedPath(to.path)) {
     // ★ 回 /chat 前必须把 activeMode 拨回 office（2026-10-25 真机空白根因）：
     //   localStorage 恢复出被屏蔽的模式（如 dev，legacy yz:code:active 迁移）时，
     //   下面「模式记忆」会把 /chat 再次弹回 /code → 本分支又弹回 /chat → 无限重定向，
@@ -574,7 +583,7 @@ router.beforeEach(async (to) => {
   // ★ 移动端：恢复出的模式若落在屏蔽路径（dev/浏览器等，来自旧版本 localStorage 或
   //   legacy yz:code:active 迁移），就地归位 office —— 否则 /chat 会以 dev 风味渲染
   //   （代码欢迎页/代码输入框），而模式记忆又被上面第二道闸拦住，模式永远错位。
-  if (isCapacitor && activeMode.value !== 'office' && MOBILE_BLOCKED_PATHS.has(modeRoute(activeMode.value))) {
+  if (isCapacitor && activeMode.value !== 'office' && isMobileBlockedPath(modeRoute(activeMode.value))) {
     setMode('office');
   }
   // 学习任务必须留在学习模式内完成：场景卡/陪练任何按钮都不应把用户送进办公聊天详情。
@@ -596,7 +605,7 @@ router.beforeEach(async (to) => {
     isModeRouteRegistered(activeMode.value) &&
     // ★ 2026-10-25：目标是移动端屏蔽路径（如 dev 的 /code）时不许跳 —— 与顶部屏蔽分支
     //   构成死循环的另一半。setMode 兜底在屏蔽分支里，这里是第二道闸。
-    !(isCapacitor && MOBILE_BLOCKED_PATHS.has(modeRoute(activeMode.value)))
+     !(isCapacitor && isMobileBlockedPath(modeRoute(activeMode.value)))
   ) {
     return { path: modeRoute(activeMode.value) };
   }
@@ -611,6 +620,7 @@ export async function syncPluginRoutes(): Promise<void> {
   try {
     const pluginStore = usePluginStore();
     for (const r of pluginStore.routes) {
+      if (isCapacitor && r.meta?.desktopOnly) continue;
       if (router.hasRoute(r.name)) continue;
       const built = resolvePluginComponent(r.component);
       const canBundle = !!(r.pluginId && r.frontendEntry && r.component);
@@ -675,7 +685,7 @@ function restoreActiveModeRouteAfterSync(): void {
   if (cur.path !== '/chat') return;
   const m = activeMode.value;
   if (m === 'office' || !isModeAvailable(m) || !isModeRouteRegistered(m)) return;
-  if (isCapacitor && MOBILE_BLOCKED_PATHS.has(modeRoute(m))) return;
+  if (isCapacitor && isMobileBlockedPath(modeRoute(m))) return;
   void router.replace({ path: modeRoute(m), query: cur.query, hash: cur.hash });
 }
 

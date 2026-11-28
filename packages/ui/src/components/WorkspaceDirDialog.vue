@@ -1,26 +1,33 @@
 <template>
-  <el-dialog v-model="visible" title="选择工作目录" width="560px" :close-on-click-modal="false" @open="onOpen">
-    <!-- ★ 移动端形态（2026-10-25 用户实报「选择不了工作目录」）：桌面目录树浏览器在
-         Capacitor 上注定失效（fs 沙箱 + 内嵌 Node 路径语义不同），改预设 + 自定义名，
-         全部落在应用数据区（前端 Capacitor 与内嵌后端都能访问的交集）。 -->
-    <div v-if="isMobile" class="wdd-mobile">
-      <div class="wdd-mobile-cur">当前：{{ props.currentPath || 'workspace（默认）' }}</div>
-      <div class="wdd-mobile-presets">
-        <button v-for="p in MOBILE_PRESETS" :key="p.value" type="button" class="wdd-mobile-preset" @click="pickMobile(p.value)">
-          <span class="wdd-mobile-preset-name">{{ p.label }}</span>
-          <span class="wdd-mobile-preset-desc">{{ p.desc }}</span>
-        </button>
+  <el-dialog
+    v-model="visible"
+    class="workspace-dir-dialog"
+    title="选择工作目录"
+    :width="dialogWidth"
+    :close-on-click-modal="false"
+    @open="onOpen"
+  >
+    <!-- 移动端与桌面端使用同一个真实目录树；先由系统页授予文件访问权限。 -->
+    <div v-if="isMobile" class="wdd-mobile-access" :class="{ granted: storageGranted }">
+      <div class="wdd-mobile-access-row">
+        <el-icon :size="18"><FolderOpened /></el-icon>
+        <div>
+          <strong>{{ storageGranted ? '已获得文件访问权限' : '需要文件访问权限' }}</strong>
+          <p>
+            {{ storageGranted
+              ? `可浏览和选择手机存储中的真实目录${storageRoot ? `（${storageRoot}）` : ''}`
+              : '授权后可像桌面端一样浏览、选择和读写手机文件与文件夹。' }}
+          </p>
+        </div>
       </div>
-      <div class="wdd-mobile-custom">
-        <el-input v-model="mobileCustom" placeholder="自定义子目录名，如 我的项目" @keyup.enter="pickMobileCustom">
-          <template #append><el-button @click="pickMobileCustom" :disabled="!mobileCustom.trim()">使用</el-button></template>
-        </el-input>
-        <p class="wdd-mobile-note">手机上的工作目录位于应用数据区（workspace/ 下），可在「我的 → 数据与日志」导出。</p>
-      </div>
+      <el-button v-if="!storageGranted" type="primary" :loading="storageBusy" @click="requestStoragePermission">
+        去授权
+      </el-button>
+      <el-button v-else size="small" text @click="requestStoragePermission">重新检查权限</el-button>
     </div>
 
-    <!-- 工具栏：原生目录选择 + 手动输入路径（桌面端） -->
-    <div v-else class="wdd-toolbar">
+    <!-- 工具栏：桌面原生目录选择 + 搜索；移动端授权后同样显示 -->
+    <div v-if="canBrowse" class="wdd-toolbar">
       <el-button v-if="isDesktop" size="small" type="primary" plain @click="pickNativeDir" :loading="picking">
         <el-icon><FolderOpened /></el-icon> 浏览电脑目录
       </el-button>
@@ -38,7 +45,7 @@
     </div>
 
     <!-- 手动输入路径 -->
-    <div v-if="!isMobile" class="wdd-toolbar wdd-toolbar--second">
+    <div v-if="canBrowse" class="wdd-toolbar wdd-toolbar--second">
       <el-input
         v-model="manualPath"
         size="small"
@@ -53,7 +60,7 @@
     </div>
 
     <!-- 最近使用 -->
-    <div v-if="!isMobile && recentDirs.length" class="wdd-recent">
+    <div v-if="canBrowse && recentDirs.length" class="wdd-recent">
       <span class="wdd-recent-label">最近使用</span>
       <button
         v-for="dir in recentDirs"
@@ -68,7 +75,7 @@
     </div>
 
     <!-- 可点面包屑 -->
-    <div v-if="!isMobile" class="wdd-breadcrumb">
+    <div v-if="canBrowse" class="wdd-breadcrumb">
       <el-button size="small" circle @click="goUp" :disabled="!canGoUp">
         <el-icon><ArrowUp /></el-icon>
       </el-button>
@@ -88,7 +95,7 @@
     </div>
 
     <!-- 列表 -->
-    <div v-if="!isMobile" class="wdd-list">
+    <div v-if="canBrowse" class="wdd-list">
       <div v-if="loading" class="wdd-state">
         <el-icon class="is-loading"><Loading /></el-icon>
         <span>加载中...</span>
@@ -104,7 +111,7 @@
           :key="entry.path"
           class="wdd-entry"
           :class="{ selected: selectedPath === entry.path }"
-          @click="selectEntry(entry)"
+          @click="isMobile ? navigateTo(entry) : selectEntry(entry)"
           @dblclick="entry.isDir && navigateTo(entry)"
         >
           <el-icon :size="16" :color="entry.isDir ? '#f59e0b' : '#94a3b8'">
@@ -125,7 +132,7 @@
     <template #footer>
       <el-button v-if="props.currentPath" type="danger" plain @click="clearDir">清除工作目录</el-button>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" @click="confirm">选择当前目录</el-button>
+      <el-button type="primary" :disabled="isMobile && !storageGranted" @click="confirm">选择当前目录</el-button>
     </template>
   </el-dialog>
 </template>
@@ -154,25 +161,11 @@ const visible = computed({
 
 const isDesktop = getPlatformAdapter().platform === 'desktop';
 const isMobile = getPlatformAdapter().platform === 'mobile';
-
-/** 移动端预设（应用数据区内的稳定位置，前端 Capacitor 与内嵌 Node 都可达） */
-const MOBILE_PRESETS = [
-  { label: '默认工作区', value: 'workspace', desc: 'workspace · 出物默认落这里' },
-  { label: '文档', value: 'workspace/文档', desc: 'workspace/文档' },
-  { label: '项目', value: 'workspace/项目', desc: 'workspace/项目' },
-];
-const mobileCustom = ref('');
-
-function pickMobile(value: string) {
-  emit('selected', value);
-  visible.value = false;
-}
-
-function pickMobileCustom() {
-  const name = mobileCustom.value.trim().replace(/[\\/:*?"<>|]/g, '_');
-  if (!name) return;
-  pickMobile(`workspace/${name}`);
-}
+const dialogWidth = computed(() => isMobile ? 'min(92vw, 520px)' : '560px');
+const storageGranted = ref(!isMobile);
+const storageRoot = ref('');
+const storageBusy = ref(false);
+const canBrowse = computed(() => !isMobile || storageGranted.value);
 const settingsStore = useSettingsStore();
 
 interface DirEntry {
@@ -243,19 +236,70 @@ const canGoUp = computed(() => {
   return true;
 });
 
-function onOpen() {
+async function refreshStorageAccess(): Promise<boolean> {
+  if (!isMobile) return true;
+  const access = getPlatformAdapter().storageAccess;
+  if (!access) {
+    storageGranted.value = false;
+    return false;
+  }
+  try {
+    const st = await access.status();
+    storageGranted.value = !!st.granted;
+    storageRoot.value = st.root || '';
+    return storageGranted.value;
+  } catch (e: any) {
+    storageGranted.value = false;
+    ElMessage.error('读取文件权限状态失败：' + (e?.message || e));
+    return false;
+  }
+}
+
+async function requestStoragePermission() {
+  if (!isMobile) return;
+  const access = getPlatformAdapter().storageAccess;
+  if (!access) {
+    ElMessage.error('当前移动端版本不支持真实文件访问');
+    return;
+  }
+  storageBusy.value = true;
+  try {
+    if (await refreshStorageAccess()) {
+      ElMessage.success('文件访问权限已开启');
+      return;
+    }
+    const st = await access.request();
+    storageGranted.value = !!st.granted;
+    storageRoot.value = st.root || storageRoot.value;
+    if (storageGranted.value) {
+      ElMessage.success('文件访问权限已开启');
+      currentPath.value = storageRoot.value || currentPath.value;
+      manualPath.value = currentPath.value;
+      await loadEntries();
+    } else {
+      ElMessage.warning('尚未获得文件访问权限，请在系统设置中允许“所有文件访问”');
+    }
+  } catch (e: any) {
+    ElMessage.error('申请文件访问权限失败：' + (e?.message || e));
+  } finally {
+    storageBusy.value = false;
+  }
+}
+
+async function onOpen() {
+  await refreshStorageAccess();
   if (props.currentPath) {
     currentPath.value = props.currentPath;
   } else if (isDesktop) {
     currentPath.value = 'C:\\';
   } else {
-    currentPath.value = 'workspace';
+    currentPath.value = storageRoot.value || '';
   }
   selectedPath.value = '';
   manualPath.value = currentPath.value;
   searchText.value = '';
   errorMsg.value = '';
-  loadEntries();
+  if (canBrowse.value) await loadEntries();
 }
 
 async function loadEntries() {
@@ -395,6 +439,10 @@ function rememberRecent(path: string) {
 }
 
 function confirm() {
+  if (isMobile && !storageGranted.value) {
+    ElMessage.warning('请先授权文件访问');
+    return;
+  }
   if (currentPath.value) rememberRecent(currentPath.value);
   emit('selected', currentPath.value);
   visible.value = false;
@@ -547,18 +595,33 @@ function clearDir() {
   font-weight: 300;
 }
 
-/* ===== 移动端形态：预设 + 自定义名 ===== */
-.wdd-mobile { display: flex; flex-direction: column; gap: 14px; }
-.wdd-mobile-cur { font-size: 13px; color: var(--color-text-secondary); word-break: break-all; }
-.wdd-mobile-presets { display: flex; flex-direction: column; gap: 8px; }
-.wdd-mobile-preset {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  padding: 10px 14px; border-radius: 10px; text-align: left;
-  border: 1px solid var(--el-border-color-lighter); background: transparent;
+/* ===== 移动端：真实存储授权 ===== */
+.wdd-mobile-access {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin-bottom: 12px; border-radius: 10px;
+  border: 1px solid var(--el-color-warning-light-5); background: var(--el-color-warning-light-9);
 }
-.wdd-mobile-preset:active { border-color: var(--el-color-primary); }
-.wdd-mobile-preset-name { font-size: 15px; font-weight: 600; color: var(--color-text); }
-.wdd-mobile-preset-desc { font-size: 12px; color: var(--color-text-secondary); }
-.wdd-mobile-custom { display: flex; flex-direction: column; gap: 6px; }
-.wdd-mobile-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary); }
+.wdd-mobile-access.granted {
+  border-color: var(--el-color-success-light-5); background: var(--el-color-success-light-9);
+}
+.wdd-mobile-access-row { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.wdd-mobile-access-row strong { display: block; font-size: 14px; color: var(--color-text); }
+.wdd-mobile-access-row p {
+  margin: 3px 0 0; font-size: 12px; line-height: 1.45;
+  color: var(--color-text-secondary); word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  :global(.workspace-dir-dialog .el-dialog__body) {
+    max-height: calc(100dvh - 180px);
+    overflow-y: auto;
+    padding-top: 8px;
+  }
+  :global(.workspace-dir-dialog .el-dialog__footer) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+}
 </style>

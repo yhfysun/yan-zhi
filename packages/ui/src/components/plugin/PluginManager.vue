@@ -29,10 +29,10 @@
             <span class="pm-cat-opt-count">{{ g.items.length }}</span>
           </el-option>
         </el-select>
-        <el-button @click="onOpenTemplate">
+        <el-button v-if="pluginStore.canInstall" @click="onOpenTemplate">
           <el-icon style="margin-right: 5px"><Document /></el-icon>开发模板
         </el-button>
-        <el-button type="primary" @click="onInstall">
+        <el-button v-if="pluginStore.canInstall" type="primary" @click="onInstall">
           <el-icon style="margin-right: 5px"><Upload /></el-icon>安装插件 (.yzp)
         </el-button>
       </div>
@@ -43,7 +43,7 @@
     </div>
     <div v-else-if="filtered.length === 0" class="pm-empty">
       <el-empty :description="keyword || activeCat ? '没有匹配的插件' : '暂无插件，安装一个试试'">
-        <el-button v-if="!keyword && !activeCat" type="primary" @click="onInstall">安装插件 (.yzp)</el-button>
+        <el-button v-if="!keyword && !activeCat && pluginStore.canInstall" type="primary" @click="onInstall">安装插件 (.yzp)</el-button>
       </el-empty>
     </div>
     <div v-else class="pm-groups">

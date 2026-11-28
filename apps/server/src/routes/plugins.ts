@@ -126,8 +126,19 @@ router.get('/', (req: Request, res: Response) => {
   res.json({ data: visible.map(toInfo), modeDefs });
 });
 
+/** 手机发行版只允许随包内置插件，禁止运行期安装第三方 .yzp。 */
+function rejectMobilePluginInstall(res: Response): boolean {
+  if (!process.env.MOBILE_MODE) return false;
+  res.status(403).json({
+    error: '手机端不支持安装第三方插件',
+    code: 'MOBILE_PLUGIN_INSTALL_DISABLED',
+  });
+  return true;
+}
+
 // POST /api/plugins/install/preview —— 预览 manifest（权限确认前）
 router.post('/install/preview', (req: Request, res: Response) => {
+  if (rejectMobilePluginInstall(res)) return;
   try {
     const { base64 } = req.body || {};
     if (typeof base64 !== 'string') { res.status(400).json({ error: '缺少 base64' }); return; }
@@ -151,6 +162,7 @@ router.post('/install/preview', (req: Request, res: Response) => {
 
 // POST /api/plugins/install —— 安装 .yzp（body: { base64 }）；单清单与多清单包都支持
 router.post('/install', async (req: Request, res: Response) => {
+  if (rejectMobilePluginInstall(res)) return;
   try {
     const { base64 } = req.body || {};
     if (typeof base64 !== 'string') { res.status(400).json({ error: '缺少 base64' }); return; }

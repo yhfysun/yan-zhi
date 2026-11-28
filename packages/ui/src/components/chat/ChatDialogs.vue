@@ -21,7 +21,7 @@
 
   <AgentEditDialog v-model="showAgentEdit" :agent="editingAgent" @saved="onAgentSaved" @deleted="onAgentDeleted" />
 
-  <WorkspaceDirDialog v-model="showWorkspaceDir" :current-path="workspaceDir" @selected="onWorkspaceDirSelected" />
+  <WorkspaceDirDialog v-model="showWorkspaceDir" :current-path="hasWorkspaceDir ? workspaceDir : ''" @selected="onWorkspaceDirSelected" />
 
   <el-dialog
 
@@ -85,7 +85,7 @@ import DistillDialog from '../DistillDialog.vue';
 
 const {
   snapshotDialog, snapshotActiveTab, currentSnapshots, showAgentEdit, editingAgent, onAgentSaved,
-  onAgentDeleted, showWorkspaceDir, workspaceDir, onWorkspaceDirSelected,
+  onAgentDeleted, showWorkspaceDir, workspaceDir, hasWorkspaceDir, onWorkspaceDirSelected,
   store, platformConfigDialogVisible, platformConfigEditId, platformConfigForm, platformConfigSaving,
   onPlatformConfigCancel, onPlatformConfigSubmit, onPlatformConfigClose, showDistill, distillMessages,
 } = useChat();

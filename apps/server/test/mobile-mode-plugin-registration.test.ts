@@ -19,9 +19,13 @@ describe('移动端模式插件注册', () => {
     const block = INDEX.slice(start, end);
     const guard = block.indexOf('if (!process.env.MOBILE_MODE)');
     expect(guard).toBeGreaterThan(-1);
-    const guarded = block.slice(guard, block.indexOf('}', guard) + 1);
+    const safetyStart = block.indexOf('// 安全工作台', guard);
+    expect(safetyStart).toBeGreaterThan(guard);
+    const guarded = block.slice(guard, safetyStart);
     expect(guarded).toContain("registerPkgOrSource('cicd-pipeline'");
     expect(guarded).toContain("registerPkgOrSource('java-suite'");
+    expect(guarded).toContain("await import('./plugins/cicd-pipeline.js')");
+    expect(guarded).toContain("await import('./plugins/java-suite.js')");
     expect(guarded).not.toContain("registerPkgOrSource('ops-shell'");
     expect(guarded).not.toContain("registerPkgOrSource('sec-lab'");
     expect(guarded).not.toContain("registerPkgOrSource('shop-ops'");

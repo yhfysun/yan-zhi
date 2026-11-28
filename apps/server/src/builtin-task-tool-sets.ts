@@ -15,7 +15,7 @@ export { PAGE_AGENT_ID };
 /** 任务模式共用的交互与规划工具（确认点全靠它们落地） */
 export const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user'];
 /** 任务模式共用的读资料与交付工具 */
-export const COMMON_FILE_TOOLS_BASE = ['file_list', 'file_read', 'file_write', 'file_grep'];
+export const COMMON_FILE_TOOLS_BASE = ['file_list', 'file_read', 'file_write', 'file_grep', 'api_artifact_save'];
 /**
  * 工具发现与安装（2026-10-22，所有任务模式共用）。
  *

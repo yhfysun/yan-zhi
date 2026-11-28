@@ -103,7 +103,7 @@ describe('P4：三模式路由插件化后，冷启动仍回到“记忆中的�
     expect(restoreFn).toContain("m === 'office'");
     expect(restoreFn).toContain('isModeAvailable(m)');
     expect(restoreFn).toContain('isModeRouteRegistered(m)');
-    expect(restoreFn).toContain('MOBILE_BLOCKED_PATHS.has(modeRoute(m))');
+    expect(restoreFn).toContain('isMobileBlockedPath(modeRoute(m))');
     // 只从对话页恢复；别的页面是用户主动去的，不该被抢走
     expect(restoreFn).toContain("cur.path !== '/chat'");
     // replace：这是"补页面"，不该进历史栈

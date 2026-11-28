@@ -22,6 +22,8 @@ const MEDIA_TOOLS = new Set([
   'music_generate',
   // 音效库（api_sfx action=render）：合成的音效文件要能被文件管理看到
   'api_sfx',
+  // 模型明确给 URL / base64 并指定文件名：保存为会话交付文件
+  'api_artifact_save',
   // 剪辑渲染产物（clip_project op=render）：漏登记的表现是"成片渲染成功但文件管理里看不到"
   'clip_project',
 ]);

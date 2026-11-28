@@ -18,6 +18,7 @@ import {
 } from './sms-forward';
 // 系统 TTS（Android 原生 TextToSpeech 插件）：注入 mobileAdapter.nativeTts
 import { nativeSpeak, nativeStopTts } from './tts';
+import { getStorageAccessStatus, requestStorageAccess } from './storage-access';
 
 /**
  * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机内嵌后端。
@@ -122,6 +123,14 @@ class MobileFs implements FsAdapter {
       return false;
     }
   }
+  async stat(path: string): Promise<{ size: number; mtimeMs: number; isDir: boolean }> {
+    const info = await Filesystem.stat(this.arg(path));
+    return {
+      size: Number((info as any).size) || 0,
+      mtimeMs: Number((info as any).mtime) || 0,
+      isDir: String((info as any).type || '').toLowerCase() === 'directory',
+    };
+  }
   async mkdir(_path: string): Promise<void> {
     // Capacitor mkdir 递归创建在 writeFile 时已处理
   }
@@ -131,6 +140,20 @@ class MobileFs implements FsAdapter {
   async readDir(path: string): Promise<string[]> {
     const result = await Filesystem.readdir(this.arg(path));
     return result.files.map((f) => f.name);
+  }
+  async listDirEntries(path: string): Promise<Array<{ name: string; path: string; isDir: boolean }>> {
+    const names = await this.readDir(path);
+    const sep = path.includes('\\') ? '\\' : '/';
+    const base = path.replace(/[/\\]+$/, '');
+    return Promise.all(names.map(async (name) => {
+      const full = `${base}${sep}${name}`;
+      try {
+        const info = await Filesystem.stat(this.arg(full));
+        return { name, path: full, isDir: String((info as any).type || '').toLowerCase() === 'directory' };
+      } catch {
+        return { name, path: full, isDir: false };
+      }
+    }));
   }
 }
 
@@ -153,6 +176,10 @@ export const mobileAdapter: PlatformAdapter = {
   db: new MobileDatabase(),
   fs: new MobileFs(),
   keyring: new MobileKeyring(),
+  storageAccess: {
+    status: getStorageAccessStatus,
+    request: requestStorageAccess,
+  },
   // LLM 请求统一走后端代理（内嵌 127.0.0.1:3001 或远程节点），见 resolveLlmProxyBase
   llmProxyBase: resolveLlmProxyBase(),
   // 移动端不支持 MCP stdio（仅支持远程 sse/http）

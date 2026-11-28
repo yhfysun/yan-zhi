@@ -85,6 +85,14 @@ export interface PlatformAdapter {
   db: DatabaseAdapter;
   fs: FsAdapter;
   keyring: KeyringAdapter;
+  /**
+   * 移动端真实文件系统授权（Android All files access / 旧版存储权限）。
+   * 桌面端不需要；授权后 root 可直接作为工作目录并在目录树中浏览。
+   */
+  storageAccess?: {
+    status(): Promise<{ granted: boolean; root: string }>;
+    request(): Promise<{ granted: boolean; root: string }>;
+  };
   mcp?: McpProcessAdapter; // 仅桌面端有
   shell?: ShellAdapter;    // 仅桌面端有
   /** LLM 代理基址（如 '/api/llm'）。设置后 LlmClient 走后端代理转发，避免浏览器 CORS 并隐藏 API Key。

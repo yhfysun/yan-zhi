@@ -88,7 +88,7 @@ yan-zhi/
 | 插件分类 | ✅ 已完成 | 功能 / 皮肤 / 操作 / 自定义四类分组，插件市场按类浏览 |
 | 智能体改名助手 | ✅ 已完成 | 内置智能体统一改名为「助手」，对齐用户心智模型 |
 | 学习 V2 | ✅ 已完成 | 21 科课程、编程 17 个课程包、算法独立学科、全屏单步沉浸学习、代码运行、原理动画与公共图书馆 |
-| 移动端应用 | ✅ 已完成 | Capacitor 8 + 原生 SQLite/文件/偏好适配 + 内嵌 Node 后端（精简 APK 与完整 APK 两套构建链） |
+| 移动端应用 | ✅ 已完成 | Capacitor 8 + 原生 SQLite/文件/偏好适配 + 内嵌 Node 后端（五模式双 ABI 正式包与完整调试包两套构建链） |
 | 多用户与共享服务 | ✅ 已完成 | 组织/角色/权限、共享模型平台、完整桌面版导出轻量壳、局域网共享主机与账号隔离 |
 
 > 仍存边界：桌面浏览器自动化和电脑操作依赖本机图形环境；部分 Anthropic 兼容网关不支持 `/v1/models`；移动端只开放五个模式，开发/工作流/自动化/剪辑等重工作台不在一级模式露出；iOS 构建仍需 macOS/Xcode。
@@ -265,9 +265,12 @@ pnpm --filter @yan-zhi/desktop electron:build:mac
 # 构建步骤（桌面端共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）
 #                       → set-edition（写版本档）→ electron-builder
 
-# 移动端 Android（APK 构建后自动拷贝到 dist-release/android/<版本>/）
-pnpm build:mobile:android
-#   产物：dist-release/android/<version>/app-debug.apk（由 scripts/copy-apk.cjs 从 Gradle 输出目录拷入）
+# 移动端 Android 正式发行（五模式、逐 ABI 分包，配置见 build/mobile.catalog.json）
+pnpm package:android
+#   产物：dist-release/android/<version>/yan-zhi-<version>-arm64-v8a.apk
+#         dist-release/android/<version>/yan-zhi-<version>-armeabi-v7a.apk
+#   两个包均使用固定 keystore 的 assembleRelease，非 debug 包；
+#   签名、家庭电脑迁移和上架备案见 docs/安卓正式签名与上架备案操作手册.md
 
 # 移动端 iOS（需 macOS + Xcode）
 pnpm build:mobile:ios

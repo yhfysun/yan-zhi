@@ -62,7 +62,7 @@
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
- *   dist-release/android/<版本>/app-debug.apk
+ *   dist-release/android/<版本>/yan-zhi-<版本>-<abi>.apk
  *
  * 选项：
  *   --dry-run     只做环境检查与计划打印，**不移动目录、不构建**（预览用）
@@ -124,6 +124,7 @@ const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mob
 let RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
 let OUTPUT_DIRS = null;
 let ANDROID_APK = null;
+let ANDROID_OUT_DIR = null;
 
 /** 按给定的产物根重算全部产物路径 */
 function computePaths(outRoot) {
@@ -132,10 +133,12 @@ function computePaths(outRoot) {
     e,
     path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot })),
   ]));
-  ANDROID_APK = path.join(
-    path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot })),
-    'app-debug.apk',
-  );
+  ANDROID_OUT_DIR = path.relative(ROOT, androidOutDir({
+    repoRoot: ROOT,
+    version: MOBILE_VERSION,
+    outRoot,
+  }));
+  ANDROID_APK = path.join(ANDROID_OUT_DIR, 'app-release.apk');
 }
 computePaths(RELEASE_ROOT);
 
@@ -1387,16 +1390,16 @@ function buildAndroid() {
   // ⓪.5 gradle wrapper 换源（官方源会跳到 GitHub，本机直连不通）
   ensureGradleWrapper(mobile);
 
-  // 发行默认走精简链：仅 office/learning、真机 ABI，避免把模拟器库和桌面插件
-  // 全部塞进手机安装包。需要全模式全 ABI 调试时显式传 --android-full。
+  // 发行默认走 build/mobile.catalog.json：五模式、手机能力精确插件集、逐 ABI 分包。
+  // 需要全模式全 ABI 调试时显式传 --android-full。
   if (!ANDROID_FULL) {
-    info('① 构建移动端五模式发行包（office + shop + ops + sec + learning，arm64-v8a + armeabi-v7a）');
+    info('① 构建移动端五模式发行包（逐 ABI：arm64-v8a / armeabi-v7a）');
     run(
       process.execPath,
       [path.join(mobile, 'scripts', 'build-android-slim.cjs')],
       { cwd: mobile },
     );
-    ok('安卓精简包构建完成');
+    ok('安卓五模式双 ABI 发行包构建完成');
     return;
   }
 
@@ -1466,7 +1469,11 @@ function buildAndroid() {
   info('④.6 应用固定 APK 签名');
   run(process.execPath, ['scripts/apply-native-signing.cjs'], { cwd: mobile });
 
-  // ⑤ gradle assembleDebug
+  // ④.7 版本号与 package.json 同步
+  info('④.7 同步正式版本号');
+  run(process.execPath, ['scripts/apply-native-release.cjs'], { cwd: mobile });
+
+  // ⑤ gradle assembleDebug（仅 --android-full 内部排障链）
   const tc = androidToolchain();
   if (!tc.sdk || !tc.javaHome) {
     fail('安卓工具链不完整（SDK / JDK），无法执行 gradle');
@@ -1525,7 +1532,7 @@ function buildAndroid() {
 
   // ⑥ 拷 APK
   info(`⑥ 拷贝 APK 到 ${path.relative(ROOT, path.dirname(path.join(ROOT, ANDROID_APK)))}`);
-  run(process.execPath, ['scripts/copy-apk.cjs'], { cwd: mobile });
+  run(process.execPath, ['scripts/copy-apk.cjs', '--debug'], { cwd: mobile });
   ok('安卓构建完成');
 }
 
@@ -1547,13 +1554,16 @@ function verifyAll(targets) {
   }
 
   if (targets.android) {
-    const apk = path.join(ROOT, ANDROID_APK);
-    if (!fs.existsSync(apk)) { fail(`缺 APK: ${apk}`); allOk = false; }
-    else {
+    const dir = path.join(ROOT, ANDROID_OUT_DIR);
+    const apks = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((name) => /\.apk$/i.test(name)).map((name) => path.join(dir, name))
+      : [];
+    if (!apks.length) { fail(`缺 APK: ${dir}`); allOk = false; }
+    for (const apk of apks) {
       try {
         run(process.execPath, [verifier, 'apk', apk]);
-        ok('APK 校验通过');
-      } catch { fail('APK 校验失败'); allOk = false; }
+        ok(`${path.basename(apk)} 校验通过`);
+      } catch { fail(`${path.basename(apk)} 校验失败`); allOk = false; }
     }
   }
   return allOk;
@@ -1572,8 +1582,12 @@ function listArtifacts(targets) {
     }
   }
   if (targets.android) {
-    const apk = path.join(ROOT, ANDROID_APK);
-    if (fs.existsSync(apk)) list.push(['安卓 APK', apk]);
+    const dir = path.join(ROOT, ANDROID_OUT_DIR);
+    if (fs.existsSync(dir)) {
+      for (const name of fs.readdirSync(dir)) {
+        if (/\.apk$/i.test(name)) list.push(['安卓 APK', path.join(dir, name)]);
+      }
+    }
   }
   for (const [label, p] of list) {
     const s = fs.statSync(p);
@@ -1749,7 +1763,7 @@ function cleanFreshRoot() {
     info(`将构建: ${[
       needCompile ? '桌面三档/选档' : null,
       targets.desktop.includes(SHELL_EDITION) ? '桌面轻量壳（无后端）' : null,
-      targets.android ? `安卓 APK（${ANDROID_FULL ? '完整调试' : '精简发行'}）` : null,
+      targets.android ? `安卓 APK（${ANDROID_FULL ? '完整调试' : '五模式双 ABI 发行'}）` : null,
     ].filter(Boolean).join(' → ')}`);
     info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
     info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);

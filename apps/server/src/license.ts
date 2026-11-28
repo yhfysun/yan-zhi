@@ -388,11 +388,12 @@ export function verifyLicenseCodeWithKey(
   //   自动激活必然失败 → 死路授权页（实测：App 停在「版本档位 读取中…」，且源码常量里的
   //   预置码 2026-12-18 到期后桌面存量包也会踩到）。MOBILE_MODE 下跳过验签恒发全量档。
   if (process.env.MOBILE_MODE) {
+    const buildModes = resolveBuildModes(undefined, 'pro');
     return {
       valid: true, expireAt: null, mac: null, machineId: null,
       machineMac, machineIdLocal, identitySource,
       buildEdition: 'pro', edition: 'pro',
-      modes: [...EDITION_MODES.pro],
+      modes: buildModes.length ? buildModes : [...EDITION_MODES.pro],
       reason: 'mobile-full',
     };
   }

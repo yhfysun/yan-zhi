@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "_comment": "Android 正式发行唯一清单。模式、插件、ABI、裁剪策略和产物命名均从这里读取；桌面/Web 不消费本文件。",
+  "modes": [
+    "office",
+    "shop",
+    "ops",
+    "sec",
+    "learning"
+  ],
+  "plugins": [
+    "office-core",
+    "shop-ops",
+    "ops-shell",
+    "sec-lab",
+    "learning-mode",
+    "remote-control",
+    "skins"
+  ],
+  "abis": [
+    "arm64-v8a",
+    "armeabi-v7a"
+  ],
+  "artifactPrefix": "yan-zhi",
+  "keepOfflineTts": true,
+  "keepSkins": true,
+  "stripBuiltinFrontends": true,
+  "stripDesktopPetAssets": true,
+  "stripSourceMaps": true,
+  "desktopOnlyFeatures": [
+    "pet-companion",
+    "git-explorer",
+    "cicd-pipeline",
+    "java-suite",
+    "computer-use",
+    "android-mirror",
+    "browser-extensions",
+    "desktop-child-windows"
+  ],
+  "mobileOnlyFeatures": [
+    "android-sms-forward",
+    "android-storage-access",
+    "android-native-tts",
+    "android-m1-nfc",
+    "android-back-navigation"
+  ]
+}

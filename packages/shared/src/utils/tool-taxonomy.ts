@@ -70,6 +70,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   fs_walk: 'file',
   api_file_list: 'file',
   api_file_set_category: 'file',
+  api_artifact_save: 'file',
   api_workspace_list_dir: 'file',
   api_workspace_search_files: 'file',
   api_conversation_file_list: 'file',

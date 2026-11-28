@@ -216,7 +216,7 @@ describe('移动外壳归属：Capacitor 与 Web 手机视口共用', () => {
     expect(WEB_TOPBAR, '办公侧栏按钮不应再显示文字标签')
       .not.toContain('<span>侧栏</span>');
     expect(WEB_TOPBAR, '办公侧栏按钮展开/收起状态应使用不同分栏位置')
-      .toContain("officeAiSidebarCollapsed ? 'M6 4v16' : 'M9 3v18'");
+      .toContain("currentSidebarCollapsed ? 'M6 4v16' : 'M9 3v18'");
     expect(WEB_TOPBAR, '办公侧栏按钮不应显示导航选中态')
       .not.toContain(':class="{ active: !officeAiSidebarCollapsed }"');
   });

@@ -7,7 +7,8 @@
  * 等价于 `node scripts/package.cjs android`。
  *
  * 常用透传参数：--dry-run（演练） / --no-verify（跳过产物校验）
- * 产物输出：dist-release/android/<版本>/app-debug.apk
+ * 产物输出：dist-release/android/<版本>/yan-zhi-<版本>-arm64-v8a.apk
+ *           dist-release/android/<版本>/yan-zhi-<版本>-armeabi-v7a.apk
  */
 process.argv = [process.execPath, __filename, 'android', ...process.argv.slice(2)];
 require('./package.cjs');

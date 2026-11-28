@@ -21,8 +21,24 @@ function phonicsAudioSync(): Plugin {
   };
 }
 
+/**
+ * Android 正式包没有桌面桌宠能力。
+ * 在模块解析层替换 pet-assets，让所有 spritesheet / VRM 的静态引用根本不进入 Rollup。
+ */
+function mobilePetAssetStub(): Plugin {
+  const stub = resolve(__dirname, '../../packages/ui/src/components/pet/pet-assets.mobile.ts');
+  return {
+    name: 'yz-mobile-pet-asset-stub',
+    enforce: 'pre',
+    resolveId(source) {
+      const cleanSource = String(source).split('?')[0].replace(/\\/g, '/');
+      return /(?:^|\/)pet-assets(?:\.ts)?$/.test(cleanSource) ? stub : null;
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [vue(), phonicsAudioSync()],
+  plugins: [vue(), phonicsAudioSync(), mobilePetAssetStub()],
   resolve: {
     extensions: ['.ts', '.mjs', '.js', '.vue', '.json'],
     alias: {

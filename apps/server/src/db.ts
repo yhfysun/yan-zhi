@@ -1385,7 +1385,7 @@ try {
 // 但模型看不到 schema 时只能瞎猜参数 —— 同步本清单是为了让默认助手的工具面完整、调用靠谱。
 const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 文件读写
-  'file_read', 'file_write', 'file_list',
+  'file_read', 'file_write', 'file_list', 'api_artifact_save',
   // 办公三件套（Word/Excel/PPT 的新建与结构化读取；与办公工作台同源）
   'office_create', 'office_read', 'office_write', 'office_search',
   // 代码工具

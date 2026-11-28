@@ -13,6 +13,7 @@ import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 import { BUILD_MODES, BUILD_MODE_DEFS } from '../generated/build-modes';
 import { usePluginStore } from './plugin';
 import { isCapacitor } from '../api/client';
+import mobileProfile from '../../../../build/mobile.catalog.json';
 
 /**
  * 移动端模式白名单（2026-11-17 调整）：手机开放「办公、店铺、运维、安全、学习」。
@@ -23,7 +24,7 @@ import { isCapacitor } from '../api/client';
  *   构建期清单不裁剪：build-modes.ts 是桌面/移动共用的生成文件，谁最后构建谁说了算，
  *   在这里做平台维度收敛不抢构建期状态。
  */
-const MOBILE_ALLOWED_MODES: readonly string[] = ['office', 'shop', 'ops', 'sec', 'learning'];
+const MOBILE_ALLOWED_MODES: readonly string[] = mobileProfile.modes;
 
 /** 构建期内置模式（type 只用于提示与兜底，运行时允许插件带来新 key） */
 export type BaseMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'rpa' | 'clip' | 'shop' | 'learning';

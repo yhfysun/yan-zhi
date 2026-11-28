@@ -109,6 +109,13 @@ describe('平台分派：百炼走原生、标准平台走标准通道（两者�
     // 标准通道 handler 委托到共用落盘
     expect(EXECUTOR).toMatch(/return finalizeImageResult\(/);
   });
+
+  it('★ 生图临时地址由程序重试转存，成功后带 file 供产物钩子自动登记', () => {
+    expect(EXECUTOR).toMatch(/async function downloadGeneratedImageBinary\s*\(/);
+    expect(EXECUTOR).toMatch(/downloadMediaBinary\(url, 180000, \{\s*retryAttempts: 6/s);
+    expect(EXECUTOR).toMatch(/await downloadGeneratedImageBinary\(remoteUrl\)/);
+    expect(EXECUTOR).toMatch(/file: localFile \|\| undefined/);
+  });
 });
 
 describe('工具 schema：api_image_generate 描述覆盖百炼通道与推荐模型', () => {

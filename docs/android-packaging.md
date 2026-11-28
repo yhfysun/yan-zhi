@@ -2,7 +2,16 @@
 
 > 2026-10-26 首次在本机打通安卓打包时踩的全部坑。每条都写了「为什么」，换机器/重建工程后按顺序核对即可。
 >
-> 入口命令：`node scripts/package.cjs android`（产物 `dist-release/android/<版本>/app-debug.apk`）
+> 正式入口：`pnpm package:android`（或 `pnpm package:android:release`）。
+> 产物固定为两个单 ABI APK：
+> `dist-release/android/<版本>/yan-zhi-<版本>-arm64-v8a.apk` 和
+> `dist-release/android/<版本>/yan-zhi-<版本>-armeabi-v7a.apk`。
+> 两个包均由 `assembleRelease` 生成，使用固定 keystore，且不得包含
+> `application-debuggable`。签名、迁移、APP备案和 AI 备案步骤见
+> `docs/安卓正式签名与上架备案操作手册.md`。
+>
+> **唯一配置源**：`build/mobile.catalog.json`。模式、插件、ABI、桌宠裁剪、
+> sourcemap 清理和产物命名都从这里读取；不要再在脚本、CI 或文档里另写一套清单。
 
 ---
 
@@ -67,7 +76,7 @@ pnpm 10+ **默认不执行依赖的安装脚本**，清单在 `pnpm-workspace.ya
 ②.6 apply-native-permissions.cjs   ← 明文流量 + CAMERA
 ③  编译 server/dist + build-mobile-server.cjs（内嵌 node 后端）
 ④  cap sync android
-⑤  gradle assembleDebug（Windows 走 C:\yz junction 短路径）
+⑤  gradle assembleRelease（Windows 走 C:\yz junction 短路径）
 ⑥  拷 APK → dist-release/android/<版本>/
 ```
 
@@ -118,8 +127,8 @@ at io.capawesome.capacitorjs.plugins.nodejs.Nodejs.<clinit>(Nodejs.java:43)
 CMake 导入了预编译 `libnode.so` 就自动把 STL 运行库放进 APK。
 
 **修**：`apply-native-nodejs-shortpath.cjs` 从 NDK 按 ABI 把 `libc++_shared.so`
-铺到短路径工程的 `src/main/jniLibs/`；`copy-apk.cjs` 同时检查三个 ABI 的
-`libc++_shared.so`，缺失直接拒绝产物。
+铺到短路径工程的 `src/main/jniLibs/`；`copy-apk.cjs` 按本次单 ABI 校验
+`libc++_shared.so`，缺失或混入其它 ABI 都直接拒绝产物。
 
 **无真机时的最小复现/验收**：
 
@@ -136,6 +145,7 @@ $adb="$sdk\platform-tools\adb.exe"
 # 启动并验证：进程必须存活、Activity 必须在前台、内嵌后端必须可访问
 & "$sdk\emulator\emulator.exe" -avd yanzhi-crash-api35 -no-window -no-audio `
   -gpu swiftshader_indirect -no-snapshot
+# x86_64 仅用于模拟器排障，需先显式走 --android-full 调试链
 & $adb install -r -t dist-release/android/<版本>/app-debug.apk
 & $adb shell am start -W -n com.yanzhi.mobile/.MainActivity
 & $adb shell pidof com.yanzhi.mobile
@@ -160,7 +170,7 @@ adb connect <手机IP>:<端口>
 adb devices -l
 
 # 2) 装包
-adb install -r -t dist-release/android/<版本>/app-debug.apk
+adb install -r -t dist-release/android/<版本>/yan-zhi-<版本>-arm64-v8a.apk
 
 # 3) 看内嵌后端日志（只认这个 tag，系统日志会刷屏）
 adb logcat -s NodejsPlugin
@@ -184,14 +194,24 @@ curl http://127.0.0.1:9222/json/list
 
 ---
 
-## 七、版本与产物
+## 七、版本、ABI 与产物
 
-- APK 路径：`dist-release/android/<版本>/app-debug.apk`
-- **体积口径（2026-11-21 实测两条线）**：
-  - `package:android`（标准发布口径：5 模式 office/ops/sec/shop/learning，双 ABI arm64-v8a + armeabi-v7a）≈ **279 MB**，构成：双 ABI 原生库 129 MB（libnode.so ×2 = 92 MB）+ 内嵌后端 133 MB + 五模式前端 62 MB。
-  - 全 9 模式 + 三 ABI（含 x86_64，`libnode.so` ×3 = 151 MB）≈ 378 MB —— 模拟器/旧机器要装 x86_64 包时才需要。
-  - **看到"才两百多 M"不是缺件**：按上面构成核对（关键件 = 两个 ABI 的 `libnode.so`、内嵌后端入口、2245 个前端 JS），`verify-package-artifacts.cjs` 结论 PASS 即可。想省体积只砍 x86_64，别砍 arm64。
-- 全新安装的平台列表本来就是空的（内置的是「厂商目录 preset」，不是已配置平台），需要用户自己选一个厂商或填 Key。
+- 正式手机包按 ABI 拆分，不生成 universal APK：
+  - `yan-zhi-<版本>-arm64-v8a.apk`：64 位 ARM 真机。
+  - `yan-zhi-<版本>-armeabi-v7a.apk`：32 位 ARM 真机。
+- 2026-11-26 本机实测：arm64 `202.0 MB`，armeabi-v7a `190.3 MB`。
+  两个包均保留离线 TTS、Sherpa/ONNX、SQLCipher 和完整皮肤库。
+- 当前 `nodejs-mobile` 只提供 `arm64-v8a`、`armeabi-v7a`、`x86_64` 的 `libnode.so`，
+  **没有 32 位 x86**。x86_64 仅用于模拟器排障，不属于正式手机产物。
+- 每个 APK 只能含一个声明 ABI。`assemble-release.cjs`（复用通用 Gradle 脚本）与
+  `copy-apk.cjs` 会检查
+  `libnode.so`、`libcapacitor-nodejs.so`、`libc++_shared.so`、Sherpa/ONNX 和 SQLCipher，
+  同时拒绝混入其它 ABI、错误的包名/版本、证书不一致和 `application-debuggable`。
+- `versionName` 来自 `apps/mobile/package.json`；`versionCode` 按
+  `major * 10000 + minor * 100 + patch` 计算。`0.1.1` 对应 `101`。
+- `package:android --android-full` 仅用于内部全模式/全 ABI 排障，不作为发行包。
+- 全新安装的平台列表本来就是空的（内置的是「厂商目录 preset」，不是已配置平台），
+  需要用户自己选一个厂商或填 Key。
 
 ---
 
@@ -223,7 +243,8 @@ $root = 'c:\Users\Administrator\Desktop\github\yan-zhi-master'
 
 删完再跑 `pnpm package:android`，日志必须出现「**真编译 server（安卓前置）**」且**没有**「新鲜，可复用（跳过编译）」字样。
 
-**长期修（待办）**：把 `package.cjs` / `build-android-slim.cjs` 里的"新鲜可复用"判断直接删掉，无条件真编译（铁律本来就要求）。
+**长期修（已落地）**：移动正式链的 `build-mobile-server.cjs` 每次都会从零重建
+`apps/server/dist`，失败即中止，不再把“新鲜可复用”作为放行条件。
 
 **产物指纹验证（证明包里是最新前端）**：ZIP 内条目时间戳被构建工具归一成 1981（不可用作新鲜度证据），改用**特征串**——在 `apps/mobile/dist/assets/News-*.js` 里 grep 一个"只有最新代码才有"的字符串：
 
@@ -238,8 +259,36 @@ Select-String -Path apps\mobile\dist\assets\News-*.js -Pattern '#1098ad','虚拟
 
 ---
 
-## 九、5 模式发布口径与构建脚本名的关系（别被日志骗）
+## 九、五模式正式发行口径（唯一标准）
 
-- `pnpm package:android` 内部跑的是 `build-android-slim.cjs`——**脚本名叫 slim，但按 2026-11-20 拍板的发布口径它选的就是 5 个模式**（office/ops/sec/shop/learning，`select-modes 排除 dev, wf, rpa, clip`），构建完成后 `--restore` 还原全量模式表供日常 dev 用。
-- 日志里出现「精简包」字样 ≠ 模式被裁：判据看 `build/build-manifest.json` 的 `modes`/`excludedModes`——发布包必须 `excludedModes` 只含 dev/wf/rpa/clip（或为空），**office/ops/sec/shop/learning 五个绝不能出现在排除列表**。
-- `pnpm package:android` 完成后如果日志显示 `已选择 5 个模式: office, ops, sec, shop, learning` + `verify PASS`，即符合发布要求。
+`build/mobile.catalog.json` 当前固定：
+
+- 模式：`office / shop / ops / sec / learning`。
+- 插件：`office-core / shop-ops / ops-shell / sec-lab / learning-mode / remote-control / skins`。
+- 明确不含：`git-explorer / cicd-pipeline / java-suite / dev-mode / wf-mode / rpa-mode / clip-mode / computer-use / android-mirror`。
+- 保留：离线 TTS、皮肤库、远程控制“手机作为控制端”。
+- 不含：桌面桌宠素材、桌面桌宠路由、Git 路由/插件、第三方 `.yzp` 安装能力。
+
+移动运维只保留基础工作台，不因桌面插件的 `requires` 自动把 CICD/Java 带回包内。
+这个例外由 `--exact-plugins` 明确表达，不能用环境变量临时改清单。
+
+`pnpm package:android` 期望关键日志：
+
+```text
+选择模式: office, shop, ops, sec, learning
+执行: node scripts/assemble-release.cjs（ABI=arm64-v8a）
+执行: node scripts/assemble-release.cjs（ABI=armeabi-v7a）
+后端裁剪校验通过
+[copy-apk] 包信息校验通过: com.yanzhi.mobile 0.1.1/101 (release)
+[copy-apk] 完成（... release ... ABI=arm64-v8a）
+[copy-apk] 完成（... release ... ABI=armeabi-v7a）
+```
+
+如果出现 `x86`、`universal`、`app-debug.apk`、`application-debuggable`、
+Git/CICD/Java 插件目录、
+桌宠 spritesheet 或重复的插件 `frontend/`，视为打包失败，不允许分发。
+
+GitHub 的 `.github/workflows/build-mobile.yml` 复用同一入口，并额外断言：
+发行目录恰好两个 APK、命名包含两个目标 ABI、包名/版本正确、没有
+`application-debuggable`、没有 `app-debug.apk`/x86 包；
+上传产物名为 `Android-Release-APK-5Mode-Split-ABI`。

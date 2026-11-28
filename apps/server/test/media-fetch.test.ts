@@ -145,6 +145,45 @@ describe('media-fetch · 下载决策链', () => {
     expect(buf.toString()).toBe(MEDIA_BYTES.toString());
   });
 
+  it('生图产物地址暂时 404：按重试次数继续直连，就绪后成功且不转代理', async () => {
+    const { downloadMediaBinary } = await import('../src/services/media-fetch.js');
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return new Response('not ready', { status: 404 });
+      return new Response(MEDIA_BYTES, { status: 200 });
+    }) as any;
+
+    const buf = await downloadMediaBinary('https://platform-outputs.agnes-ai.space/new.png', 5000, {
+      retryAttempts: 4,
+      retryDelayMs: () => 0,
+    });
+
+    expect(buf.toString()).toBe(MEDIA_BYTES.toString());
+    expect(calls).toBe(3);
+    expect(net.connect).not.toHaveBeenCalled();
+    expect(https.request).not.toHaveBeenCalled();
+  });
+
+  it('host 曾被标记直连失败后，生图重试仍会重新尝试直连', async () => {
+    const { downloadMediaBinary } = await import('../src/services/media-fetch.js');
+    const url = 'https://platform-outputs.agnes-ai.space/retry.png';
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return new Response('not ready', { status: 404 });
+      return new Response(MEDIA_BYTES, { status: 200 });
+    }) as any;
+
+    // 普通下载失败一次会进入 host 冷却。
+    await expect(downloadMediaBinary(url, 5000)).rejects.toThrow(/HTTPS_PROXY/);
+    // 生图落盘明确要求重试，不能被上一步的冷却永久挡住。
+    const buf = await downloadMediaBinary(url, 5000, { retryAttempts: 2, retryDelayMs: () => 0 });
+
+    expect(buf.toString()).toBe(MEDIA_BYTES.toString());
+    expect(calls).toBe(2);
+  });
+
   it('同一 host 直连失败一次后，第二次跳过直连（不再白等超时）', async () => {
     process.env.HTTPS_PROXY = 'http://127.0.0.1:7890';
     httpsReturnsBytes();

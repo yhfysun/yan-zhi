@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { runCmd } from '../services/exec-cmd.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { db, loadEffectiveTaskTypes } from '../db.js';
 import { softDeleteRow, lifecycleClause } from '../services/conversation-lifecycle.js';
 import { runtimePluginModes } from '../plugins/runtime-modes.js';
@@ -431,7 +433,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_browser_memory_read',
   // 短信验证码中继（移动端同网回传）：读取侧，只读
   'api_verification_code_latest', 'api_verification_code_list',
-  'api_file_list', 'api_file_set_category',
+  'api_file_list', 'api_file_set_category', 'api_artifact_save',
   'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
   'api_enterprise_resources', 'api_enterprise_mcp_connectors', 'api_enterprise_mcp_tools',
   'api_enterprise_design_resources',
@@ -693,6 +695,20 @@ async function downloadBinary(url: string, timeoutMs = 180000): Promise<Buffer> 
   return downloadMediaBinary(url, timeoutMs);
 }
 
+/**
+ * 生图结果是带短时效的临时地址，必须由程序立即转存到会话交付目录。
+ * 对象存储刚生成完成时偶尔会短暂 404/5xx，不能用一次性的普通下载口径；
+ * 这里重试的是直连本身，最终仍保留 media-fetch 的代理兜底。
+ */
+async function downloadGeneratedImageBinary(url: string): Promise<Buffer> {
+  return downloadMediaBinary(url, 180000, {
+    retryAttempts: 6,
+    // 移动网络下 2K 图从对象存储回源可能超过 20s；过短会误判落盘失败。
+    directTimeoutMs: 60000,
+    retryDelayMs: (attempt) => Math.min(8000, 500 * 2 ** Math.max(0, attempt - 1)),
+  });
+}
+
 function extFromUrl(url: string, fallback: string): string {
   const m = /\.(png|jpe?g|webp|gif|mp4|webm|mov)(?=$|[?#])/i.exec(url);
   return m ? `.${m[1].toLowerCase().replace('jpeg', 'jpg')}` : fallback;
@@ -776,7 +792,7 @@ async function finalizeImageResult(
   let localUrl = '';
   try {
     const buf = remoteUrl
-      ? await downloadBinary(remoteUrl)
+      ? await downloadGeneratedImageBinary(remoteUrl)
       : (b64 ? Buffer.from(b64, 'base64') : null);
     if (buf && buf.length > 0) {
       const target = mediaTarget({ conversationId, kind: 'images' });
@@ -1077,27 +1093,43 @@ async function mediaGenerateImageOnce(
 
   let lastErr = '';
   for (const key of keys) {
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(`${baseUrl}/v1/images/generations`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, n: 1, ...(size ? { size } : {}) }),
-      }, 180000);
-    } catch (e: unknown) {
-      lastErr = e instanceof Error ? e.message : String(e);
-      continue;
+    // 移动端优先请求内联 base64：产物 CDN 在部分移动网络直连超时，
+    // b64 响应可让服务端直接写入交付目录，不依赖第二次网络下载。
+    // 平台若不支持 response_format，400 时自动去掉该参数重试同一 Key。
+    const responseFormats = process.env.MOBILE_MODE ? ['b64_json', ''] : [''];
+    for (const responseFormat of responseFormats) {
+      let res: Response;
+      try {
+        res = await fetchWithTimeout(`${baseUrl}/v1/images/generations`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model, prompt, n: 1,
+            ...(size ? { size } : {}),
+            ...(responseFormat ? { response_format: responseFormat } : {}),
+          }),
+        }, 180000);
+      } catch (e: unknown) {
+        lastErr = e instanceof Error ? e.message : String(e);
+        break;
+      }
+      const text = await res.text();
+      if (res.status === 429 || res.status === 401 || res.status === 403) {
+        bumpAgensKeyFail(key);
+        lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+        break;
+      }
+      if (!res.ok) {
+        if (responseFormat && res.status === 400) {
+          lastErr = `HTTP 400（不支持 ${responseFormat}，已回退 URL 模式）: ${text.slice(0, 180)}`;
+          continue;
+        }
+        return fail(`生图请求失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
+      }
+      let j: any;
+      try { j = JSON.parse(text); } catch { return fail('生图响应不是合法 JSON'); }
+      return await handleImageResult(j, model, prompt, conversationId);
     }
-    const text = await res.text();
-    if (res.status === 429 || res.status === 401 || res.status === 403) {
-      bumpAgensKeyFail(key);
-      lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
-      continue;
-    }
-    if (!res.ok) return fail(`生图请求失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
-    let j: any;
-    try { j = JSON.parse(text); } catch { return fail('生图响应不是合法 JSON'); }
-    return await handleImageResult(j, model, prompt, conversationId);
   }
   return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
 }
@@ -1489,6 +1521,157 @@ function extForFetch(url: string, fallbackExt: string): string {
     if (m) return `.${m[1].toLowerCase().replace('jpeg', 'jpg')}`;
   } catch { /* 非法 URL 交给下载层报错 */ }
   return fallbackExt;
+}
+
+const ARTIFACT_SAVE_MAX_BYTES = 512 * 1024 * 1024;
+
+function isUnsafeArtifactIp(raw: string): boolean {
+  const ip = String(raw || '').toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 198 && (b === 18 || b === 19));
+  }
+  if (isIP(ip) === 6) {
+    if (ip === '::' || ip === '::1' || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip) || /^ff/.test(ip)) return true;
+    if (ip.startsWith('2001:db8:')) return true;
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+    if (mapped) return isUnsafeArtifactIp(mapped[1]);
+  }
+  return false;
+}
+
+async function assertSafeArtifactUrl(raw: string): Promise<URL> {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new Error('url 不是合法地址'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('url 只支持 http/https');
+  if (u.username || u.password) throw new Error('url 不能包含用户名或密码');
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host || host === 'localhost' || /\.(localhost|local|internal)$/.test(host)) {
+    throw new Error('url 指向本机/内网地址，已拒绝');
+  }
+  const literal = isIP(host);
+  const resolved = literal ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
+  if (!resolved.length) throw new Error('url 域名无法解析');
+  if (resolved.some((item) => isUnsafeArtifactIp(item.address))) {
+    throw new Error('url 解析到私网/保留地址，已拒绝（防止 SSRF）');
+  }
+  return u;
+}
+
+function decodeArtifactData(raw: string): { buffer: Buffer; mimeType: string } {
+  const s = String(raw || '').trim();
+  if (!s) throw new Error('data 为空');
+  const dataUrl = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(s);
+  const payload = (dataUrl ? dataUrl[2] : s).replace(/\s+/g, '');
+  if (!payload) throw new Error('base64 数据为空');
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(payload)) throw new Error('data 不是合法 base64');
+  const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+  const buffer = Buffer.from(normalized, 'base64');
+  if (!buffer.length) throw new Error('base64 解码结果为空');
+  return { buffer, mimeType: dataUrl?.[1] || '' };
+}
+
+function artifactKind(fileName: string, mimeType: string): {
+  targetKind: 'images' | 'videos' | 'audios' | 'files';
+  type: 'image' | 'video' | 'audio' | 'file';
+  fallbackExt: string;
+} {
+  const mime = mimeType.toLowerCase();
+  const ext = path.extname(fileName).toLowerCase();
+  if (mime.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(ext)) {
+    return { targetKind: 'images', type: 'image', fallbackExt: '.png' };
+  }
+  if (mime.startsWith('video/') || /\.(mp4|webm|mov|m4v|mkv|avi|flv)$/i.test(ext)) {
+    return { targetKind: 'videos', type: 'video', fallbackExt: '.mp4' };
+  }
+  if (mime.startsWith('audio/') || /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i.test(ext)) {
+    return { targetKind: 'audios', type: 'audio', fallbackExt: '.mp3' };
+  }
+  return { targetKind: 'files', type: 'file', fallbackExt: '.bin' };
+}
+
+function artifactFallbackExt(fileName: string, url: string, mimeType: string, fallbackExt: string): string {
+  const named = path.extname(fileName);
+  if (named) return named;
+  if (url) {
+    try {
+      const fromUrl = path.extname(new URL(url).pathname);
+      if (/^\.[A-Za-z0-9]{2,5}$/.test(fromUrl)) return fromUrl;
+    } catch { /* URL 已由前面的校验处理 */ }
+  }
+  const mime = mimeType.toLowerCase();
+  if (mime === 'image/jpeg') return '.jpg';
+  if (mime.startsWith('image/')) return `.${mime.slice(6).replace('svg+xml', 'svg')}`;
+  if (mime === 'video/quicktime') return '.mov';
+  if (mime.startsWith('video/')) return `.${mime.slice(6)}`;
+  if (mime === 'audio/mpeg') return '.mp3';
+  if (mime === 'audio/mp4') return '.m4a';
+  if (mime.startsWith('audio/')) return `.${mime.slice(6)}`;
+  if (mime === 'application/pdf') return '.pdf';
+  return fallbackExt;
+}
+
+/**
+ * 模型明确提供 URL 或 base64 数据流时，由程序保存到会话交付目录。
+ * URL 输入只允许公网 http/https，防止模型被不可信网页内容诱导访问内网。
+ */
+async function artifactSave(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  if (!conversationId) return fail('api_artifact_save 需要当前会话上下文，无法定位交付目录');
+  const rawName = str(args, 'file_name').trim();
+  const url = str(args, 'url').trim();
+  const data = str(args, 'data').trim();
+  if (!rawName) return fail('file_name 为必填项');
+  if (!!url === !!data) return fail('url 与 data 必须二选一，不能同时为空或同时填写');
+  const maxBytes = Math.max(1, num(args, 'max_bytes', ARTIFACT_SAVE_MAX_BYTES));
+
+  try {
+    let buffer: Buffer;
+    let mimeType = str(args, 'mime_type').trim();
+    let sourceUrl = '';
+    if (url) {
+      const safe = await assertSafeArtifactUrl(url);
+      sourceUrl = safe.toString();
+      buffer = await downloadMediaBinary(sourceUrl, 180000, { retryAttempts: 3 });
+    } else {
+      const decoded = decodeArtifactData(data);
+      buffer = decoded.buffer;
+      if (!mimeType) mimeType = decoded.mimeType;
+    }
+    if (!buffer.length) return fail('数据流为空，未写入文件');
+    if (buffer.length > maxBytes) {
+      return fail(`文件过大（${formatBytes(buffer.length)}），超过上限 ${formatBytes(maxBytes)}`);
+    }
+
+    const kind = artifactKind(rawName, mimeType);
+    const fallbackExt = artifactFallbackExt(rawName, sourceUrl, mimeType, kind.fallbackExt);
+    const fileName = safeDownloadName(rawName, fallbackExt);
+    const target = mediaTarget({ conversationId, kind: kind.targetKind });
+    await mkdir(target.dir, { recursive: true });
+    const file = path.join(target.dir, fileName);
+    await writeFile(file, buffer);
+
+    return ok(JSON.stringify({
+      ok: true,
+      type: kind.type,
+      category: 'deliverable',
+      name: fileName,
+      file,
+      bytes: buffer.length,
+      mimeType: mimeType || undefined,
+      url: `${target.urlBase}/${path.basename(file)}`,
+      sourceUrl: sourceUrl || undefined,
+    }));
+  } catch (e: unknown) {
+    return fail(`保存交付文件失败：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** 跑一次 ffprobe，成功返回 stdout（用于探测流信息）。 */
@@ -5891,6 +6074,8 @@ export async function executeApiTool(
         return await mediaFetch(args, conversationId);
       case 'api_media_normalize':
         return await mediaNormalize(args, conversationId);
+      case 'api_artifact_save':
+        return await artifactSave(args, conversationId);
 
       default:
         return fail(`未实现的 API 工具: ${name}`);

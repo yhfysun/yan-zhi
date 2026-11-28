@@ -26,7 +26,9 @@
             <span class="shop-setup-kicker">六步推进</span>
             <h2 id="shop-launch-flow-title">从没店铺到首单</h2>
           </div>
-          <el-button type="primary" :icon="ArrowRight" @click="emit('start')">AI 按当前资料继续</el-button>
+          <el-button class="shop-launch-continue" type="primary" :icon="ArrowRight" @click="emit('start')">
+            AI 按当前资料继续
+          </el-button>
         </div>
         <ShopSetupSteps :progress="progress" @toggle-step="onToggleStep" />
         <div class="shop-launch-flow-actions">

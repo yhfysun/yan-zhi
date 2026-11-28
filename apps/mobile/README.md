@@ -46,30 +46,32 @@ export ANDROID_HOME=C:\\Android\\Sdk
 ## 构建
 
 ```bash
-# 一键构建（vite build → 后端产物 → cap sync → gradle → 拷 APK）
+# 正式构建（vite build → 后端产物 → cap sync → assembleRelease → 校验/拷 APK）
 pnpm --filter @yan-zhi/mobile build:android
 ```
 
-等价的分步命令：
+模拟器调试包必须显式使用：
 
 ```bash
-cd apps/mobile
-
-# 1. 前端构建（产出 dist/）
-pnpm run build
-
-# 2. 生成内嵌后端产物
-#    复用 apps/server/dist（先确保 server 已 build：pnpm --filter @yan-zhi/server build）
-#    产出 nodejs/dist/{apps,packages} 并同步到 dist/nodejs/
-pnpm run build:mobile:server
-
-# 3. 同步到原生工程并打包
-npx cap sync android
-npx cap build android
-node ./scripts/copy-apk.cjs
+pnpm --filter @yan-zhi/mobile build:android:dev
 ```
 
-产物：`dist-release/android/<版本>/app-debug.apk`（debug）或签名后的 release APK（版本取自 apps/mobile/package.json）。
+正式发行使用 `pnpm package:android`，产物为两个单 ABI APK：
+
+```text
+dist-release/android/<版本>/yan-zhi-<版本>-arm64-v8a.apk
+dist-release/android/<版本>/yan-zhi-<版本>-armeabi-v7a.apk
+```
+
+正式构建使用固定 keystore、`assembleRelease` 和非 debuggable APK。
+签名、家庭电脑迁移、APP备案和 AI 备案的完整步骤见仓库根目录
+`docs/安卓正式签名与上架备案操作手册.md`。
+
+唯一发行配置是仓库根目录的 `build/mobile.catalog.json`。手机端固定五个模式
+（办公、店铺、运维、安全、学习），保留离线 TTS、皮肤库和远程控制控制端；
+不包含桌宠、Git、CICD、Java 套件和第三方插件安装。
+
+2026-11-26 本机实测：arm64 `202.0 MB`，armeabi-v7a `190.3 MB`。
 
 ## 内嵌后端如何工作
 
@@ -111,16 +113,19 @@ plugins: {
 （Capacitor 注册 Nodejs 插件时崩，走不到 WebView）。**不是后端问题**——
 是装的 APK 里根本没打进 nodejs-mobile 原生库。
 
-**根因**：手机上装的不是本仓库构建链的产物。微信群里流转的那份 155.3MB
+**根因**：手机上装的不是本仓库构建链的产物。微信群里流转的旧版残缺包
 精简包（`app-debug.apk.1`，微信自动改名）来自旧目录/旧 checkout 的构建，
-缺 `libnode.so`；而本仓库正常产物含全 ABI 原生库。
+缺 `libnode.so`；本仓库正式产物按 ABI 分包，每个包必须含本架构全套原生库。
 
 **规则（防复发）**：
-- 装机**只认本仓库** `pnpm --filter @yan-zhi/mobile build:android`（完整包
-  ~378MB，三 ABI）或 `build:android:slim`（精简包 ~155MB，仅 arm64-v8a）
-  的产物（`copy-apk.cjs` 会复制到 `dist-release/android/<版本>/`）。
+- 装机**只认本仓库** `pnpm package:android` 产出的两个单 ABI 正式包
+  （`dist-release/android/<版本>/yan-zhi-<版本>-<abi>.apk`）。
+- `build:android` 已切换为正式 `assembleRelease` 链；开发调试必须显式使用
+  `build:android:dev`。正式分发统一使用 `build/mobile.catalog.json` 驱动的
+  `package:android` 链路。
   ★ `copy-apk.cjs` 已加**闪退包硬闸**：拷贝前检查 APK 内必须含
-  `libnode.so`、`libcapacitor-nodejs.so`、三个 ABI 的 `libc++_shared.so`
+  `libnode.so`、`libcapacitor-nodejs.so`、当前 ABI 的 `libc++_shared.so`、
+  Sherpa/ONNX 与 SQLCipher
   和内嵌后端入口，缺了构建直接失败（exit 3）——残缺闪退包**不可能再从本
   构建链流出**；手工拷贝的旧包不受此保护，装机前请自行抽查。
 - **微信传 APK 会被改名 `xxx.apk.1` 且可能被压缩/拦截**：接收后必须重命名

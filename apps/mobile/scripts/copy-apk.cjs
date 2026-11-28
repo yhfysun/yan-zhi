@@ -3,6 +3,14 @@ const path = require('path');
 
 const mobileDir = path.join(__dirname, '..');
 const apkRoot = path.join(mobileDir, 'android', 'app', 'build', 'outputs', 'apk');
+const buildType = process.argv.includes('--debug')
+  ? 'debug'
+  : String(process.env.YZ_ANDROID_BUILD_TYPE || 'release').trim().toLowerCase();
+if (!['debug', 'release'].includes(buildType)) {
+  console.error(`[copy-apk] YZ_ANDROID_BUILD_TYPE 必须是 debug 或 release，实际为 ${buildType}`);
+  process.exit(2);
+}
+const apkPath = path.join(apkRoot, buildType, `app-${buildType}.apk`);
 
 // ★ 产物路径单一真相源在 apps/desktop/scripts/lib/pack-helpers.cjs（跨包相对引用，
 //   仅用路径函数、不引入构建依赖）：安卓统一落到 dist-release/android/<版本>/app-debug.apk。
@@ -10,8 +18,10 @@ const apkRoot = path.join(mobileDir, 'android', 'app', 'build', 'outputs', 'apk'
 const { DEFAULT_RELEASE_ROOT, androidOutDir, resolvePkgVersion } = require(
   path.join(mobileDir, '..', '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'),
 );
-const { verifyApkSignature } = require('./lib/android-signing.cjs');
+const { verifyApkSignature, inspectApkBadging } = require('./lib/android-signing.cjs');
+const { versionCodeFor } = require('./apply-native-release.cjs');
 const version = resolvePkgVersion({ pkgPath: path.join(mobileDir, 'package.json') });
+const expectedVersionCode = versionCodeFor(version);
 const outDir = androidOutDir({
   repoRoot: path.join(mobileDir, '..', '..'),
   version,
@@ -29,11 +39,12 @@ fs.mkdirSync(outDir, { recursive: true });
 // ★ 发行目录只保留本次产物：拷贝前清空 dist-release/android/<版本>/ 里的旧 APK，
 //   避免同版本多次打包后新旧文件混在一起分发错（2026-11-20 用户要求：前一次产物必须清理）。
 //   只清 android/<版本> 这一层，桌面等其他发行目录不受影响。
-for (const name of fs.readdirSync(outDir)) {
-  fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
+if (process.env.YZ_CLEAN_ANDROID_OUT !== '0') {
+  for (const name of fs.readdirSync(outDir)) {
+    fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
+  }
 }
 
-let count = 0;
 /**
  * ★★ 闪退包硬闸（2026-11-16 真机实锤复盘）：曾有人把旧目录构建的 155.3MB APK
  *   （缺 nodejs-mobile 原生库）传进手机，启动即 `UnsatisfiedLinkError: libnode.so
@@ -50,6 +61,10 @@ const expectedAbis = String(process.env.YZ_EXPECTED_ABIS || defaultAbis.join(','
   .split(/[,\s]+/)
   .map((s) => s.trim())
   .filter(Boolean);
+if (buildType === 'release' && expectedAbis.length !== 1) {
+  console.error(`[copy-apk] 正式 release 包必须声明单 ABI，当前为 ${expectedAbis.join(',') || '(空)'}`);
+  process.exit(2);
+}
 const minSizeMb = profile === 'slim' ? 140 : 300;
 const forbiddenSlimEntries = [
   'assets/public/nodejs/dist/apps/server/src/plugins/dev-mode.js',
@@ -61,7 +76,26 @@ const forbiddenSlimEntries = [
   'assets/public/nodejs/dist/plugins/builtin/wf-mode/',
   'assets/public/nodejs/dist/plugins/builtin/rpa-mode/',
   'assets/public/nodejs/dist/plugins/builtin/clip-mode/',
+  'assets/public/nodejs/dist/plugins/builtin/git-explorer/',
+  'assets/public/nodejs/dist/plugins/builtin/cicd-pipeline/',
+  'assets/public/nodejs/dist/plugins/builtin/java-suite/',
+  'assets/public/nodejs/dist/plugins/builtin/computer-use/',
+  'assets/public/nodejs/dist/plugins/builtin/android-mirror/',
+  'assets/public/nodejs/dist/apps/server/src/plugins/git-explorer.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/cicd-pipeline.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/java-suite.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/computer-use.js',
+  'assets/public/nodejs/dist/apps/server/src/plugins/android-mirror.js',
+  'assets/public/nodejs/dist/apps/server/src/routes/git.js',
+  'assets/public/nodejs/dist/apps/server/src/routes/env.js',
+  'assets/public/nodejs/dist/apps/server/src/routes/debug.js',
+  'assets/public/nodejs/dist/plugins/builtin/learning-mode/frontend/',
+  'assets/public/nodejs/dist/plugins/builtin/shop-ops/frontend/',
+  'assets/public/nodejs/dist/plugins/builtin/ops-shell/frontend/',
+  'assets/public/nodejs/dist/plugins/builtin/sec-lab/frontend/',
+  'assets/public/nodejs/dist/plugins/builtin/remote-control/frontend/',
 ];
+const allAbis = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'];
 
 function assertCompleteApk(apkPath) {
   try {
@@ -69,6 +103,28 @@ function assertCompleteApk(apkPath) {
     console.log(`[copy-apk] 签名校验通过: ${fingerprint}`);
   } catch (error) {
     console.error(`[copy-apk] ✗ APK 签名校验失败: ${error.message}`);
+    process.exit(4);
+  }
+  try {
+    const badging = inspectApkBadging(apkPath);
+    if (badging.packageName !== 'com.yanzhi.mobile') {
+      throw new Error(`包名必须是 com.yanzhi.mobile，实际 ${badging.packageName}`);
+    }
+    if (badging.versionName !== version || badging.versionCode !== expectedVersionCode) {
+      throw new Error(
+        `版本与 package.json 不一致，期望 ${version}/${expectedVersionCode}，`
+        + `实际 ${badging.versionName}/${badging.versionCode}`,
+      );
+    }
+    if (buildType === 'release' && badging.debuggable) {
+      throw new Error('release APK 仍标记为 application-debuggable');
+    }
+    console.log(
+      `[copy-apk] 包信息校验通过: ${badging.packageName} `
+      + `${badging.versionName}/${badging.versionCode} (${buildType})`,
+    );
+  } catch (error) {
+    console.error(`[copy-apk] ✗ APK 包信息校验失败: ${error.message}`);
     process.exit(4);
   }
   const fd = fs.openSync(apkPath, 'r');
@@ -81,10 +137,20 @@ function assertCompleteApk(apkPath) {
       `lib/${abi}/libnode.so`,
       `lib/${abi}/libcapacitor-nodejs.so`,
       `lib/${abi}/libc++_shared.so`,
+      `lib/${abi}/libonnxruntime.so`,
+      `lib/${abi}/libsherpa-onnx-jni.so`,
+      `lib/${abi}/libsqlcipher.so`,
     ]).concat('assets/public/nodejs/dist/apps/server/src/index.js');
     const missing = required.filter((name) => !buf.includes(name));
     const leaked = profile === 'slim'
-      ? forbiddenSlimEntries.filter((name) => buf.includes(name))
+      ? forbiddenSlimEntries
+        .filter((name) => buf.includes(name))
+        .concat(allAbis
+          .filter((abi) => !expectedAbis.includes(abi) && buf.includes(`lib/${abi}/`))
+          .map((abi) => `lib/${abi}/（包内禁止混入其他 ABI）`))
+        .concat(['boba-spritesheet-', 'mochi-spritesheet-', 'wangcai-spritesheet-']
+          .filter((name) => buf.includes(name))
+          .map((name) => `assets/public/assets/${name}*（手机桌宠已裁）`))
       : [];
     const minSize = minSizeMb * 1024 * 1024;
     if (missing.length || leaked.length || size < minSize) {
@@ -107,25 +173,22 @@ function assertCompleteApk(apkPath) {
   }
 }
 
-function walk(dir) {
-  for (const name of fs.readdirSync(dir)) {
-    const full = path.join(dir, name);
-    const stat = fs.statSync(full);
-    if (stat.isDirectory()) {
-      walk(full);
-    } else if (/\.apk$/i.test(name)) {
-      assertCompleteApk(full);
-      const dest = path.join(outDir, name);
-      fs.copyFileSync(full, dest);
-      console.log(`[copy-apk] ${path.relative(mobileDir, full)} -> ${path.relative(mobileDir, dest)}`);
-      count++;
-    }
-  }
-}
-walk(apkRoot);
-
-if (count === 0) {
-  console.warn('[copy-apk] 未发现任何 .apk 文件');
+if (!fs.existsSync(apkPath)) {
+  console.error('[copy-apk] 未找到本次 Gradle APK:', apkPath);
   process.exit(2);
 }
-console.log(`[copy-apk] 完成（v${version}，${profile}，ABI=${expectedAbis.join(',')}），共拷贝 ${count} 个 APK 到 ${path.relative(mobileDir, outDir)}`);
+assertCompleteApk(apkPath);
+const artifactName = String(
+  process.env.YZ_ANDROID_ARTIFACT_NAME || `app-${buildType}.apk`,
+).replace(/[\\/]/g, '');
+if (!/\.apk$/i.test(artifactName)) {
+  console.error('[copy-apk] YZ_ANDROID_ARTIFACT_NAME 必须以 .apk 结尾:', artifactName);
+  process.exit(2);
+}
+const dest = path.join(outDir, artifactName);
+fs.copyFileSync(apkPath, dest);
+console.log(`[copy-apk] ${path.relative(mobileDir, apkPath)} -> ${path.relative(mobileDir, dest)}`);
+console.log(
+  `[copy-apk] 完成（v${version}，${buildType}，${profile}，ABI=${expectedAbis.join(',')}），`
+  + `拷贝 1 个 APK 到 ${path.relative(mobileDir, outDir)}`,
+);

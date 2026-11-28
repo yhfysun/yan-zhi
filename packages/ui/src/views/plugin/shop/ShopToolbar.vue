@@ -1,5 +1,56 @@
 <template>
-  <div class="shop-toolbar">
+  <div v-if="compactMobile" class="shop-toolbar shop-toolbar-mobile">
+    <div class="shop-toolbar-mobile-copy">
+      <span>{{ shop ? typeMeta.label : '开店向导' }}</span>
+      <strong>{{ mobileTitle }}</strong>
+    </div>
+    <button
+      type="button"
+      class="shop-mobile-toolbar-button"
+      aria-label="打开店铺项目"
+      @click="emit('open-projects')"
+    >
+      <FolderOpen :size="18" />
+      <span>项目</span>
+    </button>
+    <button
+      type="button"
+      class="shop-mobile-toolbar-button is-primary"
+      :aria-label="chatCollapsed ? '打开 AI 助手' : '收起 AI 助手'"
+      @click="emit('toggle-chat')"
+    >
+      <ChatDotRound :size="18" />
+      <span>AI</span>
+    </button>
+
+    <div v-if="shop" class="shop-toolbar-mobile-actions">
+      <el-button size="small" :loading="checking" @click="emit('check')">自检</el-button>
+      <el-button size="small" @click="emit('edit')">编辑</el-button>
+      <el-button v-if="browserAvailable" size="small" :icon="Monitor" @click="emit('open-browser')">浏览器</el-button>
+      <el-button v-if="isStore && platformAvailable" size="small" type="primary" plain @click="emit('open-platform')">平台后台</el-button>
+      <el-button size="small" type="danger" plain @click="emit('remove')">删除</el-button>
+    </div>
+
+    <div v-if="shop && isStore" class="shop-toolbar-mobile-mode">
+      <label>
+        <span>店铺类型</span>
+        <el-select :model-value="shopType" size="small" @update:model-value="onShopType">
+          <el-option label="演示" value="demo" />
+          <el-option label="测试" value="test" />
+          <el-option label="生产" value="production" />
+        </el-select>
+      </label>
+      <label>
+        <span>货源模式</span>
+        <el-select :model-value="supplyMode" size="small" @update:model-value="onSupplyMode">
+          <el-option label="有货源" value="stocked" />
+          <el-option label="无货源" value="dropship" />
+        </el-select>
+      </label>
+    </div>
+  </div>
+
+  <div v-else class="shop-toolbar">
     <span class="shop-toolbar-title">{{ shop?.shopName || (activeProjectTitle || '未选择项目') }}</span>
     <el-tag v-if="shop" size="small" effect="plain" :type="typeMeta.tag">{{ typeMeta.label }}</el-tag>
 
@@ -51,6 +102,7 @@
 // 主导方切换统一收在 AI 对话栏头部，避免同一动作出现两个入口。
 import { computed } from 'vue';
 import { ChatDotRound, Monitor } from '@element-plus/icons-vue';
+import { FolderOpen } from 'lucide-vue-next';
 import type { ShopConnection } from '../shopSession';
 import { SHOP_TYPE_META, type ShopType, type SupplyMode } from './useShopApi';
 
@@ -62,6 +114,7 @@ const props = defineProps<{
   chatCollapsed: boolean;
   browserAvailable: boolean;
   platformAvailable: boolean;
+  compactMobile: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -73,11 +126,17 @@ const emit = defineEmits<{
   (e: 'open-platform'): void;
   (e: 'open-browser'): void;
   (e: 'toggle-chat'): void;
+  (e: 'open-projects'): void;
 }>();
 
 const shopType = computed<ShopType>(() => props.shop?.shopType ?? (props.shop?.demo ? 'demo' : props.shop?.isProduction ? 'production' : 'test'));
 const typeMeta = computed(() => SHOP_TYPE_META[shopType.value]);
 const supplyMode = computed<SupplyMode>(() => props.shop?.supplyMode ?? 'stocked');
+const mobileTitle = computed(() => {
+  if (props.shop?.shopName) return props.shop.shopName;
+  if (props.activeProjectTitle && props.activeProjectTitle !== '未归属资源') return props.activeProjectTitle;
+  return '开店工作台';
+});
 
 function onShopType(v: unknown): void { emit('update:shop-type', v as ShopType); }
 function onSupplyMode(v: unknown): void { emit('update:supply-mode', v as SupplyMode); }

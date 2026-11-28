@@ -32,11 +32,12 @@ const {
 } = require('./lib/mode-build.cjs');
 
 function readArgs(argv) {
-  const opts = { restore: false, print: false, modes: null, edition: null, plugins: null };
+  const opts = { restore: false, print: false, modes: null, edition: null, plugins: null, exactPlugins: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--restore') opts.restore = true;
     else if (a === '--print' || a === '--dry-run') opts.print = true;
+    else if (a === '--exact-plugins') opts.exactPlugins = true;
     else if (a.startsWith('--modes=')) opts.modes = a.slice('--modes='.length);
     else if (a === '--modes') opts.modes = argv[++i];
     else if (a.startsWith('--plugins=')) opts.plugins = a.slice('--plugins='.length);
@@ -58,6 +59,7 @@ function printHelp() {
   node scripts/select-modes.cjs --modes=office,dev
   node scripts/select-modes.cjs --edition=basic
   node scripts/select-modes.cjs --modes=office --plugins=office-core,skins  # 未选插件的视图也不进表
+  node scripts/select-modes.cjs --modes=office --plugins=office-core,skins --exact-plugins
   node scripts/select-modes.cjs --restore
   node scripts/select-modes.cjs --print --modes=office`);
 }
@@ -67,11 +69,20 @@ function printHelp() {
  * 选择集文法（分组关键字 / requires 闭包 / office 锁定）统一走 plugin-selection。
  * 未传 --plugins 且无 YZ_BUILD_PLUGINS = 全量（行为与 P5 之前一致）。
  */
-function resolvePluginIds(pluginsRaw) {
+function resolvePluginIds(pluginsRaw, exact = false) {
   const raw = pluginsRaw ?? process.env.YZ_BUILD_PLUGINS;
   if (raw === undefined || raw === null || String(raw).trim() === '') return null;
   const { loadCatalog: loadPluginCatalog, resolveSelection } = require(path.join(ROOT, 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
-  return resolveSelection({ catalog: loadPluginCatalog(), plugins: raw }).ids;
+  const catalog = loadPluginCatalog();
+  if (exact) {
+    const ids = String(raw).split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!ids.includes('office-core')) throw new Error('--exact-plugins 必须包含 office-core');
+    for (const id of ids) {
+      if (!catalog.plugins?.[id]) throw new Error(`--exact-plugins 含未知插件: ${id}`);
+    }
+    return Object.keys(catalog.plugins).filter((id) => ids.includes(id));
+  }
+  return resolveSelection({ catalog, plugins: raw }).ids;
 }
 
 /** 未选插件的视图（相对 packages/ui/src）——从生成表里剔除，让它们的 chunk 不进主包。 */
@@ -101,7 +112,7 @@ function main() {
 
   // 未选插件的视图不进生成表（P5：插件裁剪与模式裁剪同源）；外壳视图（RemoteControlHost / /remote）
   // 也从同一份选择集生成 —— 未选 remote-control 时它们在源码层就不存在。
-  const pluginIds = opts.restore ? null : resolvePluginIds(opts.plugins);
+  const pluginIds = opts.restore ? null : resolvePluginIds(opts.plugins, opts.exactPlugins);
   const excludedPluginViews = pluginViewExclusions(pluginIds);
   const { pluginViews } = writeGenerated({ catalog, modes, excludedPluginViews, pluginSelectionIds: pluginIds });
   const manifest = buildManifest({ catalog, modes, edition: opts.edition });

@@ -46,6 +46,10 @@ describe('P3-① 暗色硬编码', () => {
       '/components/learning/zhouyi/AnnotationPanel.vue',
       '/components/learning/zhouyi/DivinationWorkbench.vue',
       '/components/learning/zhouyi/ZhouyiWorkbench.vue',
+      // Learning V2 沉浸台与代码实验同样使用独立浅色纸面。
+      '/components/learning/v2/LearningCodeLab.vue',
+      '/components/learning/v2/LearningContentManager.vue',
+      '/views/learning-v2.css',
     ]);
     const offenders = FILES
       .filter((f) => /background(-color)?:\s*#fff(?:fff)?\b/.test(f.src))

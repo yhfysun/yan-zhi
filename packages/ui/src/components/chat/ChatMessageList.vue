@@ -849,6 +849,7 @@ import { splitUserContent, type UserAttachment, type UserQuotedLink } from '../.
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 import { resolveModelDisplayName } from '../../utils/model-display';
 import { sanitizeUserFacingError } from '../../utils/user-facing-errors';
+import { firstLocalPath } from '../../utils/file-open';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, visibleRounds, ensureRoundVisible, formatTime, collapsedMessages, toggleMsgCollapse,
@@ -1357,8 +1358,7 @@ function detectPath(text: unknown): string | null {
   if (typeof s !== 'string') return null;
   const cached = detectPathCache.get(s);
   if (cached !== undefined) return cached;
-  const m = s.match(/(?:[A-Za-z]:[\\/][^\s"'<>|]+)|(?:\/(?:home|Users|root|tmp|opt|var|src|projects|code|workspace)[^\s"'<>|]*)/);
-  const out = m ? m[0].replace(/["',]+$/, '') : null;
+  const out = firstLocalPath(s);
   if (detectPathCache.size >= DETECT_PATH_CACHE_MAX) detectPathCache.clear();
   detectPathCache.set(s, out);
   return out;
