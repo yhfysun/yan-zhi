@@ -46,6 +46,7 @@ import { LANGUAGE_REVIEW_QUALITY_PATCHES } from './review-quality-languages.js';
 import { PROFESSIONAL_REVIEW_QUALITY_PATCHES } from './review-quality-professional.js';
 import { SOCIAL_REVIEW_QUALITY_PATCHES } from './review-quality-social.js';
 import { MEDICINE_SPECIFICITY_PATCHES } from './review-medicine-specificity.js';
+import { LEARNING_V2_REWRITTEN_PLANS } from './rewrite/index.js';
 import { SECURITY_CURATED_PLANS } from './security.js';
 import { SOCIAL_SCIENCE_REMAINING_CURATED_PLANS } from './social-science-remaining.js';
 import { ZHOUYI_CURATED_PLANS } from './zhouyi.js';
@@ -109,4 +110,5 @@ export const LEARNING_V2_CURATED_PLANS = mergeCuratedCoursePlans(
   PROFESSIONAL_DEPTH2_PATCHES,
   SOCIAL_DEPTH2_PATCHES,
   MEDICINE_SPECIFICITY_PATCHES,
+  LEARNING_V2_REWRITTEN_PLANS,
 );

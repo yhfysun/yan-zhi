@@ -37,7 +37,7 @@ describe('algorithm and data structures subject', () => {
       expect(isLearningV2CourseReady('algorithms', lesson.courseName), lesson.courseName).toBe(true);
       const plan = getLearningV2CoursePlan('algorithms', lesson.courseName);
       expect(plan.qualityStatus, lesson.courseName).toBe('curated');
-      expect(plan.steps, lesson.courseName).toHaveLength(6);
+      expect(plan.steps, lesson.courseName).toHaveLength(5);
       expect(plan.steps.every((step) => step.body.length >= 60), lesson.courseName).toBe(true);
       expect(plan.prerequisite.length, lesson.courseName).toBeGreaterThan(20);
       expect(plan.guidedPractice.length, lesson.courseName).toBeGreaterThan(30);

@@ -819,7 +819,13 @@
 .lv2-lesson > header b { overflow: hidden; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .lv2-lesson > header span { color: #9db0a6; font-size: 9px; }
 .lv2-lesson > nav { display: flex; gap: 5px; overflow-x: auto; padding: 8px 14px; }
-.lv2-lesson > nav button { min-height: 34px; padding: 6px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #a7b8af; font-size: 9px; white-space: nowrap; }
+.lv2-lesson > nav {
+  scroll-padding-inline: 24px;
+  overscroll-behavior-x: contain;
+  /* 步骤条本身横向滚动，但从步骤条起手也必须能把学习正文纵向带着滚。 */
+  touch-action: pan-x pan-y;
+}
+.lv2-lesson > nav button { min-height: 34px; padding: 6px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #a7b8af; font-size: 9px; scroll-margin-inline: 24px; white-space: nowrap; }
 .lv2-lesson > nav button.active { background: #edf3ef; color: #18231f; }
 .lv2-lesson > nav button.done { border-color: #53937a; color: #cce4d8; }
 .lv2-lesson > article { width: min(940px, calc(100% - 28px)); margin: 0 auto; padding: 30px 38px 40px; overflow-y: auto; border-radius: 8px; background: #fbfcf8; color: #24302a; }
@@ -834,9 +840,87 @@
   border-radius: 7px; background: color-mix(in srgb, var(--lv2-tint) 54%, #fff); font-size: 12px;
 }
 .lv2-lesson > article .lv2-step-objective b { display: block; margin-bottom: 2px; color: var(--lv2-accent); font-size: 9px; }
+.lv2-step-study-points {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--lv2-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--lv2-tint) 24%, #fff);
+}
+.lv2-step-study-points > header span,
+.lv2-step-study-points > header b { display: block; }
+.lv2-step-study-points > header span { color: var(--lv2-accent); font-size: 8px; font-weight: 800; }
+.lv2-step-study-points > header b { margin-top: 2px; font-size: 11px; }
+.lv2-step-study-points ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.lv2-step-study-points li { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.65; }
+.lv2-step-study-points i {
+  flex: 0 0 auto;
+  min-width: 34px;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  text-align: center;
+}
+.lv2-step-study-points i[data-label="必背"] { color: #7b4b00; background: #fff4d8; }
+.lv2-step-study-points i[data-label="重点"] { color: #1f5a88; background: #edf6fd; }
+.lv2-step-study-points i[data-label="易错"] { color: #9b3329; background: #fff0ed; }
+.lv2-step-study-points i[data-label="考点"] { color: #5f3d86; background: #f5effb; }
 .lv2-lesson-copy { margin-top: 14px; }
 .lv2-lesson-copy p { margin-top: 12px; }
 .lv2-lesson-copy p:first-child { margin-top: 0; }
+.lv2-event-archives {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--lv2-accent) 24%, var(--lv2-line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--lv2-tint) 28%, #fff);
+}
+.lv2-event-archives > header span,
+.lv2-event-archives > header b { display: block; }
+.lv2-event-archives > header span { color: var(--lv2-accent); font-size: 8px; font-weight: 800; }
+.lv2-event-archives > header b { margin-top: 3px; font-size: 12px; }
+.lv2-event-archives > button {
+  display: flex;
+  width: 100%;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--lv2-line);
+  border-radius: 7px;
+  background: var(--lv2-surface, #fff);
+  color: var(--lv2-text, #24302a);
+  text-align: left;
+  cursor: pointer;
+}
+.lv2-event-archives > button:hover,
+.lv2-event-archives > button:focus-visible {
+  border-color: var(--lv2-accent);
+  outline: 0;
+}
+.lv2-event-archives > button > span { min-width: 0; }
+.lv2-event-archives > button b,
+.lv2-event-archives > button small { display: block; }
+.lv2-event-archives > button b { font-size: 12px; line-height: 1.45; }
+.lv2-event-archives > button small { margin-top: 3px; color: var(--lv2-muted); font-size: 9px; }
+.lv2-event-archives > button em {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  color: var(--lv2-accent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+}
 .lv2-step-lab,
 .lv2-step-check { margin-top: 16px; padding: 14px 15px; border: 1px solid var(--lv2-line); border-radius: 8px; }
 .lv2-step-lab { background: color-mix(in srgb, var(--lv2-tint) 38%, #fff); }
@@ -1879,13 +1963,25 @@ html[data-skin="on"] .lv2 :where(button) { color: inherit; }
   .lv2-workspace.has-textbook-toc { grid-template-columns: minmax(0, 1fr) var(--lv2-study-rail-width, 216px); }
   .lv2-workspace.is-study-surface { padding: 8px 10px 16px; }
   .lv2-lesson.inline, .lv2-specialized-study.inline, .lv2-studio-immersive.inline { min-height: calc(100vh - 158px); margin-top: 8px; }
-  .lv2-lesson-body { display: block; }
+  .lv2-lesson-body {
+    display: grid;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+  }
   /* 移动端不再让章节目录和笔记抽屉各占一段正文前/后的高度：
      课脉给出阶段与步骤，本课结构回到教材层；笔记从正文操作入口就地打开。 */
   .lv2-lesson-body > .rpane { display: none; }
   .lv2-lesson-body > .rpane .rpane-handle { display: none; }
   .lv2-lesson-body > .rpane .rpane-content { max-height: 190px; overflow-y: auto; }
-  .lv2-lesson-body > article { padding: 18px 16px 28px; }
+  .lv2-lesson-body > article {
+    height: 100%;
+    padding: 18px 16px 28px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* ===== 学习态整窗化：整个应用只留学习面板 ===== */
@@ -2071,6 +2167,35 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
 .lv2-session-practice-head > div {
   min-width: 0;
 }
+.lv2-session-practice-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.lv2-practice-scope {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #c9d1cb;
+  border-radius: 8px;
+  background: #f1f3ef;
+}
+.lv2-practice-scope button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f6c65;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.lv2-practice-scope button.active {
+  background: #fff;
+  color: #245f49;
+  box-shadow: 0 1px 4px rgba(30, 52, 41, .12);
+}
 .lv2-session-practice-head span,
 .lv2-session-practice-head b,
 .lv2-session-practice-head small {
@@ -2225,6 +2350,7 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
   margin-top: 0;
 }
 .lv2-session-practice-head > button,
+.lv2-session-practice-actions > .lv2-quiz-bank-toggle,
 .lv2-session-bridge > button {
   min-height: 38px;
   padding: 0 13px;
@@ -2237,7 +2363,7 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
   white-space: nowrap;
   cursor: pointer;
 }
-.lv2-session-practice-head > .lv2-quiz-bank-toggle {
+.lv2-session-practice-actions > .lv2-quiz-bank-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2332,11 +2458,24 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
   white-space: nowrap;
 }
 .lv2-question-focus {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 3px;
   color: #24302a;
-  font-size: 11px;
-  line-height: 1.5;
   overflow-wrap: anywhere;
+}
+.lv2-question-focus small {
+  color: #6d7b73;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.lv2-question-focus b {
+  color: #24302a;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.55;
 }
 .lv2-question-status {
   min-width: 48px;
@@ -2364,6 +2503,7 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
 .lv2-question-bank footer {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #dde2dd;
@@ -2381,9 +2521,92 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
 }
 .lv2-question-bank li > button:focus-visible,
 .lv2-question-bank footer button:focus-visible,
-.lv2-session-practice-head > .lv2-quiz-bank-toggle:focus-visible {
+.lv2-session-practice-actions > .lv2-quiz-bank-toggle:focus-visible,
+.lv2-practice-scope button:focus-visible {
   outline: 2px solid #75aa8f;
   outline-offset: 2px;
+}
+
+/* 题库是当前课程的辅助导航，不再插入题目正文。底部抽屉只覆盖当前练习阶段，
+   关闭后回到原题，避免把整门科目或整页题库伪装成正文的一部分。 */
+.lv2-question-sheet-mask {
+  position: fixed;
+  z-index: 6100;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 20px 20px max(20px, env(safe-area-inset-bottom, 0px));
+  background: rgba(20, 30, 25, .58);
+}
+.lv2-question-bank.lv2-question-sheet {
+  display: flex;
+  width: min(760px, 100%);
+  max-height: min(78dvh, 720px);
+  min-height: 0;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 16px 16px;
+  overflow: hidden;
+  border-radius: 14px 14px 8px 8px;
+  background: #fbfcfb;
+  box-shadow: 0 24px 70px rgba(18, 31, 24, .28);
+  animation: lv2-question-sheet-in 180ms ease-out;
+}
+.lv2-question-sheet-handle {
+  display: block;
+  width: 40px;
+  height: 4px;
+  flex: none;
+  margin: 8px auto 4px;
+  border-radius: 999px;
+  background: #c6cec8;
+}
+.lv2-question-sheet > header {
+  flex: none;
+  align-items: flex-start;
+  padding: 8px 0 12px;
+}
+.lv2-question-sheet-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+.lv2-question-sheet-close {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #d2dad4;
+  border-radius: 8px;
+  background: #fff;
+  color: #405047;
+  cursor: pointer;
+}
+.lv2-question-sheet-close:hover {
+  border-color: #8eaa99;
+  background: #f6f9f7;
+}
+.lv2-question-sheet > ol {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1px 2px 1px 1px;
+}
+.lv2-question-sheet > footer {
+  flex: none;
+}
+.lv2-question-sheet-close:focus-visible {
+  outline: 2px solid #75aa8f;
+  outline-offset: 2px;
+}
+@keyframes lv2-question-sheet-in {
+  from { transform: translateY(22px); }
+  to { transform: translateY(0); }
 }
 .lv2-session-bridge {
   display: flex;
@@ -2530,6 +2753,24 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
   .lv2-session-practice-head b {
     font-size: 18px;
   }
+  .lv2-session-practice-actions {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .lv2-practice-scope {
+    min-height: 44px;
+  }
+  .lv2-practice-scope button {
+    min-height: 36px;
+    padding-inline: 10px;
+  }
+  .lv2-session-practice-actions > .lv2-quiz-bank-toggle {
+    width: 100%;
+    margin-top: 0;
+  }
   .lv2-session-practice-layout {
     display: flex;
     flex-direction: column;
@@ -2570,7 +2811,7 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
     text-align: left;
   }
   .lv2-question-bank li > button {
-    min-height: 54px;
+    min-height: 68px;
     grid-template-columns: 54px minmax(0, 1fr) auto;
     gap: 8px;
     padding: 8px;
@@ -2578,6 +2819,34 @@ html[data-theme="dark"][data-skin="on"] .lv2.study-full:not(.study-lesson) {
   .lv2-question-bank footer button {
     width: 100%;
     min-height: 44px;
+  }
+  .lv2-question-sheet-mask {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .lv2-question-bank.lv2-question-sheet {
+    width: 100%;
+    max-height: 86dvh;
+    padding: 0 12px calc(12px + env(safe-area-inset-bottom, 0px));
+    border-radius: 18px 18px 0 0;
+  }
+  .lv2-question-sheet > header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .lv2-question-sheet-head-actions {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .lv2-question-sheet > header small {
+    max-width: 112px;
+    margin-top: 0;
+    text-align: right;
+  }
+  .lv2-question-sheet-close {
+    width: 44px;
+    height: 44px;
   }
   .lv2-session-bridge {
     display: block;

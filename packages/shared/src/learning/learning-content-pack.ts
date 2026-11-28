@@ -286,6 +286,82 @@ export function validateLearningSubjectPack(input: unknown): LearningContentPack
     if (!Array.isArray(rawCourse.plan.sourceRefs) || rawCourse.plan.sourceRefs.length < 1) {
       add(`${path}.plan.sourceRefs`, '至少需要一个来源');
     }
+    if (rawCourse.plan.studyPoints !== undefined) {
+      if (!Array.isArray(rawCourse.plan.studyPoints)) {
+        add(`${path}.plan.studyPoints`, '重点标记必须是数组');
+      } else {
+        rawCourse.plan.studyPoints.forEach((point, pointIndex) => {
+          const pointPath = `${path}.plan.studyPoints[${pointIndex}]`;
+          if (
+            !isRecord(point)
+            || !['重点', '必背', '易错', '考点'].includes(String(point.label))
+            || typeof point.text !== 'string'
+            || point.text.trim() === ''
+            || !Number.isInteger(point.stepIndex)
+            || Number(point.stepIndex) < 0
+            || Number(point.stepIndex) >= steps.length
+          ) {
+            add(pointPath, '重点标记需要合法标签、正文和步骤下标');
+          }
+        });
+      }
+    }
+    if (rawCourse.plan.eventDetails !== undefined) {
+      if (!Array.isArray(rawCourse.plan.eventDetails)) {
+        add(`${path}.plan.eventDetails`, '事件档案必须是数组');
+      } else {
+        rawCourse.plan.eventDetails.forEach((eventDetail, eventIndex) => {
+          const eventPath = `${path}.plan.eventDetails[${eventIndex}]`;
+          if (!isRecord(eventDetail)) {
+            add(eventPath, '事件档案必须是对象');
+            return;
+          }
+          for (const field of ['id', 'title', 'period', 'summary', 'background', 'outcome', 'significance']) {
+            if (typeof eventDetail[field] !== 'string' || eventDetail[field].trim() === '') {
+              add(`${eventPath}.${field}`, '事件档案字段不能为空');
+            }
+          }
+          const sourceCards = Array.isArray(eventDetail.sourceCards) ? eventDetail.sourceCards : [];
+          if (sourceCards.length < 1) add(`${eventPath}.sourceCards`, '至少需要一张来源卡');
+          const sourceIds = new Set<string>();
+          sourceCards.forEach((source, sourceIndex) => {
+            if (
+              !isRecord(source)
+              || typeof source.id !== 'string'
+              || typeof source.title !== 'string'
+              || typeof source.url !== 'string'
+              || !/^https:\/\//.test(source.url)
+            ) {
+              add(`${eventPath}.sourceCards[${sourceIndex}]`, '来源卡缺少 id、标题或 HTTPS URL');
+              return;
+            }
+            if (sourceIds.has(source.id)) add(`${eventPath}.sourceCards[${sourceIndex}].id`, '来源 id 重复');
+            sourceIds.add(source.id);
+          });
+          const timeline = Array.isArray(eventDetail.timeline) ? eventDetail.timeline : [];
+          if (timeline.length < 1) add(`${eventPath}.timeline`, '至少需要一个时间线节点');
+          timeline.forEach((entry, entryIndex) => {
+            const entryPath = `${eventPath}.timeline[${entryIndex}]`;
+            if (
+              !isRecord(entry)
+              || typeof entry.date !== 'string'
+              || typeof entry.title !== 'string'
+              || typeof entry.body !== 'string'
+            ) {
+              add(entryPath, '时间线节点缺少日期、标题或正文');
+              return;
+            }
+            const entrySourceIds = Array.isArray(entry.sourceIds) ? entry.sourceIds : [];
+            if (entrySourceIds.length < 1) add(`${entryPath}.sourceIds`, '时间线节点至少绑定一条来源');
+            for (const sourceId of entrySourceIds) {
+              if (typeof sourceId !== 'string' || !sourceIds.has(sourceId)) {
+                add(`${entryPath}.sourceIds`, `未知来源 id：${String(sourceId)}`);
+              }
+            }
+          });
+        });
+      }
+    }
     if (rawCourse.plan.codeLab) computedCodeLabs += 1;
   });
 

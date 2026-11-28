@@ -6,6 +6,7 @@ import { ALGORITHM_SUBJECT } from './algorithms.js';
 import { MEDICINE_SUBJECT } from './medicine.js';
 import { PROGRAMMING_SUBJECT } from './v2-curated/programming/catalog.js';
 import { planKey } from './v2-curated/types.js';
+import { LEARNING_V2_REWRITTEN_COURSE_KEYS } from './v2-curated/rewrite/index.js';
 import type {
   LearningV2CatalogData,
   LearningV2CoursePlan,
@@ -589,12 +590,18 @@ export function getLearningV2CoursePlan(subjectKey: string, courseName: string):
     independentPractice,
     commonErrors,
     sourceRefs,
+    studyPoints: curated?.studyPoints ?? [],
+    eventDetails: curated?.eventDetails ?? [],
     qualityStatus: curated?.contentStatus === 'structured'
       ? 'generated'
       : curated
         ? 'curated'
         : 'generated',
-    reviewStatus: curated?.contentStatus === 'reviewed' ? 'reviewed' : 'structured',
+    reviewStatus:
+      curated?.contentStatus === 'reviewed'
+      && LEARNING_V2_REWRITTEN_COURSE_KEYS.has(planKey(subjectKey, courseName))
+        ? 'reviewed'
+        : 'structured',
     steps: selectedSteps,
     expertNotes: curated?.expertNotes ?? SUBJECT_EXPERT_NOTES[subjectKey] ?? [],
     quiz: balanceQuizAnswerPositions(curated?.quiz ?? []),

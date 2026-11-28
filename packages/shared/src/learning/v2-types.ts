@@ -64,6 +64,48 @@ export type LearningV2LessonExample = {
   readonly output?: string;
 };
 
+export type LearningV2StudyPoint = {
+  readonly label: '重点' | '必背' | '易错' | '考点';
+  readonly text: string;
+  /** 绑定到五步教案中的 0-based 步骤下标。 */
+  readonly stepIndex: number;
+};
+
+export type LearningV2EventSource = {
+  readonly id: string;
+  readonly title: string;
+  readonly issuer: string;
+  readonly date?: string;
+  readonly url: string;
+  /** 该来源在事件档案中具体用于核对什么。 */
+  readonly usedFor: string;
+};
+
+export type LearningV2EventTimelineEntry = {
+  readonly date: string;
+  readonly title: string;
+  readonly body: string;
+  readonly sourceIds: readonly string[];
+};
+
+/**
+ * 重大事件的独立阅读档案。课程正文只承担当前教学步骤，
+ * 完整始末和材料出处由事件详情覆盖层展示。
+ */
+export type LearningV2EventDetail = {
+  readonly id: string;
+  /** 事件、制度、概念、实验或案例；未填时按重大事件处理。 */
+  readonly kind?: 'event' | 'institution' | 'concept' | 'experiment' | 'case';
+  readonly title: string;
+  readonly period: string;
+  readonly summary: string;
+  readonly background: string;
+  readonly timeline: readonly LearningV2EventTimelineEntry[];
+  readonly outcome: string;
+  readonly significance: string;
+  readonly sourceCards: readonly LearningV2EventSource[];
+};
+
 export type LearningV2LessonStep = {
   readonly title: string;
   readonly body: string;
@@ -182,7 +224,11 @@ export type LearningV2CoursePlan = {
   readonly independentPractice: string;
   readonly commonErrors: readonly string[];
   readonly sourceRefs: readonly string[];
+  readonly studyPoints?: readonly LearningV2StudyPoint[];
+  /** 重大事件的完整始末、关键节点和逐条来源；没有则不显示事件档案入口。 */
+  readonly eventDetails?: readonly LearningV2EventDetail[];
   readonly qualityStatus: 'curated' | 'generated' | 'draft';
+  /** reviewed = 已进入章节重写覆盖层并通过专项验收；structured = 仍待全量重写。 */
   readonly reviewStatus: 'reviewed' | 'structured';
   readonly steps: LearningV2Lesson['steps'];
   readonly expertNotes: readonly LearningV2ExpertNote[];
@@ -202,10 +248,12 @@ export type LearningV2CuratedCoursePlan = Pick<
   | 'sourceRefs'
   | 'steps'
 > & {
-  /** reviewed = 人工逐课整理；structured = 由课程阶段资料结构化生成。 */
+  /** reviewed = 已进入章节重写覆盖层并通过专项验收；structured = 仍待全量重写。 */
   readonly contentStatus?: 'reviewed' | 'structured';
+  readonly studyPoints?: readonly LearningV2StudyPoint[];
   /** 课程级真实注解/笔记；不填则回退到科目池（v2-curated/expert-notes.ts）。 */
   readonly expertNotes?: readonly LearningV2ExpertNote[];
+  readonly eventDetails?: readonly LearningV2EventDetail[];
   /** 本课章节题库；不填则练习页回退科目综合题 + 步骤自测清单。 */
   readonly quiz?: readonly LearningV2Practice[];
   /** 本课代码实验室；仅在手写并核对任务后挂接。 */

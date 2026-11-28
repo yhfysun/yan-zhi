@@ -73,4 +73,42 @@ describe('learning subject content packs', () => {
     expect(manifest.entries.find((entry) => entry.subjectKey === 'math')?.distribution)
       .toBe('excluded');
   });
+
+  it('validates event archive source cards and timeline references', () => {
+    const pack = createLearningSubjectPack('party', {
+      distribution: 'bundled',
+      generatedAt: '2026-11-25T00:00:00.000Z',
+    });
+    const raw = JSON.parse(serializeLearningSubjectPack(pack)) as any;
+    const eventCourse = raw.courses.find((course: any) => course.name === '建党与初心');
+    expect(eventCourse?.plan.eventDetails?.length).toBeGreaterThan(0);
+    const event = eventCourse.plan.eventDetails[0];
+    expect(validateLearningSubjectPack(raw)).toEqual([]);
+
+    event.sourceCards[0].url = 'http://example.com/source';
+    event.timeline[0].sourceIds = ['missing-source'];
+    const issues = validateLearningSubjectPack(raw);
+    expect(issues).toContainEqual(expect.objectContaining({
+      message: '来源卡缺少 id、标题或 HTTPS URL',
+    }));
+    expect(issues).toContainEqual(expect.objectContaining({
+      message: '未知来源 id：missing-source',
+    }));
+  });
+
+  it('validates study markers against lesson steps', () => {
+    const pack = createLearningSubjectPack('party', {
+      distribution: 'bundled',
+      generatedAt: '2026-11-25T00:00:00.000Z',
+    });
+    const raw = JSON.parse(serializeLearningSubjectPack(pack)) as any;
+    const course = raw.courses.find((item: any) => item.plan.studyPoints?.length);
+    expect(validateLearningSubjectPack(raw)).toEqual([]);
+
+    course.plan.studyPoints[0].stepIndex = 99;
+    course.plan.studyPoints[1].label = '选学';
+    expect(validateLearningSubjectPack(raw)).toContainEqual(expect.objectContaining({
+      message: '重点标记需要合法标签、正文和步骤下标',
+    }));
+  });
 });

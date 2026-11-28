@@ -277,7 +277,40 @@ it('prints runtime content quality by subject', () => {
   expect(usabilityTotals.templateGuidance).toBe(0);
   expect(usabilityTotals.reviewedCourses + usabilityTotals.structuredCourses)
     .toBe(usabilityTotals.courses);
-  expect(usabilityTotals.reviewedCourses).toBe(usabilityTotals.courses);
+  expect(usabilityTotals.reviewedCourses).toBe(1387);
+  expect(usabilityTotals.structuredCourses)
+    .toBe(usabilityTotals.courses - usabilityTotals.reviewedCourses);
   expect(usabilityTotals.structuredCourses).toBe(0);
   expect(timelineTaskMismatches).toHaveLength(0);
+});
+
+it('keeps four quiz questions functionally distinct across every quiz bank', () => {
+  const gaps: Array<{
+    course: string;
+    focusCount: number;
+    promptCount: number;
+    explanationCount: number;
+  }> = [];
+
+  for (const subject of getLearningV2Subjects()) {
+    for (const course of subject.courses) {
+      const quiz = getLearningV2CoursePlan(subject.key, course.name).quiz.slice(0, 4);
+      const focusCount = new Set(quiz.map((question) => question.focus.trim())).size;
+      const promptCount = new Set(quiz.map((question) => question.prompt.trim())).size;
+      const explanationCount = new Set(
+        quiz.map((question) => question.explanation.trim()),
+      ).size;
+      if (focusCount < 4 || promptCount < 4 || explanationCount < 4) {
+        gaps.push({
+          course: `${subject.name}/${course.name}`,
+          focusCount,
+          promptCount,
+          explanationCount,
+        });
+      }
+    }
+  }
+
+  console.log('quiz functional distinctness gaps', gaps.length, gaps.slice(0, 30));
+  expect(gaps).toHaveLength(0);
 });

@@ -27,6 +27,7 @@ import {
   PROGRAMMING_PROJECTS,
   SUBJECT_EXPERT_NOTES,
   type LearningV2ExpertNote,
+  type LearningV2EventDetail,
   type LearningV2LibraryEntry,
   type LearningV2PageKey,
   type LearningV2Practice,
@@ -44,6 +45,7 @@ import LearningBookReader from '../components/learning/v2/LearningBookReader.vue
 import LearningPracticeStudio from '../components/learning/v2/LearningPracticeStudio.vue';
 import LearningSessionShell from '../components/learning/v2/LearningSessionShell.vue';
 import LearningContentManager from '../components/learning/v2/LearningContentManager.vue';
+import LearningEventDetailDialog from '../components/learning/v2/LearningEventDetailDialog.vue';
 import ResizablePane from '../components/learning/v2/ResizablePane.vue';
 import LearningSpeechButton from '../components/learning/v2/LearningSpeechButton.vue';
 import ProgrammingCourseHub from '../components/learning/ProgrammingCourseHub.vue';
@@ -164,7 +166,15 @@ const quizIndex = ref(0);
 const quizPicks = ref<Record<number, number | null>>({});
 const quizSubmitted = ref<Record<number, boolean>>({});
 const quizListOpen = ref(false);
+const quizListLimit = ref(80);
+const practiceScope = ref<'course' | 'subject'>('subject');
+const quizBankToggle = ref<HTMLButtonElement | null>(null);
+const quizSheetClose = ref<HTMLButtonElement | null>(null);
+const eventDetailOpen = ref(false);
+const activeEventDetail = ref<LearningV2EventDetail | null>(null);
 const quizHeading = ref<HTMLElement | null>(null);
+const lessonStepNav = ref<HTMLElement | null>(null);
+const lessonArticle = ref<HTMLElement | null>(null);
 const completedCourseIds = ref<string[]>([]);
 type StoredLearningCodeEvidence = {
   id: string;
@@ -476,8 +486,21 @@ const coursePlan = computed(() =>
 const courseCodeLab = computed(() => coursePlan.value.codeLab || null);
 const lessonSteps = computed(() => coursePlan.value.steps || []);
 const currentLessonStep = computed(() => lessonSteps.value[lessonStep.value] || lessonSteps.value[0]);
+const currentStudyPoints = computed(() =>
+  (coursePlan.value.studyPoints ?? []).filter((point) => point.stepIndex === lessonStep.value),
+);
 const subjectExpertNotes = computed(() => SUBJECT_EXPERT_NOTES[selectedSubjectKey.value] ?? []);
 const lessonExpertNotes = computed(() => coursePlan.value.expertNotes ?? []);
+const courseEventDetails = computed(() => coursePlan.value.eventDetails ?? []);
+
+function openEventDetail(event: LearningV2EventDetail): void {
+  activeEventDetail.value = event;
+  eventDetailOpen.value = true;
+}
+
+function closeEventDetail(): void {
+  eventDetailOpen.value = false;
+}
 
 function hasCodeEvidence(mode: 'practice' | 'apply'): boolean {
   return Object.values(codeEvidence.value).some((item) =>
@@ -503,14 +526,54 @@ function restoreCodeEvidence(): void {
   }
 }
 
-/* ===== 练习测评：当前课程题目组成一场连续 quiz session =====
-   · 题目来源只取当前 coursePlan.quiz，不读取当前 lesson step，也不跨课程
-   · 课程题库为空时才回退本科目综合题；此时没有第二门课程的数据被混入
-   · 另附课程步骤自测清单（checkpoint），与课程题目列表分开展示 */
-const quizItems = computed<LearningV2Practice[]>(() => {
+/* ===== 练习测评：支持本课与全科两种题库范围 =====
+   · 本课模式只取当前 coursePlan.quiz；全科模式聚合当前学科全部课程题目
+   · 全科模式仍从当前课程题目开始，底部题库按课程标注来源
+   · 另附当前课程步骤自测清单（checkpoint），不混入全科题目列表 */
+type LearningQuizBankItem = LearningV2Practice & {
+  readonly sourceCourseName?: string;
+};
+
+const courseQuizItems = computed<LearningQuizBankItem[]>(() => {
   const banked = coursePlan.value.quiz ?? [];
-  return banked.length ? [...banked] : [subject.value.practice];
+  return banked.length
+    ? banked.map((item) => ({ ...item, sourceCourseName: selectedCourseName.value }))
+    : [{ ...subject.value.practice, sourceCourseName: selectedCourseName.value }];
 });
+const subjectQuizItems = computed<LearningQuizBankItem[]>(() => {
+  const current = selectedCourse.value;
+  const orderedCourses = [
+    ...(current ? [current] : []),
+    ...courses.value.filter((course) => course.name !== current?.name),
+  ];
+  const items = orderedCourses.flatMap((course) => {
+    if (!isLearningV2CourseReady(selectedSubjectKey.value, course.name)) return [];
+    return getLearningV2CoursePlan(selectedSubjectKey.value, course.name).quiz.map((item) => ({
+      ...item,
+      sourceCourseName: course.name,
+    }));
+  });
+  return items.length
+    ? items
+    : [{ ...subject.value.practice, sourceCourseName: subject.value.name }];
+});
+const quizItems = computed<LearningQuizBankItem[]>(() =>
+  practiceScope.value === 'subject' ? subjectQuizItems.value : courseQuizItems.value,
+);
+const visibleQuizItems = computed(() => quizItems.value.slice(0, quizListLimit.value));
+const courseQuizAllSubmitted = computed(() =>
+  courseQuizItems.value.length > 0
+  && courseQuizItems.value.every((_, index) => !!quizSubmitted.value[index]),
+);
+const courseQuizSubmittedCount = computed(() =>
+  courseQuizItems.value.filter((_, index) => !!quizSubmitted.value[index]).length,
+);
+const courseQuizScore = computed(() =>
+  courseQuizItems.value.reduce((sum, item, index) =>
+    sum + (quizSubmitted.value[index] && quizPicks.value[index] === item.answer ? 1 : 0),
+  0),
+);
+const courseQuizTotal = computed(() => courseQuizItems.value.length);
 const quizTotal = computed(() => quizItems.value.length);
 const quizQuestionIndex = computed(() => Math.min(quizIndex.value, quizTotal.value - 1));
 const currentQuiz = computed(() => quizItems.value[quizQuestionIndex.value]);
@@ -533,6 +596,21 @@ function resetQuizProgress() {
   quizPicks.value = {};
   quizSubmitted.value = {};
   quizListOpen.value = false;
+  quizListLimit.value = 80;
+}
+function setPracticeScope(scope: 'course' | 'subject'): void {
+  if (practiceScope.value === scope) return;
+  practiceScope.value = scope;
+  resetQuizProgress();
+}
+function closeQuizBank(restoreFocus = true): void {
+  quizListOpen.value = false;
+  if (!restoreFocus) return;
+  void nextTick(() => quizBankToggle.value?.focus({ preventScroll: true }));
+}
+function toggleQuizBank(): void {
+  if (quizListOpen.value) closeQuizBank();
+  else quizListOpen.value = true;
 }
 function pickQuizOption(index: number) {
   if (quizSubmitted.value[quizQuestionIndex.value]) return;
@@ -563,8 +641,82 @@ function nextQuizQuestion() {
 function prevQuizQuestion() {
   selectQuizQuestion(Math.max(quizIndex.value - 1, 0));
 }
+function revealActiveLessonStep(): void {
+  const nav = lessonStepNav.value;
+  if (!nav) return;
+  const active = nav.querySelector<HTMLElement>('button[aria-current="step"]');
+  if (!active) return;
+  const target = Math.max(
+    0,
+    active.offsetLeft - Math.max(0, (nav.clientWidth - active.offsetWidth) / 2),
+  );
+  nav.scrollLeft = target;
+}
+type LessonStepNavGesture = {
+  startX: number;
+  startY: number;
+  articleScrollTop: number;
+  axis: 'pending' | 'horizontal' | 'vertical';
+};
+let lessonStepNavGesture: LessonStepNavGesture | null = null;
+
+function onLessonStepNavTouchStart(event: TouchEvent): void {
+  if (event.touches.length !== 1) {
+    lessonStepNavGesture = null;
+    return;
+  }
+  const touch = event.touches[0];
+  lessonStepNavGesture = {
+    startX: touch.clientX,
+    startY: touch.clientY,
+    articleScrollTop: lessonArticle.value?.scrollTop ?? 0,
+    axis: 'pending',
+  };
+}
+
+function onLessonStepNavTouchMove(event: TouchEvent): void {
+  const gesture = lessonStepNavGesture;
+  if (!gesture || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const deltaX = touch.clientX - gesture.startX;
+  const deltaY = touch.clientY - gesture.startY;
+  if (gesture.axis === 'pending') {
+    if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < 4) return;
+    gesture.axis = Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
+    if (gesture.axis === 'horizontal') {
+      // 横向手势交给步骤条自己的原生横向滚动，保留惯性。
+      lessonStepNavGesture = null;
+      return;
+    }
+  }
+  if (gesture.axis !== 'vertical') return;
+  const article = lessonArticle.value;
+  if (!article) return;
+  if (event.cancelable) event.preventDefault();
+  article.scrollTop = gesture.articleScrollTop - deltaY;
+}
+
+function onLessonStepNavTouchEnd(): void {
+  lessonStepNavGesture = null;
+}
+watch([lessonStep, activePage, selectedCourseName], async () => {
+  if (activePage.value !== 'lesson') return;
+  await nextTick();
+  revealActiveLessonStep();
+  const article = lessonArticle.value;
+  if (!article) return;
+  article.scrollTop = 0;
+}, { flush: 'post' });
+watch(quizListOpen, async (open) => {
+  if (!open) return;
+  await nextTick();
+  quizSheetClose.value?.focus({ preventScroll: true });
+});
 watch(selectedSubjectKey, () => {
   resetQuizProgress();
+});
+watch(practiceScope, () => {
+  quizListLimit.value = 80;
 });
 watch(selectedCourseName, () => {
   // 整场 quiz 绑定当前课程；换课必须从该课程第一题重新开始。
@@ -638,7 +790,10 @@ const quizSubmittedCount = computed(() =>
 const sessionStepLabel = computed(() =>
   `${Math.min(lessonStep.value + 1, lessonSteps.value.length)}/${lessonSteps.value.length} 步`,
 );
-const sessionPracticeLabel = computed(() => `${quizSubmittedCount.value}/${quizTotal.value} 题`);
+const sessionPracticeLabel = computed(() =>
+  sessionStage.value === 'practice'
+    ? `${quizSubmittedCount.value}/${quizTotal.value} 题`
+    : `${courseQuizSubmittedCount.value}/${courseQuizTotal.value} 题`);
 const sessionApplyLabel = computed(() =>
   studioPracticeCompleted.value ? '已完成' : `${studios.value.studio.steps.length} 步`,
 );
@@ -650,6 +805,11 @@ const sessionObjective = computed(() => {
 });
 const sessionEvidence = computed(() => {
   if (sessionStage.value === 'practice') {
+    if (practiceScope.value === 'subject') {
+      return quizAllSubmitted.value
+        ? `全科题库已完成 ${quizScore.value}/${quizTotal.value}；本课练习仍需完成 ${courseQuizSubmittedCount.value}/${courseQuizTotal.value}。`
+        : `全科练习已作答 ${quizSubmittedCount.value}/${quizTotal.value}；本课完成度仍按当前课程 ${courseQuizSubmittedCount.value}/${courseQuizTotal.value} 计算。`;
+    }
     if (!quizAllSubmitted.value) return `完成本课 ${quizTotal.value} 道判断，并查看每题反馈。`;
     if (courseCodeLab.value && !hasCodeEvidence('practice')) {
       return `判断题已完成 ${quizScore.value}/${quizTotal.value}；还需要运行一次代码跟做。`;
@@ -671,14 +831,16 @@ const sessionEvidence = computed(() => {
 });
 const sessionOutput = computed(() =>
   sessionStage.value === 'practice'
-    ? `本课程题库 ${quizTotal.value} 题`
+    ? practiceScope.value === 'subject'
+      ? `${subject.value.name}全科题库 ${quizTotal.value} 题`
+      : `本课程题库 ${quizTotal.value} 题`
     : courseCodeLab.value
       ? `${courseCodeLab.value.apply.title} · 可运行源码与运行证据`
       : studios.value.output,
 );
 const sessionLearnDone = computed(() => lessonFinished.value || currentCourseCompleted.value);
 const sessionPracticeDone = computed(() =>
-  quizAllSubmitted.value
+  courseQuizAllSubmitted.value
   && (!courseCodeLab.value || hasCodeEvidence('practice')),
 );
 const sessionApplyDone = computed(() =>
@@ -1284,6 +1446,11 @@ function onKeydown(event: KeyboardEvent) {
     closeLibrary();
     return;
   }
+  if (quizListOpen.value && event.key === 'Escape') {
+    event.preventDefault();
+    closeQuizBank();
+    return;
+  }
   if (isStudySurface.value && event.key === 'Escape') {
     handleSessionExit();
     return;
@@ -1340,6 +1507,9 @@ watch(isStudySurface, (active, previous) => {
   }
 }, { immediate: true });
 watch([selectedSubjectKey, selectedCourseName, activePage, lessonStep], saveSession);
+watch([selectedSubjectKey, selectedCourseName, activePage], () => {
+  if (eventDetailOpen.value) closeEventDetail();
+});
 watch(selectedSubjectKey, () => void loadProgress());
 watch(lead, (next, previous) => {
   if (next === 'ai' && previous !== 'ai') {
@@ -2221,7 +2391,23 @@ onBeforeUnmount(() => {
               data-yz-annotate-id="learning-v2-lesson"
               data-yz-annotate-label="沉浸学习台"
             >
-            <nav><button v-for="(step, index) in lessonSteps" :key="step.title" type="button" :class="{ active: lessonStep === index, done: index < lessonStep }" @click="lessonStep = index">{{ step.title }}</button></nav>
+            <nav
+              ref="lessonStepNav"
+              aria-label="本课学习步骤"
+              @touchstart="onLessonStepNavTouchStart"
+              @touchmove="onLessonStepNavTouchMove"
+              @touchend="onLessonStepNavTouchEnd"
+              @touchcancel="onLessonStepNavTouchEnd"
+            >
+              <button
+                v-for="(step, index) in lessonSteps"
+                :key="step.title"
+                type="button"
+                :class="{ active: lessonStep === index, done: index < lessonStep }"
+                :aria-current="lessonStep === index ? 'step' : undefined"
+                @click="lessonStep = index"
+              >{{ step.title }}</button>
+            </nav>
             <div class="lv2-lesson-body">
             <ResizablePane
               label="章节目录"
@@ -2253,7 +2439,7 @@ onBeforeUnmount(() => {
                 </section>
               </div>
             </ResizablePane>
-            <article>
+            <article ref="lessonArticle">
               <span>{{ coursePlan.trackName }} · {{ subject.lesson.labels[lessonStep] }}</span>
               <em class="lv2-quality">
                 {{ coursePlan.reviewStatus === 'reviewed' ? '完整教案 · 人工审校' : '完整教案 · 系统整理' }}
@@ -2262,6 +2448,22 @@ onBeforeUnmount(() => {
               <p class="lv2-goal">课程目标：{{ coursePlan.plainLanguageGoal }}</p>
               <p class="lv2-prerequisite">前置知识：{{ coursePlan.prerequisite }}</p>
               <p v-if="currentLessonStep?.objective" class="lv2-step-objective"><b>本步目标</b>{{ currentLessonStep.objective }}</p>
+              <section
+                v-if="currentStudyPoints.length"
+                class="lv2-step-study-points"
+                aria-labelledby="lv2-step-study-points-title"
+              >
+                <header>
+                  <span>重点标记</span>
+                  <b id="lv2-step-study-points-title">本步需要记住和辨清的内容</b>
+                </header>
+                <ul>
+                  <li v-for="point in currentStudyPoints" :key="`${point.label}-${point.text}`">
+                    <i :data-label="point.label">{{ point.label }}</i>
+                    <span>{{ point.text }}</span>
+                  </li>
+                </ul>
+              </section>
               <div
                 class="lv2-lesson-copy"
                 data-yz-annotate-id="learning-v2-lesson-copy"
@@ -2269,6 +2471,28 @@ onBeforeUnmount(() => {
               >
                 <p v-for="(paragraph, paragraphIndex) in paragraphs(currentLessonStep?.body)" :key="paragraphIndex">{{ paragraph }}</p>
               </div>
+              <section
+                v-if="courseEventDetails.length"
+                class="lv2-event-archives"
+                aria-labelledby="lv2-event-archives-title"
+              >
+                <header>
+                  <span>深度档案</span>
+                  <b id="lv2-event-archives-title">正文保留主线，完整背景、过程与来源按需展开</b>
+                </header>
+                <button
+                  v-for="event in courseEventDetails"
+                  :key="event.id"
+                  type="button"
+                  @click="openEventDetail(event)"
+                >
+                  <span>
+                    <b>{{ event.title }}</b>
+                    <small>{{ event.period }} · {{ event.timeline.length }} 个关键节点</small>
+                  </span>
+                  <em>查看全过程<ChevronRight :size="15" /></em>
+                </button>
+              </section>
               <section
                 v-if="currentLessonStep?.example"
                 class="lv2-step-example"
@@ -2350,6 +2574,11 @@ onBeforeUnmount(() => {
                 />
                 <button class="lv2-lesson-note-action" type="button" @click="openNote(coursePlan.title, currentLessonStep?.body || '')"><NotebookPen :size="14" />自由笔记</button>
               </div>
+              <LearningEventDetailDialog
+                :event="activeEventDetail"
+                :open="eventDetailOpen"
+                @close="closeEventDetail"
+              />
             </article>
             <ResizablePane
               side="right"
@@ -2453,26 +2682,51 @@ onBeforeUnmount(() => {
           <div class="lv2-session-practice-surface">
           <header class="lv2-session-practice-head">
             <div>
-              <span>练习 · 本课即时反馈</span>
-              <b>{{ selectedCourseName }}</b>
-              <small>答错可回到本课原文，提交反馈后再进入实践。</small>
+              <span>{{ practiceScope === 'subject' ? `${subject.name} · 全科练习` : '练习 · 本课即时反馈' }}</span>
+              <b>{{ practiceScope === 'subject' ? `${subject.name}题库` : selectedCourseName }}</b>
+              <small>
+                {{ practiceScope === 'subject'
+                  ? `覆盖本学科全部课程，共 ${quizTotal} 题；当前题目仍从「${selectedCourseName}」开始。`
+                  : `当前课程共 ${quizTotal} 题；答错可回到本课原文，提交反馈后再进入实践。` }}
+              </small>
             </div>
-            <button
-              class="lv2-quiz-bank-toggle"
-              type="button"
-              aria-controls="lv2-quiz-bank"
-              :aria-expanded="quizListOpen"
-              @click="quizListOpen = !quizListOpen"
-            >
-              <ListChecks :size="15" />
-              题库列表
-            </button>
+            <div class="lv2-session-practice-actions">
+              <div class="lv2-practice-scope" role="group" aria-label="练习题范围">
+                <button
+                  type="button"
+                  :class="{ active: practiceScope === 'course' }"
+                  :aria-pressed="practiceScope === 'course'"
+                  @click="setPracticeScope('course')"
+                >本课</button>
+                <button
+                  type="button"
+                  :class="{ active: practiceScope === 'subject' }"
+                  :aria-pressed="practiceScope === 'subject'"
+                  @click="setPracticeScope('subject')"
+                >全科</button>
+              </div>
+              <button
+                ref="quizBankToggle"
+                class="lv2-quiz-bank-toggle"
+                type="button"
+                aria-controls="lv2-quiz-bank"
+                :aria-expanded="quizListOpen"
+                @click="toggleQuizBank"
+              >
+                <ListChecks :size="15" />
+                {{ practiceScope === 'subject' ? '全科题库' : '本课题库' }}
+              </button>
+            </div>
           </header>
           <div class="lv2-session-practice-layout">
           <div class="lv2-session-practice-main">
           <article ref="quizHeading" class="lv2-quiz" tabindex="-1">
             <header class="lv2-quiz-meta">
-              <span>{{ currentQuiz.focus }}</span>
+              <span>
+                {{ currentQuiz.sourceCourseName && practiceScope === 'subject'
+                  ? `${currentQuiz.sourceCourseName} · ${currentQuiz.focus}`
+                  : currentQuiz.focus }}
+              </span>
               <small>第 {{ quizQuestionIndex + 1 }} / {{ quizTotal }} 题 · 已得 {{ quizScore }} 分</small>
             </header>
             <h2 tabindex="-1" @click="focusCurrentQuiz">{{ currentQuiz.prompt }}</h2>
@@ -2524,44 +2778,79 @@ onBeforeUnmount(() => {
             <p v-if="quizAllSubmitted" class="lv2-quiz-score">本章完成：{{ quizScore }} / {{ quizTotal }} 题正确。错题解析已标出，可用「上一题」回看。</p>
             <p v-if="!coursePlan.quiz?.length" class="lv2-quiz-fallback">本课程题库暂未拆分：先用当前课程综合题练习，下面的自测清单覆盖本课每个步骤。</p>
           </article>
-          <section
+          <div
             v-show="quizListOpen"
-            id="lv2-quiz-bank"
-            class="lv2-question-bank"
-            data-quiz-bank
-            :data-quiz-course="selectedCourseName"
-            aria-labelledby="lv2-question-bank-title"
+            class="lv2-question-sheet-mask"
+            @click.self="closeQuizBank()"
           >
-            <header>
-              <div>
-                <span>本课程题库</span>
-                <b id="lv2-question-bank-title">{{ selectedCourseName }}</b>
-              </div>
-              <small>{{ quizSubmittedCount }} / {{ quizTotal }} 已完成 · 点题号直接跳转</small>
-            </header>
-            <ol>
-              <li v-for="(item, index) in quizItems" :key="`${item.focus}-${index}`">
+            <section
+              id="lv2-quiz-bank"
+              class="lv2-question-bank lv2-question-sheet"
+              data-quiz-bank
+              :data-quiz-course="selectedCourseName"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lv2-question-bank-title"
+            >
+              <span class="lv2-question-sheet-handle" aria-hidden="true"></span>
+              <header>
+                <div>
+                  <span>{{ practiceScope === 'subject' ? '全科练习题' : '当前课程题库' }}</span>
+                  <b id="lv2-question-bank-title">
+                    {{ practiceScope === 'subject' ? `${subject.name} · ${quizTotal} 题` : selectedCourseName }}
+                  </b>
+                </div>
+                <div class="lv2-question-sheet-head-actions">
+                  <small>{{ quizSubmittedCount }} / {{ quizTotal }} 已完成 · 点题号直接跳转</small>
+                  <button
+                    ref="quizSheetClose"
+                    class="lv2-question-sheet-close"
+                    type="button"
+                    aria-label="关闭题库"
+                    @click="closeQuizBank()"
+                  >
+                    <X :size="17" />
+                  </button>
+                </div>
+              </header>
+              <ol>
+                <li v-for="(item, index) in visibleQuizItems" :key="`${item.sourceCourseName}-${item.focus}-${index}`">
+                  <button
+                    type="button"
+                    :data-quiz-bank-item="index"
+                    :class="{
+                      current: quizQuestionIndex === index,
+                      correct: quizSubmitted[index] && quizPicks[index] === item.answer,
+                      wrong: quizSubmitted[index] && quizPicks[index] !== item.answer,
+                    }"
+                    :aria-current="quizQuestionIndex === index ? 'step' : undefined"
+                    @click="selectQuizQuestion(index)"
+                  >
+                    <span class="lv2-question-number">第 {{ String(index + 1).padStart(2, '0') }} 题</span>
+                    <span class="lv2-question-focus">
+                      <small>
+                        {{ item.sourceCourseName && practiceScope === 'subject'
+                          ? `${item.sourceCourseName} · ${item.focus}`
+                          : item.focus }}
+                      </small>
+                      <b>{{ item.prompt }}</b>
+                    </span>
+                    <span class="lv2-question-status" data-quiz-bank-status>{{ quizQuestionStatus(index) }}</span>
+                  </button>
+                </li>
+              </ol>
+              <footer v-if="quizAllSubmitted || quizItems.length > visibleQuizItems.length">
                 <button
+                  v-if="quizItems.length > visibleQuizItems.length"
                   type="button"
-                  :data-quiz-bank-item="index"
-                  :class="{
-                    current: quizQuestionIndex === index,
-                    correct: quizSubmitted[index] && quizPicks[index] === item.answer,
-                    wrong: quizSubmitted[index] && quizPicks[index] !== item.answer,
-                  }"
-                  :aria-current="quizQuestionIndex === index ? 'step' : undefined"
-                  @click="selectQuizQuestion(index)"
-                >
-                  <span class="lv2-question-number">第 {{ String(index + 1).padStart(2, '0') }} 题</span>
-                  <span class="lv2-question-focus">{{ item.focus }}</span>
-                  <span class="lv2-question-status" data-quiz-bank-status>{{ quizQuestionStatus(index) }}</span>
+                  @click="quizListLimit += 80"
+                >继续加载 {{ Math.min(80, quizItems.length - visibleQuizItems.length) }} 题</button>
+                <button v-if="quizAllSubmitted" type="button" @click="resetQuizProgress">
+                  重新练习{{ practiceScope === 'subject' ? '全科题库' : '本课题库' }}
                 </button>
-              </li>
-            </ol>
-            <footer v-if="quizAllSubmitted">
-              <button type="button" @click="resetQuizProgress">重新练习本课题库</button>
-            </footer>
-          </section>
+              </footer>
+            </section>
+          </div>
           <LearningCodeLab
             v-if="courseCodeLab"
             :lab="courseCodeLab"

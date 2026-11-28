@@ -42,7 +42,7 @@ describe('algorithm handwritten lesson plans', () => {
   it('keeps handwritten plan steps substantive, distinct and free of template phrases', () => {
     for (const lesson of ALGORITHM_LESSONS) {
       const plan = getLearningV2CoursePlan('algorithms', lesson.courseName);
-      expect(plan.steps, lesson.courseName).toHaveLength(6);
+      expect(plan.steps, lesson.courseName).toHaveLength(5);
       const bodies = new Set<string>();
       for (const step of plan.steps) {
         const tag = `${lesson.courseName}/${step.title}`;
@@ -56,7 +56,7 @@ describe('algorithm handwritten lesson plans', () => {
         expect(CURLY.test(step.body), tag).toBe(false);
         bodies.add(step.body);
       }
-      expect(bodies.size, lesson.courseName).toBe(6);
+      expect(bodies.size, lesson.courseName).toBe(5);
     }
   });
 
